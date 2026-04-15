@@ -33,17 +33,23 @@ function emptyToUndefined(source: NodeJS.ProcessEnv): Record<string, string | un
   return out;
 }
 
-function parseEnv() {
+type ServerEnv = z.infer<typeof serverSchema> & z.infer<typeof clientSchema>;
+
+function parseEnv(): ServerEnv {
   const source = emptyToUndefined(process.env);
   const isServer = typeof window === 'undefined';
   const client = clientSchema.parse({
     NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: source.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
     NEXT_PUBLIC_APP_URL: source.NEXT_PUBLIC_APP_URL,
   });
-  if (!isServer) return { ...client };
+  if (!isServer) {
+    // Browser bundle: only NEXT_PUBLIC_* exist at runtime. Cast is safe because
+    // server-only fields will be undefined, and client code must not access them.
+    return client as ServerEnv;
+  }
   const server = serverSchema.parse(source);
   return { ...client, ...server };
 }
 
 export const env = parseEnv();
-export type Env = ReturnType<typeof parseEnv>;
+export type Env = ServerEnv;
