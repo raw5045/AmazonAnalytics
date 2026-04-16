@@ -1,1 +1,3 @@
-export const functions = [];
+import { rubricUploadedFn } from './rubric';
+
+export const functions = [rubricUploadedFn];
