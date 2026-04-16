@@ -1,6 +1,12 @@
 import Link from 'next/link';
+import { auth } from '@clerk/nextjs/server';
+import { redirect } from 'next/navigation';
 
-export default function HomePage() {
+export default async function HomePage() {
+  const { userId } = await auth();
+  if (userId) {
+    redirect('/app');
+  }
   return (
     <main className="flex min-h-screen flex-col items-center justify-center gap-4">
       <h1 className="text-3xl font-semibold">Amazon SFR Analytics</h1>
