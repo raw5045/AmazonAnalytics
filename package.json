@@ -15,7 +15,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx db/seed.ts",
-    "admin:promote": "tsx scripts/promoteAdmin.ts"
+    "admin:promote": "tsx scripts/promoteAdmin.ts",
+    "inngest:dev": "pnpm dlx inngest-cli@latest dev -u http://localhost:3000/api/inngest"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1030.0",
@@ -23,6 +24,7 @@
     "@clerk/nextjs": "^7.2.1",
     "@neondatabase/serverless": "^1.0.2",
     "drizzle-orm": "^0.45.2",
+    "inngest": "^4.2.4",
     "next": "16.2.3",
     "react": "19.2.4",
     "react-dom": "19.2.4",
