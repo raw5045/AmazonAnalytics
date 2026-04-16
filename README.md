@@ -1,36 +1,43 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Amazon SFR Analytics
 
-## Getting Started
+Weekly Amazon Search Frequency Rank (SFR) analytics. Admin uploads CSV reports from Seller Central; users analyze keyword trends.
 
-First, run the development server:
+## Status
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Phase 0 (Foundation) — rubric upload and schema approval.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Architecture
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+See `docs/superpowers/specs/2026-04-15-amazon-sfr-analytics-design.md`.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Local development
 
-## Learn More
+Prereqs: Node 20+, pnpm, Neon account, Clerk account, Cloudflare R2 bucket.
 
-To learn more about Next.js, take a look at the following resources:
+1. `cp .env.example .env.local` and fill values
+2. `pnpm install`
+3. `pnpm db:migrate`
+4. `pnpm db:seed`
+5. Terminal A: `pnpm dev`
+6. Terminal B: `pnpm inngest:dev`
+7. Sign up at http://localhost:3000/sign-up
+8. Promote yourself to admin: `pnpm admin:promote` (requires `INITIAL_ADMIN_EMAIL` in `.env.local`)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Commands
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Command | Purpose |
+|---|---|
+| `pnpm dev` | Next.js dev server |
+| `pnpm inngest:dev` | Inngest local dev server |
+| `pnpm test` | Unit tests |
+| `pnpm test:integration` | Integration tests (requires DB) |
+| `pnpm typecheck` | TypeScript |
+| `pnpm db:generate` | Generate migrations from schema changes |
+| `pnpm db:migrate` | Apply pending migrations |
+| `pnpm db:seed` | Seed app_settings |
+| `pnpm db:studio` | Drizzle Studio |
+| `pnpm admin:promote` | Promote INITIAL_ADMIN_EMAIL to admin |
 
-## Deploy on Vercel
+## Deployment
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Vercel (auto-deploys on push to `main`). Env vars must be configured in Vercel dashboard. Clerk webhook URL must point at the deployed `/api/webhooks/clerk`.
