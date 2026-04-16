@@ -38,6 +38,9 @@ Thumbs.db
 coverage/
 .nyc_output/
 
+# Claude Code tooling
+.claude/
+
 # Local data
 *.csv
 *.zip
