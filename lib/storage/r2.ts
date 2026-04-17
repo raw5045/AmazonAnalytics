@@ -1,0 +1,45 @@
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { env } from '@/lib/env';
+
+export const r2 = new S3Client({
+  region: 'auto',
+  endpoint: `https://${env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId: env.R2_ACCESS_KEY_ID,
+    secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+  },
+});
+
+export async function uploadToR2(key: string, body: Buffer | Uint8Array, contentType: string) {
+  await r2.send(
+    new PutObjectCommand({
+      Bucket: env.R2_BUCKET_NAME,
+      Key: key,
+      Body: body,
+      ContentType: contentType,
+    }),
+  );
+  return key;
+}
+
+export async function getPresignedUploadUrl(key: string, contentType: string, expiresInSec = 900) {
+  const cmd = new PutObjectCommand({
+    Bucket: env.R2_BUCKET_NAME,
+    Key: key,
+    ContentType: contentType,
+  });
+  return getSignedUrl(r2, cmd, { expiresIn: expiresInSec });
+}
+
+export async function downloadFromR2(key: string): Promise<Buffer> {
+  const result = await r2.send(
+    new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key }),
+  );
+  const chunks: Buffer[] = [];
+  const stream = result.Body as NodeJS.ReadableStream;
+  for await (const chunk of stream) {
+    chunks.push(Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
+}

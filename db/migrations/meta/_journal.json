@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1776332084509,
+      "tag": "0000_foamy_morph",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1776332523459,
+      "tag": "0001_smart_bastion",
+      "breakpoints": true
+    }
+  ]
+}
