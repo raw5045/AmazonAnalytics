@@ -57,3 +57,8 @@ export function buildUploadStorageKey(input: UploadKeyInput): string {
   const safe = base.replace(/[^a-zA-Z0-9._-]/g, '_');
   return `uploads/${input.batchId}/${input.fileId}/${safe}`;
 }
+
+export async function downloadStreamFromR2(key: string): Promise<import('node:stream').Readable> {
+  const result = await r2.send(new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key }));
+  return result.Body as import('node:stream').Readable;
+}
