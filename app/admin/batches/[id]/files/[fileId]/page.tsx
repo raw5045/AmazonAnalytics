@@ -1,7 +1,8 @@
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, and, ne } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { uploadedFiles, ingestionErrors } from '@/db/schema';
 import { notFound } from 'next/navigation';
+import { ReplaceWeekButton } from './ReplaceWeekButton';
 
 export default async function FileDetailPage({
   params,
@@ -18,6 +19,18 @@ export default async function FileDetailPage({
     limit: 500,
   });
 
+  const weekLoadedError = errors.find((e) => e.code === 'WEEK_ALREADY_LOADED');
+  let conflictingFileId: string | null = null;
+  if (weekLoadedError && file.weekEndDate) {
+    const existing = await db.query.uploadedFiles.findFirst({
+      where: and(
+        eq(uploadedFiles.weekEndDate, file.weekEndDate),
+        ne(uploadedFiles.id, file.id),
+      ),
+    });
+    conflictingFileId = existing?.id ?? null;
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <header>
@@ -28,6 +41,18 @@ export default async function FileDetailPage({
           <div><dt className="text-gray-500">Rows</dt><dd>{file.rowCountRaw ?? '—'}</dd></div>
         </dl>
       </header>
+
+      {weekLoadedError && conflictingFileId && (
+        <div className="rounded border border-amber-300 bg-amber-50 p-4">
+          <h3 className="font-semibold">Duplicate week — action needed</h3>
+          <p className="mt-2 text-sm">
+            Week {file.weekEndDate} is already loaded. Click below to replace the existing week with this file.
+          </p>
+          <div className="mt-3">
+            <ReplaceWeekButton fileId={file.id} replacesFileId={conflictingFileId} />
+          </div>
+        </div>
+      )}
 
       {errors.length > 0 && (
         <section>
