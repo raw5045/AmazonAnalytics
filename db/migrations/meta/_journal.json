@@ -15,6 +15,13 @@
       "when": 1776332523459,
       "tag": "0001_smart_bastion",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776710939256,
+      "tag": "0002_aspiring_purifiers",
+      "breakpoints": true
     }
   ]
 }
