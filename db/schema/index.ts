@@ -6,3 +6,4 @@ export * from './auditLog';
 export * from './searchTerms';
 export * from './reportingWeeks';
 export * from './keywordWeeklyMetrics';
+export * from './stagingWeeklyMetrics';
