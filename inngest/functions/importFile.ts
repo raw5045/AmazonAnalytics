@@ -39,6 +39,9 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   weekStartDate.setUTCDate(weekStartDate.getUTCDate() - 6);
   const weekStartIso = weekStartDate.toISOString().slice(0, 10);
 
+  // Idempotency: clear any partial staging rows from a previous timeout/retry of this file
+  await db.delete(stagingWeeklyMetrics).where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
+
   // Stage 1: stream CSV into staging_weekly_metrics
   const stream = await downloadStreamFromR2(file.storageKey);
   let rowsStaged = 0;

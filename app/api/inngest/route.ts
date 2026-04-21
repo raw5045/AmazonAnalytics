@@ -6,3 +6,6 @@ export const { GET, POST, PUT } = serve({
   client: inngest,
   functions,
 });
+
+export const runtime = 'nodejs';
+export const maxDuration = 900;
