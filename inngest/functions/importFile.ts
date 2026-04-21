@@ -1,16 +1,13 @@
 import { eq, sql } from 'drizzle-orm';
+import { Pool } from '@neondatabase/serverless';
+import { from as copyFrom } from 'pg-copy-streams';
 import { inngest } from '../client';
 import { downloadStreamFromR2 } from '@/lib/storage/r2';
 import { streamParseCsv } from '@/lib/csv/streamParse';
-import {
-  normalizeForMatch,
-  keywordInTitle,
-  computeTitleMatchCount,
-} from '@/lib/analytics/derivedFields';
+import { normalizeForMatch } from '@/lib/analytics/derivedFields';
+import { env } from '@/lib/env';
 import { db } from '@/db/client';
 import { uploadedFiles, stagingWeeklyMetrics, reportingWeeks } from '@/db/schema';
-
-const BATCH_SIZE = 2000;
 
 export interface ImportFileInput {
   uploadedFileId: string;
@@ -25,6 +22,12 @@ function toNumeric(v: string | undefined | null): string | null {
   const n = Number(v);
   if (Number.isNaN(n)) return null;
   return n.toFixed(2);
+}
+
+function titleContainsKeyword(normalizedKeyword: string, title: string | null | undefined): boolean {
+  if (!title || !normalizedKeyword) return false;
+  const nTitle = normalizeForMatch(title);
+  return !!nTitle && nTitle.includes(normalizedKeyword);
 }
 
 export async function processFileImport(input: ImportFileInput): Promise<ImportFileOutput> {
@@ -42,87 +45,107 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   // Idempotency: clear any partial staging rows from a previous timeout/retry of this file
   await db.delete(stagingWeeklyMetrics).where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
 
-  // Stage 1: stream CSV into staging_weekly_metrics
+  // Stage 1: stream CSV into staging_weekly_metrics via COPY FROM STDIN
+  // Uses Neon's WebSocket Pool driver to bypass Drizzle's parameter binding
+  // overhead. For a 2.87M-row file, COPY is 50x+ faster than parameterized INSERTs.
   const stream = await downloadStreamFromR2(file.storageKey);
   let rowsStaged = 0;
-  let buffer: Array<typeof stagingWeeklyMetrics.$inferInsert> = [];
-  const inFlight = new Set<Promise<void>>();
-  const CONCURRENCY_LIMIT = 4;
 
-  async function flushBuffer(toInsert: typeof buffer) {
-    await db.insert(stagingWeeklyMetrics).values(toInsert);
-    rowsStaged += toInsert.length;
-  }
+  const pool = new Pool({ connectionString: env.DATABASE_URL });
+  const client = await pool.connect();
 
-  for await (const row of streamParseCsv(stream)) {
-    const searchTerm = row['Search Term'];
-    const normalized = normalizeForMatch(searchTerm);
-    const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
-    const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
-    const t3 = row['Top Clicked Product #3: Product Title'] ?? null;
+  try {
+    const copySql = `
+      COPY staging_weekly_metrics (
+        batch_id, uploaded_file_id, week_end_date,
+        search_term_raw, search_term_normalized,
+        actual_rank,
+        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count
+      ) FROM STDIN WITH (FORMAT text, NULL '\\N')
+    `;
 
-    buffer.push({
-      batchId: file.batchId,
-      uploadedFileId: file.id,
-      weekEndDate,
-      searchTermRaw: searchTerm,
-      searchTermNormalized: normalized,
-      actualRank: Number(row['Search Frequency Rank']),
-      topClickedBrand1: row['Top Clicked Brand #1'] || null,
-      topClickedBrand2: row['Top Clicked Brands #2'] || null,
-      topClickedBrand3: row['Top Clicked Brands #3'] || null,
-      topClickedCategory1: row['Top Clicked Category #1'] || null,
-      topClickedCategory2: row['Top Clicked Category #2'] || null,
-      topClickedCategory3: row['Top Clicked Category #3'] || null,
-      topClickedProduct1Asin: row['Top Clicked Product #1: ASIN'] || null,
-      topClickedProduct2Asin: row['Top Clicked Product #2: ASIN'] || null,
-      topClickedProduct3Asin: row['Top Clicked Product #3: ASIN'] || null,
-      topClickedProduct1Title: t1,
-      topClickedProduct2Title: t2,
-      topClickedProduct3Title: t3,
-      topClickedProduct1ClickShare: toNumeric(row['Top Clicked Product #1: Click Share']),
-      topClickedProduct2ClickShare: toNumeric(row['Top Clicked Product #2: Click Share']),
-      topClickedProduct3ClickShare: toNumeric(row['Top Clicked Product #3: Click Share']),
-      topClickedProduct1ConversionShare: toNumeric(
-        row['Top Clicked Product #1: Conversion Share'],
-      ),
-      topClickedProduct2ConversionShare: toNumeric(
-        row['Top Clicked Product #2: Conversion Share'],
-      ),
-      topClickedProduct3ConversionShare: toNumeric(
-        row['Top Clicked Product #3: Conversion Share'],
-      ),
-      keywordInTitle1: keywordInTitle(searchTerm, t1),
-      keywordInTitle2: keywordInTitle(searchTerm, t2),
-      keywordInTitle3: keywordInTitle(searchTerm, t3),
-      keywordTitleMatchCount: computeTitleMatchCount(searchTerm, [t1, t2, t3]),
-    });
+    const copyStream = client.query(copyFrom(copySql));
 
-    if (buffer.length >= BATCH_SIZE) {
-      // Throttle: block only when concurrency cap is reached
-      while (inFlight.size >= CONCURRENCY_LIMIT) {
-        await Promise.race(inFlight);
+    const encodeField = (v: string | number | boolean | null | undefined): string => {
+      if (v === null || v === undefined || v === '') return '\\N';
+      const s = String(v);
+      return s
+        .replace(/\\/g, '\\\\')
+        .replace(/\t/g, '\\t')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '\\r');
+    };
+
+    for await (const row of streamParseCsv(stream)) {
+      const searchTerm = row['Search Term'];
+      const normalizedTerm = normalizeForMatch(searchTerm);
+      const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
+      const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
+      const t3 = row['Top Clicked Product #3: Product Title'] ?? null;
+
+      // Cache: normalize keyword ONCE per row (was being redone 3x via computeTitleMatchCount)
+      const kwNormalized = normalizedTerm;
+
+      const inT1 = titleContainsKeyword(kwNormalized, t1);
+      const inT2 = titleContainsKeyword(kwNormalized, t2);
+      const inT3 = titleContainsKeyword(kwNormalized, t3);
+      const matchCount = (inT1 ? 1 : 0) + (inT2 ? 1 : 0) + (inT3 ? 1 : 0);
+
+      const fields = [
+        file.batchId,
+        file.id,
+        weekEndDate,
+        searchTerm,
+        normalizedTerm,
+        Number(row['Search Frequency Rank']),
+        row['Top Clicked Brand #1'] || null,
+        row['Top Clicked Brands #2'] || null,
+        row['Top Clicked Brands #3'] || null,
+        row['Top Clicked Category #1'] || null,
+        row['Top Clicked Category #2'] || null,
+        row['Top Clicked Category #3'] || null,
+        row['Top Clicked Product #1: ASIN'] || null,
+        row['Top Clicked Product #2: ASIN'] || null,
+        row['Top Clicked Product #3: ASIN'] || null,
+        t1,
+        t2,
+        t3,
+        toNumeric(row['Top Clicked Product #1: Click Share']),
+        toNumeric(row['Top Clicked Product #2: Click Share']),
+        toNumeric(row['Top Clicked Product #3: Click Share']),
+        toNumeric(row['Top Clicked Product #1: Conversion Share']),
+        toNumeric(row['Top Clicked Product #2: Conversion Share']),
+        toNumeric(row['Top Clicked Product #3: Conversion Share']),
+        inT1 ? 't' : 'f',
+        inT2 ? 't' : 'f',
+        inT3 ? 't' : 'f',
+        matchCount,
+      ];
+
+      const line = fields.map(encodeField).join('\t') + '\n';
+
+      // Write + respect backpressure
+      if (!copyStream.write(line)) {
+        await new Promise<void>((resolve) => copyStream.once('drain', () => resolve()));
       }
-      const toInsert = buffer;
-      buffer = [];
-      const p = flushBuffer(toInsert).finally(() => inFlight.delete(p));
-      inFlight.add(p);
+      rowsStaged++;
     }
-  }
 
-  // Flush trailing partial batch
-  if (buffer.length > 0) {
-    while (inFlight.size >= CONCURRENCY_LIMIT) {
-      await Promise.race(inFlight);
-    }
-    const toInsert = buffer;
-    buffer = [];
-    const p = flushBuffer(toInsert).finally(() => inFlight.delete(p));
-    inFlight.add(p);
+    copyStream.end();
+    await new Promise<void>((resolve, reject) => {
+      copyStream.on('finish', () => resolve());
+      copyStream.on('error', reject);
+    });
+  } finally {
+    client.release();
+    await pool.end();
   }
-
-  // Wait for all in-flight inserts to complete before moving to Stage 2
-  await Promise.all(inFlight);
 
   // Stage 2: upsert search_terms
   await db.execute(sql`
