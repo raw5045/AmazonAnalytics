@@ -34,6 +34,11 @@ export const validationStatusEnum = pgEnum('validation_status', [
   'imported',
 ]);
 export const ingestionSeverityEnum = pgEnum('ingestion_severity', ['error', 'warning', 'info']);
+export const fakeVolumeEvalStatusEnum = pgEnum('fake_volume_eval_status', [
+  'evaluated',
+  'unknown_missing_conversion',
+  'unknown_missing_click',
+]);
 
 export const uploadBatches = pgTable('upload_batches', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -76,6 +81,7 @@ export const uploadedFiles = pgTable('uploaded_files', {
   replacesFileId: uuid('replaces_file_id'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   importedAt: timestamp('imported_at', { withTimezone: true }),
+  replacedAt: timestamp('replaced_at', { withTimezone: true }),
 });
 
 export const ingestionErrors = pgTable('ingestion_errors', {

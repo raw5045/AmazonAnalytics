@@ -15,6 +15,27 @@
       "when": 1776332523459,
       "tag": "0001_smart_bastion",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1776710939256,
+      "tag": "0002_aspiring_purifiers",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776711247989,
+      "tag": "0003_outgoing_echo",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1776711412927,
+      "tag": "0004_woozy_sentry",
+      "breakpoints": true
     }
   ]
 }

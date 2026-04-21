@@ -17,6 +17,17 @@ export default defineConfig({
       '**/.next/**',
       ...(isIntegration ? [] : ['tests/integration/**']),
     ],
+    // Integration tests hit a shared Neon database and collide on unique
+    // constraints (e.g. reporting_weeks.week_end_date) when run in parallel.
+    // Run files sequentially under RUN_INTEGRATION.
+    ...(isIntegration
+      ? {
+          pool: 'forks' as const,
+          forks: { singleFork: true },
+          fileParallelism: false,
+          sequence: { concurrent: false },
+        }
+      : {}),
   },
   resolve: {
     alias: {

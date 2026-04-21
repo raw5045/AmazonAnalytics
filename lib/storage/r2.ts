@@ -43,3 +43,22 @@ export async function downloadFromR2(key: string): Promise<Buffer> {
   }
   return Buffer.concat(chunks);
 }
+
+export interface UploadKeyInput {
+  batchId: string;
+  fileId: string;
+  filename: string;
+}
+
+export function buildUploadStorageKey(input: UploadKeyInput): string {
+  // Strip any path components (prevent directory traversal)
+  const base = input.filename.split(/[\\/]/).pop() ?? 'upload.csv';
+  // Keep only safe characters
+  const safe = base.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return `uploads/${input.batchId}/${input.fileId}/${safe}`;
+}
+
+export async function downloadStreamFromR2(key: string): Promise<import('node:stream').Readable> {
+  const result = await r2.send(new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key }));
+  return result.Body as import('node:stream').Readable;
+}

@@ -21,6 +21,15 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <Link href="/admin/rubric" className="hover:underline">
             Schema rubric
           </Link>
+          <Link href="/admin/upload" className="hover:underline">
+            Bulk upload
+          </Link>
+          <Link href="/admin/upload/single" className="hover:underline">
+            Single upload
+          </Link>
+          <Link href="/admin/batches" className="hover:underline">
+            Upload history
+          </Link>
         </nav>
       </aside>
       <main className="flex-1 p-8">{children}</main>
