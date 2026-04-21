@@ -38,6 +38,18 @@ Prereqs: Node 20+, pnpm, Neon account, Clerk account, Cloudflare R2 bucket.
 | `pnpm db:studio` | Drizzle Studio |
 | `pnpm admin:promote` | Promote INITIAL_ADMIN_EMAIL to admin |
 
+## Ingestion (Plan 2)
+
+Admin uploads weekly Amazon SFR CSVs through:
+
+- `/admin/upload` — bulk upload (select multiple files, one batch)
+- `/admin/upload/single` — single weekly file
+- `/admin/batches` — upload history
+- `/admin/batches/[id]` — batch health (view per-file status, import valid files)
+- `/admin/batches/[id]/files/[fileId]` — per-file detail with validation errors
+
+Files are uploaded directly to Cloudflare R2 via presigned URLs (browser → R2, bypassing the web server). Inngest validates each file as it arrives. Admin reviews the batch and clicks "Import valid files" to run the import pipeline, which streams each CSV from R2 into `keyword_weekly_metrics`.
+
 ## Deployment
 
 Vercel (auto-deploys on push to `main`). Env vars must be configured in Vercel dashboard. Clerk webhook URL must point at the deployed `/api/webhooks/clerk`.
