@@ -122,36 +122,36 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
 
   // Stage 4: promote to keyword_weekly_metrics
   if (file.isReplacement) {
-    await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`DELETE FROM keyword_weekly_metrics WHERE week_end_date = ${weekEndDate}::date`,
-      );
-      await tx.execute(sql`
-        INSERT INTO keyword_weekly_metrics (
-          week_end_date, search_term_id, actual_rank,
-          top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-          top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-          top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-          top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-          top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-          top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-          keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-          source_file_id
-        )
-        SELECT
-          week_end_date, search_term_id, actual_rank,
-          top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-          top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-          top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-          top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-          top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-          top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-          keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-          ${file.id}
-        FROM staging_weekly_metrics
-        WHERE uploaded_file_id = ${file.id}
-      `);
-    });
+    // neon-http does not support transactions; run DELETE + INSERT sequentially.
+    // Safe because the pipeline serializes per-week (concurrency limit=1 on importFileFn).
+    await db.execute(
+      sql`DELETE FROM keyword_weekly_metrics WHERE week_end_date = ${weekEndDate}::date`,
+    );
+    await db.execute(sql`
+      INSERT INTO keyword_weekly_metrics (
+        week_end_date, search_term_id, actual_rank,
+        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+        source_file_id
+      )
+      SELECT
+        week_end_date, search_term_id, actual_rank,
+        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+        ${file.id}
+      FROM staging_weekly_metrics
+      WHERE uploaded_file_id = ${file.id}
+    `);
   } else {
     await db.execute(sql`
       INSERT INTO keyword_weekly_metrics (
