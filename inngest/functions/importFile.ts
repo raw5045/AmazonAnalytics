@@ -10,7 +10,7 @@ import {
 import { db } from '@/db/client';
 import { uploadedFiles, stagingWeeklyMetrics, reportingWeeks } from '@/db/schema';
 
-const BATCH_SIZE = 500;
+const BATCH_SIZE = 2000;
 
 export interface ImportFileInput {
   uploadedFileId: string;
@@ -46,6 +46,13 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   const stream = await downloadStreamFromR2(file.storageKey);
   let rowsStaged = 0;
   let buffer: Array<typeof stagingWeeklyMetrics.$inferInsert> = [];
+  const inFlight = new Set<Promise<void>>();
+  const CONCURRENCY_LIMIT = 4;
+
+  async function flushBuffer(toInsert: typeof buffer) {
+    await db.insert(stagingWeeklyMetrics).values(toInsert);
+    rowsStaged += toInsert.length;
+  }
 
   for await (const row of streamParseCsv(stream)) {
     const searchTerm = row['Search Term'];
@@ -92,15 +99,30 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     });
 
     if (buffer.length >= BATCH_SIZE) {
-      await db.insert(stagingWeeklyMetrics).values(buffer);
-      rowsStaged += buffer.length;
+      // Throttle: block only when concurrency cap is reached
+      while (inFlight.size >= CONCURRENCY_LIMIT) {
+        await Promise.race(inFlight);
+      }
+      const toInsert = buffer;
       buffer = [];
+      const p = flushBuffer(toInsert).finally(() => inFlight.delete(p));
+      inFlight.add(p);
     }
   }
+
+  // Flush trailing partial batch
   if (buffer.length > 0) {
-    await db.insert(stagingWeeklyMetrics).values(buffer);
-    rowsStaged += buffer.length;
+    while (inFlight.size >= CONCURRENCY_LIMIT) {
+      await Promise.race(inFlight);
+    }
+    const toInsert = buffer;
+    buffer = [];
+    const p = flushBuffer(toInsert).finally(() => inFlight.delete(p));
+    inFlight.add(p);
   }
+
+  // Wait for all in-flight inserts to complete before moving to Stage 2
+  await Promise.all(inFlight);
 
   // Stage 2: upsert search_terms
   await db.execute(sql`
