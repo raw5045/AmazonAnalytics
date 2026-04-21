@@ -15,9 +15,14 @@ export interface ValidateFileOutput {
 
 function parseReportingDateToIso(d: string | undefined): string | null {
   if (!d) return null;
-  const m = d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (!m) return null;
-  return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  const trimmed = d.trim();
+  // ISO YYYY-MM-DD (real production files)
+  const iso = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  // US slash M/D/YYYY or MM/DD/YYYY (sample files and older exports)
+  const us = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (us) return `${us[3]}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}`;
+  return null;
 }
 
 export async function processFileValidation(
