@@ -8,4 +8,4 @@ export const { GET, POST, PUT } = serve({
 });
 
 export const runtime = 'nodejs';
-export const maxDuration = 900;
+export const maxDuration = 800;
