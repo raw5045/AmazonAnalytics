@@ -17,7 +17,9 @@
     "db:studio": "drizzle-kit studio",
     "db:seed": "tsx db/seed.ts",
     "admin:promote": "tsx scripts/promoteAdmin.ts",
-    "inngest:dev": "pnpm dlx inngest-cli@latest dev -u http://localhost:3000/api/inngest"
+    "inngest:dev": "pnpm dlx inngest-cli@latest dev -u http://localhost:3000/api/inngest",
+    "worker:dev": "node --env-file=.env.local --import tsx --watch worker/index.ts",
+    "worker:start": "tsx worker/index.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1030.0",
@@ -26,6 +28,7 @@
     "@neondatabase/serverless": "^1.0.2",
     "csv-parse": "^6.2.1",
     "drizzle-orm": "^0.45.2",
+    "express": "^5.2.1",
     "inngest": "^4.2.4",
     "next": "16.2.3",
     "pg-copy-streams": "^7.0.0",
@@ -38,6 +41,7 @@
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/express": "^5.0.6",
     "@types/node": "^20",
     "@types/pg-copy-streams": "^1.2.5",
     "@types/react": "^19",
