@@ -84,7 +84,11 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
 
     for await (const row of streamParseCsv(stream)) {
       const searchTerm = row['Search Term'];
-      const normalizedTerm = normalizeForMatch(searchTerm);
+      // Fallback: if normalization produces an empty string (e.g. search term is
+      // purely non-alphanumeric Unicode like the object-replacement character U+FFFC),
+      // use the raw term lowercased/trimmed. The schema requires NOT NULL so we
+      // must never emit an empty string here.
+      const normalizedTerm = normalizeForMatch(searchTerm) || searchTerm.toLowerCase().trim() || '__unparseable__';
       const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
       const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
       const t3 = row['Top Clicked Product #3: Product Title'] ?? null;
