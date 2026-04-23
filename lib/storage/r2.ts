@@ -1,4 +1,4 @@
-import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '@/lib/env';
 
@@ -61,4 +61,20 @@ export function buildUploadStorageKey(input: UploadKeyInput): string {
 export async function downloadStreamFromR2(key: string): Promise<import('node:stream').Readable> {
   const result = await r2.send(new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key }));
   return result.Body as import('node:stream').Readable;
+}
+
+/**
+ * Delete an object from R2. Used by the cancel-batch flow to clean up
+ * uploaded CSV files that should no longer exist. Returns true if the
+ * delete succeeded (or the key didn't exist), false on hard error.
+ */
+export async function deleteFromR2(key: string): Promise<boolean> {
+  if (!key) return true;
+  try {
+    await r2.send(new DeleteObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key }));
+    return true;
+  } catch (e) {
+    console.warn('[r2] delete failed for', key, '-', (e as Error).message);
+    return false;
+  }
 }
