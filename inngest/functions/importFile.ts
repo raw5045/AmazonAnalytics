@@ -37,6 +37,13 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   if (!file) throw new Error(`uploaded file ${input.uploadedFileId} not found`);
   if (!file.weekEndDate) throw new Error(`file ${input.uploadedFileId} has no weekEndDate`);
 
+  // Idempotency guard: if this file was already imported by a previous run,
+  // short-circuit. Prevents a retried or re-invoked import from double-staging
+  // (the bug that produced 2x staging rows in batch 8b20651d for File 3).
+  if (file.validationStatus === 'imported') {
+    return { rowsImported: file.rowCountLoaded ?? 0 };
+  }
+
   const weekEndDate = file.weekEndDate;
   const weekStartDate = new Date(Date.parse(weekEndDate));
   weekStartDate.setUTCDate(weekStartDate.getUTCDate() - 6);
@@ -272,7 +279,16 @@ export const importFileFn = inngest.createFunction(
   {
     id: 'import-file',
     name: 'Import file to keyword_weekly_metrics',
+    // Only one file imports at a time — COPY + INSERT pipeline is DB-heavy
+    // and we don't want two files racing for the same week.
     concurrency: { limit: 1 },
+    // No retries: if the import fails mid-pipeline, the DB may have partial
+    // staging rows. The importBatchFn coordinator catches the failure and
+    // marks the file 'import_failed'; retrying on a fresh re-upload is safer
+    // than re-running the pipeline over existing partial state. The existing
+    // DELETE-staging-by-file_id step at the top of processFileImport protects
+    // a legitimate manual retry from duplicating staging.
+    retries: 0,
     triggers: [{ event: 'csv/file.import' }],
   },
   async ({ event, step }) => {
