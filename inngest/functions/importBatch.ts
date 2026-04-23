@@ -2,36 +2,41 @@ import { and, asc, eq, inArray } from 'drizzle-orm';
 import { inngest } from '../client';
 import { db } from '@/db/client';
 import { uploadBatches, uploadedFiles } from '@/db/schema';
-import { importFileFn } from './importFile';
+import { startImportJob } from '@/worker/jobs';
 
 export interface ImportBatchInput {
   batchId: string;
 }
 
 /**
- * Batch import coordinator.
+ * Batch import coordinator (version 2, detached-job pattern).
  *
- * Design notes (rewritten to fix the concurrency bug that produced duplicate
- * staging rows and silent zero-row imports in batch 8b20651d):
+ * Prior attempts failed because of Inngest's HTTP invocation timeout:
+ *  v0 ran all files in one step.run → timed out at ~75 min
+ *  v1 used step.invoke per file → each file's importFileFn step still ran
+ *      15 min, exceeded Inngest's HTTP timeout, retried at transport layer,
+ *      caused re-entry that wiped staging mid-import
  *
- * - `retries: 0` — this function is pure orchestration. If it fails mid-way,
- *   the user re-clicks Import; the idempotency guard below handles that.
- *   The old code used the Inngest default (3 retries), which combined with
- *   a 60+ minute monolithic step caused retried invocations to run
- *   concurrently with the original still in-flight in the worker.
+ * This version (v2) uses Inngest ONLY for coordination. Each Inngest step
+ * finishes in < 1 second:
+ *   - guard-idempotency: check batch state, mark importing
+ *   - fetch-files: list files to import
+ *   - kickoff-<file>: startImportJob(file_id) — spawns a detached Promise
+ *     that runs processFileImport in the worker's Node process. Returns
+ *     immediately, so the Inngest step completes quickly.
+ *   - poll-wait-<file>-<N>: step.sleep 30s
+ *   - poll-check-<file>-<N>: SELECT validation_status — one row lookup
+ *   - When status is terminal, move to the next file.
  *
- * - `concurrency: { limit: 1 }` is kept as belt-and-suspenders, but the real
- *   serialization protection is on `importFileFn` (which processes one file
- *   at a time and also has `retries: 0`).
+ * The heavy 15-minute processFileImport runs OUTSIDE any Inngest step, so
+ * Inngest's HTTP timeout no longer applies.
  *
- * - Each file is imported via `step.invoke(importFileFn, ...)` — each file
- *   is its own Inngest run, with its own step/timeout budget. Previously
- *   the code called `processFileImport` as a plain function inside a single
- *   `step.run`, which made the whole batch a single 60+ minute step.
- *
- * - The idempotency guard in the first step short-circuits if the batch is
- *   already in a terminal or in-flight state. This makes the event safe to
- *   re-send (e.g. user double-clicks Import, or Inngest dedup fires).
+ * Protection against double-work:
+ *   - concurrency:{limit:1} on this function blocks parallel orchestrators
+ *   - retries:0 means no coordinator retries
+ *   - idempotency guard early-returns if batch is already in-flight or done
+ *   - processFileImport has its own DB-level re-entry lock via
+ *     uploaded_files.import_started_at
  */
 export const importBatchFn = inngest.createFunction(
   {
@@ -45,22 +50,16 @@ export const importBatchFn = inngest.createFunction(
     const batchId = (event.data as { batchId: string }).batchId;
 
     // Step 1: idempotency guard + mark importing.
-    // Wrapped in step.run so it's checkpointed — rerunning the function won't
-    // re-flip status, and if something crashes after this we have an audit
-    // trail of when 'importing' was set.
     const guard = await step.run('guard-idempotency', async () => {
       const batch = await db.query.uploadBatches.findFirst({
         where: eq(uploadBatches.id, batchId),
       });
-      if (!batch) {
-        return { skip: true as const, reason: 'not-found' };
-      }
+      if (!batch) return { skip: true as const, reason: 'not-found' };
       const terminal = ['imported', 'imported_partial', 'failed'];
       if (terminal.includes(batch.status)) {
         return { skip: true as const, reason: `already-${batch.status}` };
       }
       if (batch.status === 'importing') {
-        // Another run already claimed this batch. Don't start a parallel one.
         return { skip: true as const, reason: 'already-importing' };
       }
       await db
@@ -74,7 +73,7 @@ export const importBatchFn = inngest.createFunction(
       return { ok: true, skipped: true, reason: guard.reason };
     }
 
-    // Step 2: fetch files that are ready to import.
+    // Step 2: fetch files ready to import.
     const files = await step.run('fetch-files', async () => {
       const rows = await db.query.uploadedFiles.findMany({
         where: and(
@@ -84,43 +83,65 @@ export const importBatchFn = inngest.createFunction(
         orderBy: [asc(uploadedFiles.weekEndDate)],
         columns: { id: true, weekEndDate: true, originalFilename: true },
       });
-      // Drizzle returns Date for timestamp columns; strip to ID list for the loop
-      return rows.map((r) => ({ id: r.id, weekEndDate: r.weekEndDate, name: r.originalFilename }));
+      return rows.map((r) => ({ id: r.id, name: r.originalFilename }));
     });
 
     let imported = 0;
     let failed = 0;
 
-    // Step 3: invoke each file's import as its own Inngest function run.
-    // importFileFn has concurrency:{limit:1} so files serialize automatically.
-    // Each run gets its own step budget — no more 75-minute mega-steps.
+    // Per-file loop: kick off a background job, then poll DB for terminal status.
+    // Sequential, since importFileFn previously had concurrency:{limit:1} and
+    // we want to preserve that serialization to avoid DB contention on a
+    // single 2.8M-row COPY + INSERT pipeline.
+    const POLL_INTERVAL = '30s';
+    const MAX_POLLS = 120; // 120 * 30s = 60 min max per file
+
     for (const f of files) {
-      try {
-        await step.invoke(`import-${f.id}`, {
-          function: importFileFn,
-          data: { uploadedFileId: f.id },
-          // 45 min is ~3x the observed ~15 min for a 2.8M-row file. If a
-          // single file really exceeds this, something is wrong and we want
-          // to fail fast rather than silently orphan.
-          timeout: '45m',
+      // Kick off the detached job. This is a trivial step — it just hands
+      // the work off to an in-process async Promise and returns.
+      await step.run(`kickoff-${f.id}`, () => {
+        const result = startImportJob(f.id);
+        return { started: result.started, reason: result.reason ?? null };
+      });
+
+      // Poll the DB until the file reaches a terminal status.
+      let done = false;
+      for (let iter = 0; iter < MAX_POLLS && !done; iter++) {
+        await step.sleep(`poll-wait-${f.id}-${iter}`, POLL_INTERVAL);
+        const status = await step.run(`poll-check-${f.id}-${iter}`, async () => {
+          const row = await db.query.uploadedFiles.findFirst({
+            where: eq(uploadedFiles.id, f.id),
+            columns: { validationStatus: true },
+          });
+          return row?.validationStatus ?? null;
         });
-        imported++;
-      } catch (e) {
+        if (status === 'imported') {
+          imported++;
+          done = true;
+        } else if (status === 'import_failed') {
+          failed++;
+          done = true;
+        }
+      }
+
+      if (!done) {
+        // Orchestrator exceeded its poll budget. Mark the file failed so
+        // the batch doesn't hang forever, and let user retry if needed.
         failed++;
-        const msg = e instanceof Error ? e.message : String(e);
-        await step.run(`mark-failed-${f.id}`, () =>
+        await step.run(`mark-timeout-${f.id}`, () =>
           db
             .update(uploadedFiles)
             .set({
               validationStatus: 'import_failed',
-              validationErrorsJson: { error: msg },
+              validationErrorsJson: { error: 'orchestrator poll timeout (>60 min)' },
+              importStartedAt: null,
             })
             .where(eq(uploadedFiles.id, f.id)),
         );
       }
     }
 
-    // Step 4: finalize batch status.
+    // Finalize batch status.
     const finalStatus =
       failed === 0 ? 'imported' : imported === 0 ? 'failed' : 'imported_partial';
     await step.run('finalize-batch', () =>
@@ -130,7 +151,7 @@ export const importBatchFn = inngest.createFunction(
         .where(eq(uploadBatches.id, batchId)),
     );
 
-    // Step 5: hand off to Plan 3 summary refresh (no-op handler for now).
+    // Plan 3 hand-off.
     await step.sendEvent('summary-refresh', {
       name: 'summary/refresh-requested',
       data: { batchId },

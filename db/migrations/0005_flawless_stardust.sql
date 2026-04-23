@@ -1,0 +1,1 @@
+ALTER TABLE "uploaded_files" ADD COLUMN "import_started_at" timestamp with time zone;

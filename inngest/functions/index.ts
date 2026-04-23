@@ -1,6 +1,10 @@
 import { rubricUploadedFn } from './rubric';
 import { validateFileFn } from './validate';
-import { importFileFn } from './importFile';
 import { importBatchFn } from './importBatch';
 
-export const functions = [rubricUploadedFn, validateFileFn, importFileFn, importBatchFn];
+// Note: `importFileFn` is no longer registered. The batch path
+// (importBatchFn) now calls processFileImport directly via the worker's
+// in-process job runner (worker/jobs.ts), bypassing Inngest's HTTP
+// invocation timeout. See inngest/functions/importBatch.ts for rationale.
+
+export const functions = [rubricUploadedFn, validateFileFn, importBatchFn];

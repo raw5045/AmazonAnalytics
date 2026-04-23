@@ -31,18 +31,44 @@ function titleContainsKeyword(normalizedKeyword: string, title: string | null | 
 }
 
 export async function processFileImport(input: ImportFileInput): Promise<ImportFileOutput> {
+  // Atomic re-entry lock. CAS-style UPDATE that only succeeds if (a) nobody
+  // else is currently processing this file (import_started_at is NULL or
+  // older than 60 min — recovering from orphaned jobs after worker crash),
+  // and (b) the file isn't already imported. If zero rows are returned,
+  // another invocation owns the import and this one short-circuits.
+  //
+  // Why 60 min: a 2.8M-row file takes ~15 min in practice; 60 min is a
+  // comfortable ceiling even for much larger files. After that, we assume
+  // the previous invocation died and allow a new one to take over.
+  const lockResult = await db.execute<{ id: string }>(sql`
+    UPDATE uploaded_files
+    SET import_started_at = NOW()
+    WHERE id = ${input.uploadedFileId}
+      AND (import_started_at IS NULL OR import_started_at < NOW() - INTERVAL '60 minutes')
+      AND validation_status != 'imported'
+    RETURNING id
+  `);
+
+  if (lockResult.rows.length === 0) {
+    // Either already imported (happy idempotent path) or another invocation
+    // holds the lock (concurrent re-entry — don't fight over it).
+    const existing = await db.query.uploadedFiles.findFirst({
+      where: eq(uploadedFiles.id, input.uploadedFileId),
+    });
+    if (!existing) throw new Error(`uploaded file ${input.uploadedFileId} not found`);
+    if (existing.validationStatus === 'imported') {
+      return { rowsImported: existing.rowCountLoaded ?? 0 };
+    }
+    throw new Error(
+      `file ${input.uploadedFileId.slice(0, 8)} is locked by another invocation (started ${existing.importStartedAt?.toISOString() ?? 'unknown'})`,
+    );
+  }
+
   const file = await db.query.uploadedFiles.findFirst({
     where: eq(uploadedFiles.id, input.uploadedFileId),
   });
   if (!file) throw new Error(`uploaded file ${input.uploadedFileId} not found`);
   if (!file.weekEndDate) throw new Error(`file ${input.uploadedFileId} has no weekEndDate`);
-
-  // Idempotency guard: if this file was already imported by a previous run,
-  // short-circuit. Prevents a retried or re-invoked import from double-staging
-  // (the bug that produced 2x staging rows in batch 8b20651d for File 3).
-  if (file.validationStatus === 'imported') {
-    return { rowsImported: file.rowCountLoaded ?? 0 };
-  }
 
   const weekEndDate = file.weekEndDate;
   const weekStartDate = new Date(Date.parse(weekEndDate));
@@ -269,6 +295,10 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       validationStatus: 'imported',
       importedAt: new Date(),
       rowCountLoaded: rowsStaged,
+      // Release the lock. Not strictly required (status='imported' itself
+      // prevents re-entry via the lock's WHERE clause), but clearer in
+      // the DB view and mirrors the "import_failed" path in worker/jobs.ts.
+      importStartedAt: null,
     })
     .where(eq(uploadedFiles.id, file.id));
 

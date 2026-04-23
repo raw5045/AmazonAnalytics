@@ -82,6 +82,11 @@ export const uploadedFiles = pgTable('uploaded_files', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   importedAt: timestamp('imported_at', { withTimezone: true }),
   replacedAt: timestamp('replaced_at', { withTimezone: true }),
+  // Set when a background import job takes ownership of this file. Serves as
+  // a DB-level mutex against duplicate work when Inngest's transport-level
+  // retries cause multiple invocations of processFileImport for the same
+  // file. NULL = free to pick up. Stale (> 60 min) = orphaned job, reclaim.
+  importStartedAt: timestamp('import_started_at', { withTimezone: true }),
 });
 
 export const ingestionErrors = pgTable('ingestion_errors', {
