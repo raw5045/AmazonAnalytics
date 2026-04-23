@@ -34,6 +34,13 @@ export async function withNeonRetry<T>(
 
 function isTransientNetworkError(e: unknown): boolean {
   if (!e || typeof e !== 'object') return false;
+
+  // WebSocket Pool surfaces its connection failures as ErrorEvent instances
+  // from the DOM-style event API. Recognize by shape even when there's no
+  // useful message string.
+  const err = e as { cause?: unknown };
+  if (isErrorEventLike(err.cause) || isErrorEventLike(e)) return true;
+
   const msg = messageOf(e);
   return (
     msg.includes('fetch failed') ||
@@ -42,8 +49,17 @@ function isTransientNetworkError(e: unknown): boolean {
     msg.includes('ENOTFOUND') ||
     msg.includes('socket hang up') ||
     msg.includes('query_wait_timeout') ||
-    msg.includes('Error connecting to database')
+    msg.includes('Error connecting to database') ||
+    msg.includes('Connection terminated') ||
+    msg.includes('terminating connection') ||
+    msg.includes('WebSocket')
   );
+}
+
+function isErrorEventLike(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const ev = e as { type?: unknown; timeStamp?: unknown; defaultPrevented?: unknown };
+  return ev.type === 'error' && typeof ev.timeStamp === 'number';
 }
 
 function messageOf(e: unknown): string {
