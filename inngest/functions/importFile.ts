@@ -1,5 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
-import { Pool } from '@neondatabase/serverless';
+import { Pool } from 'pg';
 import { from as copyFrom } from 'pg-copy-streams';
 import { inngest } from '../client';
 import { downloadStreamFromR2 } from '@/lib/storage/r2';
@@ -45,13 +45,21 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   // Idempotency: clear any partial staging rows from a previous timeout/retry of this file
   await db.delete(stagingWeeklyMetrics).where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
 
-  // Stage 1: stream CSV into staging_weekly_metrics via COPY FROM STDIN
-  // Uses Neon's WebSocket Pool driver to bypass Drizzle's parameter binding
-  // overhead. For a 2.87M-row file, COPY is 50x+ faster than parameterized INSERTs.
+  // Stage 1: stream CSV into staging_weekly_metrics via COPY FROM STDIN.
+  // Uses node-postgres TCP Pool (with keepalives) for the COPY connection.
+  // For a 2.87M-row file, COPY is 50x+ faster than parameterized INSERTs.
   const stream = await downloadStreamFromR2(file.storageKey);
   let rowsStaged = 0;
 
-  const pool = new Pool({ connectionString: env.DATABASE_URL });
+  const pool = new Pool({
+    connectionString: env.DATABASE_URL,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+    connectionTimeoutMillis: 20_000,
+  });
+  pool.on('error', (err) => {
+    console.warn('[copy pool] idle client error:', err.message);
+  });
   const client = await pool.connect();
 
   try {

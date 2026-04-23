@@ -40,10 +40,11 @@ vi.mock('@/lib/env', () => ({
   },
 }));
 
-vi.mock('@neondatabase/serverless', () => ({
+vi.mock('pg', () => ({
   Pool: class {
     connect = mockPoolConnect;
     end = mockPoolEnd;
+    on = vi.fn();
   },
 }));
 

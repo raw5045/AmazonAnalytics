@@ -14,8 +14,11 @@ export async function withNeonRetry<T>(
   fn: () => Promise<T>,
   opts: { attempts?: number; baseMs?: number } = {},
 ): Promise<T> {
-  const attempts = opts.attempts ?? 3;
-  const baseMs = opts.baseMs ?? 500;
+  // 5 attempts with 1s base = 1s + 2s + 4s + 8s = ~15s of total backoff.
+  // Covers Neon compute cold-start (typical: a few hundred ms; worst case
+  // after auto-suspend: 3-5s) and gives pg-pool time to evict dead clients.
+  const attempts = opts.attempts ?? 5;
+  const baseMs = opts.baseMs ?? 1000;
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
