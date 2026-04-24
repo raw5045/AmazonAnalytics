@@ -3,34 +3,31 @@
  *
  * Why this exists: Inngest's HTTP invocation has a server-side timeout
  * (~2-5 minutes for non-streaming, observable as "Service Unavailable" 503
- * when exceeded). A 2.8M-row CSV import takes 10-15 minutes — if we run
- * that work synchronously inside an Inngest step, the HTTP call times out
- * and Inngest retries at the transport layer (bypassing function-level
- * `retries: 0`). Each transport retry re-enters processFileImport, whose
- * idempotency DELETE at the top wipes the previous invocation's staging
- * rows mid-import. Net effect: silent data corruption.
+ * when exceeded). A 2.8M-row CSV import takes 10-15+ minutes — and under
+ * load it can take 2+ hours as DB indexes grow. Running that work
+ * synchronously inside an Inngest step hits the HTTP timeout; transport-level
+ * retries then re-enter processFileImport and wipe the previous run's
+ * staging rows mid-import.
  *
  * Fix: run processFileImport as a detached Promise in the worker's Node
  * process. The Inngest orchestrator (importBatchFn) only uses Inngest for
- * coordination — short step.run calls to kick off a job and poll for
- * completion. The actual import work happens outside Inngest's step lifecycle
- * entirely, so HTTP timeouts don't apply.
+ * coordination — short step.run calls to kick off a job, then a
+ * step.waitForEvent to sleep server-side until this runner fires the
+ * csv/file.import-completed event. The actual import work happens outside
+ * Inngest's step lifecycle entirely, so HTTP timeouts don't apply.
  *
- * Durability note: if the worker crashes mid-job, the import is lost. The
- * uploaded_files.import_started_at column serves as a DB-level lock with a
- * 60-minute expiry — after that, a manual retry (re-click Import) can pick
- * up the orphaned file. Multi-instance resilience is not a concern yet
- * because Railway runs a single instance.
+ * Durability: if the worker crashes mid-job, the detached Promise dies.
+ * uploaded_files.import_started_at serves as a DB-level lock with a
+ * 60-minute expiry. After that, a manual retry can reclaim the file.
  */
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { uploadedFiles } from '@/db/schema';
 import { processFileImport } from '@/inngest/functions/importFile';
+import { inngest } from '@/inngest/client';
 
-// In-process dedup set. Belt-and-suspenders against the same kickoff HTTP
-// firing twice in rapid succession. The DB-level lock in processFileImport
-// is the real protection; this just avoids two sibling Promises racing to
-// acquire the same lock.
+// In-process dedup: avoids two sibling Promises racing to acquire the same
+// DB lock if the kickoff step runs twice in rapid succession.
 const inflight = new Set<string>();
 
 export function startImportJob(uploadedFileId: string): { started: boolean; reason?: string } {
@@ -39,22 +36,26 @@ export function startImportJob(uploadedFileId: string): { started: boolean; reas
   }
   inflight.add(uploadedFileId);
 
-  // Detach — don't await. The Promise runs in background; the HTTP caller
-  // gets an immediate response. Errors are handled here: on failure we mark
-  // the file `import_failed` so the orchestrator's poll sees it.
+  // Detach — don't await. The Promise runs in background; the caller
+  // gets an immediate response. Errors are caught and marked
+  // `import_failed` in DB. On success OR failure we fire an Inngest
+  // event so the orchestrator's step.waitForEvent wakes up.
   (async () => {
+    let success = false;
+    let error: string | null = null;
     try {
       await processFileImport({ uploadedFileId });
+      success = true;
       console.log(`[job] import-file ${uploadedFileId.slice(0, 8)} ok`);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`[job] import-file ${uploadedFileId.slice(0, 8)} failed:`, msg);
+      error = e instanceof Error ? e.message : String(e);
+      console.error(`[job] import-file ${uploadedFileId.slice(0, 8)} failed:`, error);
       try {
         await db
           .update(uploadedFiles)
           .set({
             validationStatus: 'import_failed',
-            validationErrorsJson: { error: msg },
+            validationErrorsJson: { error },
             importStartedAt: null,
           })
           .where(eq(uploadedFiles.id, uploadedFileId));
@@ -66,6 +67,19 @@ export function startImportJob(uploadedFileId: string): { started: boolean; reas
       }
     } finally {
       inflight.delete(uploadedFileId);
+      // Fire completion event. Orchestrator's step.waitForEvent
+      // correlates by data.uploadedFileId.
+      try {
+        await inngest.send({
+          name: 'csv/file.import-completed',
+          data: { uploadedFileId, success, error },
+        });
+      } catch (sendErr) {
+        console.error(
+          `[job] failed to fire completion event for ${uploadedFileId.slice(0, 8)}:`,
+          sendErr,
+        );
+      }
     }
   })();
 
