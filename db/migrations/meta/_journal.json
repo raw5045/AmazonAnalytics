@@ -43,6 +43,13 @@
       "when": 1776969277924,
       "tag": "0005_flawless_stardust",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1777038492467,
+      "tag": "0006_easy_random",
+      "breakpoints": true
     }
   ]
 }

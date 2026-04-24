@@ -34,14 +34,15 @@ async function main() {
     process.exit(1);
   }
 
-  // Clear any stale import_started_at locks on files in this batch too.
+  // Clear any stale locks (both started_at and heartbeat) on files in this batch.
   const lockClearResult = (await sql`
     UPDATE uploaded_files
-    SET import_started_at = NULL
-    WHERE batch_id = ${batchId} AND import_started_at IS NOT NULL
+    SET import_started_at = NULL, import_heartbeat_at = NULL
+    WHERE batch_id = ${batchId}
+      AND (import_started_at IS NOT NULL OR import_heartbeat_at IS NOT NULL)
     RETURNING id
   `) as Array<{ id: string }>;
-  console.log(`Cleared ${lockClearResult.length} stale import_started_at lock(s).`);
+  console.log(`Cleared ${lockClearResult.length} stale lock(s).`);
 
   await sql`UPDATE upload_batches SET status = 'clean', completed_at = NULL WHERE id = ${batchId}`;
   console.log(`Batch ${batchId.slice(0, 8)} now: clean (ready for Import click).`);

@@ -82,11 +82,17 @@ export const uploadedFiles = pgTable('uploaded_files', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   importedAt: timestamp('imported_at', { withTimezone: true }),
   replacedAt: timestamp('replaced_at', { withTimezone: true }),
-  // Set when a background import job takes ownership of this file. Serves as
-  // a DB-level mutex against duplicate work when Inngest's transport-level
-  // retries cause multiple invocations of processFileImport for the same
-  // file. NULL = free to pick up. Stale (> 60 min) = orphaned job, reclaim.
+  // Set when a background import job takes ownership of this file.
+  // Together with import_heartbeat_at below, forms a DB-level mutex against
+  // duplicate work when Inngest's transport-level retries cause multiple
+  // invocations of processFileImport for the same file.
   importStartedAt: timestamp('import_started_at', { withTimezone: true }),
+  // Updated every 60s by the running import job. Lock is considered
+  // "orphaned" (the previous worker died) if heartbeat is > 3 min stale.
+  // Keeps the lock honest when imports run longer than the startedAt-based
+  // fixed expiry — necessary because imports now routinely exceed 60 min
+  // as the DB grows.
+  importHeartbeatAt: timestamp('import_heartbeat_at', { withTimezone: true }),
 });
 
 export const ingestionErrors = pgTable('ingestion_errors', {

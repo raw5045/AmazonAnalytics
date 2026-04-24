@@ -57,6 +57,7 @@ export function startImportJob(uploadedFileId: string): { started: boolean; reas
             validationStatus: 'import_failed',
             validationErrorsJson: { error },
             importStartedAt: null,
+            importHeartbeatAt: null,
           })
           .where(eq(uploadedFiles.id, uploadedFileId));
       } catch (updateErr) {

@@ -7,7 +7,12 @@ import { streamParseCsv } from '@/lib/csv/streamParse';
 import { normalizeForMatch } from '@/lib/analytics/derivedFields';
 import { env } from '@/lib/env';
 import { db } from '@/db/client';
-import { uploadedFiles, stagingWeeklyMetrics, reportingWeeks } from '@/db/schema';
+import {
+  uploadedFiles,
+  stagingWeeklyMetrics,
+  reportingWeeks,
+  importPhaseTimings,
+} from '@/db/schema';
 
 export interface ImportFileInput {
   uploadedFileId: string;
@@ -30,28 +35,83 @@ function titleContainsKeyword(normalizedKeyword: string, title: string | null | 
   return !!nTitle && nTitle.includes(normalizedKeyword);
 }
 
+/**
+ * Wraps a phase of processFileImport in start/end timestamp tracking and
+ * writes a row to import_phase_timings. Cheap — single INSERT per phase,
+ * no hot-path impact. Failures to log are swallowed so instrumentation
+ * never breaks the actual import.
+ */
+async function timePhase<T>(
+  fileId: string,
+  phase: string,
+  work: () => Promise<T>,
+  getRowCount?: (r: T) => number | null,
+): Promise<T> {
+  const startedAt = new Date();
+  const result = await work();
+  const endedAt = new Date();
+  const durationMs = endedAt.getTime() - startedAt.getTime();
+  try {
+    await db.insert(importPhaseTimings).values({
+      uploadedFileId: fileId,
+      phase,
+      startedAt,
+      endedAt,
+      durationMs,
+      rowsAffected: getRowCount ? getRowCount(result) : null,
+    });
+  } catch (e) {
+    console.warn(`[timing] failed to log phase "${phase}":`, e);
+  }
+  return result;
+}
+
+/**
+ * Starts a 60s-interval heartbeat that bumps uploaded_files.import_heartbeat_at.
+ * Returned function stops the heartbeat (called from finally block).
+ *
+ * Why: Before this, the lock was based on a fixed 60-minute expiry on
+ * import_started_at. That was safe when imports took ~15 min, but as the
+ * DB grew imports now routinely exceed 60 min — meaning the lock can
+ * legally expire mid-import, allowing a retry to acquire it while the
+ * first invocation is still running. With the heartbeat, "lock is stale"
+ * means "no heartbeat for 3+ minutes" — which only happens if the worker
+ * actually died.
+ */
+function startHeartbeat(fileId: string): () => Promise<void> {
+  let stopped = false;
+  const intervalId: NodeJS.Timeout = setInterval(async () => {
+    if (stopped) return;
+    try {
+      await db.execute(
+        sql`UPDATE uploaded_files SET import_heartbeat_at = NOW() WHERE id = ${fileId}`,
+      );
+    } catch (e) {
+      console.warn(`[heartbeat] update failed for ${fileId.slice(0, 8)}:`, e);
+    }
+  }, 60_000);
+  return async () => {
+    stopped = true;
+    clearInterval(intervalId);
+  };
+}
+
 export async function processFileImport(input: ImportFileInput): Promise<ImportFileOutput> {
-  // Atomic re-entry lock. CAS-style UPDATE that only succeeds if (a) nobody
-  // else is currently processing this file (import_started_at is NULL or
-  // older than 60 min — recovering from orphaned jobs after worker crash),
-  // and (b) the file isn't already imported. If zero rows are returned,
-  // another invocation owns the import and this one short-circuits.
-  //
-  // Why 60 min: a 2.8M-row file takes ~15 min in practice; 60 min is a
-  // comfortable ceiling even for much larger files. After that, we assume
-  // the previous invocation died and allow a new one to take over.
+  // Atomic re-entry lock using the heartbeat. Succeeds only if:
+  //  (a) no current heartbeat, OR
+  //  (b) heartbeat is > 3 min stale (worker died), AND
+  //  (c) file isn't already imported.
   const lockResult = await db.execute<{ id: string }>(sql`
     UPDATE uploaded_files
-    SET import_started_at = NOW()
+    SET import_started_at = NOW(),
+        import_heartbeat_at = NOW()
     WHERE id = ${input.uploadedFileId}
-      AND (import_started_at IS NULL OR import_started_at < NOW() - INTERVAL '60 minutes')
+      AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '3 minutes')
       AND validation_status != 'imported'
     RETURNING id
   `);
 
   if (lockResult.rows.length === 0) {
-    // Either already imported (happy idempotent path) or another invocation
-    // holds the lock (concurrent re-entry — don't fight over it).
     const existing = await db.query.uploadedFiles.findFirst({
       where: eq(uploadedFiles.id, input.uploadedFileId),
     });
@@ -60,7 +120,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       return { rowsImported: existing.rowCountLoaded ?? 0 };
     }
     throw new Error(
-      `file ${input.uploadedFileId.slice(0, 8)} is locked by another invocation (started ${existing.importStartedAt?.toISOString() ?? 'unknown'})`,
+      `file ${input.uploadedFileId.slice(0, 8)} is locked by another invocation (heartbeat at ${existing.importHeartbeatAt?.toISOString() ?? 'unknown'})`,
     );
   }
 
@@ -75,249 +135,275 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   weekStartDate.setUTCDate(weekStartDate.getUTCDate() - 6);
   const weekStartIso = weekStartDate.toISOString().slice(0, 10);
 
-  // Idempotency: clear any partial staging rows from a previous timeout/retry of this file
-  await db.delete(stagingWeeklyMetrics).where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
-
-  // Stage 1: stream CSV into staging_weekly_metrics via COPY FROM STDIN.
-  // Uses node-postgres TCP Pool (with keepalives) for the COPY connection.
-  // For a 2.87M-row file, COPY is 50x+ faster than parameterized INSERTs.
-  const stream = await downloadStreamFromR2(file.storageKey);
-  let rowsStaged = 0;
-
-  const pool = new Pool({
-    connectionString: env.DATABASE_URL,
-    keepAlive: true,
-    keepAliveInitialDelayMillis: 10_000,
-    connectionTimeoutMillis: 20_000,
-  });
-  pool.on('error', (err) => {
-    console.warn('[copy pool] idle client error:', err.message);
-  });
-  const client = await pool.connect();
+  const stopHeartbeat = startHeartbeat(file.id);
 
   try {
-    const copySql = `
-      COPY staging_weekly_metrics (
-        batch_id, uploaded_file_id, week_end_date,
-        search_term_raw, search_term_normalized,
-        actual_rank,
-        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count
-      ) FROM STDIN WITH (FORMAT text, NULL '\\N')
-    `;
+    // Clear any partial staging rows from a previous timed-out run of this file.
+    // (TRUNCATE at the end of the pipeline keeps staging generally empty; this
+    // DELETE handles the narrow case where a prior attempt staged but never
+    // reached cleanup.)
+    await timePhase(file.id, 'clear_staging', async () => {
+      await db
+        .delete(stagingWeeklyMetrics)
+        .where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
+    });
 
-    const copyStream = client.query(copyFrom(copySql));
+    // ------------------------------------------------------------------
+    // Phase 1: COPY CSV into staging.
+    // Uses pg-copy-streams on a dedicated pg.Pool with TCP keepalives.
+    // COPY is ~50x faster than parameterized INSERTs for a 2.8M-row file.
+    // ------------------------------------------------------------------
+    const rowsStaged = await timePhase(
+      file.id,
+      'copy_to_staging',
+      async () => {
+        const stream = await downloadStreamFromR2(file.storageKey);
+        let rowsStaged = 0;
+        const pool = new Pool({
+          connectionString: env.DATABASE_URL,
+          keepAlive: true,
+          keepAliveInitialDelayMillis: 10_000,
+          connectionTimeoutMillis: 20_000,
+        });
+        pool.on('error', (err) => {
+          console.warn('[copy pool] idle client error:', err.message);
+        });
+        const client = await pool.connect();
+        try {
+          const copySql = `
+            COPY staging_weekly_metrics (
+              batch_id, uploaded_file_id, week_end_date,
+              search_term_raw, search_term_normalized,
+              actual_rank,
+              top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+              top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+              top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+              top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+              top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+              top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+              keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count
+            ) FROM STDIN WITH (FORMAT text, NULL '\\N')
+          `;
+          const copyStream = client.query(copyFrom(copySql));
+          const encodeField = (v: string | number | boolean | null | undefined): string => {
+            if (v === null || v === undefined || v === '') return '\\N';
+            const s = String(v);
+            return s
+              .replace(/\\/g, '\\\\')
+              .replace(/\t/g, '\\t')
+              .replace(/\n/g, '\\n')
+              .replace(/\r/g, '\\r');
+          };
+          for await (const row of streamParseCsv(stream)) {
+            const searchTerm = row['Search Term'];
+            const normalizedTerm =
+              normalizeForMatch(searchTerm) ||
+              searchTerm.toLowerCase().trim() ||
+              '__unparseable__';
+            const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
+            const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
+            const t3 = row['Top Clicked Product #3: Product Title'] ?? null;
+            const inT1 = titleContainsKeyword(normalizedTerm, t1);
+            const inT2 = titleContainsKeyword(normalizedTerm, t2);
+            const inT3 = titleContainsKeyword(normalizedTerm, t3);
+            const matchCount = (inT1 ? 1 : 0) + (inT2 ? 1 : 0) + (inT3 ? 1 : 0);
+            const fields = [
+              file.batchId,
+              file.id,
+              weekEndDate,
+              searchTerm,
+              normalizedTerm,
+              Number(row['Search Frequency Rank']),
+              row['Top Clicked Brand #1'] || null,
+              row['Top Clicked Brands #2'] || null,
+              row['Top Clicked Brands #3'] || null,
+              row['Top Clicked Category #1'] || null,
+              row['Top Clicked Category #2'] || null,
+              row['Top Clicked Category #3'] || null,
+              row['Top Clicked Product #1: ASIN'] || null,
+              row['Top Clicked Product #2: ASIN'] || null,
+              row['Top Clicked Product #3: ASIN'] || null,
+              t1,
+              t2,
+              t3,
+              toNumeric(row['Top Clicked Product #1: Click Share']),
+              toNumeric(row['Top Clicked Product #2: Click Share']),
+              toNumeric(row['Top Clicked Product #3: Click Share']),
+              toNumeric(row['Top Clicked Product #1: Conversion Share']),
+              toNumeric(row['Top Clicked Product #2: Conversion Share']),
+              toNumeric(row['Top Clicked Product #3: Conversion Share']),
+              inT1 ? 't' : 'f',
+              inT2 ? 't' : 'f',
+              inT3 ? 't' : 'f',
+              matchCount,
+            ];
+            const line = fields.map(encodeField).join('\t') + '\n';
+            if (!copyStream.write(line)) {
+              await new Promise<void>((resolve) => copyStream.once('drain', () => resolve()));
+            }
+            rowsStaged++;
+          }
+          copyStream.end();
+          await new Promise<void>((resolve, reject) => {
+            copyStream.on('finish', () => resolve());
+            copyStream.on('error', reject);
+          });
+        } finally {
+          client.release();
+          await pool.end();
+        }
+        return rowsStaged;
+      },
+      (n) => n,
+    );
 
-    const encodeField = (v: string | number | boolean | null | undefined): string => {
-      if (v === null || v === undefined || v === '') return '\\N';
-      const s = String(v);
-      return s
-        .replace(/\\/g, '\\\\')
-        .replace(/\t/g, '\\t')
-        .replace(/\n/g, '\\n')
-        .replace(/\r/g, '\\r');
-    };
+    // ------------------------------------------------------------------
+    // Phase 2: upsert search_terms.
+    // DO NOTHING (not DO UPDATE) — we no longer maintain first_seen_week /
+    // last_seen_week on every import. Those can be recomputed from kwm in
+    // a post-backfill job (MIN/MAX(week_end_date) GROUP BY search_term_id).
+    // Eliminates ~2M tuple updates per file + associated WAL + index churn.
+    // ------------------------------------------------------------------
+    await timePhase(file.id, 'search_terms_upsert', async () => {
+      await db.execute(sql`
+        INSERT INTO search_terms (search_term_raw, search_term_normalized, first_seen_week, last_seen_week)
+        SELECT DISTINCT ON (search_term_normalized)
+          search_term_raw, search_term_normalized, ${weekEndDate}::date, ${weekEndDate}::date
+        FROM staging_weekly_metrics
+        WHERE uploaded_file_id = ${file.id}
+        ON CONFLICT (search_term_normalized) DO NOTHING
+      `);
+    });
 
-    for await (const row of streamParseCsv(stream)) {
-      const searchTerm = row['Search Term'];
-      // Fallback: if normalization produces an empty string (e.g. search term is
-      // purely non-alphanumeric Unicode like the object-replacement character U+FFFC),
-      // use the raw term lowercased/trimmed. The schema requires NOT NULL so we
-      // must never emit an empty string here.
-      const normalizedTerm = normalizeForMatch(searchTerm) || searchTerm.toLowerCase().trim() || '__unparseable__';
-      const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
-      const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
-      const t3 = row['Top Clicked Product #3: Product Title'] ?? null;
-
-      // Cache: normalize keyword ONCE per row (was being redone 3x via computeTitleMatchCount)
-      const kwNormalized = normalizedTerm;
-
-      const inT1 = titleContainsKeyword(kwNormalized, t1);
-      const inT2 = titleContainsKeyword(kwNormalized, t2);
-      const inT3 = titleContainsKeyword(kwNormalized, t3);
-      const matchCount = (inT1 ? 1 : 0) + (inT2 ? 1 : 0) + (inT3 ? 1 : 0);
-
-      const fields = [
-        file.batchId,
-        file.id,
-        weekEndDate,
-        searchTerm,
-        normalizedTerm,
-        Number(row['Search Frequency Rank']),
-        row['Top Clicked Brand #1'] || null,
-        row['Top Clicked Brands #2'] || null,
-        row['Top Clicked Brands #3'] || null,
-        row['Top Clicked Category #1'] || null,
-        row['Top Clicked Category #2'] || null,
-        row['Top Clicked Category #3'] || null,
-        row['Top Clicked Product #1: ASIN'] || null,
-        row['Top Clicked Product #2: ASIN'] || null,
-        row['Top Clicked Product #3: ASIN'] || null,
-        t1,
-        t2,
-        t3,
-        toNumeric(row['Top Clicked Product #1: Click Share']),
-        toNumeric(row['Top Clicked Product #2: Click Share']),
-        toNumeric(row['Top Clicked Product #3: Click Share']),
-        toNumeric(row['Top Clicked Product #1: Conversion Share']),
-        toNumeric(row['Top Clicked Product #2: Conversion Share']),
-        toNumeric(row['Top Clicked Product #3: Conversion Share']),
-        inT1 ? 't' : 'f',
-        inT2 ? 't' : 'f',
-        inT3 ? 't' : 'f',
-        matchCount,
-      ];
-
-      const line = fields.map(encodeField).join('\t') + '\n';
-
-      // Write + respect backpressure
-      if (!copyStream.write(line)) {
-        await new Promise<void>((resolve) => copyStream.once('drain', () => resolve()));
-      }
-      rowsStaged++;
+    // ------------------------------------------------------------------
+    // Phase 3: promote to keyword_weekly_metrics.
+    //
+    // Big architectural change: we no longer UPDATE staging.search_term_id
+    // as a pre-step. Instead we JOIN staging to search_terms directly in
+    // the INSERT's SELECT. This saves a full ~2.8M-row UPDATE on the
+    // wide staging table (which previously rewrote every row, generated
+    // massive WAL, and left 2.8M dead tuples per import for vacuum to
+    // reclaim).
+    // ------------------------------------------------------------------
+    if (file.isReplacement) {
+      // Replacement flow: nuke existing week, INSERT fresh. No ON CONFLICT.
+      await timePhase(file.id, 'kwm_delete_week', async () => {
+        await db.execute(
+          sql`DELETE FROM keyword_weekly_metrics WHERE week_end_date = ${weekEndDate}::date`,
+        );
+      });
+      await timePhase(file.id, 'kwm_insert_replace', async () => {
+        await db.execute(sql`
+          INSERT INTO keyword_weekly_metrics (
+            week_end_date, search_term_id, actual_rank,
+            top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+            top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+            top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+            top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+            top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+            top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+            keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+            source_file_id
+          )
+          SELECT
+            s.week_end_date, st.id, s.actual_rank,
+            s.top_clicked_brand_1, s.top_clicked_brand_2, s.top_clicked_brand_3,
+            s.top_clicked_category_1, s.top_clicked_category_2, s.top_clicked_category_3,
+            s.top_clicked_product_1_asin, s.top_clicked_product_2_asin, s.top_clicked_product_3_asin,
+            s.top_clicked_product_1_title, s.top_clicked_product_2_title, s.top_clicked_product_3_title,
+            s.top_clicked_product_1_click_share, s.top_clicked_product_2_click_share, s.top_clicked_product_3_click_share,
+            s.top_clicked_product_1_conversion_share, s.top_clicked_product_2_conversion_share, s.top_clicked_product_3_conversion_share,
+            s.keyword_in_title_1, s.keyword_in_title_2, s.keyword_in_title_3, s.keyword_title_match_count,
+            ${file.id}
+          FROM staging_weekly_metrics s
+          JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
+          WHERE s.uploaded_file_id = ${file.id}
+        `);
+      });
+    } else {
+      await timePhase(file.id, 'kwm_insert', async () => {
+        await db.execute(sql`
+          INSERT INTO keyword_weekly_metrics (
+            week_end_date, search_term_id, actual_rank,
+            top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+            top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+            top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+            top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+            top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+            top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+            keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+            source_file_id
+          )
+          SELECT
+            s.week_end_date, st.id, s.actual_rank,
+            s.top_clicked_brand_1, s.top_clicked_brand_2, s.top_clicked_brand_3,
+            s.top_clicked_category_1, s.top_clicked_category_2, s.top_clicked_category_3,
+            s.top_clicked_product_1_asin, s.top_clicked_product_2_asin, s.top_clicked_product_3_asin,
+            s.top_clicked_product_1_title, s.top_clicked_product_2_title, s.top_clicked_product_3_title,
+            s.top_clicked_product_1_click_share, s.top_clicked_product_2_click_share, s.top_clicked_product_3_click_share,
+            s.top_clicked_product_1_conversion_share, s.top_clicked_product_2_conversion_share, s.top_clicked_product_3_conversion_share,
+            s.keyword_in_title_1, s.keyword_in_title_2, s.keyword_in_title_3, s.keyword_title_match_count,
+            ${file.id}
+          FROM staging_weekly_metrics s
+          JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
+          WHERE s.uploaded_file_id = ${file.id}
+          ON CONFLICT (week_end_date, search_term_id) DO NOTHING
+        `);
+      });
     }
 
-    copyStream.end();
-    await new Promise<void>((resolve, reject) => {
-      copyStream.on('finish', () => resolve());
-      copyStream.on('error', reject);
+    // ------------------------------------------------------------------
+    // Phase 4: reporting_weeks + staging cleanup.
+    //
+    // TRUNCATE is safe because importFileFn has concurrency:{limit:1} — no
+    // other import is using staging while we're here. TRUNCATE is
+    // fast (metadata-only, no per-row WAL) and reclaims space immediately
+    // (vs DELETE which leaves dead tuples for vacuum). This was the big
+    // source of staging-table bloat across many imports.
+    // ------------------------------------------------------------------
+    await timePhase(file.id, 'reporting_weeks_upsert', async () => {
+      await db
+        .insert(reportingWeeks)
+        .values({
+          weekEndDate,
+          weekStartDate: weekStartIso,
+          sourceFileId: file.id,
+          isComplete: true,
+        })
+        .onConflictDoUpdate({
+          target: reportingWeeks.weekEndDate,
+          set: { sourceFileId: file.id, isComplete: true },
+        });
     });
+
+    await timePhase(file.id, 'staging_truncate', async () => {
+      await db.execute(sql`TRUNCATE TABLE staging_weekly_metrics`);
+    });
+
+    await timePhase(file.id, 'mark_imported', async () => {
+      await db
+        .update(uploadedFiles)
+        .set({
+          validationStatus: 'imported',
+          importedAt: new Date(),
+          rowCountLoaded: rowsStaged,
+          importStartedAt: null,
+          importHeartbeatAt: null,
+        })
+        .where(eq(uploadedFiles.id, file.id));
+    });
+
+    return { rowsImported: rowsStaged };
   } finally {
-    client.release();
-    await pool.end();
+    await stopHeartbeat();
   }
-
-  // Stage 2: upsert search_terms
-  await db.execute(sql`
-    INSERT INTO search_terms (search_term_raw, search_term_normalized, first_seen_week, last_seen_week)
-    SELECT DISTINCT ON (search_term_normalized)
-      search_term_raw, search_term_normalized, ${weekEndDate}::date, ${weekEndDate}::date
-    FROM staging_weekly_metrics
-    WHERE uploaded_file_id = ${file.id}
-    ON CONFLICT (search_term_normalized) DO UPDATE
-      SET last_seen_week = GREATEST(search_terms.last_seen_week, EXCLUDED.last_seen_week),
-          first_seen_week = LEAST(search_terms.first_seen_week, EXCLUDED.first_seen_week)
-  `);
-
-  // Stage 3: link staging rows to search_term ids
-  await db.execute(sql`
-    UPDATE staging_weekly_metrics s
-    SET search_term_id = st.id
-    FROM search_terms st
-    WHERE s.uploaded_file_id = ${file.id}
-      AND s.search_term_normalized = st.search_term_normalized
-  `);
-
-  // Stage 4: promote to keyword_weekly_metrics
-  if (file.isReplacement) {
-    // neon-http does not support transactions; run DELETE + INSERT sequentially.
-    // Safe because the pipeline serializes per-week (concurrency limit=1 on importFileFn).
-    await db.execute(
-      sql`DELETE FROM keyword_weekly_metrics WHERE week_end_date = ${weekEndDate}::date`,
-    );
-    await db.execute(sql`
-      INSERT INTO keyword_weekly_metrics (
-        week_end_date, search_term_id, actual_rank,
-        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-        source_file_id
-      )
-      SELECT
-        week_end_date, search_term_id, actual_rank,
-        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-        ${file.id}
-      FROM staging_weekly_metrics
-      WHERE uploaded_file_id = ${file.id}
-    `);
-  } else {
-    await db.execute(sql`
-      INSERT INTO keyword_weekly_metrics (
-        week_end_date, search_term_id, actual_rank,
-        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-        source_file_id
-      )
-      SELECT
-        week_end_date, search_term_id, actual_rank,
-        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-        ${file.id}
-      FROM staging_weekly_metrics
-      WHERE uploaded_file_id = ${file.id}
-      ON CONFLICT (week_end_date, search_term_id) DO NOTHING
-    `);
-  }
-
-  // Stage 5: reporting_weeks + cleanup
-  await db
-    .insert(reportingWeeks)
-    .values({
-      weekEndDate,
-      weekStartDate: weekStartIso,
-      sourceFileId: file.id,
-      isComplete: true,
-    })
-    .onConflictDoUpdate({
-      target: reportingWeeks.weekEndDate,
-      set: { sourceFileId: file.id, isComplete: true },
-    });
-
-  await db.delete(stagingWeeklyMetrics).where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
-  await db
-    .update(uploadedFiles)
-    .set({
-      validationStatus: 'imported',
-      importedAt: new Date(),
-      rowCountLoaded: rowsStaged,
-      // Release the lock. Not strictly required (status='imported' itself
-      // prevents re-entry via the lock's WHERE clause), but clearer in
-      // the DB view and mirrors the "import_failed" path in worker/jobs.ts.
-      importStartedAt: null,
-    })
-    .where(eq(uploadedFiles.id, file.id));
-
-  return { rowsImported: rowsStaged };
 }
 
 export const importFileFn = inngest.createFunction(
   {
     id: 'import-file',
     name: 'Import file to keyword_weekly_metrics',
-    // Only one file imports at a time — COPY + INSERT pipeline is DB-heavy
-    // and we don't want two files racing for the same week.
     concurrency: { limit: 1 },
-    // No retries: if the import fails mid-pipeline, the DB may have partial
-    // staging rows. The importBatchFn coordinator catches the failure and
-    // marks the file 'import_failed'; retrying on a fresh re-upload is safer
-    // than re-running the pipeline over existing partial state. The existing
-    // DELETE-staging-by-file_id step at the top of processFileImport protects
-    // a legitimate manual retry from duplicating staging.
     retries: 0,
     triggers: [{ event: 'csv/file.import' }],
   },

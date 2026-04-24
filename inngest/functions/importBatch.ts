@@ -145,6 +145,7 @@ export const importBatchFn = inngest.createFunction(
                   error: `orchestrator waitForEvent timeout (>${FILE_TIMEOUT})`,
                 },
                 importStartedAt: null,
+                importHeartbeatAt: null,
               })
               .where(eq(uploadedFiles.id, f.id)),
           );
