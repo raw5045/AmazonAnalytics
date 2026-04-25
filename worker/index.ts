@@ -19,9 +19,22 @@ const app = express();
 // Inngest needs raw JSON body support
 app.use(express.json({ limit: '10mb' }));
 
-// Health check — Railway pings this to confirm the service is up
+// Health check — Railway pings this to confirm the service is up.
+// Includes the git commit SHA so we can verify which code is actually
+// serving requests after a deploy. Railway sets RAILWAY_GIT_COMMIT_SHA
+// automatically; we fall back to a few alternatives for portability.
+const GIT_SHA =
+  process.env.RAILWAY_GIT_COMMIT_SHA ??
+  process.env.GIT_COMMIT_SHA ??
+  process.env.VERCEL_GIT_COMMIT_SHA ??
+  'unknown';
 app.get('/', (_req, res) => {
-  res.json({ ok: true, service: 'amazon-sfr-analytics-worker', functions: functions.length });
+  res.json({
+    ok: true,
+    service: 'amazon-sfr-analytics-worker',
+    functions: functions.length,
+    commit: GIT_SHA.slice(0, 7),
+  });
 });
 
 // Inngest's serve handler — registers all functions at /api/inngest
