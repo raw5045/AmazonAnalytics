@@ -44,15 +44,31 @@ async function main() {
   }
   console.log('Batch status:', batch.status, '| created:', batch.created_at);
 
-  const files = (await sql`SELECT id, storage_key, original_filename FROM uploaded_files WHERE batch_id = ${batchId}`) as Array<{
+  const files = (await sql`SELECT id, storage_key, original_filename, validation_status FROM uploaded_files WHERE batch_id = ${batchId}`) as Array<{
     id: string;
     storage_key: string | null;
     original_filename: string;
+    validation_status: string;
   }>;
   console.log(`Found ${files.length} file(s):`);
-  for (const f of files) console.log(`  - ${f.id.slice(0, 8)} | ${f.original_filename}`);
+  for (const f of files) console.log(`  - ${f.id.slice(0, 8)} | ${f.validation_status.padEnd(20)} | ${f.original_filename}`);
   if (files.length === 0) {
     console.log('No files in batch — deleting batch row only.');
+  }
+
+  // Safety guard: refuse to nuke a batch that has any imported files,
+  // because that would silently delete ~2.7M kwm rows per file (the data
+  // analytics queries depend on). User can override with FORCE_PURGE_IMPORTED=yes
+  // when they really mean it (e.g., redoing a corrupt batch).
+  const importedFiles = files.filter((f) => f.validation_status === 'imported');
+  if (importedFiles.length > 0 && process.env.FORCE_PURGE_IMPORTED !== 'yes') {
+    console.error(
+      `\nRefusing to purge: ${importedFiles.length} of ${files.length} file(s) are in 'imported' status.\n` +
+        `Purging would delete their kwm rows (~2.7M each = ${(importedFiles.length * 2_700_000).toLocaleString()} rows estimated).\n` +
+        `If you really mean to purge already-imported data, re-run with FORCE_PURGE_IMPORTED=yes.\n` +
+        `Otherwise, target only the failed/pending files individually instead.`,
+    );
+    process.exit(1);
   }
 
   const fileIds = files.map((f) => f.id);
