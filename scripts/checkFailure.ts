@@ -32,8 +32,31 @@ async function main() {
     console.log('Cleared stale errors.');
   }
 
+  // ALSO find batches in 'imported_partial' or 'failed' state whose files
+  // are actually all 'imported'. The orchestrator may have tallied a stale
+  // 'failed' count from the race condition where a healthy slow worker won
+  // its mark_imported AFTER the orchestrator already counted it as orphaned.
+  const misfinalized = (await sql`
+    SELECT b.id
+    FROM upload_batches b
+    WHERE b.status IN ('imported_partial', 'failed')
+      AND NOT EXISTS (
+        SELECT 1 FROM uploaded_files uf
+        WHERE uf.batch_id = b.id
+          AND uf.validation_status NOT IN ('imported', 'fail')
+      )
+      AND EXISTS (
+        SELECT 1 FROM uploaded_files uf
+        WHERE uf.batch_id = b.id
+          AND uf.validation_status = 'imported'
+      )
+  `) as Array<{ id: string }>;
+
   // For each affected batch, re-evaluate batch status from its files
-  const batchIds = Array.from(new Set(stale.map((f) => f.batch_id)));
+  const batchIds = Array.from(new Set([
+    ...stale.map((f) => f.batch_id),
+    ...misfinalized.map((b) => b.id),
+  ]));
   for (const batchId of batchIds) {
     const summary = (await sql`
       SELECT validation_status, COUNT(*)::int c

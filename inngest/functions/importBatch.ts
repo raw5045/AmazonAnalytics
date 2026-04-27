@@ -206,9 +206,32 @@ export const importBatchFn = inngest.createFunction(
       }
     }
 
-    // Finalize batch status.
+    // Finalize batch status — re-read from DB to get the source-of-truth
+    // counts. The orchestrator's in-memory `imported` / `failed` counters
+    // can lag the worker: when a slow file's heartbeat went stale, the
+    // orchestrator counted it 'failed' even though the worker eventually
+    // won and flipped status to 'imported'. The CAS-style mark-orphaned
+    // protects file-level status from being stomped, but the batch
+    // counter needs this re-read to match reality.
+    const finalSummary = await step.run('finalize-summary', async () => {
+      const rows = (await db.execute<{ validation_status: string; c: number }>(sql`
+        SELECT validation_status, COUNT(*)::int AS c
+        FROM uploaded_files
+        WHERE batch_id = ${batchId}
+        GROUP BY validation_status
+      `)).rows;
+      const counts = Object.fromEntries(rows.map((r) => [r.validation_status, r.c]));
+      const importedDb = counts.imported ?? 0;
+      const failedDb = (counts.import_failed ?? 0) + (counts.fail ?? 0);
+      return { imported: importedDb, failed: failedDb };
+    });
+
     const finalStatus =
-      failed === 0 ? 'imported' : imported === 0 ? 'failed' : 'imported_partial';
+      finalSummary.failed === 0
+        ? 'imported'
+        : finalSummary.imported === 0
+          ? 'failed'
+          : 'imported_partial';
     await step.run('finalize-batch', () =>
       db
         .update(uploadBatches)
@@ -221,6 +244,14 @@ export const importBatchFn = inngest.createFunction(
       data: { batchId },
     });
 
-    return { ok: true, imported, failed };
+    return {
+      ok: true,
+      imported: finalSummary.imported,
+      failed: finalSummary.failed,
+      // For visibility, log the orchestrator's in-flight tally too — diff
+      // between this and the DB-derived counts indicates how many files
+      // were "saved" by a slow worker winning the race.
+      orchestratorTally: { imported, failed },
+    };
   },
 );
