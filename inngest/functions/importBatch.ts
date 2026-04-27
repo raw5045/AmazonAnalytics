@@ -93,12 +93,11 @@ export const importBatchFn = inngest.createFunction(
     // an orphaned job within ~5–10 min instead of 4 hours.
     const POLL_INTERVAL = '5m';
     const MAX_POLLS = 24; // 24 × 5m = 2h total per file (well above observed import times)
-    // 10 minutes — matches processFileImport's lock-acquire staleness check.
-    // Was 3 min initially but observed: heartbeat can stall up to ~5 min
-    // during the long kwm_insert phase even when the worker is healthy.
-    // 10 min eliminates the false-positive without giving up worker-death
-    // recovery (a real dead worker isn't coming back).
-    const HEARTBEAT_STALE_MS = 10 * 60_000;
+    // 30 min — staleness threshold raised after observing kwm_insert can
+    // legitimately hold the heartbeat stalled for 15-20+ min on big
+    // (3.9M-row) December files combined with growing kwm indexes.
+    // A real dead worker is dead longer than 30 min anyway.
+    const HEARTBEAT_STALE_MS = 30 * 60_000;
 
     for (const f of files) {
       await step.run(`kickoff-${f.id}`, () => {
@@ -199,9 +198,29 @@ export const importBatchFn = inngest.createFunction(
           if (finalStatus === 'imported') imported++;
           else failed++;
         }
+        // CRITICAL: stop processing more files in this batch.
+        //
+        // The previous file's detached Promise may still be running on the
+        // worker (heartbeat stalled but the COPY/INSERT is genuinely making
+        // progress). If we kicked off the NEXT file now, two Promises would
+        // be running concurrently — each would race through phases sharing
+        // the same staging table. Without TRUNCATE-vs-DELETE-WHERE
+        // discipline, one's cleanup can wipe the other's COPY data, and
+        // the data-integrity bug observed on batch 285f592c reappears
+        // (status=imported but kwm=0 because INSERT ran on empty staging).
+        //
+        // Bailing the batch here means: orphaned file marked failed, no
+        // further files attempted, batch finalizes as imported_partial or
+        // failed. The user re-clicks Import to retry remaining files; the
+        // first attempt will skip already-imported files via the
+        // fetch-files filter. Slightly more user effort, much safer.
+        break;
       } else {
         // outcome === 'import_failed' — worker marked it failed itself
-        // via worker/jobs.ts catch path. Already updated; just count.
+        // via worker/jobs.ts catch path. The Promise has already
+        // resolved (the catch path runs DB cleanup synchronously before
+        // firing the completion event we observed), so no risk of
+        // spawning a parallel Promise. Continue to next file.
         failed++;
       }
     }

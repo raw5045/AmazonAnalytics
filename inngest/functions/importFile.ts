@@ -466,8 +466,21 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         });
     });
 
-    await timePhase(file.id, 'staging_truncate', async () => {
-      await db.execute(sql`TRUNCATE TABLE staging_weekly_metrics`);
+    // Use targeted DELETE rather than TRUNCATE. Earlier we used TRUNCATE
+    // because importFileFn had concurrency:{limit:1} and only one file's
+    // staging rows existed at a time. But the orchestrator's "orphan and
+    // move on" behavior can spawn a second detached Promise for a
+    // different file BEFORE the first one finishes its pipeline — so
+    // staging may legitimately contain rows for two files simultaneously.
+    // TRUNCATE wipes the entire table, including the other file's
+    // in-flight COPY data, causing the "INSERT into kwm SELECT FROM
+    // staging" of THAT file to insert 0 rows and silently succeed
+    // (status=imported, kwm=0). Switching to DELETE WHERE
+    // uploaded_file_id = X scopes cleanup to just our own file.
+    await timePhase(file.id, 'staging_cleanup', async () => {
+      await db
+        .delete(stagingWeeklyMetrics)
+        .where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
     });
 
     await timePhase(file.id, 'mark_imported', async () => {
