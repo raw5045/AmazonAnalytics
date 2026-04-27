@@ -1,5 +1,6 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { Transform, type Readable } from 'node:stream';
 import { env } from '@/lib/env';
 
 export const r2 = new S3Client({
@@ -58,9 +59,77 @@ export function buildUploadStorageKey(input: UploadKeyInput): string {
   return `uploads/${input.batchId}/${input.fileId}/${safe}`;
 }
 
-export async function downloadStreamFromR2(key: string): Promise<import('node:stream').Readable> {
-  const result = await r2.send(new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key }));
-  return result.Body as import('node:stream').Readable;
+/**
+ * Stream-level inactivity timeout. Destroys the stream with an error if no
+ * chunk arrives within `ms`. Catches the case where R2 returns a body but
+ * the underlying TCP stream stalls mid-transfer — a real hang we observed
+ * could not be distinguished from a hung Promise without this.
+ */
+class InactivityTimeout extends Transform {
+  private timer: NodeJS.Timeout | null = null;
+  constructor(private readonly ms: number, private readonly label: string) {
+    super();
+    this.reset();
+  }
+  private reset() {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.destroy(new Error(`${this.label} inactive for ${this.ms}ms`));
+    }, this.ms);
+  }
+  _transform(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null, data?: Buffer) => void) {
+    this.reset();
+    cb(null, chunk);
+  }
+  _flush(cb: (err?: Error | null) => void) {
+    if (this.timer) clearTimeout(this.timer);
+    cb();
+  }
+  _destroy(err: Error | null, cb: (err: Error | null) => void) {
+    if (this.timer) clearTimeout(this.timer);
+    cb(err);
+  }
+}
+
+export interface DownloadStreamOptions {
+  /** Max time to wait for the GetObject HTTP response (headers received). Default 120s. */
+  requestTimeoutMs?: number;
+  /** Max time to wait between chunks once the stream starts. Default 120s. */
+  inactivityTimeoutMs?: number;
+}
+
+/**
+ * Download an R2 object as a Readable stream, with both request-level and
+ * stream-inactivity timeouts. Without these, a stalled R2 transfer would
+ * silently hang the import indefinitely (no error event ever fires on
+ * downstream consumers).
+ */
+export async function downloadStreamFromR2(
+  key: string,
+  opts: DownloadStreamOptions = {},
+): Promise<Readable> {
+  const requestTimeoutMs = opts.requestTimeoutMs ?? 120_000;
+  const inactivityTimeoutMs = opts.inactivityTimeoutMs ?? 120_000;
+
+  const controller = new AbortController();
+  const requestTimer = setTimeout(() => controller.abort(), requestTimeoutMs);
+
+  let result;
+  try {
+    result = await r2.send(
+      new GetObjectCommand({ Bucket: env.R2_BUCKET_NAME, Key: key }),
+      { abortSignal: controller.signal },
+    );
+  } finally {
+    clearTimeout(requestTimer);
+  }
+
+  if (!result.Body) throw new Error(`R2 object has no body: ${key}`);
+
+  // Pipe through the inactivity timeout. If R2 stalls mid-stream, the
+  // Transform fires an error which propagates to whoever's consuming
+  // the stream — turning a silent hang into a normal caught error.
+  return (result.Body as Readable).pipe(new InactivityTimeout(inactivityTimeoutMs, `R2 stream ${key}`));
 }
 
 /**

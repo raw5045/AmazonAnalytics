@@ -6,6 +6,7 @@ import { downloadStreamFromR2 } from '@/lib/storage/r2';
 import { streamParseCsv } from '@/lib/csv/streamParse';
 import { normalizeForMatch } from '@/lib/analytics/derivedFields';
 import { env } from '@/lib/env';
+import { BOOT_ID } from '@/lib/runtime';
 import { db } from '@/db/client';
 import {
   uploadedFiles,
@@ -37,9 +38,15 @@ function titleContainsKeyword(normalizedKeyword: string, title: string | null | 
 
 /**
  * Wraps a phase of processFileImport in start/end timestamp tracking and
- * writes a row to import_phase_timings. Cheap — single INSERT per phase,
- * no hot-path impact. Failures to log are swallowed so instrumentation
- * never breaks the actual import.
+ * writes a row to import_phase_timings. Also updates the live
+ * uploaded_files.import_phase column at phase start so a stuck import
+ * shows the exact phase it died in (the import_phase_timings table only
+ * gets a row on phase completion).
+ *
+ * Phase-start logging matters: when the previous import wedged in
+ * `copy_to_staging`, we couldn't tell from the DB whether COPY started
+ * because no completion-time row exists for stuck phases. With the
+ * import_phase column updated up front, we can tell at a glance.
  */
 async function timePhase<T>(
   fileId: string,
@@ -48,6 +55,19 @@ async function timePhase<T>(
   getRowCount?: (r: T) => number | null,
 ): Promise<T> {
   const startedAt = new Date();
+
+  // Mark the live phase before doing work. If the work crashes the
+  // process, this leaves a breadcrumb in uploaded_files.import_phase.
+  try {
+    await db.execute(sql`
+      UPDATE uploaded_files
+      SET import_phase = ${phase}
+      WHERE id = ${fileId}
+    `);
+  } catch (e) {
+    console.warn(`[phase] failed to set live phase "${phase}":`, e);
+  }
+
   const result = await work();
   const endedAt = new Date();
   const durationMs = endedAt.getTime() - startedAt.getTime();
@@ -101,10 +121,15 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   //  (a) no current heartbeat, OR
   //  (b) heartbeat is > 3 min stale (worker died), AND
   //  (c) file isn't already imported.
+  // Also records BOOT_ID so post-mortem we can compare against the live
+  // worker's BOOT_ID to confirm whether the original process is still
+  // around or got restarted.
   const lockResult = await db.execute<{ id: string }>(sql`
     UPDATE uploaded_files
     SET import_started_at = NOW(),
-        import_heartbeat_at = NOW()
+        import_heartbeat_at = NOW(),
+        import_worker_boot_id = ${BOOT_ID},
+        import_phase = 'lock_acquired'
     WHERE id = ${input.uploadedFileId}
       AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '3 minutes')
       AND validation_status != 'imported'
@@ -185,16 +210,54 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
             ) FROM STDIN WITH (FORMAT text, NULL '\\N')
           `;
           const copyStream = client.query(copyFrom(copySql));
+
+          // CRITICAL: attach error listener BEFORE the first write. If
+          // pg-copy-streams emits 'error' mid-COPY (Postgres rejected a
+          // row, NUL byte, length overflow, type mismatch, etc.) and no
+          // listener is registered, Node throws and the process exits.
+          // That was the root cause of the prior "stuck on Feb 07"
+          // behavior — process died mid-COPY, Railway restarted the
+          // container, Inngest's waitForEvent had no completion event
+          // ever fired, lock heartbeat never advanced.
+          let copyError: Error | null = null;
+          copyStream.on('error', (err: Error) => {
+            copyError = err;
+            console.error(`[copy] error event for ${file.id.slice(0, 8)}:`, err.message);
+          });
+
           const encodeField = (v: string | number | boolean | null | undefined): string => {
             if (v === null || v === undefined || v === '') return '\\N';
-            const s = String(v);
+            // Strip NUL bytes — Postgres text/varchar cannot contain them
+            // and pg-copy-streams will emit error mid-stream if it sees
+            // one. Cheap defense; rare in normal Amazon CSVs but observed
+            // in practice in some search-term values.
+            const s = String(v).replace(/\u0000/g, '');
             return s
               .replace(/\\/g, '\\\\')
               .replace(/\t/g, '\\t')
               .replace(/\n/g, '\\n')
               .replace(/\r/g, '\\r');
           };
+
+          const waitForDrainOrError = (): Promise<void> =>
+            new Promise<void>((resolve, reject) => {
+              const onDrain = () => {
+                copyStream.removeListener('error', onError);
+                resolve();
+              };
+              const onError = (err: Error) => {
+                copyStream.removeListener('drain', onDrain);
+                reject(err);
+              };
+              copyStream.once('drain', onDrain);
+              copyStream.once('error', onError);
+            });
+
           for await (const row of streamParseCsv(stream)) {
+            // If the COPY socket already errored, surface it immediately
+            // rather than continuing to write into a dead stream.
+            if (copyError) throw copyError;
+
             const searchTerm = row['Search Term'];
             const normalizedTerm =
               normalizeForMatch(searchTerm) ||
@@ -238,15 +301,34 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
               matchCount,
             ];
             const line = fields.map(encodeField).join('\t') + '\n';
+            // Use the version that races drain vs. error — without this,
+            // a backpressure pause that's interrupted by an error would
+            // hang forever waiting for 'drain'.
             if (!copyStream.write(line)) {
-              await new Promise<void>((resolve) => copyStream.once('drain', () => resolve()));
+              await waitForDrainOrError();
             }
             rowsStaged++;
           }
+
+          if (copyError) throw copyError;
+
           copyStream.end();
+
+          // Final completion: race finish vs. error so a late-emitting
+          // error during COPY commit (e.g., constraint violation that
+          // surfaces server-side after we've sent all rows) propagates
+          // properly instead of just hanging.
           await new Promise<void>((resolve, reject) => {
-            copyStream.on('finish', () => resolve());
-            copyStream.on('error', reject);
+            const onFinish = () => {
+              copyStream.removeListener('error', onError);
+              resolve();
+            };
+            const onError = (err: Error) => {
+              copyStream.removeListener('finish', onFinish);
+              reject(err);
+            };
+            copyStream.once('finish', onFinish);
+            copyStream.once('error', onError);
           });
         } finally {
           client.release();

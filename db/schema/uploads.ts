@@ -93,6 +93,18 @@ export const uploadedFiles = pgTable('uploaded_files', {
   // fixed expiry — necessary because imports now routinely exceed 60 min
   // as the DB grows.
   importHeartbeatAt: timestamp('import_heartbeat_at', { withTimezone: true }),
+  // Live phase indicator. Set by processFileImport at the start of each
+  // phase (copy_to_staging, search_terms_upsert, kwm_insert, etc.). Lets
+  // us see exactly where a stuck import froze without waiting for the
+  // (completion-only) import_phase_timings table to populate.
+  importPhase: text('import_phase'),
+  // Identifies which worker process owns the lock. If this differs from
+  // the current worker's BOOT_ID at retry time, we know the previous
+  // worker died (process crash, container restart, etc.) and the orphan
+  // is reclaimable. Critical for diagnosing the failure mode where the
+  // health endpoint shows a different process than the one that started
+  // the import.
+  importWorkerBootId: text('import_worker_boot_id'),
 });
 
 export const ingestionErrors = pgTable('ingestion_errors', {

@@ -50,6 +50,13 @@
       "when": 1777038492467,
       "tag": "0006_easy_random",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1777298266062,
+      "tag": "0007_nervous_micromax",
+      "breakpoints": true
     }
   ]
 }

@@ -86,71 +86,97 @@ export const importBatchFn = inngest.createFunction(
     let imported = 0;
     let failed = 0;
 
-    // Per-file: kickoff + waitForEvent. No polling.
-    const FILE_TIMEOUT = '4h'; // per-file upper bound; see history above
+    // Per-file: kickoff + poll loop of short waitForEvents that also check
+    // DB heartbeat staleness. Replaces the old single 4h waitForEvent which
+    // would happily wait full duration even if the worker had crashed and
+    // could never fire the completion event. Now the orchestrator detects
+    // an orphaned job within ~5–10 min instead of 4 hours.
+    const POLL_INTERVAL = '5m';
+    const MAX_POLLS = 24; // 24 × 5m = 2h total per file (well above observed import times)
+    const HEARTBEAT_STALE_MS = 3 * 60_000; // matches processFileImport's lock condition
 
     for (const f of files) {
-      // Kick off the detached background import.
       await step.run(`kickoff-${f.id}`, () => {
         const result = startImportJob(f.id);
         return { started: result.started, reason: result.reason ?? null };
       });
 
-      // Race guard: the background Promise might have already finished if
-      // the file was already imported (idempotency early-return) or very
-      // fast, OR the kickoff returned {started:false, reason:'already-inflight'}
-      // meaning a previous invocation's job is still running.
-      const currentStatus = await step.run(`pre-wait-check-${f.id}`, async () => {
-        const row = await db.query.uploadedFiles.findFirst({
-          where: eq(uploadedFiles.id, f.id),
-          columns: { validationStatus: true },
+      let outcome: 'imported' | 'import_failed' | 'orphaned' | 'timeout' = 'timeout';
+      let pollIter = 0;
+
+      while (pollIter < MAX_POLLS) {
+        // Check current DB state before waiting. Catches the race where
+        // the job finished (or was already done) before we registered.
+        const status = await step.run(`status-${f.id}-${pollIter}`, async () => {
+          const row = await db.query.uploadedFiles.findFirst({
+            where: eq(uploadedFiles.id, f.id),
+            columns: { validationStatus: true, importHeartbeatAt: true },
+          });
+          return {
+            validationStatus: row?.validationStatus ?? null,
+            heartbeatAt: row?.importHeartbeatAt ?? null,
+          };
         });
-        return row?.validationStatus ?? null;
-      });
 
-      let outcome: 'imported' | 'import_failed' | 'timeout';
+        if (status.validationStatus === 'imported') {
+          outcome = 'imported';
+          break;
+        }
+        if (status.validationStatus === 'import_failed') {
+          outcome = 'import_failed';
+          break;
+        }
 
-      if (currentStatus === 'imported') {
-        outcome = 'imported';
-      } else if (currentStatus === 'import_failed') {
-        outcome = 'import_failed';
-      } else {
-        // Wait server-side for the completion event. Matches the specific
-        // file via `if` expression. Returns null on timeout.
-        const completion = await step.waitForEvent(`await-${f.id}`, {
+        // Detect orphaned job: heartbeat is older than the staleness
+        // threshold, meaning the worker that started the import has died.
+        // No completion event will ever fire from a dead Promise; mark
+        // failed and move on. This is the new detection path that prevents
+        // the 4-hour wait when a worker crashed mid-COPY.
+        const hbAt = status.heartbeatAt ? new Date(status.heartbeatAt).getTime() : null;
+        // Skip the staleness check on iteration 0 — kickoff just happened
+        // and the worker may not have written its first heartbeat yet.
+        if (pollIter > 0 && hbAt !== null && Date.now() - hbAt > HEARTBEAT_STALE_MS) {
+          outcome = 'orphaned';
+          break;
+        }
+
+        // Wait for the completion event with a short timeout. If it fires
+        // we exit immediately on the next iteration's status check (the
+        // worker writes status before firing the event). If it doesn't,
+        // we re-check heartbeat staleness and decide whether to keep waiting.
+        await step.waitForEvent(`await-${f.id}-${pollIter}`, {
           event: 'csv/file.import-completed',
           if: `async.data.uploadedFileId == "${f.id}"`,
-          timeout: FILE_TIMEOUT,
+          timeout: POLL_INTERVAL,
         });
 
-        if (completion === null) {
-          outcome = 'timeout';
-        } else {
-          const data = completion.data as { success?: boolean };
-          outcome = data.success ? 'imported' : 'import_failed';
-        }
+        pollIter++;
       }
 
       if (outcome === 'imported') {
         imported++;
       } else {
         failed++;
-        if (outcome === 'timeout') {
-          await step.run(`mark-timeout-${f.id}`, () =>
+        // Mark file failed for outcomes that don't already update the DB.
+        // (worker/jobs.ts marks 'import_failed' itself when processFileImport
+        // throws; orphaned + timeout are orchestrator-side only.)
+        if (outcome === 'orphaned' || outcome === 'timeout') {
+          const reason =
+            outcome === 'orphaned'
+              ? 'worker died: heartbeat stale > 3 min while orchestrator was waiting'
+              : `orchestrator poll budget exhausted (>${MAX_POLLS} × ${POLL_INTERVAL})`;
+          await step.run(`mark-${outcome}-${f.id}`, () =>
             db
               .update(uploadedFiles)
               .set({
                 validationStatus: 'import_failed',
-                validationErrorsJson: {
-                  error: `orchestrator waitForEvent timeout (>${FILE_TIMEOUT})`,
-                },
+                validationErrorsJson: { error: reason, outcome },
                 importStartedAt: null,
                 importHeartbeatAt: null,
               })
               .where(eq(uploadedFiles.id, f.id)),
           );
         }
-        // On import_failed outcome, worker/jobs.ts already updated the DB.
       }
     }
 
