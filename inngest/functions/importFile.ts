@@ -119,11 +119,19 @@ function startHeartbeat(fileId: string): () => Promise<void> {
 export async function processFileImport(input: ImportFileInput): Promise<ImportFileOutput> {
   // Atomic re-entry lock using the heartbeat. Succeeds only if:
   //  (a) no current heartbeat, OR
-  //  (b) heartbeat is > 3 min stale (worker died), AND
+  //  (b) heartbeat is > 10 min stale (worker is genuinely dead), AND
   //  (c) file isn't already imported.
   // Also records BOOT_ID so post-mortem we can compare against the live
   // worker's BOOT_ID to confirm whether the original process is still
   // around or got restarted.
+  //
+  // Why 10 min (not 3): observed behavior on Feb 07 import showed the
+  // heartbeat setInterval can stall for ~3-5 min during the long
+  // kwm_insert phase even when the worker is alive — likely due to
+  // Drizzle pool contention or pgbouncer-side queueing while the long
+  // INSERT holds a connection. A 3-min threshold falsely flagged a
+  // healthy in-flight import as orphaned. 10 min is well past any
+  // legitimate stall but still recovers from a real worker death.
   const lockResult = await db.execute<{ id: string }>(sql`
     UPDATE uploaded_files
     SET import_started_at = NOW(),
@@ -131,7 +139,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         import_worker_boot_id = ${BOOT_ID},
         import_phase = 'lock_acquired'
     WHERE id = ${input.uploadedFileId}
-      AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '3 minutes')
+      AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '10 minutes')
       AND validation_status != 'imported'
     RETURNING id
   `);
@@ -471,6 +479,12 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
           rowCountLoaded: rowsStaged,
           importStartedAt: null,
           importHeartbeatAt: null,
+          // Clear any stale error blob the orchestrator may have written
+          // when it (incorrectly) declared this run orphaned. The race
+          // can happen if the heartbeat stalled briefly during a long
+          // phase; we now win the race correctness-wise but the error
+          // blob would otherwise linger and confuse the UI.
+          validationErrorsJson: null,
         })
         .where(eq(uploadedFiles.id, file.id));
     });

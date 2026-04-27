@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { inngest } from '../client';
 import { db } from '@/db/client';
 import { uploadBatches, uploadedFiles } from '@/db/schema';
@@ -93,7 +93,12 @@ export const importBatchFn = inngest.createFunction(
     // an orphaned job within ~5–10 min instead of 4 hours.
     const POLL_INTERVAL = '5m';
     const MAX_POLLS = 24; // 24 × 5m = 2h total per file (well above observed import times)
-    const HEARTBEAT_STALE_MS = 3 * 60_000; // matches processFileImport's lock condition
+    // 10 minutes — matches processFileImport's lock-acquire staleness check.
+    // Was 3 min initially but observed: heartbeat can stall up to ~5 min
+    // during the long kwm_insert phase even when the worker is healthy.
+    // 10 min eliminates the false-positive without giving up worker-death
+    // recovery (a real dead worker isn't coming back).
+    const HEARTBEAT_STALE_MS = 10 * 60_000;
 
     for (const f of files) {
       await step.run(`kickoff-${f.id}`, () => {
@@ -155,28 +160,49 @@ export const importBatchFn = inngest.createFunction(
 
       if (outcome === 'imported') {
         imported++;
-      } else {
-        failed++;
-        // Mark file failed for outcomes that don't already update the DB.
-        // (worker/jobs.ts marks 'import_failed' itself when processFileImport
-        // throws; orphaned + timeout are orchestrator-side only.)
-        if (outcome === 'orphaned' || outcome === 'timeout') {
-          const reason =
-            outcome === 'orphaned'
-              ? 'worker died: heartbeat stale > 3 min while orchestrator was waiting'
-              : `orchestrator poll budget exhausted (>${MAX_POLLS} × ${POLL_INTERVAL})`;
-          await step.run(`mark-${outcome}-${f.id}`, () =>
-            db
-              .update(uploadedFiles)
-              .set({
-                validationStatus: 'import_failed',
-                validationErrorsJson: { error: reason, outcome },
-                importStartedAt: null,
-                importHeartbeatAt: null,
-              })
-              .where(eq(uploadedFiles.id, f.id)),
-          );
+      } else if (outcome === 'orphaned' || outcome === 'timeout') {
+        // CAS-style flip: only mark failed if the file is STILL in 'pass'
+        // status. If the worker won the race (its kwm_insert finished
+        // and processFileImport flipped the file to 'imported' between
+        // our last status check and this update), respect that — the
+        // data is in kwm and the worker's outcome is the source of truth.
+        const reason =
+          outcome === 'orphaned'
+            ? `worker heartbeat stale > ${HEARTBEAT_STALE_MS / 60_000} min while orchestrator was waiting`
+            : `orchestrator poll budget exhausted (>${MAX_POLLS} × ${POLL_INTERVAL})`;
+        const updated = await step.run(`mark-${outcome}-${f.id}`, async () => {
+          const result = await db.execute<{ id: string }>(sql`
+            UPDATE uploaded_files
+            SET validation_status = 'import_failed',
+                validation_errors_json = ${JSON.stringify({ error: reason, outcome })}::jsonb,
+                import_started_at = NULL,
+                import_heartbeat_at = NULL
+            WHERE id = ${f.id}
+              AND validation_status IN ('pass', 'pass_with_warnings')
+            RETURNING id
+          `);
+          return result.rows.length > 0;
+        });
+        if (updated) {
+          failed++;
+        } else {
+          // Worker won the race; the file is already 'imported' (or
+          // 'import_failed' from worker's catch path). Count it
+          // accordingly by re-reading status.
+          const finalStatus = await step.run(`recheck-${f.id}`, async () => {
+            const row = await db.query.uploadedFiles.findFirst({
+              where: eq(uploadedFiles.id, f.id),
+              columns: { validationStatus: true },
+            });
+            return row?.validationStatus ?? null;
+          });
+          if (finalStatus === 'imported') imported++;
+          else failed++;
         }
+      } else {
+        // outcome === 'import_failed' — worker marked it failed itself
+        // via worker/jobs.ts catch path. Already updated; just count.
+        failed++;
       }
     }
 
