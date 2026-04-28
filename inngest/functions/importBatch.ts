@@ -93,11 +93,14 @@ export const importBatchFn = inngest.createFunction(
     // an orphaned job within ~5–10 min instead of 4 hours.
     const POLL_INTERVAL = '5m';
     const MAX_POLLS = 24; // 24 × 5m = 2h total per file (well above observed import times)
-    // 30 min — staleness threshold raised after observing kwm_insert can
-    // legitimately hold the heartbeat stalled for 15-20+ min on big
-    // (3.9M-row) December files combined with growing kwm indexes.
-    // A real dead worker is dead longer than 30 min anyway.
-    const HEARTBEAT_STALE_MS = 30 * 60_000;
+    // 60 min — paired with the dedicated heartbeat connection in
+    // processFileImport. With dedicated connection the heartbeat
+    // shouldn't miss ticks under load; if it goes silent for 60+ min,
+    // the worker is genuinely gone. Was 30 min, but observed Jan 10
+    // import had heartbeat go > 30 min stale during a slow kwm_insert
+    // while the worker was healthy and the INSERT was still progressing
+    // server-side.
+    const HEARTBEAT_STALE_MS = 60 * 60_000;
 
     for (const f of files) {
       await step.run(`kickoff-${f.id}`, () => {
@@ -214,6 +217,28 @@ export const importBatchFn = inngest.createFunction(
         // failed. The user re-clicks Import to retry remaining files; the
         // first attempt will skip already-imported files via the
         // fetch-files filter. Slightly more user effort, much safer.
+        //
+        // Mark every NOT-YET-PROCESSED file (still 'pass') as failed so:
+        //   (a) the batch finalize step counts them correctly (otherwise
+        //       'pass' files are silently ignored, batch shows 'imported'
+        //       even though some files weren't attempted)
+        //   (b) the user sees clearly which files need retry
+        const remainingFiles = files.slice(files.indexOf(f) + 1);
+        if (remainingFiles.length > 0) {
+          await step.run(`mark-remaining-skipped-${f.id}`, async () => {
+            await db.execute(sql`
+              UPDATE uploaded_files
+              SET validation_status = 'import_failed',
+                  validation_errors_json = ${JSON.stringify({
+                    error: 'Skipped after upstream file orphaned/timed out — re-run batch to retry',
+                    skippedAfter: f.id,
+                  })}::jsonb
+              WHERE id = ANY(${remainingFiles.map((rf) => rf.id)}::uuid[])
+                AND validation_status IN ('pass', 'pass_with_warnings')
+            `);
+          });
+          failed += remainingFiles.length;
+        }
         break;
       } else {
         // outcome === 'import_failed' — worker marked it failed itself
@@ -241,7 +266,17 @@ export const importBatchFn = inngest.createFunction(
       `)).rows;
       const counts = Object.fromEntries(rows.map((r) => [r.validation_status, r.c]));
       const importedDb = counts.imported ?? 0;
-      const failedDb = (counts.import_failed ?? 0) + (counts.fail ?? 0);
+      // Count any non-imported, non-pending validation states as "failed" for
+      // batch-level reporting. Treat 'pass' / 'pass_with_warnings' files
+      // remaining at finalize as "skipped" (defensive — Bug 1 fix above
+      // marks them import_failed before reaching here, but if a future
+      // change ever leaves a 'pass' row at finalize, we want the batch to
+      // truthfully reflect that the work isn't done).
+      const failedDb =
+        (counts.import_failed ?? 0) +
+        (counts.fail ?? 0) +
+        (counts.pass ?? 0) +
+        (counts.pass_with_warnings ?? 0);
       return { imported: importedDb, failed: failedDb };
     });
 

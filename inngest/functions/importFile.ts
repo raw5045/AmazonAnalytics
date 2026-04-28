@@ -1,5 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
-import { Pool } from 'pg';
+import { Pool, Client as PgClient } from 'pg';
 import { from as copyFrom } from 'pg-copy-streams';
 import { inngest } from '../client';
 import { downloadStreamFromR2 } from '@/lib/storage/r2';
@@ -87,24 +87,64 @@ async function timePhase<T>(
 }
 
 /**
+ * Dedicated long-lived pg connection for heartbeat updates.
+ *
+ * Why a separate connection (not Drizzle's pool):
+ *   The kwm_insert phase holds a pool connection for 10-30 min. Other
+ *   pool connections are also borrowed by orchestrator status-check
+ *   queries that may run concurrently. If the heartbeat update has to
+ *   acquire a fresh pool connection at exactly the wrong moment — or
+ *   queues behind anything else — it can stall for many minutes.
+ *   Observed: a healthy Jan 10 import had heartbeat go > 30 min stale
+ *   while the kwm_insert was actively progressing in Postgres.
+ *
+ *   A dedicated client owns ONE connection for the entire process
+ *   lifetime. The heartbeat query never has to wait to acquire one.
+ *   It also keeps TCP keepalive alive on a known socket so we'd notice
+ *   a real disconnect quickly.
+ */
+let heartbeatClient: PgClient | null = null;
+let heartbeatClientPromise: Promise<PgClient> | null = null;
+async function getHeartbeatClient(): Promise<PgClient> {
+  if (heartbeatClient) return heartbeatClient;
+  if (heartbeatClientPromise) return heartbeatClientPromise;
+  heartbeatClientPromise = (async () => {
+    const c = new PgClient({
+      connectionString: env.DATABASE_URL,
+      keepAlive: true,
+      keepAliveInitialDelayMillis: 10_000,
+      connectionTimeoutMillis: 20_000,
+    });
+    c.on('error', (err) => {
+      console.warn('[heartbeat client] connection error:', err.message);
+      // Force re-create on next use; don't try to reuse a broken client.
+      heartbeatClient = null;
+      heartbeatClientPromise = null;
+    });
+    await c.connect();
+    heartbeatClient = c;
+    heartbeatClientPromise = null;
+    return c;
+  })();
+  return heartbeatClientPromise;
+}
+
+/**
  * Starts a 60s-interval heartbeat that bumps uploaded_files.import_heartbeat_at.
  * Returned function stops the heartbeat (called from finally block).
  *
- * Why: Before this, the lock was based on a fixed 60-minute expiry on
- * import_started_at. That was safe when imports took ~15 min, but as the
- * DB grew imports now routinely exceed 60 min — meaning the lock can
- * legally expire mid-import, allowing a retry to acquire it while the
- * first invocation is still running. With the heartbeat, "lock is stale"
- * means "no heartbeat for 3+ minutes" — which only happens if the worker
- * actually died.
+ * Uses a dedicated pg.Client (not Drizzle's pool) so heartbeat updates
+ * never queue behind a long INSERT or other pool-contended query.
  */
 function startHeartbeat(fileId: string): () => Promise<void> {
   let stopped = false;
   const intervalId: NodeJS.Timeout = setInterval(async () => {
     if (stopped) return;
     try {
-      await db.execute(
-        sql`UPDATE uploaded_files SET import_heartbeat_at = NOW() WHERE id = ${fileId}`,
+      const c = await getHeartbeatClient();
+      await c.query(
+        `UPDATE uploaded_files SET import_heartbeat_at = NOW() WHERE id = $1`,
+        [fileId],
       );
     } catch (e) {
       console.warn(`[heartbeat] update failed for ${fileId.slice(0, 8)}:`, e);
@@ -119,19 +159,15 @@ function startHeartbeat(fileId: string): () => Promise<void> {
 export async function processFileImport(input: ImportFileInput): Promise<ImportFileOutput> {
   // Atomic re-entry lock using the heartbeat. Succeeds only if:
   //  (a) no current heartbeat, OR
-  //  (b) heartbeat is > 10 min stale (worker is genuinely dead), AND
+  //  (b) heartbeat is > 60 min stale (worker is genuinely dead), AND
   //  (c) file isn't already imported.
-  // Also records BOOT_ID so post-mortem we can compare against the live
-  // worker's BOOT_ID to confirm whether the original process is still
-  // around or got restarted.
   //
-  // Why 10 min (not 3): observed behavior on Feb 07 import showed the
-  // heartbeat setInterval can stall for ~3-5 min during the long
-  // kwm_insert phase even when the worker is alive — likely due to
-  // Drizzle pool contention or pgbouncer-side queueing while the long
-  // INSERT holds a connection. A 3-min threshold falsely flagged a
-  // healthy in-flight import as orphaned. 10 min is well past any
-  // legitimate stall but still recovers from a real worker death.
+  // 60 min threshold is paired with a DEDICATED heartbeat connection
+  // (see getHeartbeatClient above). With that, the heartbeat should
+  // never miss a tick under load. If it DOES go silent for 60+ min,
+  // the worker is genuinely gone (process exited, container restart,
+  // network partition). 60 min lets a real dead worker be reclaimed
+  // within reasonable time without false-orphaning a slow import.
   const lockResult = await db.execute<{ id: string }>(sql`
     UPDATE uploaded_files
     SET import_started_at = NOW(),
@@ -139,7 +175,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         import_worker_boot_id = ${BOOT_ID},
         import_phase = 'lock_acquired'
     WHERE id = ${input.uploadedFileId}
-      AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '10 minutes')
+      AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '60 minutes')
       AND validation_status != 'imported'
     RETURNING id
   `);
