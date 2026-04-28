@@ -5,7 +5,6 @@ import {
   uploadedFiles,
   reportingWeeks,
   stagingWeeklyMetrics,
-  keywordWeeklyMetrics,
 } from '@/db/schema';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
@@ -41,7 +40,13 @@ export default async function BatchDetailPage({
   // Helps the user see import is actually moving even when status is just "importing".
   const fileIds = files.map((f) => f.id);
   let stagingProgressByFile = new Map<string, number>();
-  let importedProgressByFile = new Map<string, number>();
+  // Imported-rows progress comes from file.rowCountLoaded (cached on the
+  // uploaded_files row by processFileImport's mark_imported phase). We
+  // previously COUNT(*)'d keyword_weekly_metrics by source_file_id here
+  // for live promotion progress, but that's a full-table scan on a
+  // 50M+ row table without a source_file_id index — caused 504 timeouts
+  // on this page once data grew. Cached row_count_loaded is the same
+  // number (the worker's COPY count), zero query cost.
   if (fileIds.length > 0) {
     const stagingRows = (await db
       .select({
@@ -52,16 +57,6 @@ export default async function BatchDetailPage({
       .where(inArray(stagingWeeklyMetrics.uploadedFileId, fileIds))
       .groupBy(stagingWeeklyMetrics.uploadedFileId)) as Array<{ fileId: string; c: number }>;
     stagingProgressByFile = new Map(stagingRows.map((r) => [r.fileId, r.c]));
-
-    const importedRows = (await db
-      .select({
-        fileId: keywordWeeklyMetrics.sourceFileId,
-        c: sql<number>`count(*)::int`,
-      })
-      .from(keywordWeeklyMetrics)
-      .where(inArray(keywordWeeklyMetrics.sourceFileId, fileIds))
-      .groupBy(keywordWeeklyMetrics.sourceFileId)) as Array<{ fileId: string; c: number }>;
-    importedProgressByFile = new Map(importedRows.map((r) => [r.fileId, r.c]));
   }
 
   // Auto-refresh while anything is in motion: batch is uploading/validating/importing,
@@ -138,7 +133,7 @@ export default async function BatchDetailPage({
           <tbody className="divide-y">
             {files.map((f) => {
               const stagedSoFar = stagingProgressByFile.get(f.id) ?? 0;
-              const importedSoFar = importedProgressByFile.get(f.id) ?? 0;
+              const importedSoFar = f.rowCountLoaded ?? 0;
               const total = f.rowCountRaw ?? 0;
               let progressLabel = '—';
               if (f.validationStatus === 'imported') {
@@ -146,9 +141,6 @@ export default async function BatchDetailPage({
               } else if (stagedSoFar > 0 && total > 0) {
                 const pct = Math.min(99, Math.floor((stagedSoFar / total) * 100));
                 progressLabel = `Staging: ${stagedSoFar.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`;
-              } else if (importedSoFar > 0 && total > 0) {
-                const pct = Math.min(99, Math.floor((importedSoFar / total) * 100));
-                progressLabel = `Promoting: ${importedSoFar.toLocaleString()} / ${total.toLocaleString()} (${pct}%)`;
               } else if (f.validationStatus === 'pass' || f.validationStatus === 'pass_with_warnings') {
                 progressLabel = 'Ready to import';
               } else if (f.validationStatus === 'pending') {
