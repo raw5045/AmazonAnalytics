@@ -32,18 +32,19 @@ async function main() {
     console.log('Cleared stale errors.');
   }
 
-  // ALSO find batches in 'imported_partial' or 'failed' state whose files
-  // are actually all 'imported'. The orchestrator may have tallied a stale
-  // 'failed' count from the race condition where a healthy slow worker won
-  // its mark_imported AFTER the orchestrator already counted it as orphaned.
+  // ALSO find batches in 'imported_partial' / 'failed' / 'importing' state
+  // whose files have all reached terminal states. The orchestrator may
+  // have tallied a stale 'failed' count, OR the orchestrator function
+  // ended without reaching finalize-batch (e.g., Inngest per-function
+  // execution time limit on long batches with many polling steps).
   const misfinalized = (await sql`
     SELECT b.id
     FROM upload_batches b
-    WHERE b.status IN ('imported_partial', 'failed')
+    WHERE b.status IN ('imported_partial', 'failed', 'importing')
       AND NOT EXISTS (
         SELECT 1 FROM uploaded_files uf
         WHERE uf.batch_id = b.id
-          AND uf.validation_status NOT IN ('imported', 'fail')
+          AND uf.validation_status NOT IN ('imported', 'fail', 'import_failed')
       )
       AND EXISTS (
         SELECT 1 FROM uploaded_files uf

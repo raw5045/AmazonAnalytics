@@ -385,10 +385,12 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
 
     // ------------------------------------------------------------------
     // Phase 2: upsert search_terms.
-    // DO NOTHING (not DO UPDATE) — we no longer maintain first_seen_week /
-    // last_seen_week on every import. Those can be recomputed from kwm in
-    // a post-backfill job (MIN/MAX(week_end_date) GROUP BY search_term_id).
-    // Eliminates ~2M tuple updates per file + associated WAL + index churn.
+    // DO UPDATE on conflict, maintaining first_seen_week / last_seen_week.
+    // We used DO NOTHING during the 52-week backfill to avoid ~2M tuple
+    // rewrites per import × 52 imports. Now that we're in steady state
+    // (1 file/week), the per-import cost is small (~2-4 min on a 60M+
+    // row search_terms table) and keeps these aggregate columns correct
+    // without needing a separate recompute job.
     // ------------------------------------------------------------------
     await timePhase(file.id, 'search_terms_upsert', async () => {
       await db.execute(sql`
@@ -397,7 +399,12 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
           search_term_raw, search_term_normalized, ${weekEndDate}::date, ${weekEndDate}::date
         FROM staging_weekly_metrics
         WHERE uploaded_file_id = ${file.id}
-        ON CONFLICT (search_term_normalized) DO NOTHING
+        ON CONFLICT (search_term_normalized) DO UPDATE
+          SET last_seen_week = GREATEST(search_terms.last_seen_week, EXCLUDED.last_seen_week),
+              first_seen_week = LEAST(search_terms.first_seen_week, EXCLUDED.first_seen_week)
+          WHERE
+            search_terms.last_seen_week < EXCLUDED.last_seen_week
+            OR search_terms.first_seen_week > EXCLUDED.first_seen_week
       `);
     });
 
