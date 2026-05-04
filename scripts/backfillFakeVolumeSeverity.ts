@@ -1,25 +1,29 @@
 /**
  * One-time backfill of fake_volume_severity + fake_volume_eval_status for
- * the 140M existing keyword_weekly_metrics rows accumulated during the
- * 53-week historical import.
+ * existing keyword_weekly_metrics rows.
  *
  * Why we need this: Plan 3.1 introduced two-tier severity but the
- * existing rows have NULL fake_volume_severity (and most also have NULL
- * fake_volume_eval_status). New imports compute these in the kwm INSERT
- * going forward; this script catches up the existing data.
+ * existing rows have NULL fake_volume_severity. New imports compute it
+ * in the kwm INSERT going forward; this script catches up.
  *
- * Strategy: chunk by week_end_date. Each weekly slice is ~2.7M rows.
- * Filter clause uses (week_end_date = X) which the PK
- * (week_end_date, search_term_id) covers via index range scan. Re-runnable
- * — only updates rows where severity is still NULL.
+ * Strategy: chunk by week_end_date. Each weekly slice is ~2.7-3.9M rows.
+ * Each UPDATE filters on `week_end_date = X` (covered by PK index range
+ * scan). Re-runnable — only touches rows where severity is still NULL.
  *
- * Connection: uses pg.Pool (TCP keepalive) instead of @neondatabase/
- * serverless HTTP because each per-week UPDATE can take 30-60s — well
- * past the HTTP driver's request timeout.
+ * Wide-row UPDATE on a 140M-row table is heavy: each tuple is rewritten
+ * in full. Observed first slice: 10+ minutes due to Neon cold-cache
+ * page prefetch. Subsequent slices benefit from warm cache but full-history
+ * backfill is realistically 4-9 hours.
  *
- * Estimated total: 25-55 minutes across all 53 weeks.
+ * Args:
+ *   LAST_N_WEEKS=N   Limit to the most recent N reporting_weeks (e.g., 4).
+ *                    Default: all weeks.
  *
- * Usage: pnpm tsx scripts/backfillFakeVolumeSeverity.ts
+ * Connection: pg.Pool (TCP keepalive) — neon-http would time out.
+ *
+ * Usage:
+ *   pnpm tsx scripts/backfillFakeVolumeSeverity.ts            # all weeks
+ *   LAST_N_WEEKS=4 pnpm tsx scripts/backfillFakeVolumeSeverity.ts  # last 4 weeks
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
@@ -37,11 +41,19 @@ async function main() {
   const client = await pool.connect();
 
   try {
-    // 1. Get the list of weeks with imported data
-    const { rows: weekRows } = await client.query<{ week_end_date: string }>(
-      `SELECT week_end_date FROM reporting_weeks ORDER BY week_end_date`,
-    );
-    console.log(`Found ${weekRows.length} weeks to process`);
+    // 1. Get the list of weeks to process. Optionally limit to last N.
+    const lastN = process.env.LAST_N_WEEKS ? parseInt(process.env.LAST_N_WEEKS, 10) : null;
+    const weekQuery = lastN
+      ? `SELECT week_end_date
+         FROM reporting_weeks
+         WHERE is_complete = true
+         ORDER BY week_end_date DESC
+         LIMIT ${lastN}`
+      : `SELECT week_end_date FROM reporting_weeks WHERE is_complete = true ORDER BY week_end_date`;
+    const { rows: weekRowsRaw } = await client.query<{ week_end_date: string }>(weekQuery);
+    // If we used LIMIT to get most-recent, reverse so we process oldest -> newest
+    const weekRows = lastN ? [...weekRowsRaw].reverse() : weekRowsRaw;
+    console.log(`Found ${weekRows.length} week(s) to process${lastN ? ` (last ${lastN} weeks)` : ''}`);
 
     let totalRowsUpdated = 0;
     const startedAt = Date.now();
