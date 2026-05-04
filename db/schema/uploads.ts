@@ -39,6 +39,17 @@ export const fakeVolumeEvalStatusEnum = pgEnum('fake_volume_eval_status', [
   'unknown_missing_conversion',
   'unknown_missing_click',
 ]);
+// Two-tier fake-volume severity (Plan 3.1).
+//   none     — rule evaluated cleanly and neither tier matched
+//   warning  — looser thresholds (orange flag)
+//   critical — stricter thresholds (red flag)
+// The column is nullable; NULL = could not evaluate (use fakeVolumeEvalStatus
+// to know why).
+export const fakeVolumeSeverityEnum = pgEnum('fake_volume_severity', [
+  'none',
+  'warning',
+  'critical',
+]);
 
 export const uploadBatches = pgTable('upload_batches', {
   id: uuid('id').primaryKey().defaultRandom(),

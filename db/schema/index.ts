@@ -8,3 +8,5 @@ export * from './reportingWeeks';
 export * from './keywordWeeklyMetrics';
 export * from './stagingWeeklyMetrics';
 export * from './importPhaseTimings';
+export * from './fakeVolumeRules';
+export * from './keywordCurrentSummary';

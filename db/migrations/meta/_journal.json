@@ -57,6 +57,13 @@
       "when": 1777298266062,
       "tag": "0007_nervous_micromax",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777908778015,
+      "tag": "0008_greedy_tattoo",
+      "breakpoints": true
     }
   ]
 }

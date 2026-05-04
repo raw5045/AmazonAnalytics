@@ -13,7 +13,11 @@ import {
   index,
 } from 'drizzle-orm/pg-core';
 import { searchTerms } from './searchTerms';
-import { uploadedFiles, fakeVolumeEvalStatusEnum } from './uploads';
+import {
+  uploadedFiles,
+  fakeVolumeEvalStatusEnum,
+  fakeVolumeSeverityEnum,
+} from './uploads';
 
 export const keywordWeeklyMetrics = pgTable(
   'keyword_weekly_metrics',
@@ -43,7 +47,13 @@ export const keywordWeeklyMetrics = pgTable(
     keywordInTitle2: boolean('keyword_in_title_2'),
     keywordInTitle3: boolean('keyword_in_title_3'),
     keywordTitleMatchCount: smallint('keyword_title_match_count'),
+    // fakeVolumeFlag is the original single-tier boolean — DEPRECATED in
+    // Plan 3.1 (never populated for any of the 140M backfilled rows). Kept
+    // nullable in schema for backwards-compat, will be dropped in Plan 3.5.
     fakeVolumeFlag: boolean('fake_volume_flag'),
+    // Plan 3.1: two-tier severity. Backfilled for all existing rows + set
+    // by processFileImport going forward.
+    fakeVolumeSeverity: fakeVolumeSeverityEnum('fake_volume_severity'),
     fakeVolumeEvalStatus: fakeVolumeEvalStatusEnum('fake_volume_eval_status'),
     fakeVolumeRuleVersionId: uuid('fake_volume_rule_version_id'),
     sourceFileId: uuid('source_file_id').notNull().references(() => uploadedFiles.id),
