@@ -31,7 +31,6 @@
  * time out on the 5+ minute INSERT).
  */
 import { Pool, type PoolClient } from 'pg';
-import { env } from '@/lib/env';
 
 export interface RefreshSummaryResult {
   rowsWritten: number;
@@ -41,8 +40,10 @@ export interface RefreshSummaryResult {
 
 export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResult> {
   const startedAt = Date.now();
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) throw new Error('DATABASE_URL not set');
   const pool = new Pool({
-    connectionString: env.DATABASE_URL,
+    connectionString: dbUrl,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
     connectionTimeoutMillis: 20_000,

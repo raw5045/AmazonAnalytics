@@ -93,7 +93,7 @@ async function main() {
             ELSE 'evaluated'::fake_volume_eval_status
           END
         WHERE week_end_date = $1::date
-          AND fake_volume_severity IS NULL
+          AND fake_volume_eval_status IS NULL  -- idempotent: skip rows we've already evaluated
         `,
         [week],
       );
