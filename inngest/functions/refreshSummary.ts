@@ -83,9 +83,14 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       await stageRankAtOffset(client, weeks);
     }
 
-    // 3. ever_top_50k aggregate per term (over full kwm history, not just
-    //    the 4-week active window — spec says "ever").
-    await stageEverTop50k(client);
+    // ever_top_50k DEFERRED to Plan 3.5: a full-history scan of kwm joined
+    // to latest_per_term takes 1+ hours via Neon's cold-page prefetch
+    // (135M rows still NULL severity-wise post-scoped-backfill, so they're
+    // also cold). For Plan 3.1 we default ever_top_50k to false; once
+    // the overnight full-history backfill warms the cache and the aggregate
+    // can complete in reasonable time, we'll add a one-off "ever_top_50k
+    // compute" job and decide whether to keep it inline in the refresh
+    // or maintain it incrementally on each import.
 
     // 4. TRUNCATE + INSERT keyword_current_summary
     await client.query('TRUNCATE keyword_current_summary');
@@ -121,12 +126,13 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         (r26.actual_rank - l.actual_rank),
         (r52.actual_rank - l.actual_rank),
         0 AS consecutive_improvement_streak,
-        COALESCE(e.ever_top_50k, false),
+        false AS ever_top_50k, -- deferred to Plan 3.5; see note above
         false AS has_unranked_week,
         0 AS unranked_week_count,
         false AS unranked_after_top_50k,
         l.week_end_date AS last_seen_week,
-        EXTRACT(DAY FROM ($1::date - l.week_end_date))::int / 7 AS weeks_since_seen,
+        -- date - date returns int (days). Divide by 7 for weeks.
+        (($1::date - l.week_end_date) / 7)::int AS weeks_since_seen,
         l.fake_volume_severity,
         l.top_clicked_category_1,
         l.top_clicked_product_1_asin,
@@ -142,7 +148,6 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       LEFT JOIN rank_at_13w r13 ON r13.search_term_id = l.search_term_id
       LEFT JOIN rank_at_26w r26 ON r26.search_term_id = l.search_term_id
       LEFT JOIN rank_at_52w r52 ON r52.search_term_id = l.search_term_id
-      LEFT JOIN ever_top_50k_per_term e ON e.search_term_id = l.search_term_id
       `,
       [currentWeekEndDate],
     );
@@ -210,17 +215,5 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
   );
 }
 
-async function stageEverTop50k(client: PoolClient): Promise<void> {
-  // Only need this for active terms — JOIN against latest_per_term to
-  // restrict the aggregation.
-  await client.query(`
-    CREATE TEMP TABLE ever_top_50k_per_term ON COMMIT DROP AS
-    SELECT
-      k.search_term_id,
-      BOOL_OR(k.actual_rank <= 50000) AS ever_top_50k
-    FROM keyword_weekly_metrics k
-    JOIN latest_per_term l ON l.search_term_id = k.search_term_id
-    GROUP BY k.search_term_id;
-    CREATE INDEX ON ever_top_50k_per_term (search_term_id);
-  `);
-}
+// stageEverTop50k removed — see "ever_top_50k DEFERRED" comment in main flow.
+// Will return in Plan 3.5 once we have a faster aggregate strategy.
