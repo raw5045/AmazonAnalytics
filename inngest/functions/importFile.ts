@@ -14,6 +14,7 @@ import {
   reportingWeeks,
   importPhaseTimings,
 } from '@/db/schema';
+import { refreshKeywordCurrentSummary } from './refreshSummary';
 
 export interface ImportFileInput {
   uploadedFileId: string;
@@ -436,6 +437,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
             top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
             top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
             keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+            fake_volume_severity, fake_volume_eval_status,
             source_file_id
           )
           SELECT
@@ -447,6 +449,24 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
             s.top_clicked_product_1_click_share, s.top_clicked_product_2_click_share, s.top_clicked_product_3_click_share,
             s.top_clicked_product_1_conversion_share, s.top_clicked_product_2_conversion_share, s.top_clicked_product_3_conversion_share,
             s.keyword_in_title_1, s.keyword_in_title_2, s.keyword_in_title_3, s.keyword_title_match_count,
+            -- fake_volume_severity (Plan 3.1): two-tier rule v1-default
+            CASE
+              WHEN s.top_clicked_product_1_click_share IS NULL
+                OR s.top_clicked_product_1_conversion_share IS NULL THEN NULL
+              WHEN (s.top_clicked_product_1_click_share > 20 AND s.top_clicked_product_1_conversion_share < 0.5)
+                OR (s.top_clicked_product_1_click_share > 30 AND s.top_clicked_product_1_conversion_share < 1.0)
+                THEN 'critical'::fake_volume_severity
+              WHEN (s.top_clicked_product_1_click_share > 5 AND s.top_clicked_product_1_conversion_share < 0.5)
+                OR (s.top_clicked_product_1_click_share > 10 AND s.top_clicked_product_1_conversion_share < 1.0)
+                THEN 'warning'::fake_volume_severity
+              ELSE 'none'::fake_volume_severity
+            END,
+            -- fake_volume_eval_status — captures WHY severity is NULL
+            CASE
+              WHEN s.top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
+              WHEN s.top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
+              ELSE 'evaluated'::fake_volume_eval_status
+            END,
             ${file.id}
           FROM staging_weekly_metrics s
           JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
@@ -465,6 +485,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
             top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
             top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
             keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+            fake_volume_severity, fake_volume_eval_status,
             source_file_id
           )
           SELECT
@@ -476,6 +497,24 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
             s.top_clicked_product_1_click_share, s.top_clicked_product_2_click_share, s.top_clicked_product_3_click_share,
             s.top_clicked_product_1_conversion_share, s.top_clicked_product_2_conversion_share, s.top_clicked_product_3_conversion_share,
             s.keyword_in_title_1, s.keyword_in_title_2, s.keyword_in_title_3, s.keyword_title_match_count,
+            -- fake_volume_severity (Plan 3.1): two-tier rule v1-default
+            CASE
+              WHEN s.top_clicked_product_1_click_share IS NULL
+                OR s.top_clicked_product_1_conversion_share IS NULL THEN NULL
+              WHEN (s.top_clicked_product_1_click_share > 20 AND s.top_clicked_product_1_conversion_share < 0.5)
+                OR (s.top_clicked_product_1_click_share > 30 AND s.top_clicked_product_1_conversion_share < 1.0)
+                THEN 'critical'::fake_volume_severity
+              WHEN (s.top_clicked_product_1_click_share > 5 AND s.top_clicked_product_1_conversion_share < 0.5)
+                OR (s.top_clicked_product_1_click_share > 10 AND s.top_clicked_product_1_conversion_share < 1.0)
+                THEN 'warning'::fake_volume_severity
+              ELSE 'none'::fake_volume_severity
+            END,
+            -- fake_volume_eval_status — captures WHY severity is NULL
+            CASE
+              WHEN s.top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
+              WHEN s.top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
+              ELSE 'evaluated'::fake_volume_eval_status
+            END,
             ${file.id}
           FROM staging_weekly_metrics s
           JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
@@ -544,6 +583,28 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         })
         .where(eq(uploadedFiles.id, file.id));
     });
+
+    // ------------------------------------------------------------------
+    // Phase 5: refresh keyword_current_summary (Plan 3.1).
+    //
+    // Runs AFTER mark_imported deliberately: if the refresh fails for
+    // any reason, the file is still correctly marked 'imported' (its
+    // data IS in kwm), and we just have a stale summary that can be
+    // fixed with `pnpm tsx scripts/refreshSummaryOnce.ts`. Catching
+    // here means a flaky summary refresh doesn't make the orchestrator
+    // think the import failed.
+    // ------------------------------------------------------------------
+    try {
+      await timePhase(file.id, 'summary_refresh', async () => {
+        await refreshKeywordCurrentSummary();
+      });
+    } catch (refreshErr) {
+      const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+      console.error(
+        `[summary_refresh] failed for file ${file.id.slice(0, 8)}, but kwm import succeeded — recover with refreshSummaryOnce.ts. Error:`,
+        msg,
+      );
+    }
 
     return { rowsImported: rowsStaged };
   } finally {
