@@ -27,9 +27,10 @@ describe('buildExplorerQuery', () => {
       // Default severity filter — covers NULL since 'none' is selected
       expect(norm(sql)).toContain('IS NULL OR kcs.fake_volume_severity_current IN ($1, $2)');
 
-      // countSql shares the WHERE-clause args but has no LIMIT/OFFSET
-      expect(norm(countSql)).toContain('SELECT COUNT(*)::bigint AS total');
-      expect(norm(countSql)).not.toContain('LIMIT');
+      // countSql shares the WHERE-clause args + uses the bail-out subquery
+      // pattern so it stops counting after COUNT_CAP+1 matches.
+      expect(norm(countSql)).toContain('SELECT COUNT(*)::int AS total');
+      expect(norm(countSql)).toContain('LIMIT 10001');
       expect(norm(countSql)).not.toContain('OFFSET');
       expect(norm(countSql)).not.toContain('ORDER BY');
     });
@@ -256,7 +257,7 @@ describe('buildExplorerQuery', () => {
   });
 
   describe('countSql vs sql', () => {
-    it('countSql uses identical WHERE but no ORDER BY / LIMIT / OFFSET', () => {
+    it('countSql uses identical WHERE + the bail-out LIMIT, no ORDER BY / OFFSET', () => {
       const { countSql } = buildExplorerQuery({
         ...baseFilters,
         q: 'wireless',
@@ -267,7 +268,7 @@ describe('buildExplorerQuery', () => {
       expect(norm(countSql)).toContain('current_rank >=');
       expect(norm(countSql)).toContain('current_rank <=');
       expect(norm(countSql)).not.toContain('ORDER BY');
-      expect(norm(countSql)).not.toContain('LIMIT');
+      expect(norm(countSql)).toContain('LIMIT 10001');
       expect(norm(countSql)).not.toContain('OFFSET');
     });
 
@@ -314,7 +315,8 @@ describe('buildExplorerQuery', () => {
       expect(norm(sql)).toContain('ORDER BY kcs.improvement_4w DESC NULLS LAST');
       expect(args.slice(-2)).toEqual([50, 50]);
       expect(args.length).toBe(countArgs.length + 2);
-      expect(norm(countSql)).not.toContain('LIMIT');
+      // countSql LIMITs the bail-out subquery; that's the only LIMIT it has.
+      expect(norm(countSql)).toContain('LIMIT 10001');
     });
   });
 });

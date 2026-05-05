@@ -157,15 +157,31 @@ export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery
     LIMIT ${limitParam} OFFSET ${offsetParam}
   `.trim();
 
+  // Bail-out count: an exact COUNT(*) over millions of rows is a 1-3s
+  // sequential aggregate. We only need to render a pagination footer, so
+  // count up to COUNT_CAP+1 rows. If we hit the cap, the UI shows "10,000+"
+  // and pagination caps at the same number — the user almost certainly
+  // wants to refine filters before page 100 anyway.
   const countSql = `
-    SELECT COUNT(*)::bigint AS total
-    FROM keyword_current_summary kcs
-    JOIN search_terms st ON st.id = kcs.search_term_id
-    ${whereClause}
+    SELECT COUNT(*)::int AS total
+    FROM (
+      SELECT 1
+      FROM keyword_current_summary kcs
+      JOIN search_terms st ON st.id = kcs.search_term_id
+      ${whereClause}
+      LIMIT ${COUNT_CAP + 1}
+    ) sub
   `.trim();
 
   return { sql, args, countSql, countArgs };
 }
+
+/**
+ * Maximum rows we count exactly. Beyond this, the UI shows "{cap}+" and
+ * pagination caps at this count. Set high enough that real usage rarely
+ * hits it, low enough that the count completes quickly even on cold cache.
+ */
+export const COUNT_CAP = 10_000;
 
 function buildOrderBy(sort: ExplorerFilters['sort'], improvementCol: string): string {
   switch (sort) {

@@ -12,10 +12,12 @@ export function Pagination({
   page,
   perPage,
   total,
+  totalIsCapped,
 }: {
   page: number;
   perPage: number;
   total: number;
+  totalIsCapped?: boolean;
 }) {
   const router = useRouter();
   const sp = useSearchParams();
@@ -57,7 +59,7 @@ export function Pagination({
         ‹ Prev
       </button>
       <span className="text-gray-600">
-        Page {page.toLocaleString()} of {totalPages.toLocaleString()}
+        Page {page.toLocaleString()} of {totalPages.toLocaleString()}{totalIsCapped ? '+' : ''}
       </span>
       <button
         type="button"

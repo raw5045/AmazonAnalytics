@@ -1,7 +1,7 @@
 'use client';
 
-import { useRouter, useSearchParams } from 'next/navigation';
-import { useState, useTransition, type FormEvent } from 'react';
+import { useRouter } from 'next/navigation';
+import { useState, useTransition } from 'react';
 import type {
   ExplorerFilters,
   JumpKey,
@@ -10,6 +10,7 @@ import type {
   TitleMatchMode,
   WindowKey,
 } from '@/lib/explorer/types';
+import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
 
 const WINDOWS: Array<{ value: WindowKey; label: string }> = [
   { value: '1w', label: 'Week' },
@@ -46,6 +47,59 @@ const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
   { value: 'all', label: 'Missing from all selected' },
 ];
 
+interface PendingFilters {
+  window: WindowKey;
+  q: string;
+  rankBest: string;
+  rankWorst: string;
+  jump: JumpKey | '';
+  category: string;
+  severities: SeverityKey[];
+  titleSlots: number[];
+  titleMatchMode: TitleMatchMode | '';
+  sort: SortKey;
+}
+
+function filtersToPending(f: ExplorerFilters): PendingFilters {
+  return {
+    window: f.window,
+    q: f.q ?? '',
+    rankBest: f.rankMin?.toString() ?? '',
+    rankWorst: f.rankMax?.toString() ?? '',
+    jump: f.jump ?? '',
+    category: f.category ?? '',
+    severities: f.severities,
+    titleSlots: f.titleSlots,
+    titleMatchMode: f.titleMatchMode ?? '',
+    sort: f.sort,
+  };
+}
+
+function pendingToParams(p: PendingFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  if (p.window !== EXPLORER_DEFAULTS.window) params.set('window', p.window);
+  if (p.sort !== EXPLORER_DEFAULTS.sort) params.set('sort', p.sort);
+  if (p.q.trim().length >= 3) params.set('q', p.q.trim());
+  if (p.rankBest) params.set('rank_min', p.rankBest);
+  if (p.rankWorst) params.set('rank_max', p.rankWorst);
+  if (p.jump) params.set('jump', p.jump);
+  if (p.category) params.set('category', p.category);
+  // Default severities = ['none', 'warning']. Only emit when different.
+  const defaultSev = JSON.stringify([...EXPLORER_DEFAULTS.severities].sort());
+  const currentSev = JSON.stringify([...p.severities].sort());
+  if (currentSev !== defaultSev && p.severities.length > 0) {
+    params.set('severity', p.severities.join(','));
+  }
+  if (p.titleMatchMode) {
+    params.set('title_match', p.titleMatchMode);
+    // Only emit titles param if it differs from default [1, 2, 3]
+    if (p.titleSlots.length !== 3) {
+      params.set('titles', p.titleSlots.join(','));
+    }
+  }
+  return params;
+}
+
 export function FilterSidebar({
   filters,
   categories,
@@ -54,60 +108,46 @@ export function FilterSidebar({
   categories: string[];
 }) {
   const router = useRouter();
-  const sp = useSearchParams();
   const [isPending, startTransition] = useTransition();
-  const [qInput, setQInput] = useState(filters.q ?? '');
-  const [rankMinInput, setRankMinInput] = useState(filters.rankMin?.toString() ?? '');
-  const [rankMaxInput, setRankMaxInput] = useState(filters.rankMax?.toString() ?? '');
+  const [pending, setPending] = useState<PendingFilters>(filtersToPending(filters));
 
-  const update = (mutate: (params: URLSearchParams) => void) => {
-    const params = new URLSearchParams(sp?.toString());
-    mutate(params);
-    // Any filter change resets to page 1.
-    params.delete('page');
+  const apply = () => {
+    const params = pendingToParams(pending);
+    const qs = params.toString();
     startTransition(() => {
-      router.replace(`/explorer?${params.toString()}`, { scroll: false });
+      router.replace(qs ? `/explorer?${qs}` : '/explorer', { scroll: false });
     });
   };
 
-  const setOrDelete = (key: string, value: string | null) => {
-    update((p) => {
-      if (value === null || value === '') p.delete(key);
-      else p.set(key, value);
+  const reset = () => {
+    setPending(filtersToPending(EXPLORER_DEFAULTS));
+    startTransition(() => {
+      router.replace('/explorer', { scroll: false });
     });
   };
 
-  const submitText = (e: FormEvent) => {
-    e.preventDefault();
-    setOrDelete('q', qInput.trim() || null);
-  };
+  const dirty = JSON.stringify(filtersToPending(filters)) !== JSON.stringify(pending);
 
-  const submitRanks = (e: FormEvent) => {
-    e.preventDefault();
-    update((p) => {
-      const min = rankMinInput.trim();
-      const max = rankMaxInput.trim();
-      if (min) p.set('rank_min', min);
-      else p.delete('rank_min');
-      if (max) p.set('rank_max', max);
-      else p.delete('rank_max');
-    });
+  const set = <K extends keyof PendingFilters>(key: K, value: PendingFilters[K]) => {
+    setPending((p) => ({ ...p, [key]: value }));
   };
 
   const toggleSeverity = (sev: SeverityKey) => {
-    const next = filters.severities.includes(sev)
-      ? filters.severities.filter((s) => s !== sev)
-      : [...filters.severities, sev];
-    if (next.length === 0) return;
-    setOrDelete('severity', next.length === 3 ? null : next.join(','));
+    set(
+      'severities',
+      pending.severities.includes(sev)
+        ? pending.severities.filter((s) => s !== sev)
+        : [...pending.severities, sev],
+    );
   };
 
   const toggleTitleSlot = (slot: number) => {
-    const next = filters.titleSlots.includes(slot)
-      ? filters.titleSlots.filter((s) => s !== slot)
-      : [...filters.titleSlots, slot].sort();
-    if (next.length === 0) return;
-    setOrDelete('titles', next.join(',') === '1,2,3' ? null : next.join(','));
+    set(
+      'titleSlots',
+      pending.titleSlots.includes(slot)
+        ? pending.titleSlots.filter((s) => s !== slot)
+        : [...pending.titleSlots, slot].sort(),
+    );
   };
 
   return (
@@ -119,8 +159,8 @@ export function FilterSidebar({
 
       <FieldGroup label="Window">
         <select
-          value={filters.window}
-          onChange={(e) => setOrDelete('window', e.target.value === '1w' ? null : e.target.value)}
+          value={pending.window}
+          onChange={(e) => set('window', e.target.value as WindowKey)}
           className="filter-input"
         >
           {WINDOWS.map((w) => (
@@ -133,8 +173,8 @@ export function FilterSidebar({
 
       <FieldGroup label="Sort">
         <select
-          value={filters.sort}
-          onChange={(e) => setOrDelete('sort', e.target.value === 'rank' ? null : e.target.value)}
+          value={pending.sort}
+          onChange={(e) => set('sort', e.target.value as SortKey)}
           className="filter-input"
         >
           {SORTS.map((s) => (
@@ -146,48 +186,51 @@ export function FilterSidebar({
       </FieldGroup>
 
       <FieldGroup label="Search term contains">
-        <form onSubmit={submitText}>
-          <input
-            type="text"
-            value={qInput}
-            onChange={(e) => setQInput(e.target.value)}
-            onBlur={submitText}
-            placeholder="≥ 3 characters"
-            className="filter-input"
-          />
-        </form>
-        {qInput.length > 0 && qInput.length < 3 && (
+        <input
+          type="text"
+          value={pending.q}
+          onChange={(e) => set('q', e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') apply();
+          }}
+          placeholder="≥ 3 characters"
+          className="filter-input"
+        />
+        {pending.q.length > 0 && pending.q.length < 3 && (
           <p className="text-xs text-gray-500 mt-1">Type at least 3 characters to filter by text.</p>
         )}
       </FieldGroup>
 
-      <FieldGroup label="Current rank">
-        <form onSubmit={submitRanks} className="flex gap-2">
+      <FieldGroup label="Rank range (1 = best)">
+        <div className="flex gap-2">
           <input
             type="number"
             min={1}
-            value={rankMinInput}
-            onChange={(e) => setRankMinInput(e.target.value)}
-            onBlur={submitRanks}
-            placeholder="min"
+            value={pending.rankBest}
+            onChange={(e) => set('rankBest', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Best (1)"
             className="filter-input flex-1"
+            aria-label="Best rank"
           />
           <input
             type="number"
             min={1}
-            value={rankMaxInput}
-            onChange={(e) => setRankMaxInput(e.target.value)}
-            onBlur={submitRanks}
-            placeholder="max"
+            value={pending.rankWorst}
+            onChange={(e) => set('rankWorst', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Worst (e.g. 10000)"
             className="filter-input flex-1"
+            aria-label="Worst rank"
           />
-        </form>
+        </div>
+        <p className="text-xs text-gray-500 mt-1">Lower number = more searches. e.g. Best 1, Worst 10000 = top-10k.</p>
       </FieldGroup>
 
       <FieldGroup label="Threshold jump">
         <select
-          value={filters.jump ?? ''}
-          onChange={(e) => setOrDelete('jump', e.target.value || null)}
+          value={pending.jump}
+          onChange={(e) => set('jump', e.target.value as JumpKey | '')}
           className="filter-input"
         >
           <option value="">(none)</option>
@@ -201,8 +244,8 @@ export function FilterSidebar({
 
       <FieldGroup label="Top clicked category #1">
         <select
-          value={filters.category ?? ''}
-          onChange={(e) => setOrDelete('category', e.target.value || null)}
+          value={pending.category}
+          onChange={(e) => set('category', e.target.value)}
           className="filter-input"
         >
           <option value="">All categories</option>
@@ -220,7 +263,7 @@ export function FilterSidebar({
             <label key={s.value} className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
-                checked={filters.severities.includes(s.value)}
+                checked={pending.severities.includes(s.value)}
                 onChange={() => toggleSeverity(s.value)}
               />
               {s.label}
@@ -231,8 +274,8 @@ export function FilterSidebar({
 
       <FieldGroup label="Title-gap filter">
         <select
-          value={filters.titleMatchMode ?? ''}
-          onChange={(e) => setOrDelete('title_match', e.target.value || null)}
+          value={pending.titleMatchMode}
+          onChange={(e) => set('titleMatchMode', e.target.value as TitleMatchMode | '')}
           className="filter-input"
         >
           {TITLE_MODES.map((m) => (
@@ -241,13 +284,13 @@ export function FilterSidebar({
             </option>
           ))}
         </select>
-        {filters.titleMatchMode && (
+        {pending.titleMatchMode && (
           <div className="mt-2 flex gap-3">
             {[1, 2, 3].map((slot) => (
               <label key={slot} className="flex items-center gap-1 text-sm">
                 <input
                   type="checkbox"
-                  checked={filters.titleSlots.includes(slot)}
+                  checked={pending.titleSlots.includes(slot)}
                   onChange={() => toggleTitleSlot(slot)}
                 />
                 #{slot}
@@ -256,6 +299,24 @@ export function FilterSidebar({
           </div>
         )}
       </FieldGroup>
+
+      <div className="pt-3 border-t flex items-center gap-2">
+        <button
+          type="button"
+          onClick={apply}
+          disabled={!dirty || isPending}
+          className="flex-1 bg-blue-600 text-white text-sm font-medium px-3 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+        >
+          {isPending ? 'Applying…' : dirty ? 'Apply filters' : 'Filters applied'}
+        </button>
+        <button
+          type="button"
+          onClick={reset}
+          className="text-xs text-gray-600 underline hover:text-gray-900"
+        >
+          Reset
+        </button>
+      </div>
 
       <style jsx>{`
         .filter-input {

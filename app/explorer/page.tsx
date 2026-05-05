@@ -27,12 +27,15 @@ export default async function ExplorerPage({
   const sp = await searchParams;
   const filters = parseExplorerFilters(sp);
 
-  const [{ rows, total }, categories] = await Promise.all([
+  const [{ rows, total, totalIsCapped }, categories] = await Promise.all([
     runExplorerQuery(filters),
     listCategories(),
   ]);
 
   const totalPages = Math.max(1, Math.ceil(total / filters.perPage));
+  const totalLabel = totalIsCapped
+    ? `${total.toLocaleString()}+`
+    : total.toLocaleString();
 
   return (
     <div className="flex">
@@ -42,7 +45,7 @@ export default async function ExplorerPage({
           <p className="text-sm text-gray-600">
             {total === 0
               ? 'No results — try removing a filter.'
-              : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${total.toLocaleString()} — page ${filters.page} of ${totalPages.toLocaleString()}`}
+              : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
           </p>
           {filtersAreCustomized(filters) && (
             <a href="/explorer" className="text-sm underline text-gray-600">
@@ -50,8 +53,13 @@ export default async function ExplorerPage({
             </a>
           )}
         </div>
+        {totalIsCapped && (
+          <p className="mb-3 text-xs text-gray-500">
+            Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
+          </p>
+        )}
         <ResultsTable rows={rows} window={filters.window} />
-        <Pagination page={filters.page} perPage={filters.perPage} total={total} />
+        <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>
   );

@@ -14,12 +14,14 @@
  */
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
-import { buildExplorerQuery } from './buildQuery';
+import { buildExplorerQuery, COUNT_CAP } from './buildQuery';
 import type { ExplorerFilters, ExplorerRow } from './types';
 
 interface ExplorerQueryResult {
   rows: ExplorerRow[];
   total: number;
+  /** True when total === COUNT_CAP and the real total may be larger. */
+  totalIsCapped: boolean;
 }
 
 interface RawRow {
@@ -52,7 +54,7 @@ export async function runExplorerQuery(
     sqlClient.query(countSql, countArgs),
   ]);
   const rawRows = rawRowsAny as unknown as RawRow[];
-  const countRows = countRowsAny as unknown as Array<{ total: string }>;
+  const countRows = countRowsAny as unknown as Array<{ total: number | string }>;
 
   const rows: ExplorerRow[] = rawRows.map((r) => ({
     searchTermId: r.search_term_id,
@@ -72,9 +74,16 @@ export async function runExplorerQuery(
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
   }));
 
-  // pg returns COUNT(*)::bigint as a string to avoid loss of precision on
-  // very large totals; parse to number — explorer counts will fit easily.
-  const total = countRows.length > 0 ? parseInt(countRows[0].total, 10) : 0;
+  // The COUNT(*) is capped at COUNT_CAP+1 by the bail-out subquery —
+  // if it returned exactly COUNT_CAP+1 we know the real total is at
+  // least that, but not how much larger.
+  const rawTotal = countRows.length > 0
+    ? typeof countRows[0].total === 'string'
+      ? parseInt(countRows[0].total, 10)
+      : countRows[0].total
+    : 0;
+  const totalIsCapped = rawTotal > COUNT_CAP;
+  const total = totalIsCapped ? COUNT_CAP : rawTotal;
 
-  return { rows, total };
+  return { rows, total, totalIsCapped };
 }
