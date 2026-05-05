@@ -10,6 +10,7 @@
 import type {
   ExplorerFilters,
   JumpKey,
+  MatchMode,
   SeverityKey,
   SortKey,
   TitleMatchMode,
@@ -26,6 +27,7 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   severities: ['none', 'warning'],
   titleSlots: [1, 2, 3],
   titleMatchMode: null,
+  matchMode: 'loose',
   sort: 'rank',
   page: 1,
   perPage: 100,
@@ -38,6 +40,7 @@ const SORT_VALUES: SortKey[] = ['rank', 'rank_desc', 'imp', 'decline', 'title_ga
 const SEVERITY_VALUES: SeverityKey[] = ['none', 'warning', 'critical'];
 const JUMP_VALUES: JumpKey[] = ['500k_to_100k', '100k_to_50k', '100k_to_10k', '50k_to_10k'];
 const TITLE_MODE_VALUES: TitleMatchMode[] = ['any', 'all'];
+const MATCH_MODE_VALUES: MatchMode[] = ['strict', 'loose'];
 
 function getOne(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
@@ -89,6 +92,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const sort = parseEnum(getOne(searchParams.sort), SORT_VALUES, EXPLORER_DEFAULTS.sort);
   const jump = parseEnumNullable(getOne(searchParams.jump), JUMP_VALUES);
   const titleMatchMode = parseEnumNullable(getOne(searchParams.title_match), TITLE_MODE_VALUES);
+  const matchMode = parseEnum(getOne(searchParams.match_mode), MATCH_MODE_VALUES, EXPLORER_DEFAULTS.matchMode);
 
   const q = (getOne(searchParams.q) ?? '').trim();
 
@@ -113,6 +117,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     severities,
     titleSlots,
     titleMatchMode,
+    matchMode,
     sort,
     page,
     perPage,

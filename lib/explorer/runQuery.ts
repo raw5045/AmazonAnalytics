@@ -36,6 +36,10 @@ interface RawRow {
   keyword_in_title_1_current: boolean | null;
   keyword_in_title_2_current: boolean | null;
   keyword_in_title_3_current: boolean | null;
+  keyword_title_match_count_loose_current: number | null;
+  keyword_in_title_1_loose_current: boolean | null;
+  keyword_in_title_2_loose_current: boolean | null;
+  keyword_in_title_3_loose_current: boolean | null;
   top_clicked_product_1_asin_current: string | null;
   top_clicked_product_1_title_current: string | null;
   top_clicked_product_1_click_share_current: string | null;
@@ -68,6 +72,10 @@ export async function runExplorerQuery(
     keywordInTitle1: r.keyword_in_title_1_current,
     keywordInTitle2: r.keyword_in_title_2_current,
     keywordInTitle3: r.keyword_in_title_3_current,
+    keywordTitleMatchCountLoose: r.keyword_title_match_count_loose_current,
+    keywordInTitle1Loose: r.keyword_in_title_1_loose_current,
+    keywordInTitle2Loose: r.keyword_in_title_2_loose_current,
+    keywordInTitle3Loose: r.keyword_in_title_3_loose_current,
     topClickedProduct1Asin: r.top_clicked_product_1_asin_current,
     topClickedProduct1Title: r.top_clicked_product_1_title_current,
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,

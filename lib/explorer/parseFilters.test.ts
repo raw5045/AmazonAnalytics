@@ -17,6 +17,7 @@ describe('parseExplorerFilters', () => {
       severity: 'warning,critical',
       titles: '1,2',
       title_match: 'all',
+      match_mode: 'strict',
       sort: 'imp',
       page: '3',
       per_page: '50',
@@ -31,10 +32,19 @@ describe('parseExplorerFilters', () => {
       severities: ['warning', 'critical'],
       titleSlots: [1, 2],
       titleMatchMode: 'all',
+      matchMode: 'strict',
       sort: 'imp',
       page: 3,
       perPage: 50,
     });
+  });
+
+  it('matchMode defaults to loose', () => {
+    expect(parseExplorerFilters({}).matchMode).toBe('loose');
+  });
+
+  it('invalid match_mode falls back to loose', () => {
+    expect(parseExplorerFilters({ match_mode: 'fuzzy' }).matchMode).toBe('loose');
   });
 
   it('falls back to defaults for invalid enum values', () => {

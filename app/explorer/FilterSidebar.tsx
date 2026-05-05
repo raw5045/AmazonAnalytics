@@ -5,6 +5,7 @@ import { useState, useTransition } from 'react';
 import type {
   ExplorerFilters,
   JumpKey,
+  MatchMode,
   SeverityKey,
   SortKey,
   TitleMatchMode,
@@ -57,6 +58,7 @@ interface PendingFilters {
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | '';
+  matchMode: MatchMode;
   sort: SortKey;
 }
 
@@ -71,6 +73,7 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     severities: f.severities,
     titleSlots: f.titleSlots,
     titleMatchMode: f.titleMatchMode ?? '',
+    matchMode: f.matchMode,
     sort: f.sort,
   };
 }
@@ -96,6 +99,9 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
     if (p.titleSlots.length !== 3) {
       params.set('titles', p.titleSlots.join(','));
     }
+  }
+  if (p.matchMode !== EXPLORER_DEFAULTS.matchMode) {
+    params.set('match_mode', p.matchMode);
   }
   return params;
 }
@@ -270,6 +276,33 @@ export function FilterSidebar({
             </label>
           ))}
         </div>
+      </FieldGroup>
+
+      <FieldGroup label="Title match mode">
+        <div className="flex gap-3 text-sm">
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name="match-mode"
+              checked={pending.matchMode === 'loose'}
+              onChange={() => set('matchMode', 'loose')}
+            />
+            Loose
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="radio"
+              name="match-mode"
+              checked={pending.matchMode === 'strict'}
+              onChange={() => set('matchMode', 'strict')}
+            />
+            Strict
+          </label>
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Loose: every word in the search term appears anywhere in the title.{' '}
+          Strict: Amazon&apos;s exact-phrase match.
+        </p>
       </FieldGroup>
 
       <FieldGroup label="Title-gap filter">

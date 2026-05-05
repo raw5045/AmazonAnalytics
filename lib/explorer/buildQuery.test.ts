@@ -171,25 +171,36 @@ describe('buildExplorerQuery', () => {
   });
 
   describe('title-gap filter (1.7)', () => {
-    it('"any" mode with all 3 slots → at least one is false', () => {
+    it('"any" mode with all 3 slots → at least one is false (loose default)', () => {
       const { sql } = buildExplorerQuery({
         ...baseFilters,
         titleMatchMode: 'any',
         titleSlots: [1, 2, 3],
       });
-      expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_current OR NOT kcs.keyword_in_title_2_current OR NOT kcs.keyword_in_title_3_current');
+      expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_loose_current OR NOT kcs.keyword_in_title_2_loose_current OR NOT kcs.keyword_in_title_3_loose_current');
     });
 
-    it('"all" mode with all 3 slots → every slot is false', () => {
+    it('"all" mode with all 3 slots → every slot is false (loose default)', () => {
       const { sql } = buildExplorerQuery({
         ...baseFilters,
         titleMatchMode: 'all',
         titleSlots: [1, 2, 3],
       });
-      expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_current AND NOT kcs.keyword_in_title_2_current AND NOT kcs.keyword_in_title_3_current');
+      expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_loose_current AND NOT kcs.keyword_in_title_2_loose_current AND NOT kcs.keyword_in_title_3_loose_current');
     });
 
-    it('"any" mode with only slot 1 selected', () => {
+    it('strict matchMode uses the non-loose columns', () => {
+      const { sql } = buildExplorerQuery({
+        ...baseFilters,
+        titleMatchMode: 'any',
+        titleSlots: [1, 2, 3],
+        matchMode: 'strict',
+      });
+      expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_current OR NOT kcs.keyword_in_title_2_current OR NOT kcs.keyword_in_title_3_current');
+      expect(norm(sql)).not.toContain('keyword_in_title_1_loose_current OR');
+    });
+
+    it('"any" mode with only slot 1 selected (loose default)', () => {
       const { sql } = buildExplorerQuery({
         ...baseFilters,
         titleMatchMode: 'any',
@@ -200,9 +211,9 @@ describe('buildExplorerQuery', () => {
       const whereStart = norm(sql).indexOf('WHERE');
       const whereEnd = norm(sql).indexOf('ORDER BY');
       const whereOnly = norm(sql).slice(whereStart, whereEnd);
-      expect(whereOnly).toContain('NOT kcs.keyword_in_title_1_current');
-      expect(whereOnly).not.toContain('keyword_in_title_2_current');
-      expect(whereOnly).not.toContain('keyword_in_title_3_current');
+      expect(whereOnly).toContain('NOT kcs.keyword_in_title_1_loose_current');
+      expect(whereOnly).not.toContain('keyword_in_title_2_loose_current');
+      expect(whereOnly).not.toContain('keyword_in_title_3_loose_current');
     });
 
     it('no titleMatchMode → no title-gap WHERE clause', () => {
@@ -233,9 +244,15 @@ describe('buildExplorerQuery', () => {
       expect(norm(sql)).toContain('ORDER BY kcs.improvement_13w ASC NULLS LAST');
     });
 
-    it('title_gap → keyword_title_match_count_current ASC', () => {
+    it('title_gap (loose default) → keyword_title_match_count_loose_current ASC', () => {
       const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'title_gap' });
-      expect(norm(sql)).toContain('ORDER BY kcs.keyword_title_match_count_current ASC');
+      expect(norm(sql)).toContain('ORDER BY kcs.keyword_title_match_count_loose_current ASC');
+    });
+
+    it('title_gap with strict matchMode → keyword_title_match_count_current ASC', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'title_gap', matchMode: 'strict' });
+      expect(norm(sql)).toMatch(/ORDER BY kcs\.keyword_title_match_count_current ASC/);
+      expect(norm(sql)).not.toContain('ORDER BY kcs.keyword_title_match_count_loose_current ASC');
     });
   });
 
@@ -299,6 +316,7 @@ describe('buildExplorerQuery', () => {
         severities: ['none', 'warning'],
         titleSlots: [1, 2, 3],
         titleMatchMode: 'any',
+        matchMode: 'loose',
         sort: 'imp',
         page: 2,
         perPage: 50,
@@ -311,7 +329,7 @@ describe('buildExplorerQuery', () => {
       expect(norm(sql)).toContain('kcs.rank_4w_ago >');
       expect(norm(sql)).toContain('top_clicked_category_1_current =');
       expect(norm(sql)).toContain('IS NULL OR kcs.fake_volume_severity_current IN');
-      expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_current OR');
+      expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_loose_current OR');
       expect(norm(sql)).toContain('ORDER BY kcs.improvement_4w DESC NULLS LAST');
       expect(args.slice(-2)).toEqual([50, 50]);
       expect(args.length).toBe(countArgs.length + 2);

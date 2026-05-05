@@ -58,7 +58,7 @@ export default async function ExplorerPage({
             Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
           </p>
         )}
-        <ResultsTable rows={rows} window={filters.window} />
+        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} />
         <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>

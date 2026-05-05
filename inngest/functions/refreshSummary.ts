@@ -83,6 +83,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       await stageRankAtOffset(client, weeks);
     }
 
+    // 3. Stage loose-match flags into a temp table so each per-(term, slot)
+    //    regex match is evaluated once (vs. 2x if computed inline in the
+    //    INSERT — once for the boolean, once inside the count CASE).
+    await stageLooseMatchFlags(client);
+
     // ever_top_50k DEFERRED to Plan 3.5: a full-history scan of kwm joined
     // to latest_per_term takes 1+ hours via Neon's cold-page prefetch
     // (135M rows still NULL severity-wise post-scoped-backfill, so they're
@@ -111,6 +116,8 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         top_clicked_product_1_conversion_share_current,
         keyword_in_title_1_current, keyword_in_title_2_current, keyword_in_title_3_current,
         keyword_title_match_count_current,
+        keyword_in_title_1_loose_current, keyword_in_title_2_loose_current, keyword_in_title_3_loose_current,
+        keyword_title_match_count_loose_current,
         updated_at
       )
       SELECT
@@ -145,8 +152,17 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         l.keyword_in_title_2,
         l.keyword_in_title_3,
         l.keyword_title_match_count,
+        lf.f1 AS in_title_1_loose,
+        lf.f2 AS in_title_2_loose,
+        lf.f3 AS in_title_3_loose,
+        (
+          (CASE WHEN lf.f1 IS TRUE THEN 1 ELSE 0 END) +
+          (CASE WHEN lf.f2 IS TRUE THEN 1 ELSE 0 END) +
+          (CASE WHEN lf.f3 IS TRUE THEN 1 ELSE 0 END)
+        )::smallint AS title_match_count_loose,
         NOW()
       FROM latest_per_term l
+      JOIN loose_flags lf ON lf.search_term_id = l.search_term_id
       LEFT JOIN rank_at_1w r1 ON r1.search_term_id = l.search_term_id
       LEFT JOIN rank_at_4w r4 ON r4.search_term_id = l.search_term_id
       LEFT JOIN rank_at_13w r13 ON r13.search_term_id = l.search_term_id
@@ -174,6 +190,10 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
 }
 
 async function stageLatestPerTerm(client: PoolClient): Promise<void> {
+  // We pull all 3 product titles + search_term_raw into the temp table even
+  // though kcs only stores title 1, because the loose-match computation in
+  // the final INSERT needs to compare every search-term token against each
+  // of the 3 titles. search_term_raw is joined from search_terms.
   await client.query(`
     CREATE TEMP TABLE latest_per_term ON COMMIT DROP AS
     WITH ref AS (
@@ -182,19 +202,24 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
     )
     SELECT DISTINCT ON (k.search_term_id)
       k.search_term_id,
+      st.search_term_raw,
       k.week_end_date,
       k.actual_rank,
       k.fake_volume_severity,
       k.top_clicked_category_1,
       k.top_clicked_product_1_asin,
       k.top_clicked_product_1_title,
+      k.top_clicked_product_2_title,
+      k.top_clicked_product_3_title,
       k.top_clicked_product_1_click_share,
       k.top_clicked_product_1_conversion_share,
       k.keyword_in_title_1,
       k.keyword_in_title_2,
       k.keyword_in_title_3,
       k.keyword_title_match_count
-    FROM keyword_weekly_metrics k, ref
+    FROM keyword_weekly_metrics k
+    JOIN search_terms st ON st.id = k.search_term_id,
+    ref
     WHERE k.week_end_date >= ref.current_week - INTERVAL '28 days'
     ORDER BY k.search_term_id, k.week_end_date DESC;
     CREATE INDEX ON latest_per_term (search_term_id);
@@ -223,3 +248,56 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
 
 // stageEverTop50k removed — see "ever_top_50k DEFERRED" comment in main flow.
 // Will return in Plan 3.5 once we have a faster aggregate strategy.
+
+/**
+ * Compute, for every term in latest_per_term, three booleans (f1/f2/f3)
+ * — TRUE iff every non-stopword token in the search term appears in the
+ * corresponding product title via word-boundary regex match (case-
+ * insensitive). NULL when that slot's title is NULL.
+ *
+ * Staged to a temp table so each (term, slot) regex evaluation runs
+ * once. The final INSERT joins this and reuses the values for both the
+ * boolean columns and the count column.
+ *
+ * Tokenization: lowercase the search term, replace non-alphanumeric
+ * runs with spaces, split on space, drop empty + stopwords. The
+ * remaining words must each match `\m<word>\M` against the lowercased
+ * title.
+ *
+ * Stopword list is intentionally small — common English function words
+ * that contribute no semantic information when matching brand-style
+ * search terms. Search terms rarely contain stopwords anyway, but the
+ * filter is cheap insurance.
+ */
+async function stageLooseMatchFlags(client: PoolClient): Promise<void> {
+  const slotExpr = (titleCol: string): string => `(
+    CASE
+      WHEN ${titleCol} IS NULL THEN NULL
+      ELSE NOT EXISTS (
+        SELECT 1 FROM unnest(
+          string_to_array(
+            regexp_replace(LOWER(l.search_term_raw), '[^a-z0-9 ]+', ' ', 'g'),
+            ' '
+          )
+        ) AS word
+        WHERE word <> ''
+          AND word NOT IN (
+            'a','an','and','are','as','at','be','by','for','from','has','have',
+            'in','is','it','its','of','on','or','that','the','this','to','with'
+          )
+          AND LOWER(${titleCol}) !~ ('\\m' || word || '\\M')
+      )
+    END
+  )`;
+
+  await client.query(`
+    CREATE TEMP TABLE loose_flags ON COMMIT DROP AS
+    SELECT
+      l.search_term_id,
+      ${slotExpr('l.top_clicked_product_1_title')} AS f1,
+      ${slotExpr('l.top_clicked_product_2_title')} AS f2,
+      ${slotExpr('l.top_clicked_product_3_title')} AS f3
+    FROM latest_per_term l;
+    CREATE INDEX ON loose_flags (search_term_id);
+  `);
+}

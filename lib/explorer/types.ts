@@ -16,6 +16,19 @@ export type JumpKey = '500k_to_100k' | '100k_to_50k' | '100k_to_10k' | '50k_to_1
 export type TitleMatchMode = 'any' | 'all';
 
 /**
+ * Which definition of "keyword in title" we use for both the
+ * in-title icons in the results table and the title-gap WHERE clause:
+ *
+ *   - 'strict' = the flags Amazon ships in the SFR CSV (exact phrase)
+ *   - 'loose'  = our computed flag — every non-stopword token appears
+ *                somewhere in the title (word-boundary match)
+ *
+ * Default is 'loose' since it more often matches user expectations
+ * ("Creatine Gummies" → "Creatine Monohydrate Gummies" should count).
+ */
+export type MatchMode = 'strict' | 'loose';
+
+/**
  * The full set of filters/sort/pagination state for the explorer page.
  * All fields have defaults — `parseFilters` produces a fully-populated
  * object even from an empty searchParams.
@@ -30,6 +43,7 @@ export interface ExplorerFilters {
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | null;
+  matchMode: MatchMode;
   sort: SortKey;
   page: number;
   perPage: number;
@@ -47,10 +61,16 @@ export interface ExplorerRow {
   improvement: number | null;
   topClickedCategory1: string | null;
   fakeVolumeSeverity: SeverityKey | null;
+  // Strict (Amazon-shipped) and loose (our computed) flags + counts.
+  // The UI picks which to display based on filters.matchMode.
   keywordTitleMatchCount: number | null;
   keywordInTitle1: boolean | null;
   keywordInTitle2: boolean | null;
   keywordInTitle3: boolean | null;
+  keywordTitleMatchCountLoose: number | null;
+  keywordInTitle1Loose: boolean | null;
+  keywordInTitle2Loose: boolean | null;
+  keywordInTitle3Loose: boolean | null;
   topClickedProduct1Asin: string | null;
   topClickedProduct1Title: string | null;
   topClickedProduct1ClickShare: string | null;

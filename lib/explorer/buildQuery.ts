@@ -16,6 +16,7 @@ import type {
   BuiltExplorerQuery,
   ExplorerFilters,
   JumpKey,
+  MatchMode,
   WindowKey,
 } from './types';
 
@@ -101,9 +102,9 @@ export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery
     }
   }
 
-  // 1.7 — title-gap filter
+  // 1.7 — title-gap filter (operates on the matchMode-selected slot columns)
   if (filters.titleMatchMode && filters.titleSlots.length > 0) {
-    const slotCols = filters.titleSlots.map((slot) => `kcs.keyword_in_title_${slot}_current`);
+    const slotCols = filters.titleSlots.map((slot) => slotColumn(slot, filters.matchMode));
     if (filters.titleMatchMode === 'all') {
       // "Missing from all selected" — every selected slot is false
       const conditions = slotCols.map((c) => `NOT ${c}`);
@@ -115,12 +116,14 @@ export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery
     }
   }
 
-  // ORDER BY
-  const orderBy = buildOrderBy(filters.sort, improvementCol);
+  // ORDER BY (title_gap sort uses the matchMode-specific count column)
+  const orderBy = buildOrderBy(filters.sort, improvementCol, filters.matchMode);
 
-  // SELECT list — note priorRankCol and improvementCol are dynamically chosen
-  // based on the window, but exposed under the stable aliases prior_rank / improvement
-  // so the row mapper does not need to know which window was selected.
+  // SELECT list — priorRankCol and improvementCol are dynamically chosen
+  // based on the window, but exposed under the stable aliases
+  // prior_rank / improvement so the row mapper does not need to know
+  // which window was selected. We always SELECT both the strict and
+  // loose match flag/count columns; the UI picks which to display.
   const selectList = `
       kcs.search_term_id,
       st.search_term_raw,
@@ -133,6 +136,10 @@ export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery
       kcs.keyword_in_title_1_current,
       kcs.keyword_in_title_2_current,
       kcs.keyword_in_title_3_current,
+      kcs.keyword_title_match_count_loose_current,
+      kcs.keyword_in_title_1_loose_current,
+      kcs.keyword_in_title_2_loose_current,
+      kcs.keyword_in_title_3_loose_current,
       kcs.top_clicked_product_1_asin_current,
       kcs.top_clicked_product_1_title_current,
       kcs.top_clicked_product_1_click_share_current,
@@ -183,7 +190,11 @@ export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery
  */
 export const COUNT_CAP = 10_000;
 
-function buildOrderBy(sort: ExplorerFilters['sort'], improvementCol: string): string {
+function buildOrderBy(
+  sort: ExplorerFilters['sort'],
+  improvementCol: string,
+  matchMode: MatchMode,
+): string {
   switch (sort) {
     case 'rank':
       return 'ORDER BY kcs.current_rank ASC';
@@ -193,7 +204,18 @@ function buildOrderBy(sort: ExplorerFilters['sort'], improvementCol: string): st
       return `ORDER BY kcs.${improvementCol} DESC NULLS LAST`;
     case 'decline':
       return `ORDER BY kcs.${improvementCol} ASC NULLS LAST`;
-    case 'title_gap':
-      return 'ORDER BY kcs.keyword_title_match_count_current ASC NULLS FIRST';
+    case 'title_gap': {
+      const col = matchMode === 'loose'
+        ? 'keyword_title_match_count_loose_current'
+        : 'keyword_title_match_count_current';
+      return `ORDER BY kcs.${col} ASC NULLS FIRST`;
+    }
   }
+}
+
+/** Returns the per-slot in-title boolean column for a given match mode. */
+function slotColumn(slot: number, matchMode: MatchMode): string {
+  return matchMode === 'loose'
+    ? `kcs.keyword_in_title_${slot}_loose_current`
+    : `kcs.keyword_in_title_${slot}_current`;
 }

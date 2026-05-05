@@ -60,6 +60,17 @@ export const keywordCurrentSummary = pgTable(
     keywordInTitle3Current: boolean('keyword_in_title_3_current'),
     keywordTitleMatchCountCurrent: smallint('keyword_title_match_count_current'),
 
+    // "Loose" match flags computed by refreshKeywordCurrentSummary:
+    // every non-stopword token in the search term must appear (with
+    // word-boundary regex match, case-insensitive) anywhere in the
+    // title — order doesn't matter and intervening words are allowed.
+    // Distinct from the strict flags above (which come straight from
+    // Amazon's CSV and require an exact phrase match).
+    keywordInTitle1LooseCurrent: boolean('keyword_in_title_1_loose_current'),
+    keywordInTitle2LooseCurrent: boolean('keyword_in_title_2_loose_current'),
+    keywordInTitle3LooseCurrent: boolean('keyword_in_title_3_loose_current'),
+    keywordTitleMatchCountLooseCurrent: smallint('keyword_title_match_count_loose_current'),
+
     // top_category_changed_recently / top_asin_changed_recently DEFERRED
     // (Plan 3.1 review 2026-05-01 — low expected signal in low-volume
     // keywords; add later via ALTER TABLE if user demand emerges)
@@ -69,6 +80,7 @@ export const keywordCurrentSummary = pgTable(
   (t) => ({
     rankIdx: index('kcs_rank_idx').on(t.currentWeekEndDate, t.currentRank),
     titleMatchIdx: index('kcs_title_match_idx').on(t.currentWeekEndDate, t.keywordTitleMatchCountCurrent),
+    titleMatchLooseIdx: index('kcs_title_match_loose_idx').on(t.currentWeekEndDate, t.keywordTitleMatchCountLooseCurrent),
     imp1Idx: index('kcs_imp1_idx').on(t.improvement1w),
     imp4Idx: index('kcs_imp4_idx').on(t.improvement4w),
     imp13Idx: index('kcs_imp13_idx').on(t.improvement13w),

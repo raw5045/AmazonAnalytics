@@ -1,4 +1,4 @@
-import type { ExplorerRow, SeverityKey, WindowKey } from '@/lib/explorer/types';
+import type { ExplorerRow, MatchMode, SeverityKey, WindowKey } from '@/lib/explorer/types';
 
 const WINDOW_LABEL: Record<WindowKey, string> = {
   '1w': 'Prior week rank',
@@ -8,7 +8,23 @@ const WINDOW_LABEL: Record<WindowKey, string> = {
   '52w': 'Rank 52w ago',
 };
 
-export function ResultsTable({ rows, window }: { rows: ExplorerRow[]; window: WindowKey }) {
+export function ResultsTable({
+  rows,
+  window,
+  matchMode,
+}: {
+  rows: ExplorerRow[];
+  window: WindowKey;
+  matchMode: MatchMode;
+}) {
+  const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
+    if (matchMode === 'loose') {
+      return slot === 1 ? r.keywordInTitle1Loose : slot === 2 ? r.keywordInTitle2Loose : r.keywordInTitle3Loose;
+    }
+    return slot === 1 ? r.keywordInTitle1 : slot === 2 ? r.keywordInTitle2 : r.keywordInTitle3;
+  };
+  const matchCount = (r: ExplorerRow): number | null =>
+    matchMode === 'loose' ? r.keywordTitleMatchCountLoose : r.keywordTitleMatchCount;
   if (rows.length === 0) {
     return (
       <div className="border rounded p-8 text-center text-sm text-gray-500">
@@ -28,10 +44,10 @@ export function ResultsTable({ rows, window }: { rows: ExplorerRow[]; window: Wi
             <th className="p-2 text-right">Δ</th>
             <th className="p-2">Category</th>
             <th className="p-2 text-center" title="Fake volume severity">Fake?</th>
-            <th className="p-2 text-center w-12" title="Keyword in title slot 1">In #1</th>
-            <th className="p-2 text-center w-12" title="Keyword in title slot 2">In #2</th>
-            <th className="p-2 text-center w-12" title="Keyword in title slot 3">In #3</th>
-            <th className="p-2 text-right">Match count</th>
+            <th className="p-2 text-center w-12" title={`Keyword in title slot 1 (${matchMode} match)`}>In #1</th>
+            <th className="p-2 text-center w-12" title={`Keyword in title slot 2 (${matchMode} match)`}>In #2</th>
+            <th className="p-2 text-center w-12" title={`Keyword in title slot 3 (${matchMode} match)`}>In #3</th>
+            <th className="p-2 text-right" title={`${matchMode} match count`}>Match count</th>
             <th className="p-2">Top product #1</th>
           </tr>
         </thead>
@@ -48,11 +64,11 @@ export function ResultsTable({ rows, window }: { rows: ExplorerRow[]; window: Wi
               </td>
               <td className="p-2 text-gray-700">{r.topClickedCategory1 ?? <span className="text-gray-400">—</span>}</td>
               <td className="p-2 text-center"><SeverityBadge severity={r.fakeVolumeSeverity} /></td>
-              <td className="p-2 text-center"><TitleIcon present={r.keywordInTitle1} /></td>
-              <td className="p-2 text-center"><TitleIcon present={r.keywordInTitle2} /></td>
-              <td className="p-2 text-center"><TitleIcon present={r.keywordInTitle3} /></td>
+              <td className="p-2 text-center"><TitleIcon present={inTitle(r, 1)} /></td>
+              <td className="p-2 text-center"><TitleIcon present={inTitle(r, 2)} /></td>
+              <td className="p-2 text-center"><TitleIcon present={inTitle(r, 3)} /></td>
               <td className="p-2 text-right tabular-nums">
-                {r.keywordTitleMatchCount ?? <span className="text-gray-400">—</span>}
+                {matchCount(r) ?? <span className="text-gray-400">—</span>}
               </td>
               <td className="p-2 max-w-xs">
                 <TopProductCell row={r} />
