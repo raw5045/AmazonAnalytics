@@ -1,4 +1,4 @@
-import { pgTable, uuid, integer, date, varchar, text, boolean, smallint, timestamp, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, integer, date, varchar, text, boolean, smallint, timestamp, numeric, index } from 'drizzle-orm/pg-core';
 import { searchTerms } from './searchTerms';
 import { fakeVolumeSeverityEnum } from './uploads';
 
@@ -53,6 +53,8 @@ export const keywordCurrentSummary = pgTable(
     topClickedCategory1Current: varchar('top_clicked_category_1_current', { length: 255 }),
     topClickedProduct1AsinCurrent: varchar('top_clicked_product_1_asin_current', { length: 20 }),
     topClickedProduct1TitleCurrent: text('top_clicked_product_1_title_current'),
+    topClickedProduct1ClickShareCurrent: numeric('top_clicked_product_1_click_share_current', { precision: 5, scale: 2 }),
+    topClickedProduct1ConversionShareCurrent: numeric('top_clicked_product_1_conversion_share_current', { precision: 5, scale: 2 }),
     keywordInTitle1Current: boolean('keyword_in_title_1_current'),
     keywordInTitle2Current: boolean('keyword_in_title_2_current'),
     keywordInTitle3Current: boolean('keyword_in_title_3_current'),
@@ -74,6 +76,12 @@ export const keywordCurrentSummary = pgTable(
     imp52Idx: index('kcs_imp52_idx').on(t.improvement52w),
     categoryIdx: index('kcs_category_idx').on(t.currentWeekEndDate, t.topClickedCategory1Current),
     severityIdx: index('kcs_severity_idx').on(t.currentWeekEndDate, t.fakeVolumeSeverityCurrent),
+    // Composite indexes powering threshold-jump filters
+    // ("rank_Nw_ago > X AND current_rank < Y"). Plan 3.2 §8.
+    jump4wIdx: index('kcs_jump_4w_idx').on(t.rank4wAgo, t.currentRank),
+    jump13wIdx: index('kcs_jump_13w_idx').on(t.rank13wAgo, t.currentRank),
+    jump26wIdx: index('kcs_jump_26w_idx').on(t.rank26wAgo, t.currentRank),
+    jump52wIdx: index('kcs_jump_52w_idx').on(t.rank52wAgo, t.currentRank),
   }),
 );
 

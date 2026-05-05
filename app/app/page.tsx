@@ -8,10 +8,15 @@ export default async function AppHome() {
     <main className="p-8">
       <h1 className="text-2xl font-semibold">Welcome, {user.name ?? user.email}</h1>
       <p className="mt-4 text-gray-600">
-        Analytics will be available in Phase 3. For now this is a placeholder page.
+        Browse Amazon SFR keyword data with the explorer.
+      </p>
+      <p className="mt-4">
+        <a href="/explorer" className="underline">
+          Open keyword explorer →
+        </a>
       </p>
       {user.role === 'admin' && (
-        <p className="mt-4">
+        <p className="mt-2">
           <a href="/admin" className="underline">
             Go to admin
           </a>
