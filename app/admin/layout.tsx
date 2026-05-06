@@ -1,6 +1,7 @@
 import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { ImportStatusChip } from './ImportStatusChip';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
   try {
@@ -36,7 +37,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           </Link>
         </nav>
       </aside>
-      <main className="flex-1 p-8">{children}</main>
+      <div className="flex-1 flex flex-col">
+        <ImportStatusChip />
+        <main className="flex-1 p-8">{children}</main>
+      </div>
     </div>
   );
 }
