@@ -594,17 +594,32 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // here means a flaky summary refresh doesn't make the orchestrator
     // think the import failed.
     // ------------------------------------------------------------------
+    let summaryRefreshOk = true;
     try {
       await timePhase(file.id, 'summary_refresh', async () => {
         await refreshKeywordCurrentSummary();
       });
     } catch (refreshErr) {
+      summaryRefreshOk = false;
       const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
       console.error(
         `[summary_refresh] failed for file ${file.id.slice(0, 8)}, but kwm import succeeded — recover with refreshSummaryOnce.ts. Error:`,
         msg,
       );
     }
+
+    // Final phase mark. The `import_phase` column is a breadcrumb of the
+    // last phase the worker entered; without an explicit "we're done"
+    // write here it would stay stuck on 'summary_refresh' forever, even
+    // after a successful import. The admin UI / notification system
+    // distinguishes 'completed' (full success) from 'completed_with_refresh_failure'
+    // (kwm rows landed but kcs is stale and needs a manual recovery).
+    await db
+      .update(uploadedFiles)
+      .set({
+        importPhase: summaryRefreshOk ? 'completed' : 'completed_with_refresh_failure',
+      })
+      .where(eq(uploadedFiles.id, file.id));
 
     return { rowsImported: rowsStaged };
   } finally {
