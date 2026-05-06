@@ -78,6 +78,13 @@
       "when": 1777990886337,
       "tag": "0010_black_grey_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1778083200000,
+      "tag": "0011_kwm_rank_covering_indexes",
+      "breakpoints": true
     }
   ]
 }

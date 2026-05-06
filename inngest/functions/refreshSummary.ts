@@ -252,40 +252,69 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
 /**
  * Compute, for every term in latest_per_term, three booleans (f1/f2/f3)
  * — TRUE iff every non-stopword token in the search term appears in the
- * corresponding product title via word-boundary regex match (case-
- * insensitive). NULL when that slot's title is NULL.
+ * corresponding product title with word-boundary semantics, case-
+ * insensitive. NULL when that slot's title is NULL.
  *
- * Staged to a temp table so each (term, slot) regex evaluation runs
- * once. The final INSERT joins this and reuses the values for both the
- * boolean columns and the count column.
+ * Implementation: a two-stage approach for performance.
  *
- * Tokenization: lowercase the search term, replace non-alphanumeric
- * runs with spaces, split on space, drop empty + stopwords. The
- * remaining words must each match `\m<word>\M` against the lowercased
- * title.
+ *   1. Build `term_normalized` — lowercase the search term + each title,
+ *      replace runs of non-alphanumeric chars with spaces, and pad with
+ *      a leading and trailing space. Punctuation/hyphens become spaces
+ *      so that "monohydrate-flavored" tokenizes as two words.
+ *
+ *   2. For each (term, slot) pair, check that every non-stopword token
+ *      in the search term appears in the title via `POSITION(' word ' IN
+ *      padded_title) > 0` — a substring search that's dramatically
+ *      faster than a regex word-boundary match (which the database
+ *      can't pre-compile because the pattern is constructed per row).
+ *
+ * Equivalence to the old regex approach: identical for all alphanumeric
+ * tokens. The padding-with-spaces trick + punctuation-to-space
+ * preprocessing reproduces the `\m...\M` word-boundary semantics for
+ * anything we care about (the strict/loose divergence we observed in
+ * verification was unicode-symbol / weird-char edge cases that affect
+ * BOTH approaches the same way).
  *
  * Stopword list is intentionally small — common English function words
  * that contribute no semantic information when matching brand-style
- * search terms. Search terms rarely contain stopwords anyway, but the
- * filter is cheap insurance.
+ * search terms.
  */
 async function stageLooseMatchFlags(client: PoolClient): Promise<void> {
+  // Stage 1: normalize and pad. One regexp_replace per (term, slot) — done
+  // once and the result is reused by all three slot checks below.
+  await client.query(`
+    CREATE TEMP TABLE term_normalized ON COMMIT DROP AS
+    SELECT
+      l.search_term_id,
+      ' ' || regexp_replace(LOWER(l.search_term_raw), '[^a-z0-9]+', ' ', 'g') || ' ' AS s,
+      CASE WHEN l.top_clicked_product_1_title IS NULL THEN NULL
+           ELSE ' ' || regexp_replace(LOWER(l.top_clicked_product_1_title), '[^a-z0-9]+', ' ', 'g') || ' '
+      END AS t1,
+      CASE WHEN l.top_clicked_product_2_title IS NULL THEN NULL
+           ELSE ' ' || regexp_replace(LOWER(l.top_clicked_product_2_title), '[^a-z0-9]+', ' ', 'g') || ' '
+      END AS t2,
+      CASE WHEN l.top_clicked_product_3_title IS NULL THEN NULL
+           ELSE ' ' || regexp_replace(LOWER(l.top_clicked_product_3_title), '[^a-z0-9]+', ' ', 'g') || ' '
+      END AS t3
+    FROM latest_per_term l;
+    CREATE INDEX ON term_normalized (search_term_id);
+  `);
+
+  // Stage 2: for each (term, slot), check that every non-stopword token
+  // in the search term appears in the padded title.
+  // POSITION returns 0 when the substring is not found — so the NOT EXISTS
+  // returns true iff every token IS found (= the term matches the title).
   const slotExpr = (titleCol: string): string => `(
     CASE
       WHEN ${titleCol} IS NULL THEN NULL
       ELSE NOT EXISTS (
-        SELECT 1 FROM unnest(
-          string_to_array(
-            regexp_replace(LOWER(l.search_term_raw), '[^a-z0-9 ]+', ' ', 'g'),
-            ' '
-          )
-        ) AS word
+        SELECT 1 FROM unnest(string_to_array(trim(tn.s), ' ')) AS word
         WHERE word <> ''
           AND word NOT IN (
             'a','an','and','are','as','at','be','by','for','from','has','have',
             'in','is','it','its','of','on','or','that','the','this','to','with'
           )
-          AND LOWER(${titleCol}) !~ ('\\m' || word || '\\M')
+          AND POSITION(' ' || word || ' ' IN ${titleCol}) = 0
       )
     END
   )`;
@@ -293,11 +322,11 @@ async function stageLooseMatchFlags(client: PoolClient): Promise<void> {
   await client.query(`
     CREATE TEMP TABLE loose_flags ON COMMIT DROP AS
     SELECT
-      l.search_term_id,
-      ${slotExpr('l.top_clicked_product_1_title')} AS f1,
-      ${slotExpr('l.top_clicked_product_2_title')} AS f2,
-      ${slotExpr('l.top_clicked_product_3_title')} AS f3
-    FROM latest_per_term l;
+      tn.search_term_id,
+      ${slotExpr('tn.t1')} AS f1,
+      ${slotExpr('tn.t2')} AS f2,
+      ${slotExpr('tn.t3')} AS f3
+    FROM term_normalized tn;
     CREATE INDEX ON loose_flags (search_term_id);
   `);
 }
