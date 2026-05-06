@@ -22,13 +22,17 @@
  * Filter: active terms only (last_seen_week >= current_week_end_date - 28 days).
  *
  * Strategy: stage rows in temp tables for clean intermediate plans, then
- * TRUNCATE + INSERT into keyword_current_summary inside a single
- * transaction so concurrent reads see either the old or new state, never
- * a half-built one.
+ * INSERT into the parallel `keyword_current_summary_stage` table. After
+ * commit, atomically swap names with the live table via three RENAMEs
+ * in a tiny transaction (~ms). Concurrent reads of
+ * keyword_current_summary are NEVER blocked beyond that brief metadata
+ * swap — the prior approach (TRUNCATE + INSERT in one transaction on
+ * the live table) blocked the explorer for ~3 min during the INSERT.
  *
- * Estimated cost: 5–8 minutes on ~4M active terms. Connection: pg.Pool
- * with TCP keepalives (the @neondatabase/serverless HTTP driver would
- * time out on the 5+ minute INSERT).
+ * Estimated cost: ~30 minutes on ~4M active terms (post-covering-index
+ * fix; was ~155 min before migration 0011). Connection: pg.Pool with
+ * TCP keepalives (the @neondatabase/serverless HTTP driver would time
+ * out on long INSERTs).
  */
 import { Pool, type PoolClient } from 'pg';
 
@@ -65,9 +69,26 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     }
     currentWeekEndDate = refRows[0].current_week as unknown as string;
 
-    // We open a transaction so the TRUNCATE + INSERT are atomic from the
-    // perspective of any concurrent read of keyword_current_summary.
+    // Stage-and-swap pattern (Plan 3.2 perf fix #4):
+    //   - Build the new snapshot inside `keyword_current_summary_stage`,
+    //     a parallel table with identical structure (created in migration
+    //     0012). This holds an EXCLUSIVE lock on _stage but no lock on the
+    //     live `keyword_current_summary`.
+    //   - At the end, do a brief metadata-only RENAME swap: the live
+    //     table becomes _stage, _stage becomes live. Reader-blocking
+    //     window goes from ~3 min (the prior INSERT duration) to a
+    //     few milliseconds (just the system catalog update).
+    //
+    // Everything from BEGIN through the final INSERT runs in one
+    // transaction so the temp tables persist across stages. The RENAME
+    // swap is a separate, very short transaction at the end.
     await client.query('BEGIN');
+
+    // Wipe stale data from the previous refresh's stage table. (After a
+    // successful swap, _stage holds the prior snapshot; we don't need
+    // it.) TRUNCATE on _stage takes ACCESS EXCLUSIVE on _stage but no
+    // one reads _stage, so this doesn't block any explorer queries.
+    await client.query('TRUNCATE keyword_current_summary_stage');
 
     // 1. latest_per_term — most recent kwm row per active term.
     //    Active = seen within the last 28 days of current_week_end_date.
@@ -97,11 +118,10 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // compute" job and decide whether to keep it inline in the refresh
     // or maintain it incrementally on each import.
 
-    // 4. TRUNCATE + INSERT keyword_current_summary
-    await client.query('TRUNCATE keyword_current_summary');
+    // 4. INSERT into the stage table (the live table is untouched).
     const insertResult = await client.query(
       `
-      INSERT INTO keyword_current_summary (
+      INSERT INTO keyword_current_summary_stage (
         search_term_id, current_week_end_date, current_rank,
         prior_week_rank, rank_4w_ago, rank_13w_ago, rank_26w_ago, rank_52w_ago,
         improvement_1w, improvement_4w, improvement_13w, improvement_26w, improvement_52w,
@@ -173,6 +193,34 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     );
     rowsWritten = insertResult.rowCount ?? 0;
 
+    await client.query('COMMIT');
+
+    // 5. Swap stage <-> live in a separate, very short transaction.
+    //    Three RENAMEs are pure metadata operations on the system catalog;
+    //    each takes ACCESS EXCLUSIVE briefly but completes in
+    //    milliseconds. Net reader-blocking window: ~tens of ms.
+    //
+    //    After this commit:
+    //      - The previously-live `keyword_current_summary` is now the
+    //        empty-pending-truncate `_stage` (will be wiped at the start
+    //        of the next refresh).
+    //      - The freshly-built rows are now live as
+    //        `keyword_current_summary`.
+    //
+    //    Index names rotate with their tables and are not renamed —
+    //    EXPLAIN output may transiently show indexes named like
+    //    `keyword_current_summary_stage_<col>_idx` against the live
+    //    table. Functional but visually quirky.
+    await client.query('BEGIN');
+    await client.query(
+      'ALTER TABLE keyword_current_summary RENAME TO keyword_current_summary_swap_old',
+    );
+    await client.query(
+      'ALTER TABLE keyword_current_summary_stage RENAME TO keyword_current_summary',
+    );
+    await client.query(
+      'ALTER TABLE keyword_current_summary_swap_old RENAME TO keyword_current_summary_stage',
+    );
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});

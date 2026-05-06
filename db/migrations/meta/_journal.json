@@ -85,6 +85,13 @@
       "when": 1778083200000,
       "tag": "0011_kwm_rank_covering_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1778154000000,
+      "tag": "0012_kcs_stage_table",
+      "breakpoints": true
     }
   ]
 }
