@@ -15,6 +15,7 @@ import {
   importPhaseTimings,
 } from '@/db/schema';
 import { refreshKeywordCurrentSummary } from './refreshSummary';
+import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
 
 export interface ImportFileInput {
   uploadedFileId: string;
@@ -595,16 +596,18 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // think the import failed.
     // ------------------------------------------------------------------
     let summaryRefreshOk = true;
+    let refreshResult: { rowsWritten: number; currentWeekEndDate: string } | null = null;
+    let refreshErrorMessage: string | undefined;
     try {
-      await timePhase(file.id, 'summary_refresh', async () => {
-        await refreshKeywordCurrentSummary();
+      refreshResult = await timePhase(file.id, 'summary_refresh', async () => {
+        return await refreshKeywordCurrentSummary();
       });
     } catch (refreshErr) {
       summaryRefreshOk = false;
-      const msg = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+      refreshErrorMessage = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
       console.error(
         `[summary_refresh] failed for file ${file.id.slice(0, 8)}, but kwm import succeeded — recover with refreshSummaryOnce.ts. Error:`,
-        msg,
+        refreshErrorMessage,
       );
     }
 
@@ -620,6 +623,24 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         importPhase: summaryRefreshOk ? 'completed' : 'completed_with_refresh_failure',
       })
       .where(eq(uploadedFiles.id, file.id));
+
+    // Notify admins via email. Soft-fails (logs) — never throws.
+    // The total duration is computed from when the import lock was
+    // taken (file.importStartedAt was set in lockResult). Falls back
+    // to undefined if for some reason we don't have a timestamp.
+    const durationMs = file.importStartedAt
+      ? Date.now() - new Date(file.importStartedAt).getTime()
+      : undefined;
+    await sendImportEmail({
+      outcome: summaryRefreshOk ? 'completed' : 'completed_with_refresh_failure',
+      filename: file.originalFilename ?? '(unknown filename)',
+      batchId: file.batchId,
+      durationMs,
+      rowsImported: rowsStaged,
+      rowsInSummary: refreshResult?.rowsWritten,
+      latestWeek: refreshResult?.currentWeekEndDate,
+      errorMessage: refreshErrorMessage,
+    });
 
     return { rowsImported: rowsStaged };
   } finally {

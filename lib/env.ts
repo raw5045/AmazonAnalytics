@@ -11,6 +11,8 @@ const serverSchema = z.object({
   INNGEST_EVENT_KEY: z.string().min(1).optional(),
   INNGEST_SIGNING_KEY: z.string().min(1).optional(),
   INITIAL_ADMIN_EMAIL: z.string().email().optional(),
+  RESEND_API_KEY: z.string().min(1).optional(),
+  RESEND_FROM: z.string().min(1).optional(),
   APP_PUBLIC_URL: z.string().url(),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
