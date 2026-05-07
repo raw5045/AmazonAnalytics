@@ -25,8 +25,29 @@ export const stagingWeeklyMetrics = pgTable(
       .notNull()
       .references(() => uploadedFiles.id),
     weekEndDate: date('week_end_date').notNull(),
+    /**
+     * The raw value as it appeared in the CSV — kept for forensics so we
+     * can detect the unicode-noise pattern (OBJ char etc.) post-import.
+     */
+    searchTermRawOriginal: varchar('search_term_raw_original', { length: 512 }).notNull(),
+    /**
+     * Cleaned for display: NFC normalized, invisible-noise stripped,
+     * whitespace collapsed. This is what gets persisted to
+     * search_terms.search_term_raw and shown in the UI.
+     */
     searchTermRaw: varchar('search_term_raw', { length: 512 }).notNull(),
     searchTermNormalized: varchar('search_term_normalized', { length: 512 }).notNull(),
+    /**
+     * True iff cleanSearchTermForDisplay changed the input. Used to
+     * audit how often Amazon's CSVs ship noise rows and to break ties
+     * when picking dedup winners (prefer no-noise rows).
+     */
+    hadUnicodeNoise: boolean('had_unicode_noise').notNull().default(false),
+    /**
+     * 1-based row number within the source CSV. Used as final
+     * deterministic tiebreaker when picking dedup winners.
+     */
+    sourceRowNumber: integer('source_row_number').notNull(),
     searchTermId: uuid('search_term_id').references(() => searchTerms.id),
     actualRank: integer('actual_rank').notNull(),
     topClickedBrand1: varchar('top_clicked_brand_1', { length: 255 }),

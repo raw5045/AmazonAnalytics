@@ -10,3 +10,4 @@ export * from './stagingWeeklyMetrics';
 export * from './importPhaseTimings';
 export * from './fakeVolumeRules';
 export * from './keywordCurrentSummary';
+export * from './importDuplicateSearchTerms';
