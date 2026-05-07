@@ -23,6 +23,14 @@ import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
 
 export interface ImportFileInput {
   uploadedFileId: string;
+  /**
+   * If true, skip the kcs refresh + email notification at the end of
+   * processFileImport. Used by the bulk historical-replay job to avoid
+   * paying ~30 min of refresh cost per file (53 files × 30 min ≈ 26 hr
+   * saved). The replay caller is responsible for running one final
+   * refresh after all files complete.
+   */
+  skipRefresh?: boolean;
 }
 
 export interface ImportFileOutput {
@@ -323,24 +331,39 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   // the worker is genuinely gone (process exited, container restart,
   // network partition). 60 min lets a real dead worker be reclaimed
   // within reasonable time without false-orphaning a slow import.
-  const lockResult = await db.execute<{ id: string }>(sql`
-    UPDATE uploaded_files
-    SET import_started_at = NOW(),
-        import_heartbeat_at = NOW(),
-        import_worker_boot_id = ${BOOT_ID},
-        import_phase = 'lock_acquired'
-    WHERE id = ${input.uploadedFileId}
-      AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '60 minutes')
-      AND validation_status != 'imported'
-    RETURNING id
-  `);
+  // For bulk historical replay we INTENTIONALLY want to re-process
+  // files that are already validation_status='imported'. The lock
+  // condition relaxes to "heartbeat stale" only — the imported-status
+  // check is dropped.
+  const lockResult = input.skipRefresh
+    ? await db.execute<{ id: string }>(sql`
+        UPDATE uploaded_files
+        SET import_started_at = NOW(),
+            import_heartbeat_at = NOW(),
+            import_worker_boot_id = ${BOOT_ID},
+            import_phase = 'lock_acquired'
+        WHERE id = ${input.uploadedFileId}
+          AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '60 minutes')
+        RETURNING id
+      `)
+    : await db.execute<{ id: string }>(sql`
+        UPDATE uploaded_files
+        SET import_started_at = NOW(),
+            import_heartbeat_at = NOW(),
+            import_worker_boot_id = ${BOOT_ID},
+            import_phase = 'lock_acquired'
+        WHERE id = ${input.uploadedFileId}
+          AND (import_heartbeat_at IS NULL OR import_heartbeat_at < NOW() - INTERVAL '60 minutes')
+          AND validation_status != 'imported'
+        RETURNING id
+      `);
 
   if (lockResult.rows.length === 0) {
     const existing = await db.query.uploadedFiles.findFirst({
       where: eq(uploadedFiles.id, input.uploadedFileId),
     });
     if (!existing) throw new Error(`uploaded file ${input.uploadedFileId} not found`);
-    if (existing.validationStatus === 'imported') {
+    if (!input.skipRefresh && existing.validationStatus === 'imported') {
       return { rowsImported: existing.rowCountLoaded ?? 0 };
     }
     throw new Error(
@@ -562,6 +585,11 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // without needing a separate recompute job.
     // ------------------------------------------------------------------
     await timePhase(file.id, 'search_terms_upsert', async () => {
+      // Note: staging.search_term_raw now stores the CLEANED display
+      // form (NFC + invisible-stripped). On conflict we also refresh
+      // search_terms.search_term_raw to that clean value if it differs
+      // — this is how existing rows that were created with OBJ-prefixed
+      // raws get healed during the historical replay.
       await db.execute(sql`
         INSERT INTO search_terms (search_term_raw, search_term_normalized, first_seen_week, last_seen_week)
         SELECT DISTINCT ON (search_term_normalized)
@@ -570,10 +598,12 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         WHERE uploaded_file_id = ${file.id}
         ON CONFLICT (search_term_normalized) DO UPDATE
           SET last_seen_week = GREATEST(search_terms.last_seen_week, EXCLUDED.last_seen_week),
-              first_seen_week = LEAST(search_terms.first_seen_week, EXCLUDED.first_seen_week)
+              first_seen_week = LEAST(search_terms.first_seen_week, EXCLUDED.first_seen_week),
+              search_term_raw = EXCLUDED.search_term_raw
           WHERE
             search_terms.last_seen_week < EXCLUDED.last_seen_week
             OR search_terms.first_seen_week > EXCLUDED.first_seen_week
+            OR search_terms.search_term_raw <> EXCLUDED.search_term_raw
       `);
     });
 
@@ -678,17 +708,23 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     let summaryRefreshOk = true;
     let refreshResult: { rowsWritten: number; currentWeekEndDate: string } | null = null;
     let refreshErrorMessage: string | undefined;
-    try {
-      refreshResult = await timePhase(file.id, 'summary_refresh', async () => {
-        return await refreshKeywordCurrentSummary();
-      });
-    } catch (refreshErr) {
-      summaryRefreshOk = false;
-      refreshErrorMessage = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
-      console.error(
-        `[summary_refresh] failed for file ${file.id.slice(0, 8)}, but kwm import succeeded — recover with refreshSummaryOnce.ts. Error:`,
-        refreshErrorMessage,
-      );
+    if (input.skipRefresh) {
+      // Bulk historical-replay path: caller will run one final refresh
+      // after all files complete. No per-file refresh, no email per file.
+      summaryRefreshOk = true;
+    } else {
+      try {
+        refreshResult = await timePhase(file.id, 'summary_refresh', async () => {
+          return await refreshKeywordCurrentSummary();
+        });
+      } catch (refreshErr) {
+        summaryRefreshOk = false;
+        refreshErrorMessage = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+        console.error(
+          `[summary_refresh] failed for file ${file.id.slice(0, 8)}, but kwm import succeeded — recover with refreshSummaryOnce.ts. Error:`,
+          refreshErrorMessage,
+        );
+      }
     }
 
     // Final phase mark. The `import_phase` column is a breadcrumb of the
@@ -704,23 +740,24 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       })
       .where(eq(uploadedFiles.id, file.id));
 
-    // Notify admins via email. Soft-fails (logs) — never throws.
-    // The total duration is computed from when the import lock was
-    // taken (file.importStartedAt was set in lockResult). Falls back
-    // to undefined if for some reason we don't have a timestamp.
-    const durationMs = file.importStartedAt
-      ? Date.now() - new Date(file.importStartedAt).getTime()
-      : undefined;
-    await sendImportEmail({
-      outcome: summaryRefreshOk ? 'completed' : 'completed_with_refresh_failure',
-      filename: file.originalFilename ?? '(unknown filename)',
-      batchId: file.batchId,
-      durationMs,
-      rowsImported: rowsStaged,
-      rowsInSummary: refreshResult?.rowsWritten,
-      latestWeek: refreshResult?.currentWeekEndDate,
-      errorMessage: refreshErrorMessage,
-    });
+    // Notify admins via email — but skip for bulk replay runs to avoid
+    // 53 emails landing in the admin's inbox over the course of an
+    // overnight job. The replay caller emails one summary at the end.
+    if (!input.skipRefresh) {
+      const durationMs = file.importStartedAt
+        ? Date.now() - new Date(file.importStartedAt).getTime()
+        : undefined;
+      await sendImportEmail({
+        outcome: summaryRefreshOk ? 'completed' : 'completed_with_refresh_failure',
+        filename: file.originalFilename ?? '(unknown filename)',
+        batchId: file.batchId,
+        durationMs,
+        rowsImported: rowsStaged,
+        rowsInSummary: refreshResult?.rowsWritten,
+        latestWeek: refreshResult?.currentWeekEndDate,
+        errorMessage: refreshErrorMessage,
+      });
+    }
 
     return { rowsImported: rowsStaged };
   } finally {
