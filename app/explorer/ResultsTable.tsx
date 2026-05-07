@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import type { ExplorerRow, MatchMode, SeverityKey, WindowKey } from '@/lib/explorer/types';
 
 const WINDOW_LABEL: Record<WindowKey, string> = {
@@ -54,7 +55,14 @@ export function ResultsTable({
         <tbody className="divide-y">
           {rows.map((r) => (
             <tr key={r.searchTermId} className="hover:bg-gray-50">
-              <td className="p-2 font-medium">{r.searchTermRaw}</td>
+              <td className="p-2 font-medium">
+                <Link
+                  href={`/explorer/keyword/${r.searchTermId}`}
+                  className="text-blue-700 hover:underline"
+                >
+                  {r.searchTermRaw}
+                </Link>
+              </td>
               <td className="p-2 text-right tabular-nums">{r.currentRank.toLocaleString()}</td>
               <td className="p-2 text-right tabular-nums text-gray-600">
                 {r.priorRank?.toLocaleString() ?? <span className="text-gray-400">—</span>}
