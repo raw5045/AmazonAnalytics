@@ -14,6 +14,10 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { fetchKeywordDetail } from '@/lib/explorer/fetchKeywordDetail';
 import { RawDataTable } from './RawDataTable';
+import { RankChart } from './RankChart';
+import { FakeVolumeStrip } from './FakeVolumeStrip';
+import { TitleMatchHistory } from './TitleMatchHistory';
+import { TopProductTimeline } from './TopProductTimeline';
 
 export const metadata: Metadata = {
   title: 'Keyword detail',
@@ -72,9 +76,27 @@ export default async function KeywordDetailPage({
         )}
       </header>
 
-      {/* Commit 3: RankChart goes here */}
-      {/* Commit 4: FakeVolumeStrip + TitleMatchHistory go here */}
-      {/* Commit 5: TopProductTimeline goes here */}
+      <section className="mt-6">
+        <RankChart
+          history={history}
+          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
+        />
+      </section>
+
+      <section className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <FakeVolumeStrip
+          history={history}
+          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
+        />
+        <TitleMatchHistory
+          history={history}
+          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
+        />
+      </section>
+
+      <section className="mt-6">
+        <TopProductTimeline history={history} />
+      </section>
 
       <section className="mt-8">
         <h2 className="text-sm font-semibold text-gray-700 mb-2">Weekly history</h2>
