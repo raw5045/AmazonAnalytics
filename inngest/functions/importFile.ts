@@ -4,7 +4,11 @@ import { from as copyFrom } from 'pg-copy-streams';
 import { inngest } from '../client';
 import { downloadStreamFromR2 } from '@/lib/storage/r2';
 import { streamParseCsv } from '@/lib/csv/streamParse';
-import { normalizeForMatch } from '@/lib/analytics/derivedFields';
+import {
+  cleanSearchTermForDisplay,
+  hadUnicodeNoise,
+  normalizeForMatch,
+} from '@/lib/analytics/derivedFields';
 import { env } from '@/lib/env';
 import { BOOT_ID } from '@/lib/runtime';
 import { db } from '@/db/client';
@@ -86,6 +90,155 @@ async function timePhase<T>(
     console.warn(`[timing] failed to log phase "${phase}":`, e);
   }
   return result;
+}
+
+/**
+ * Promote staging rows to keyword_weekly_metrics with deterministic
+ * deduplication of (week_end_date, search_term_id) groups.
+ *
+ * Why this exists: Amazon's BA CSV exports sometimes contain phantom
+ * duplicate rows for popular keywords (e.g. "essential oils" + an
+ * OBJ-prefixed copy at a junk rank). Both rows resolve to the same
+ * search_term_id via normalization. The previous import used
+ * `ON CONFLICT DO NOTHING` which left it to Postgres to non-
+ * deterministically pick a winner — about 5-15% of popular keyword
+ * weeks ended up showing the phantom row's junk rank.
+ *
+ * The fix here:
+ *   1. CTE builds candidate rows by joining staging to search_terms,
+ *      with a row_number() over (week, term_id) ordered by rank ASC,
+ *      then no-noise preference, then source_row_number for a
+ *      deterministic final tiebreak.
+ *   2. We log every duplicate group to import_duplicate_search_terms
+ *      for forensics (this gets us a paper trail of which CSVs ship
+ *      noise rows and how often).
+ *   3. We INSERT only `rn = 1` winners into kwm.
+ *   4. ON CONFLICT DO UPDATE replaces an existing row only if the new
+ *      row differs (re-imports of the same data are no-ops; corrections
+ *      go through cleanly).
+ *
+ * The CHECK that the input batch contains no duplicates of the conflict
+ * key is enforced by the CTE itself — we filter to rn=1 before INSERT,
+ * so Postgres never sees more than one row per (week, term_id) per
+ * statement and can't raise a cardinality violation.
+ */
+async function runStagingToKwmInsert(fileId: string): Promise<void> {
+  // 1. Audit-log duplicate groups BEFORE the kwm INSERT runs. This
+  //    keeps the forensic record even if the INSERT itself errors.
+  await db.execute(sql`
+    INSERT INTO import_duplicate_search_terms (
+      uploaded_file_id, week_end_date, search_term_id,
+      search_term_normalized, duplicate_count, winning_rank,
+      losing_ranks, raw_examples
+    )
+    SELECT
+      s.uploaded_file_id,
+      s.week_end_date,
+      st.id,
+      s.search_term_normalized,
+      COUNT(*)::int,
+      MIN(s.actual_rank)::int,
+      ARRAY_AGG(s.actual_rank ORDER BY s.actual_rank ASC),
+      (ARRAY_AGG(LEFT(s.search_term_raw_original, 200) ORDER BY s.actual_rank ASC))[1:3]
+    FROM staging_weekly_metrics s
+    JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
+    WHERE s.uploaded_file_id = ${fileId}
+    GROUP BY s.uploaded_file_id, s.week_end_date, st.id, s.search_term_normalized
+    HAVING COUNT(*) > 1
+  `);
+
+  // 2. INSERT winners (rn=1) into kwm with safe upsert.
+  await db.execute(sql`
+    WITH candidates AS (
+      SELECT
+        s.*,
+        st.id AS term_id,
+        ROW_NUMBER() OVER (
+          PARTITION BY s.week_end_date, st.id
+          ORDER BY
+            s.actual_rank ASC,             -- prefer the row with the lower (better) rank
+            s.had_unicode_noise ASC,       -- false < true: prefer clean rows
+            s.source_row_number ASC        -- final deterministic tiebreak
+        ) AS rn
+      FROM staging_weekly_metrics s
+      JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
+      WHERE s.uploaded_file_id = ${fileId}
+    )
+    INSERT INTO keyword_weekly_metrics AS kwm (
+      week_end_date, search_term_id, actual_rank,
+      top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+      top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+      top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+      top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+      top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+      top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+      keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+      fake_volume_severity, fake_volume_eval_status,
+      source_file_id
+    )
+    SELECT
+      week_end_date, term_id, actual_rank,
+      top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+      top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+      top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+      top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+      top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+      top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+      keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+      CASE
+        WHEN top_clicked_product_1_click_share IS NULL
+          OR top_clicked_product_1_conversion_share IS NULL THEN NULL
+        WHEN (top_clicked_product_1_click_share > 20 AND top_clicked_product_1_conversion_share < 0.5)
+          OR (top_clicked_product_1_click_share > 30 AND top_clicked_product_1_conversion_share < 1.0)
+          THEN 'critical'::fake_volume_severity
+        WHEN (top_clicked_product_1_click_share > 5 AND top_clicked_product_1_conversion_share < 0.5)
+          OR (top_clicked_product_1_click_share > 10 AND top_clicked_product_1_conversion_share < 1.0)
+          THEN 'warning'::fake_volume_severity
+        ELSE 'none'::fake_volume_severity
+      END AS fake_volume_severity,
+      CASE
+        WHEN top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
+        WHEN top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
+        ELSE 'evaluated'::fake_volume_eval_status
+      END AS fake_volume_eval_status,
+      ${fileId}
+    FROM candidates
+    WHERE rn = 1
+    ON CONFLICT (week_end_date, search_term_id) DO UPDATE SET
+      actual_rank = EXCLUDED.actual_rank,
+      top_clicked_brand_1 = EXCLUDED.top_clicked_brand_1,
+      top_clicked_brand_2 = EXCLUDED.top_clicked_brand_2,
+      top_clicked_brand_3 = EXCLUDED.top_clicked_brand_3,
+      top_clicked_category_1 = EXCLUDED.top_clicked_category_1,
+      top_clicked_category_2 = EXCLUDED.top_clicked_category_2,
+      top_clicked_category_3 = EXCLUDED.top_clicked_category_3,
+      top_clicked_product_1_asin = EXCLUDED.top_clicked_product_1_asin,
+      top_clicked_product_2_asin = EXCLUDED.top_clicked_product_2_asin,
+      top_clicked_product_3_asin = EXCLUDED.top_clicked_product_3_asin,
+      top_clicked_product_1_title = EXCLUDED.top_clicked_product_1_title,
+      top_clicked_product_2_title = EXCLUDED.top_clicked_product_2_title,
+      top_clicked_product_3_title = EXCLUDED.top_clicked_product_3_title,
+      top_clicked_product_1_click_share = EXCLUDED.top_clicked_product_1_click_share,
+      top_clicked_product_2_click_share = EXCLUDED.top_clicked_product_2_click_share,
+      top_clicked_product_3_click_share = EXCLUDED.top_clicked_product_3_click_share,
+      top_clicked_product_1_conversion_share = EXCLUDED.top_clicked_product_1_conversion_share,
+      top_clicked_product_2_conversion_share = EXCLUDED.top_clicked_product_2_conversion_share,
+      top_clicked_product_3_conversion_share = EXCLUDED.top_clicked_product_3_conversion_share,
+      keyword_in_title_1 = EXCLUDED.keyword_in_title_1,
+      keyword_in_title_2 = EXCLUDED.keyword_in_title_2,
+      keyword_in_title_3 = EXCLUDED.keyword_in_title_3,
+      keyword_title_match_count = EXCLUDED.keyword_title_match_count,
+      fake_volume_severity = EXCLUDED.fake_volume_severity,
+      fake_volume_eval_status = EXCLUDED.fake_volume_eval_status,
+      source_file_id = EXCLUDED.source_file_id
+    WHERE
+      kwm.actual_rank IS DISTINCT FROM EXCLUDED.actual_rank
+      OR kwm.top_clicked_product_1_asin IS DISTINCT FROM EXCLUDED.top_clicked_product_1_asin
+      OR kwm.top_clicked_product_1_title IS DISTINCT FROM EXCLUDED.top_clicked_product_1_title
+      OR kwm.top_clicked_product_1_click_share IS DISTINCT FROM EXCLUDED.top_clicked_product_1_click_share
+      OR kwm.top_clicked_product_1_conversion_share IS DISTINCT FROM EXCLUDED.top_clicked_product_1_conversion_share
+      OR kwm.fake_volume_severity IS DISTINCT FROM EXCLUDED.fake_volume_severity
+  `);
 }
 
 /**
@@ -244,7 +397,8 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
           const copySql = `
             COPY staging_weekly_metrics (
               batch_id, uploaded_file_id, week_end_date,
-              search_term_raw, search_term_normalized,
+              search_term_raw_original, search_term_raw, search_term_normalized,
+              had_unicode_noise, source_row_number,
               actual_rank,
               top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
               top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
@@ -299,15 +453,25 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
               copyStream.once('error', onError);
             });
 
+          let sourceRowNumber = 0;
           for await (const row of streamParseCsv(stream)) {
             // If the COPY socket already errored, surface it immediately
             // rather than continuing to write into a dead stream.
             if (copyError) throw copyError;
 
-            const searchTerm = row['Search Term'];
+            sourceRowNumber++;
+            const searchTermOriginal = row['Search Term'];
+            // Clean for display: strip invisible noise (OBJ, ZWSP, etc.),
+            // collapse whitespace, NFC. This is what gets stored as
+            // staging.search_term_raw and ultimately surfaces in the UI.
+            const searchTermCleaned = cleanSearchTermForDisplay(searchTermOriginal);
+            const noisy = hadUnicodeNoise(searchTermOriginal);
+            // Normalize from the cleaned form for the match key. Fallback
+            // to a deterministic non-empty value if normalization yields
+            // empty (e.g., search term was entirely noise).
             const normalizedTerm =
-              normalizeForMatch(searchTerm) ||
-              searchTerm.toLowerCase().trim() ||
+              normalizeForMatch(searchTermCleaned) ||
+              searchTermCleaned.toLowerCase().trim() ||
               '__unparseable__';
             const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
             const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
@@ -320,8 +484,11 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
               file.batchId,
               file.id,
               weekEndDate,
-              searchTerm,
+              searchTermOriginal,
+              searchTermCleaned,
               normalizedTerm,
+              noisy ? 't' : 'f',
+              sourceRowNumber,
               Number(row['Search Frequency Rank']),
               row['Top Clicked Brand #1'] || null,
               row['Top Clicked Brands #2'] || null,
@@ -421,107 +588,20 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // reclaim).
     // ------------------------------------------------------------------
     if (file.isReplacement) {
-      // Replacement flow: nuke existing week, INSERT fresh. No ON CONFLICT.
+      // Replacement flow: nuke existing week, then INSERT fresh through
+      // the dedup pipeline below. Staging dedup still applies — even
+      // a fresh week could contain Amazon's phantom OBJ-prefixed rows.
       await timePhase(file.id, 'kwm_delete_week', async () => {
         await db.execute(
           sql`DELETE FROM keyword_weekly_metrics WHERE week_end_date = ${weekEndDate}::date`,
         );
       });
       await timePhase(file.id, 'kwm_insert_replace', async () => {
-        await db.execute(sql`
-          INSERT INTO keyword_weekly_metrics (
-            week_end_date, search_term_id, actual_rank,
-            top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-            top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-            top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-            top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-            top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-            top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-            keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-            fake_volume_severity, fake_volume_eval_status,
-            source_file_id
-          )
-          SELECT
-            s.week_end_date, st.id, s.actual_rank,
-            s.top_clicked_brand_1, s.top_clicked_brand_2, s.top_clicked_brand_3,
-            s.top_clicked_category_1, s.top_clicked_category_2, s.top_clicked_category_3,
-            s.top_clicked_product_1_asin, s.top_clicked_product_2_asin, s.top_clicked_product_3_asin,
-            s.top_clicked_product_1_title, s.top_clicked_product_2_title, s.top_clicked_product_3_title,
-            s.top_clicked_product_1_click_share, s.top_clicked_product_2_click_share, s.top_clicked_product_3_click_share,
-            s.top_clicked_product_1_conversion_share, s.top_clicked_product_2_conversion_share, s.top_clicked_product_3_conversion_share,
-            s.keyword_in_title_1, s.keyword_in_title_2, s.keyword_in_title_3, s.keyword_title_match_count,
-            -- fake_volume_severity (Plan 3.1): two-tier rule v1-default
-            CASE
-              WHEN s.top_clicked_product_1_click_share IS NULL
-                OR s.top_clicked_product_1_conversion_share IS NULL THEN NULL
-              WHEN (s.top_clicked_product_1_click_share > 20 AND s.top_clicked_product_1_conversion_share < 0.5)
-                OR (s.top_clicked_product_1_click_share > 30 AND s.top_clicked_product_1_conversion_share < 1.0)
-                THEN 'critical'::fake_volume_severity
-              WHEN (s.top_clicked_product_1_click_share > 5 AND s.top_clicked_product_1_conversion_share < 0.5)
-                OR (s.top_clicked_product_1_click_share > 10 AND s.top_clicked_product_1_conversion_share < 1.0)
-                THEN 'warning'::fake_volume_severity
-              ELSE 'none'::fake_volume_severity
-            END,
-            -- fake_volume_eval_status — captures WHY severity is NULL
-            CASE
-              WHEN s.top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
-              WHEN s.top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
-              ELSE 'evaluated'::fake_volume_eval_status
-            END,
-            ${file.id}
-          FROM staging_weekly_metrics s
-          JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
-          WHERE s.uploaded_file_id = ${file.id}
-        `);
+        await runStagingToKwmInsert(file.id);
       });
     } else {
       await timePhase(file.id, 'kwm_insert', async () => {
-        await db.execute(sql`
-          INSERT INTO keyword_weekly_metrics (
-            week_end_date, search_term_id, actual_rank,
-            top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-            top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-            top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-            top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-            top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-            top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-            keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-            fake_volume_severity, fake_volume_eval_status,
-            source_file_id
-          )
-          SELECT
-            s.week_end_date, st.id, s.actual_rank,
-            s.top_clicked_brand_1, s.top_clicked_brand_2, s.top_clicked_brand_3,
-            s.top_clicked_category_1, s.top_clicked_category_2, s.top_clicked_category_3,
-            s.top_clicked_product_1_asin, s.top_clicked_product_2_asin, s.top_clicked_product_3_asin,
-            s.top_clicked_product_1_title, s.top_clicked_product_2_title, s.top_clicked_product_3_title,
-            s.top_clicked_product_1_click_share, s.top_clicked_product_2_click_share, s.top_clicked_product_3_click_share,
-            s.top_clicked_product_1_conversion_share, s.top_clicked_product_2_conversion_share, s.top_clicked_product_3_conversion_share,
-            s.keyword_in_title_1, s.keyword_in_title_2, s.keyword_in_title_3, s.keyword_title_match_count,
-            -- fake_volume_severity (Plan 3.1): two-tier rule v1-default
-            CASE
-              WHEN s.top_clicked_product_1_click_share IS NULL
-                OR s.top_clicked_product_1_conversion_share IS NULL THEN NULL
-              WHEN (s.top_clicked_product_1_click_share > 20 AND s.top_clicked_product_1_conversion_share < 0.5)
-                OR (s.top_clicked_product_1_click_share > 30 AND s.top_clicked_product_1_conversion_share < 1.0)
-                THEN 'critical'::fake_volume_severity
-              WHEN (s.top_clicked_product_1_click_share > 5 AND s.top_clicked_product_1_conversion_share < 0.5)
-                OR (s.top_clicked_product_1_click_share > 10 AND s.top_clicked_product_1_conversion_share < 1.0)
-                THEN 'warning'::fake_volume_severity
-              ELSE 'none'::fake_volume_severity
-            END,
-            -- fake_volume_eval_status — captures WHY severity is NULL
-            CASE
-              WHEN s.top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
-              WHEN s.top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
-              ELSE 'evaluated'::fake_volume_eval_status
-            END,
-            ${file.id}
-          FROM staging_weekly_metrics s
-          JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
-          WHERE s.uploaded_file_id = ${file.id}
-          ON CONFLICT (week_end_date, search_term_id) DO NOTHING
-        `);
+        await runStagingToKwmInsert(file.id);
       });
     }
 
