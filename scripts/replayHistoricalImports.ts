@@ -14,33 +14,57 @@
  * Strategy:
  *   1. List uploaded_files where validation_status = 'imported',
  *      ordered by week_end_date ASC (oldest first; deterministic).
- *   2. For each file, call processFileImport with skipRefresh=true.
- *      - Skips per-file refresh (~30 min each → ~26 hr total saved)
- *      - Skips per-file completion email (avoids 53 inbox messages)
- *   3. After all files complete, run one final
+ *   2. Snapshot the cutoff: write `.replay-state.json` with the
+ *      maximum `imported_at` across those files at start. Used for
+ *      resume.
+ *   3. For each file in turn, skip it if its `imported_at` is already
+ *      > the snapshot cutoff (i.e., a previous run of this script
+ *      already replayed it). Otherwise call processFileImport with
+ *      skipRefresh=true. The successful replay updates imported_at
+ *      to NOW(), automatically taking it out of the "needs replay"
+ *      set on resume.
+ *   4. After all files complete, run one final
  *      refreshKeywordCurrentSummary.
- *   4. Send a single summary email recapping the run.
+ *   5. Send a single summary email recapping the run.
  *
  * Resilience:
- *   - If the script is interrupted, it can be re-run; the dedup logic
- *     is idempotent (re-importing identical data is a no-op via the
- *     ROW IS DISTINCT clause).
+ *   - Resume is automatic: re-run the script and it picks up where
+ *     it left off, skipping already-replayed files.
  *   - The DRY_RUN env var lists files that would be replayed without
  *     touching the DB. Useful before kicking off the actual run.
+ *   - START_FROM=YYYY-MM-DD overrides the snapshot logic and forces
+ *     replay starting at that week.
+ *   - DELETE the .replay-state.json file to start fresh.
  *
  * Estimated runtime: ~9 hr for the 53 files we have today (kwm-only
  * import is ~10 min/file warm-cache), plus ~30 min for the final
  * refresh.
  *
  * Usage:
- *   pnpm tsx scripts/replayHistoricalImports.ts            # actual run
+ *   pnpm tsx scripts/replayHistoricalImports.ts            # start or resume
  *   DRY_RUN=1 pnpm tsx scripts/replayHistoricalImports.ts  # list only
  *   START_FROM=2026-01-17 pnpm tsx scripts/replayHistoricalImports.ts
- *     # resume from the file with that week_end_date if a prior run
- *     # was interrupted
+ *     # force replay from that week regardless of state file
+ *   rm .replay-state.json && pnpm tsx scripts/replayHistoricalImports.ts
+ *     # forget all progress and start over
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+interface ReplayState {
+  /**
+   * ISO timestamp at run start. Files whose imported_at is > this
+   * cutoff have been replayed by the current script run; we skip them
+   * on resume.
+   */
+  cutoffIso: string;
+  /** When this state file was first written (informational). */
+  startedAt: string;
+}
+
+const STATE_FILE = join(process.cwd(), '.replay-state.json');
 
 async function main() {
   const { db } = await import('@/db/client');
@@ -53,6 +77,33 @@ async function main() {
   const startFrom = process.env.START_FROM ?? null;
   const dryRun = process.env.DRY_RUN === '1';
 
+  // Load or create state snapshot. The cutoff timestamp lets us
+  // reliably resume — any file whose imported_at is > cutoffIso has
+  // already been replayed by a prior invocation of this run.
+  let state: ReplayState;
+  if (existsSync(STATE_FILE)) {
+    state = JSON.parse(readFileSync(STATE_FILE, 'utf8')) as ReplayState;
+    console.log(`Resuming run started ${state.startedAt}`);
+    console.log(`  cutoff: imported_at > ${state.cutoffIso} = already replayed`);
+  } else {
+    // Fresh run: cutoff is the max imported_at across all imported files
+    // RIGHT NOW. Anything updated after this point is by us.
+    const [{ max_imported }] = (await db.execute(
+      // Cast to text to avoid timezone-shift issues across drivers
+      `SELECT COALESCE(MAX(imported_at)::text, '1970-01-01T00:00:00Z') AS max_imported
+       FROM uploaded_files
+       WHERE validation_status = 'imported'`,
+    )).rows as Array<{ max_imported: string }>;
+    state = {
+      cutoffIso: max_imported,
+      startedAt: new Date().toISOString(),
+    };
+    if (!dryRun) {
+      writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+      console.log(`Wrote ${STATE_FILE} with cutoff = ${state.cutoffIso}`);
+    }
+  }
+
   // Pull all imported files in week order. The replay processes them
   // chronologically so the final state of search_terms (which tracks
   // first_seen_week / last_seen_week) ends up correct.
@@ -63,6 +114,7 @@ async function main() {
       weekEndDate: uploadedFiles.weekEndDate,
       storageKey: uploadedFiles.storageKey,
       validationStatus: uploadedFiles.validationStatus,
+      importedAt: uploadedFiles.importedAt,
     })
     .from(uploadedFiles)
     .where(
@@ -73,9 +125,18 @@ async function main() {
     )
     .orderBy(asc(uploadedFiles.weekEndDate));
 
-  const filtered = startFrom
-    ? files.filter((f) => f.weekEndDate && f.weekEndDate >= startFrom)
-    : files;
+  const cutoff = new Date(state.cutoffIso).getTime();
+  const filtered = files.filter((f) => {
+    if (startFrom && f.weekEndDate && f.weekEndDate < startFrom) return false;
+    // Skip files already replayed by this run (imported_at > cutoff)
+    const importedAt = f.importedAt ? new Date(f.importedAt).getTime() : 0;
+    if (importedAt > cutoff) return false;
+    return true;
+  });
+  const skipped = files.length - filtered.length;
+  if (skipped > 0) {
+    console.log(`\nSkipping ${skipped} files already replayed in this run.`);
+  }
 
   console.log(`\nReplay plan: ${filtered.length} files`);
   if (startFrom) console.log(`  Resuming from week ${startFrom}`);
@@ -157,6 +218,19 @@ async function main() {
 
   const totalMin = Math.round((Date.now() - startedAt) / 60_000);
   console.log(`\nTotal replay time: ${totalMin} min`);
+
+  // Clean up the state file once we've reached the end of the loop
+  // AND the final refresh is done. If the script gets killed before
+  // here, the state file persists and the next run resumes.
+  if (existsSync(STATE_FILE)) {
+    try {
+      const fs = await import('node:fs');
+      fs.unlinkSync(STATE_FILE);
+      console.log(`Removed ${STATE_FILE}`);
+    } catch (e) {
+      console.warn('Could not remove state file:', e);
+    }
+  }
 
   // One summary email at the end
   await sendImportEmail({

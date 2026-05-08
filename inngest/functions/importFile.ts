@@ -483,18 +483,23 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
             if (copyError) throw copyError;
 
             sourceRowNumber++;
-            const searchTermOriginal = row['Search Term'];
+            const searchTermOriginalRaw = row['Search Term'] ?? '';
             // Clean for display: strip invisible noise (OBJ, ZWSP, etc.),
             // collapse whitespace, NFC. This is what gets stored as
             // staging.search_term_raw and ultimately surfaces in the UI.
-            const searchTermCleaned = cleanSearchTermForDisplay(searchTermOriginal);
-            const noisy = hadUnicodeNoise(searchTermOriginal);
-            // Normalize from the cleaned form for the match key. Fallback
-            // to a deterministic non-empty value if normalization yields
-            // empty (e.g., search term was entirely noise).
+            const searchTermCleanedRaw = cleanSearchTermForDisplay(searchTermOriginalRaw);
+            const noisy = hadUnicodeNoise(searchTermOriginalRaw);
+            // Defensive fallbacks. The cleanest production case (a real
+            // search term with maybe some unicode noise) never hits these,
+            // but if Amazon ships a row with an empty cell or a term
+            // composed entirely of OBJ/ZWSP/etc, we need non-empty values
+            // for the NOT NULL constraints. Use the same sentinel for all
+            // three columns so the dedup logic still groups them together.
+            const searchTermOriginal = searchTermOriginalRaw || '__unparseable__';
+            const searchTermCleaned = searchTermCleanedRaw || '__unparseable__';
             const normalizedTerm =
-              normalizeForMatch(searchTermCleaned) ||
-              searchTermCleaned.toLowerCase().trim() ||
+              normalizeForMatch(searchTermCleanedRaw) ||
+              searchTermCleanedRaw.toLowerCase().trim() ||
               '__unparseable__';
             const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
             const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
@@ -590,12 +595,27 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       // search_terms.search_term_raw to that clean value if it differs
       // — this is how existing rows that were created with OBJ-prefixed
       // raws get healed during the historical replay.
+      //
+      // The DISTINCT ON winner is chosen with the same priority as the
+      // kwm dedup CTE — lowest actual_rank first, then no-noise
+      // preference, then shortest raw, then earliest source_row_number.
+      // This keeps search_terms.search_term_raw and the kwm winning row
+      // semantically aligned: the "best" rank's raw form wins for both.
+      // Without ORDER BY, DISTINCT ON would non-deterministically pick
+      // any raw variant — which is how we ended up with "essential oils'"
+      // (apostrophe variant) in the smoke test instead of "essential oils".
       await db.execute(sql`
         INSERT INTO search_terms (search_term_raw, search_term_normalized, first_seen_week, last_seen_week)
         SELECT DISTINCT ON (search_term_normalized)
           search_term_raw, search_term_normalized, ${weekEndDate}::date, ${weekEndDate}::date
         FROM staging_weekly_metrics
         WHERE uploaded_file_id = ${file.id}
+        ORDER BY
+          search_term_normalized,
+          actual_rank ASC,
+          had_unicode_noise ASC,
+          length(search_term_raw) ASC,
+          source_row_number ASC
         ON CONFLICT (search_term_normalized) DO UPDATE
           SET last_seen_week = GREATEST(search_terms.last_seen_week, EXCLUDED.last_seen_week),
               first_seen_week = LEAST(search_terms.first_seen_week, EXCLUDED.first_seen_week),
