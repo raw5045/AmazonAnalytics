@@ -53,6 +53,32 @@ config({ path: '.env.local' });
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
+// Force TCP (pg.Pool) instead of neon-http for the replay. The HTTP
+// driver times out on INSERT statements that take more than a few
+// minutes — the search_terms upsert and the kwm dedup CTE both can
+// run 5-15 min on cold cache, well past Neon's HTTP timeout. The
+// production Railway worker uses TCP via USE_PG_TCP=1; we set the same
+// here so the replay matches that path.
+//
+// MUST run before importing @/db/client below (createDb() reads this
+// at module-init time).
+process.env.USE_PG_TCP = '1';
+
+// Catch async errors from R2 streams that emit 'error' AFTER the COPY
+// loop has consumed the stream. Without this, a single transient R2
+// inactivity timeout would emit an uncaught 'error' event and kill
+// the whole replay process, losing 5+ hours of progress. Per-file
+// errors are already caught in the loop's try/catch — this is a
+// safety net for stream errors that bubble up via the event-emitter
+// path instead of via the await.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException — logged, not fatal]:', err.message);
+});
+process.on('unhandledRejection', (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  console.error('[unhandledRejection — logged, not fatal]:', msg);
+});
+
 interface ReplayState {
   /**
    * ISO timestamp at run start. Files whose imported_at is > this
