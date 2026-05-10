@@ -28,8 +28,27 @@ export interface KeywordDetailHistoryRow {
   keywordInTitle2: boolean | null;
   keywordInTitle3: boolean | null;
   keywordTitleMatchCount: number | null;
+  // Loose match flags (per-week) — backfilled in migration 0014.
+  // NULL only on rows not yet backfilled (transitional).
+  keywordInTitle1Loose: boolean | null;
+  keywordInTitle2Loose: boolean | null;
+  keywordInTitle3Loose: boolean | null;
+  keywordTitleMatchCountLoose: number | null;
   fakeVolumeSeverity: SeverityKey | null;
   fakeVolumeEvalStatus: string | null;
+  // Variant info from import_duplicate_search_terms — populated when
+  // Amazon's CSV had multiple rows for this (week, normalized term).
+  // null when no variants existed for this week (the common case).
+  variants: KeywordVariantInfo | null;
+}
+
+export interface KeywordVariantInfo {
+  /** How many rows existed in the source CSV. Always >= 2 when present. */
+  duplicateCount: number;
+  /** All ranks from the source CSV (sorted asc; first is the kept rank). */
+  losingRanks: number[];
+  /** Up to 3 example raw values from the source CSV. */
+  rawExamples: string[];
 }
 
 export interface KeywordDetailCurrent {
@@ -74,7 +93,7 @@ export async function fetchKeywordDetail(
 ): Promise<KeywordDetail | null> {
   const sql = neon(env.DATABASE_URL);
 
-  const [termRowsAny, currentRowsAny, historyRowsAny] = await Promise.all([
+  const [termRowsAny, currentRowsAny, historyRowsAny, variantRowsAny] = await Promise.all([
     sql`
       SELECT id, search_term_raw, search_term_normalized,
              first_seen_week, last_seen_week
@@ -116,11 +135,20 @@ export async function fetchKeywordDetail(
         keyword_in_title_2,
         keyword_in_title_3,
         keyword_title_match_count,
+        keyword_in_title_1_loose,
+        keyword_in_title_2_loose,
+        keyword_in_title_3_loose,
+        keyword_title_match_count_loose,
         fake_volume_severity,
         fake_volume_eval_status
       FROM keyword_weekly_metrics
       WHERE search_term_id = ${searchTermId}
       ORDER BY week_end_date ASC
+    `,
+    sql`
+      SELECT week_end_date, duplicate_count, losing_ranks, raw_examples
+      FROM import_duplicate_search_terms
+      WHERE search_term_id = ${searchTermId}
     `,
   ]);
   const termRows = termRowsAny as unknown as Array<{
@@ -132,6 +160,12 @@ export async function fetchKeywordDetail(
   }>;
   const currentRows = currentRowsAny as unknown as Array<Record<string, unknown>>;
   const historyRows = historyRowsAny as unknown as Array<Record<string, unknown>>;
+  const variantRows = variantRowsAny as unknown as Array<{
+    week_end_date: string;
+    duplicate_count: number;
+    losing_ranks: number[];
+    raw_examples: string[];
+  }>;
 
   if (termRows.length === 0) return null;
   const term = termRows[0];
@@ -140,6 +174,16 @@ export async function fetchKeywordDetail(
     ? mapCurrent(currentRows[0])
     : null;
 
+  // Index variants by week for O(1) lookup during history mapping.
+  const variantsByWeek = new Map<string, KeywordVariantInfo>();
+  for (const v of variantRows) {
+    variantsByWeek.set(toIsoDate(v.week_end_date), {
+      duplicateCount: v.duplicate_count,
+      losingRanks: v.losing_ranks ?? [],
+      rawExamples: v.raw_examples ?? [],
+    });
+  }
+
   return {
     searchTermId: term.id,
     searchTermRaw: term.search_term_raw,
@@ -147,7 +191,7 @@ export async function fetchKeywordDetail(
     firstSeenWeek: toIsoDate(term.first_seen_week),
     lastSeenWeek: toIsoDate(term.last_seen_week),
     current,
-    history: historyRows.map(mapHistory),
+    history: historyRows.map((r) => mapHistory(r, variantsByWeek)),
   };
 }
 
@@ -169,9 +213,13 @@ function mapCurrent(r: Record<string, unknown>): KeywordDetailCurrent {
   };
 }
 
-function mapHistory(r: Record<string, unknown>): KeywordDetailHistoryRow {
+function mapHistory(
+  r: Record<string, unknown>,
+  variantsByWeek: Map<string, KeywordVariantInfo>,
+): KeywordDetailHistoryRow {
+  const weekEndDate = toIsoDate(r.week_end_date as string);
   return {
-    weekEndDate: toIsoDate(r.week_end_date as string),
+    weekEndDate,
     actualRank: r.actual_rank as number,
     topClickedProduct1Asin: (r.top_clicked_product_1_asin as string | null) ?? null,
     topClickedProduct1Title: (r.top_clicked_product_1_title as string | null) ?? null,
@@ -186,8 +234,13 @@ function mapHistory(r: Record<string, unknown>): KeywordDetailHistoryRow {
     keywordInTitle2: (r.keyword_in_title_2 as boolean | null) ?? null,
     keywordInTitle3: (r.keyword_in_title_3 as boolean | null) ?? null,
     keywordTitleMatchCount: (r.keyword_title_match_count as number | null) ?? null,
+    keywordInTitle1Loose: (r.keyword_in_title_1_loose as boolean | null) ?? null,
+    keywordInTitle2Loose: (r.keyword_in_title_2_loose as boolean | null) ?? null,
+    keywordInTitle3Loose: (r.keyword_in_title_3_loose as boolean | null) ?? null,
+    keywordTitleMatchCountLoose: (r.keyword_title_match_count_loose as number | null) ?? null,
     fakeVolumeSeverity: (r.fake_volume_severity as SeverityKey | null) ?? null,
     fakeVolumeEvalStatus: (r.fake_volume_eval_status as string | null) ?? null,
+    variants: variantsByWeek.get(weekEndDate) ?? null,
   };
 }
 

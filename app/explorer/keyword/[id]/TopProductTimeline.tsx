@@ -25,7 +25,7 @@ export function TopProductTimeline({ history }: { history: KeywordDetailHistoryR
         run{display.length === 1 ? '' : 's'} in this keyword&apos;s history.
       </p>
       <ol className="space-y-2">
-        {display.map((run, i) => (
+        {display.map((run) => (
           <li
             key={`${run.startWeek}-${run.asin}`}
             className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 p-2 rounded hover:bg-gray-50"
@@ -33,11 +33,6 @@ export function TopProductTimeline({ history }: { history: KeywordDetailHistoryR
             <div className="text-xs text-gray-600 font-mono w-full md:w-48 shrink-0 whitespace-nowrap">
               {run.startWeek} → {run.endWeek}
               <span className="ml-2 text-gray-400">({run.weeks}w)</span>
-              {i === 0 && (
-                <span className="ml-2 inline-block bg-blue-100 text-blue-800 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded">
-                  current
-                </span>
-              )}
             </div>
             <div className="flex-1 min-w-0">
               <div className="text-sm truncate" title={run.title ?? ''}>

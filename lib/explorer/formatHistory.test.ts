@@ -22,8 +22,13 @@ const blankRow = (overrides: Partial<KeywordDetailHistoryRow>): KeywordDetailHis
   keywordInTitle2: null,
   keywordInTitle3: null,
   keywordTitleMatchCount: null,
+  keywordInTitle1Loose: null,
+  keywordInTitle2Loose: null,
+  keywordInTitle3Loose: null,
+  keywordTitleMatchCountLoose: null,
   fakeVolumeSeverity: null,
   fakeVolumeEvalStatus: null,
+  variants: null,
   ...overrides,
 });
 

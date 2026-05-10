@@ -47,6 +47,16 @@ export const keywordWeeklyMetrics = pgTable(
     keywordInTitle2: boolean('keyword_in_title_2'),
     keywordInTitle3: boolean('keyword_in_title_3'),
     keywordTitleMatchCount: smallint('keyword_title_match_count'),
+    // "Loose" match: every non-stopword token in the search term appears
+    // in the title with word-boundary semantics (case-insensitive).
+    // Computed at INSERT time from the same source data Amazon ships.
+    // See lib/analytics/derivedFields.ts and the SQL POSITION-based
+    // implementation in importFile.ts. Backfilled for all rows in
+    // migration 0014; populated for new rows by the import path.
+    keywordInTitle1Loose: boolean('keyword_in_title_1_loose'),
+    keywordInTitle2Loose: boolean('keyword_in_title_2_loose'),
+    keywordInTitle3Loose: boolean('keyword_in_title_3_loose'),
+    keywordTitleMatchCountLoose: smallint('keyword_title_match_count_loose'),
     // fakeVolumeFlag is the original single-tier boolean — DEPRECATED in
     // Plan 3.1 (never populated for any of the 140M backfilled rows). Kept
     // nullable in schema for backwards-compat, will be dropped in Plan 3.5.
