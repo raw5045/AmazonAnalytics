@@ -190,7 +190,7 @@ async function main() {
     try {
       const result = await processFileImport({
         uploadedFileId: f.id,
-        skipRefresh: true,
+        replayMode: true,
       });
       const durationMs = Date.now() - fileStartedAt;
       console.log(`  ✓ ${result.rowsImported.toLocaleString()} rows imported in ${(durationMs / 1000).toFixed(1)}s`);

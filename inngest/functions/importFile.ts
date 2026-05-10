@@ -31,6 +31,20 @@ export interface ImportFileInput {
    * refresh after all files complete.
    */
   skipRefresh?: boolean;
+  /**
+   * If true, use the targeted-repair path instead of the full UPSERT
+   * path: TRUNCATE staging instead of DELETE-by-uploaded_file_id; skip
+   * search_terms_upsert (existing terms are already correct from the
+   * original import); use runStagingToKwmTargetedRepair for the kwm
+   * promotion (only touches duplicate-group rows).
+   *
+   * ~3-4× faster per file than the upsert path because we avoid 3M
+   * cold-cache wide-row IS-DISTINCT-FROM comparisons.
+   *
+   * Implies skipRefresh and that the file is already imported — see
+   * docs/replay-slowness-rfc.md.
+   */
+  replayMode?: boolean;
 }
 
 export interface ImportFileOutput {
@@ -250,6 +264,145 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
 }
 
 /**
+ * Targeted-repair version of the staging→kwm promotion. ONLY touches
+ * (week, term_id) groups where the original staging had duplicates —
+ * i.e., the rows that could have been corrupted by the
+ * `ON CONFLICT DO NOTHING` non-determinism bug. Non-duplicate rows
+ * are already correct, so we don't read/UPDATE them.
+ *
+ * Strategy (per GPT review):
+ *   1. Build tmp_kwm_replay_winners ONCE — deduped winners + duplicate
+ *      counts. Used for both audit-log and the targeted repair.
+ *   2. Audit log entries for groups where duplicate_count > 1.
+ *   3. DELETE only the kwm rows whose (week, term_id) is in a
+ *      duplicate group.
+ *   4. Plain INSERT (no UPSERT) the deduped winners for those same
+ *      groups. If a conflict happens here, that's a bug we want to
+ *      see loudly — don't hide with another upsert.
+ *
+ * Compared to runStagingToKwmInsert, avoids ~3M wide-row UPSERT
+ * comparisons (the per-row IS DISTINCT FROM check that requires
+ * cold heap reads on historical partitions). Affects only the small
+ * fraction of rows that actually had the bug.
+ *
+ * Caller must wrap in a single transaction so reads see consistent
+ * state mid-repair.
+ */
+async function runStagingToKwmTargetedRepair(fileId: string): Promise<void> {
+  // 1. Audit log first — runs OUTSIDE the transaction so it can
+  //    aggregate from staging directly (the temp table only has
+  //    winners, but we want all-ranks per duplicate group for
+  //    forensics). Same query shape as runStagingToKwmInsert's audit.
+  await db.execute(sql`
+    INSERT INTO import_duplicate_search_terms (
+      uploaded_file_id, week_end_date, search_term_id,
+      search_term_normalized, duplicate_count, winning_rank,
+      losing_ranks, raw_examples
+    )
+    SELECT
+      s.uploaded_file_id,
+      s.week_end_date,
+      st.id,
+      s.search_term_normalized,
+      COUNT(*)::int,
+      MIN(s.actual_rank)::int,
+      ARRAY_AGG(s.actual_rank ORDER BY s.actual_rank ASC),
+      (ARRAY_AGG(LEFT(s.search_term_raw_original, 200) ORDER BY s.actual_rank ASC))[1:3]
+    FROM staging_weekly_metrics s
+    JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
+    WHERE s.uploaded_file_id = ${fileId}
+    GROUP BY s.uploaded_file_id, s.week_end_date, st.id, s.search_term_normalized
+    HAVING COUNT(*) > 1
+  `);
+
+  // 2. Targeted repair — temp table + DELETE + plain INSERT. All in
+  //    one transaction for connection-pinning (temp tables are
+  //    session-scoped) AND for atomic mid-repair visibility.
+  await db.transaction(async (tx) => {
+    // Build the deduped winners + duplicate counts in one pass.
+    await tx.execute(sql`
+      CREATE TEMP TABLE tmp_kwm_replay_winners ON COMMIT DROP AS
+      WITH candidates AS (
+        SELECT
+          s.*,
+          st.id AS term_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY s.week_end_date, st.id
+            ORDER BY
+              s.actual_rank ASC,
+              s.had_unicode_noise ASC,
+              s.source_row_number ASC
+          ) AS rn,
+          COUNT(*) OVER (
+            PARTITION BY s.week_end_date, st.id
+          ) AS duplicate_count
+        FROM staging_weekly_metrics s
+        JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
+        WHERE s.uploaded_file_id = ${fileId}
+      )
+      SELECT * FROM candidates WHERE rn = 1
+    `);
+    await tx.execute(sql`CREATE UNIQUE INDEX ON tmp_kwm_replay_winners (week_end_date, term_id)`);
+    await tx.execute(sql`ANALYZE tmp_kwm_replay_winners`);
+
+    // Targeted repair: DELETE only kwm rows in duplicate groups.
+    await tx.execute(sql`
+      DELETE FROM keyword_weekly_metrics kwm
+      USING tmp_kwm_replay_winners w
+      WHERE kwm.week_end_date = w.week_end_date
+        AND kwm.search_term_id = w.term_id
+        AND w.duplicate_count > 1
+    `);
+
+    // INSERT winners for those same groups. Plain INSERT (no UPSERT) —
+    // if a conflict occurs after we just DELETEd the rows + dedup'd
+    // the source, that's a bug to see loudly, not paper over.
+    await tx.execute(sql`
+      INSERT INTO keyword_weekly_metrics (
+        week_end_date, search_term_id, actual_rank,
+        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+        fake_volume_severity, fake_volume_eval_status,
+        source_file_id
+      )
+      SELECT
+        week_end_date, term_id, actual_rank,
+        top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+        top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+        top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+        top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+        top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+        top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+        keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
+        CASE
+          WHEN top_clicked_product_1_click_share IS NULL
+            OR top_clicked_product_1_conversion_share IS NULL THEN NULL
+          WHEN (top_clicked_product_1_click_share > 20 AND top_clicked_product_1_conversion_share < 0.5)
+            OR (top_clicked_product_1_click_share > 30 AND top_clicked_product_1_conversion_share < 1.0)
+            THEN 'critical'::fake_volume_severity
+          WHEN (top_clicked_product_1_click_share > 5 AND top_clicked_product_1_conversion_share < 0.5)
+            OR (top_clicked_product_1_click_share > 10 AND top_clicked_product_1_conversion_share < 1.0)
+            THEN 'warning'::fake_volume_severity
+          ELSE 'none'::fake_volume_severity
+        END,
+        CASE
+          WHEN top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
+          WHEN top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
+          ELSE 'evaluated'::fake_volume_eval_status
+        END,
+        ${fileId}
+      FROM tmp_kwm_replay_winners
+      WHERE duplicate_count > 1
+    `);
+  });
+}
+
+/**
  * Dedicated long-lived pg connection for heartbeat updates.
  *
  * Why a separate connection (not Drizzle's pool):
@@ -335,7 +488,8 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
   // files that are already validation_status='imported'. The lock
   // condition relaxes to "heartbeat stale" only — the imported-status
   // check is dropped.
-  const lockResult = input.skipRefresh
+  const isReplay = input.skipRefresh || input.replayMode;
+  const lockResult = isReplay
     ? await db.execute<{ id: string }>(sql`
         UPDATE uploaded_files
         SET import_started_at = NOW(),
@@ -363,7 +517,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       where: eq(uploadedFiles.id, input.uploadedFileId),
     });
     if (!existing) throw new Error(`uploaded file ${input.uploadedFileId} not found`);
-    if (!input.skipRefresh && existing.validationStatus === 'imported') {
+    if (!isReplay && existing.validationStatus === 'imported') {
       return { rowsImported: existing.rowCountLoaded ?? 0 };
     }
     throw new Error(
@@ -390,9 +544,16 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // DELETE handles the narrow case where a prior attempt staged but never
     // reached cleanup.)
     await timePhase(file.id, 'clear_staging', async () => {
-      await db
-        .delete(stagingWeeklyMetrics)
-        .where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
+      if (input.replayMode) {
+        // Replay is single-threaded and we don't need to preserve any
+        // other file's staging rows — TRUNCATE is instant vs. minutes
+        // for the per-file DELETE on a populated staging table.
+        await db.execute(sql`TRUNCATE staging_weekly_metrics`);
+      } else {
+        await db
+          .delete(stagingWeeklyMetrics)
+          .where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
+      }
     });
 
     // ------------------------------------------------------------------
@@ -589,6 +750,14 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // row search_terms table) and keeps these aggregate columns correct
     // without needing a separate recompute job.
     // ------------------------------------------------------------------
+    if (input.replayMode) {
+      // Skip search_terms_upsert entirely in replay mode. All terms in
+      // the file already exist in search_terms (from the original
+      // import); the upsert would do millions of index lookups against
+      // a 9.3M-row table to discover this fact and update nothing
+      // important. search_term_raw cleanup happens as a separate
+      // one-shot pass after the replay (see scripts/cleanSearchTermRaw.ts).
+    } else {
     await timePhase(file.id, 'search_terms_upsert', async () => {
       // Note: staging.search_term_raw now stores the CLEANED display
       // form (NFC + invisible-stripped). On conflict we also refresh
@@ -626,6 +795,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
             OR search_terms.search_term_raw <> EXCLUDED.search_term_raw
       `);
     });
+    }
 
     // ------------------------------------------------------------------
     // Phase 3: promote to keyword_weekly_metrics.
@@ -637,7 +807,14 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // massive WAL, and left 2.8M dead tuples per import for vacuum to
     // reclaim).
     // ------------------------------------------------------------------
-    if (file.isReplacement) {
+    if (input.replayMode) {
+      // Targeted repair: only DELETE+INSERT rows in duplicate groups.
+      // ~3-4× faster than the upsert path on cold partitions.
+      // See runStagingToKwmTargetedRepair docstring.
+      await timePhase(file.id, 'kwm_targeted_repair', async () => {
+        await runStagingToKwmTargetedRepair(file.id);
+      });
+    } else if (file.isReplacement) {
       // Replacement flow: nuke existing week, then INSERT fresh through
       // the dedup pipeline below. Staging dedup still applies — even
       // a fresh week could contain Amazon's phantom OBJ-prefixed rows.
@@ -728,7 +905,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     let summaryRefreshOk = true;
     let refreshResult: { rowsWritten: number; currentWeekEndDate: string } | null = null;
     let refreshErrorMessage: string | undefined;
-    if (input.skipRefresh) {
+    if (isReplay) {
       // Bulk historical-replay path: caller will run one final refresh
       // after all files complete. No per-file refresh, no email per file.
       summaryRefreshOk = true;
@@ -763,7 +940,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // Notify admins via email — but skip for bulk replay runs to avoid
     // 53 emails landing in the admin's inbox over the course of an
     // overnight job. The replay caller emails one summary at the end.
-    if (!input.skipRefresh) {
+    if (!isReplay) {
       const durationMs = file.importStartedAt
         ? Date.now() - new Date(file.importStartedAt).getTime()
         : undefined;
