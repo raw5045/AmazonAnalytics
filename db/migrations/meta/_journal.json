@@ -120,6 +120,13 @@
       "when": 1778659200000,
       "tag": "0016_loose_match_padded_string",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1778680800000,
+      "tag": "0017_loose_match_inlinable_sql",
+      "breakpoints": true
     }
   ]
 }
