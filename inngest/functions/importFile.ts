@@ -77,23 +77,34 @@ function titleContainsKeyword(normalizedKeyword: string, title: string | null | 
  * Used by both the import path's kwm INSERT and the historical
  * backfill (scripts/backfillKwmLooseFlags.ts).
  */
-const LOOSE_STOPWORDS_SQL_LIST =
-  "'a','an','and','are','as','at','be','by','for','from','has','have'," +
-  "'in','is','it','its','of','on','or','that','the','this','to','with'";
-function looseFlagSqlFragment(searchTermSql: string, titleSql: string): string {
+/**
+ * Build a SQL CASE expression that evaluates one loose title-match
+ * flag, taking advantage of:
+ *
+ *   - Amazon's strict flag as a shortcut: if strict is TRUE, loose is
+ *     also TRUE (loose is a superset). Saves the regex+function work
+ *     on ~30-50% of rows.
+ *   - NULL title → NULL result (preserved correctly).
+ *   - Otherwise: call loose_match() on pre-tokenized search input and
+ *     freshly computed title forms.
+ *
+ * `searchTokensSql` should resolve to a text[] (typically a CTE column
+ * holding `loose_search_tokens(search_term_normalized)`).
+ * `titleSql` and `strictFlagSql` are SQL expressions on the row.
+ *
+ * The actual matching logic lives in migration 0015's Postgres
+ * functions; see lib/analytics/looseMatch.ts for the spec.
+ */
+function looseFlagExpr(
+  searchTokensSql: string,
+  titleSql: string,
+  strictFlagSql: string,
+): string {
   return `
-    CASE WHEN ${titleSql} IS NULL THEN NULL
-      ELSE NOT EXISTS (
-        SELECT 1 FROM unnest(
-          string_to_array(
-            regexp_replace(LOWER(${searchTermSql}), '[^a-z0-9]+', ' ', 'g'),
-            ' '
-          )
-        ) AS w
-        WHERE w <> ''
-          AND w NOT IN (${LOOSE_STOPWORDS_SQL_LIST})
-          AND POSITION(' ' || w || ' ' IN ' ' || regexp_replace(LOWER(${titleSql}), '[^a-z0-9]+', ' ', 'g') || ' ') = 0
-      )
+    CASE
+      WHEN ${titleSql} IS NULL THEN NULL
+      WHEN ${strictFlagSql} IS TRUE THEN TRUE
+      ELSE loose_match(${searchTokensSql}, loose_title_forms(${titleSql}))
     END
   `;
 }
@@ -219,6 +230,26 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
       FROM staging_weekly_metrics s
       JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
       WHERE s.uploaded_file_id = ${fileId}
+    ),
+    prepared AS (
+      -- Filter to winners (rn=1) and hoist the search-side tokenization
+      -- once per row so the three loose-flag CASE expressions reuse it.
+      SELECT
+        *,
+        loose_search_tokens(search_term_normalized) AS search_tokens
+      FROM candidates
+      WHERE rn = 1
+    ),
+    with_flags AS (
+      -- Pre-compute the three loose flags once. The outer SELECT
+      -- references f1/f2/f3 for both the column values and the count,
+      -- so each flag expression evaluates exactly once.
+      SELECT
+        *,
+        ${sql.raw(looseFlagExpr('search_tokens', 'top_clicked_product_1_title', 'keyword_in_title_1'))} AS f1,
+        ${sql.raw(looseFlagExpr('search_tokens', 'top_clicked_product_2_title', 'keyword_in_title_2'))} AS f2,
+        ${sql.raw(looseFlagExpr('search_tokens', 'top_clicked_product_3_title', 'keyword_in_title_3'))} AS f3
+      FROM prepared
     )
     INSERT INTO keyword_weekly_metrics AS kwm (
       week_end_date, search_term_id, actual_rank,
@@ -242,13 +273,13 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
       top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
       top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
       keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-      ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_1_title'))} AS keyword_in_title_1_loose,
-      ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_2_title'))} AS keyword_in_title_2_loose,
-      ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_3_title'))} AS keyword_in_title_3_loose,
+      f1 AS keyword_in_title_1_loose,
+      f2 AS keyword_in_title_2_loose,
+      f3 AS keyword_in_title_3_loose,
       (
-        (CASE WHEN ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_1_title'))} IS TRUE THEN 1 ELSE 0 END) +
-        (CASE WHEN ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_2_title'))} IS TRUE THEN 1 ELSE 0 END) +
-        (CASE WHEN ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_3_title'))} IS TRUE THEN 1 ELSE 0 END)
+        (CASE WHEN f1 IS TRUE THEN 1 ELSE 0 END) +
+        (CASE WHEN f2 IS TRUE THEN 1 ELSE 0 END) +
+        (CASE WHEN f3 IS TRUE THEN 1 ELSE 0 END)
       )::smallint AS keyword_title_match_count_loose,
       CASE
         WHEN top_clicked_product_1_click_share IS NULL
@@ -267,8 +298,7 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
         ELSE 'evaluated'::fake_volume_eval_status
       END AS fake_volume_eval_status,
       ${fileId}
-    FROM candidates
-    WHERE rn = 1
+    FROM with_flags
     ON CONFLICT (week_end_date, search_term_id) DO UPDATE SET
       actual_rank = EXCLUDED.actual_rank,
       top_clicked_brand_1 = EXCLUDED.top_clicked_brand_1,
@@ -428,13 +458,13 @@ async function runStagingToKwmTargetedRepair(fileId: string): Promise<void> {
         top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
         top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
         keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-        ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_1_title'))} AS keyword_in_title_1_loose,
-        ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_2_title'))} AS keyword_in_title_2_loose,
-        ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_3_title'))} AS keyword_in_title_3_loose,
+        ${sql.raw(looseFlagExpr('loose_search_tokens(search_term_normalized)', 'top_clicked_product_1_title', 'keyword_in_title_1'))} AS keyword_in_title_1_loose,
+        ${sql.raw(looseFlagExpr('loose_search_tokens(search_term_normalized)', 'top_clicked_product_2_title', 'keyword_in_title_2'))} AS keyword_in_title_2_loose,
+        ${sql.raw(looseFlagExpr('loose_search_tokens(search_term_normalized)', 'top_clicked_product_3_title', 'keyword_in_title_3'))} AS keyword_in_title_3_loose,
         (
-          (CASE WHEN ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_1_title'))} IS TRUE THEN 1 ELSE 0 END) +
-          (CASE WHEN ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_2_title'))} IS TRUE THEN 1 ELSE 0 END) +
-          (CASE WHEN ${sql.raw(looseFlagSqlFragment('search_term_raw', 'top_clicked_product_3_title'))} IS TRUE THEN 1 ELSE 0 END)
+          (CASE WHEN ${sql.raw(looseFlagExpr('loose_search_tokens(search_term_normalized)', 'top_clicked_product_1_title', 'keyword_in_title_1'))} IS TRUE THEN 1 ELSE 0 END) +
+          (CASE WHEN ${sql.raw(looseFlagExpr('loose_search_tokens(search_term_normalized)', 'top_clicked_product_2_title', 'keyword_in_title_2'))} IS TRUE THEN 1 ELSE 0 END) +
+          (CASE WHEN ${sql.raw(looseFlagExpr('loose_search_tokens(search_term_normalized)', 'top_clicked_product_3_title', 'keyword_in_title_3'))} IS TRUE THEN 1 ELSE 0 END)
         )::smallint,
         CASE
           WHEN top_clicked_product_1_click_share IS NULL
