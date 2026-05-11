@@ -127,6 +127,13 @@
       "when": 1778680800000,
       "tag": "0017_loose_match_inlinable_sql",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1778702400000,
+      "tag": "0018_search_term_loose_requirements",
+      "breakpoints": true
     }
   ]
 }

@@ -78,22 +78,42 @@ function titleContainsKeyword(normalizedKeyword: string, title: string | null | 
  * backfill (scripts/backfillKwmLooseFlags.ts).
  */
 /**
+ * Rank threshold for loose computation. Rows with actual_rank > this
+ * are functionally zero-traffic noise; we skip loose computation for
+ * them to match the historical backfill behavior. Loose columns stay
+ * NULL on those rows.
+ */
+const LOOSE_RANK_THRESHOLD = 1_000_000;
+
+/**
  * Build a SQL expression that calls loose_title_flags_3() — the
  * single-function-call matcher introduced in migration 0016. Returns
  * a `loose_title_flags` composite (f1, f2, f3, match_count). The
  * caller is expected to alias the result and project the fields via
  * `(alias).f1` etc.
  *
- * Inlines the strict-true shortcut + null-title handling inside
- * loose_title_flags_3 itself. See lib/analytics/looseMatch.ts for
- * the spec.
+ * Skips the matcher entirely for rows with actual_rank > LOOSE_RANK_THRESHOLD
+ * (returns a NULL composite, so all loose columns end up NULL — consistent
+ * with the historical backfill).
+ *
+ * `rankSql` should evaluate to the actual_rank column. The other args
+ * are SQL expressions resolving to the search-term + title + strict-flag
+ * columns.
  */
-function looseFlagsCall(searchSql: string, titlePrefix: string, strictPrefix: string): string {
-  return `loose_title_flags_3(
-    ${searchSql},
-    ${titlePrefix}_1_title, ${titlePrefix}_2_title, ${titlePrefix}_3_title,
-    ${strictPrefix}_1, ${strictPrefix}_2, ${strictPrefix}_3
-  )`;
+function looseFlagsCall(
+  searchSql: string,
+  titlePrefix: string,
+  strictPrefix: string,
+  rankSql: string,
+): string {
+  return `(CASE
+    WHEN ${rankSql} > ${LOOSE_RANK_THRESHOLD} THEN NULL::loose_title_flags
+    ELSE loose_title_flags_3(
+      ${searchSql},
+      ${titlePrefix}_1_title, ${titlePrefix}_2_title, ${titlePrefix}_3_title,
+      ${strictPrefix}_1, ${strictPrefix}_2, ${strictPrefix}_3
+    )
+  END)`;
 }
 
 /**
@@ -225,7 +245,7 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
       -- null-title and strict-true shortcuts.
       SELECT
         *,
-        ${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title'))} AS lf
+        ${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title', 'actual_rank'))} AS lf
       FROM candidates
       WHERE rn = 1
     )
@@ -432,10 +452,10 @@ async function runStagingToKwmTargetedRepair(fileId: string): Promise<void> {
         top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
         top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
         keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count,
-        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title'))}).f1 AS keyword_in_title_1_loose,
-        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title'))}).f2 AS keyword_in_title_2_loose,
-        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title'))}).f3 AS keyword_in_title_3_loose,
-        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title'))}).match_count,
+        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title', 'actual_rank'))}).f1 AS keyword_in_title_1_loose,
+        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title', 'actual_rank'))}).f2 AS keyword_in_title_2_loose,
+        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title', 'actual_rank'))}).f3 AS keyword_in_title_3_loose,
+        (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title', 'actual_rank'))}).match_count,
         CASE
           WHEN top_clicked_product_1_click_share IS NULL
             OR top_clicked_product_1_conversion_share IS NULL THEN NULL
