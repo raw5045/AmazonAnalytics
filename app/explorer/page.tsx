@@ -27,6 +27,17 @@ export default async function ExplorerPage({
   const sp = await searchParams;
   const filters = parseExplorerFilters(sp);
 
+  // Build the back-URL that detail pages will return to. Re-serializes
+  // the current filter state so users don't lose their filters when
+  // they click into a keyword and click back.
+  const backQuery = new URLSearchParams();
+  for (const [k, v] of Object.entries(sp ?? {})) {
+    if (v === undefined) continue;
+    if (Array.isArray(v)) v.forEach((vv) => backQuery.append(k, vv));
+    else backQuery.set(k, v);
+  }
+  const backUrl = backQuery.toString() ? `/explorer?${backQuery.toString()}` : '/explorer';
+
   const [{ rows, total, totalIsCapped }, categories] = await Promise.all([
     runExplorerQuery(filters),
     listCategories(),
@@ -58,7 +69,7 @@ export default async function ExplorerPage({
             Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
           </p>
         )}
-        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} />
+        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} backUrl={backUrl} />
         <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>

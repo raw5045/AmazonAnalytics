@@ -21,10 +21,14 @@ import type {
 } from './types';
 
 /**
- * Map JumpKey to the (rank_Nw_ago > X, current_rank < Y) thresholds.
+ * Map preset JumpKeys to (rank_Nw_ago > X, current_rank < Y) thresholds.
+ * The 'custom' variant reads from filters.jumpFrom / filters.jumpTo
+ * instead — see the dispatch in buildExplorerQuery.
+ *
  * The SQL applied is `rank_${window}w_ago > X AND current_rank < Y`.
  */
-const JUMP_THRESHOLDS: Record<JumpKey, { from: number; to: number }> = {
+type PresetJumpKey = Exclude<JumpKey, 'custom'>;
+const JUMP_THRESHOLDS: Record<PresetJumpKey, { from: number; to: number }> = {
   '500k_to_100k': { from: 500_000, to: 100_000 },
   '100k_to_50k': { from: 100_000, to: 50_000 },
   '100k_to_10k': { from: 100_000, to: 10_000 },
@@ -77,7 +81,16 @@ export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery
 
   // 1.4 — threshold jump (uses the window-specific rank_Nw_ago column)
   if (filters.jump) {
-    const { from, to } = JUMP_THRESHOLDS[filters.jump];
+    let from: number;
+    let to: number;
+    if (filters.jump === 'custom') {
+      // parseFilters has already validated that both values are present
+      // and from > to when jump === 'custom'; non-null asserts are safe.
+      from = filters.jumpFrom!;
+      to = filters.jumpTo!;
+    } else {
+      ({ from, to } = JUMP_THRESHOLDS[filters.jump]);
+    }
     const fromParam = next(from);
     const toParam = next(to);
     // For the 1w window we use prior_week_rank; for other windows we use rank_Nw_ago.

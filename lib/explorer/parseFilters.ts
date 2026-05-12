@@ -23,6 +23,8 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   rankMin: null,
   rankMax: null,
   jump: null,
+  jumpFrom: null,
+  jumpTo: null,
   category: null,
   severities: ['none', 'warning'],
   titleSlots: [1, 2, 3],
@@ -38,7 +40,7 @@ export type SearchParamsLike = Record<string, string | string[] | undefined>;
 const WINDOW_VALUES: WindowKey[] = ['1w', '4w', '13w', '26w', '52w'];
 const SORT_VALUES: SortKey[] = ['rank', 'rank_desc', 'imp', 'decline', 'title_gap'];
 const SEVERITY_VALUES: SeverityKey[] = ['none', 'warning', 'critical'];
-const JUMP_VALUES: JumpKey[] = ['500k_to_100k', '100k_to_50k', '100k_to_10k', '50k_to_10k'];
+const JUMP_VALUES: JumpKey[] = ['500k_to_100k', '100k_to_50k', '100k_to_10k', '50k_to_10k', 'custom'];
 const TITLE_MODE_VALUES: TitleMatchMode[] = ['any', 'all'];
 const MATCH_MODE_VALUES: MatchMode[] = ['strict', 'loose'];
 
@@ -90,7 +92,15 @@ function parseTitleSlots(value: string | undefined): number[] {
 export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFilters {
   const window = parseEnum(getOne(searchParams.window), WINDOW_VALUES, EXPLORER_DEFAULTS.window);
   const sort = parseEnum(getOne(searchParams.sort), SORT_VALUES, EXPLORER_DEFAULTS.sort);
-  const jump = parseEnumNullable(getOne(searchParams.jump), JUMP_VALUES);
+  let jump = parseEnumNullable(getOne(searchParams.jump), JUMP_VALUES);
+  const jumpFrom = parsePositiveInt(getOne(searchParams.jump_from));
+  const jumpTo = parsePositiveInt(getOne(searchParams.jump_to));
+  // If 'custom' is requested but both thresholds aren't valid + ordered
+  // (worse rank > better rank), drop the jump filter rather than apply
+  // a nonsensical one.
+  if (jump === 'custom' && (jumpFrom === null || jumpTo === null || jumpFrom <= jumpTo)) {
+    jump = null;
+  }
   const titleMatchMode = parseEnumNullable(getOne(searchParams.title_match), TITLE_MODE_VALUES);
   const matchMode = parseEnum(getOne(searchParams.match_mode), MATCH_MODE_VALUES, EXPLORER_DEFAULTS.matchMode);
 
@@ -113,6 +123,8 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     rankMin,
     rankMax,
     jump,
+    jumpFrom: jump === 'custom' ? jumpFrom : null,
+    jumpTo: jump === 'custom' ? jumpTo : null,
     category: getOne(searchParams.category) ?? null,
     severities,
     titleSlots,

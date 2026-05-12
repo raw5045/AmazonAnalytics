@@ -28,6 +28,8 @@ describe('parseExplorerFilters', () => {
       rankMin: 1,
       rankMax: 1000,
       jump: '500k_to_100k',
+      jumpFrom: null,
+      jumpTo: null,
       category: 'Electronics',
       severities: ['warning', 'critical'],
       titleSlots: [1, 2],
@@ -37,6 +39,35 @@ describe('parseExplorerFilters', () => {
       page: 3,
       perPage: 50,
     });
+  });
+
+  it('parses custom threshold jump with both bounds', () => {
+    const filters = parseExplorerFilters({
+      jump: 'custom',
+      jump_from: '201000',
+      jump_to: '75000',
+    });
+    expect(filters.jump).toBe('custom');
+    expect(filters.jumpFrom).toBe(201000);
+    expect(filters.jumpTo).toBe(75000);
+  });
+
+  it('drops custom jump when bounds are missing or reversed', () => {
+    expect(parseExplorerFilters({ jump: 'custom' }).jump).toBeNull();
+    expect(parseExplorerFilters({ jump: 'custom', jump_from: '100' }).jump).toBeNull();
+    // from <= to is rejected (would be a non-improvement)
+    expect(parseExplorerFilters({ jump: 'custom', jump_from: '100', jump_to: '500' }).jump).toBeNull();
+  });
+
+  it('clears jumpFrom/jumpTo when jump is a preset', () => {
+    const filters = parseExplorerFilters({
+      jump: '500k_to_100k',
+      jump_from: '999999',
+      jump_to: '1',
+    });
+    expect(filters.jump).toBe('500k_to_100k');
+    expect(filters.jumpFrom).toBeNull();
+    expect(filters.jumpTo).toBeNull();
   });
 
   it('matchMode defaults to loose', () => {

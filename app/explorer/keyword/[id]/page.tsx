@@ -27,8 +27,10 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 export default async function KeywordDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<{ from?: string | string[] }>;
 }) {
   const { id } = await params;
   if (!UUID_RE.test(id)) notFound();
@@ -36,13 +38,18 @@ export default async function KeywordDetailPage({
   const detail = await fetchKeywordDetail(id);
   if (!detail) notFound();
 
+  const sp = searchParams ? await searchParams : {};
+  const fromRaw = Array.isArray(sp.from) ? sp.from[0] : sp.from;
+  // Only allow same-origin /explorer URLs (defense against open-redirect via from=).
+  const backHref = fromRaw && fromRaw.startsWith('/explorer') ? fromRaw : '/explorer';
+
   const { searchTermRaw, searchTermNormalized, current, history } = detail;
   const showNormalized =
     searchTermNormalized && searchTermNormalized.toLowerCase() !== searchTermRaw.toLowerCase();
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <Link href="/explorer" className="text-sm underline text-gray-600 hover:text-gray-900">
+      <Link href={backHref} className="text-sm underline text-gray-600 hover:text-gray-900">
         ← Back to explorer
       </Link>
 

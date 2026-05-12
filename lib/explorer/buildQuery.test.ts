@@ -312,6 +312,8 @@ describe('buildExplorerQuery', () => {
         rankMin: 1,
         rankMax: 100_000,
         jump: '500k_to_100k',
+        jumpFrom: null,
+        jumpTo: null,
         category: 'Electronics',
         severities: ['none', 'warning'],
         titleSlots: [1, 2, 3],

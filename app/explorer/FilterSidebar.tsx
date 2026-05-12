@@ -26,6 +26,7 @@ const JUMPS: Array<{ value: JumpKey; label: string }> = [
   { value: '100k_to_50k', label: 'Outside top 100k → inside top 50k' },
   { value: '100k_to_10k', label: 'Outside top 100k → inside top 10k' },
   { value: '50k_to_10k', label: 'Outside top 50k → inside top 10k' },
+  { value: 'custom', label: 'Custom thresholds…' },
 ];
 
 const SEVERITIES: Array<{ value: SeverityKey; label: string }> = [
@@ -54,6 +55,10 @@ interface PendingFilters {
   rankBest: string;
   rankWorst: string;
   jump: JumpKey | '';
+  /** Numeric string; only used when jump === 'custom'. */
+  jumpFrom: string;
+  /** Numeric string; only used when jump === 'custom'. */
+  jumpTo: string;
   category: string;
   severities: SeverityKey[];
   titleSlots: number[];
@@ -69,6 +74,8 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     rankBest: f.rankMin?.toString() ?? '',
     rankWorst: f.rankMax?.toString() ?? '',
     jump: f.jump ?? '',
+    jumpFrom: f.jumpFrom?.toString() ?? '',
+    jumpTo: f.jumpTo?.toString() ?? '',
     category: f.category ?? '',
     severities: f.severities,
     titleSlots: f.titleSlots,
@@ -85,7 +92,13 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.q.trim().length >= 3) params.set('q', p.q.trim());
   if (p.rankBest) params.set('rank_min', p.rankBest);
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
-  if (p.jump) params.set('jump', p.jump);
+  if (p.jump) {
+    params.set('jump', p.jump);
+    if (p.jump === 'custom') {
+      if (p.jumpFrom) params.set('jump_from', p.jumpFrom);
+      if (p.jumpTo) params.set('jump_to', p.jumpTo);
+    }
+  }
   if (p.category) params.set('category', p.category);
   // Default severities = ['none', 'warning']. Only emit when different.
   const defaultSev = JSON.stringify([...EXPLORER_DEFAULTS.severities].sort());
@@ -246,6 +259,36 @@ export function FilterSidebar({
             </option>
           ))}
         </select>
+        {pending.jump === 'custom' && (
+          <div className="mt-2">
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={1}
+                value={pending.jumpFrom}
+                onChange={(e) => set('jumpFrom', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && apply()}
+                placeholder="Was worse than (e.g. 201000)"
+                className="filter-input flex-1"
+                aria-label="Custom jump: was ranked worse than"
+              />
+              <span className="self-center text-gray-400 text-xs">→</span>
+              <input
+                type="number"
+                min={1}
+                value={pending.jumpTo}
+                onChange={(e) => set('jumpTo', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && apply()}
+                placeholder="Now better than (e.g. 75000)"
+                className="filter-input flex-1"
+                aria-label="Custom jump: now ranked better than"
+              />
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Show keywords whose rank in the selected window was worse than the first value and is now better than the second.
+            </p>
+          </div>
+        )}
       </FieldGroup>
 
       <FieldGroup label="Top clicked category #1">

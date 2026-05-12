@@ -11,7 +11,13 @@ export type SortKey = 'rank' | 'rank_desc' | 'imp' | 'decline' | 'title_gap';
 
 export type SeverityKey = 'none' | 'warning' | 'critical';
 
-export type JumpKey = '500k_to_100k' | '100k_to_50k' | '100k_to_10k' | '50k_to_10k';
+export type JumpKey =
+  | '500k_to_100k'
+  | '100k_to_50k'
+  | '100k_to_10k'
+  | '50k_to_10k'
+  /** Custom threshold pair — user-entered `jumpFrom` and `jumpTo`. */
+  | 'custom';
 
 export type TitleMatchMode = 'any' | 'all';
 
@@ -39,6 +45,10 @@ export interface ExplorerFilters {
   rankMin: number | null;
   rankMax: number | null;
   jump: JumpKey | null;
+  /** Only consulted when jump === 'custom'. The "was ranked worse than" threshold. */
+  jumpFrom: number | null;
+  /** Only consulted when jump === 'custom'. The "now ranked better than" threshold. */
+  jumpTo: number | null;
   category: string | null;
   severities: SeverityKey[];
   titleSlots: number[];

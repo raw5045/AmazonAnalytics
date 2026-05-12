@@ -13,11 +13,15 @@ export function ResultsTable({
   rows,
   window,
   matchMode,
+  backUrl,
 }: {
   rows: ExplorerRow[];
   window: WindowKey;
   matchMode: MatchMode;
+  /** The URL the detail page should return to (preserves filter state). */
+  backUrl: string;
 }) {
+  const fromParam = backUrl === '/explorer' ? '' : `?from=${encodeURIComponent(backUrl)}`;
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
     if (matchMode === 'loose') {
       return slot === 1 ? r.keywordInTitle1Loose : slot === 2 ? r.keywordInTitle2Loose : r.keywordInTitle3Loose;
@@ -57,7 +61,7 @@ export function ResultsTable({
             <tr key={r.searchTermId} className="hover:bg-gray-50">
               <td className="p-2 font-medium">
                 <Link
-                  href={`/explorer/keyword/${r.searchTermId}`}
+                  href={`/explorer/keyword/${r.searchTermId}${fromParam}`}
                   className="text-blue-700 hover:underline"
                 >
                   {r.searchTermRaw}
