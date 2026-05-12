@@ -17,7 +17,7 @@ import { RawDataTable } from './RawDataTable';
 import { RankChart } from './RankChart';
 import { FakeVolumeStrip } from './FakeVolumeStrip';
 import { TitleMatchHistory } from './TitleMatchHistory';
-import { TopProductTimeline } from './TopProductTimeline';
+import { KeywordVariantsBox } from './KeywordVariantsBox';
 
 export const metadata: Metadata = {
   title: 'Keyword detail',
@@ -94,9 +94,18 @@ export default async function KeywordDetailPage({
         />
       </section>
 
-      <section className="mt-6">
-        <TopProductTimeline history={history} />
-      </section>
+      {(() => {
+        // Variants box: only show for active keywords whose most recent week
+        // had >1 raw CSV phrasing for this normalized term.
+        if (!current) return null;
+        const latestRow = history.find((r) => r.weekEndDate === current.currentWeekEndDate);
+        if (!latestRow?.variants) return null;
+        return (
+          <section className="mt-6">
+            <KeywordVariantsBox weekEndDate={current.currentWeekEndDate} variants={latestRow.variants} />
+          </section>
+        );
+      })()}
 
       <section className="mt-8">
         <h2 className="text-sm font-semibold text-gray-700 mb-2">Weekly history</h2>

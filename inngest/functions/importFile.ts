@@ -213,7 +213,7 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
       COUNT(*)::int,
       MIN(s.actual_rank)::int,
       ARRAY_AGG(s.actual_rank ORDER BY s.actual_rank ASC),
-      (ARRAY_AGG(LEFT(s.search_term_raw_original, 200) ORDER BY s.actual_rank ASC))[1:3]
+      ARRAY_AGG(LEFT(s.search_term_raw_original, 200) ORDER BY s.actual_rank ASC)
     FROM staging_weekly_metrics s
     JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
     WHERE s.uploaded_file_id = ${fileId}
@@ -379,7 +379,7 @@ async function runStagingToKwmTargetedRepair(fileId: string): Promise<void> {
       COUNT(*)::int,
       MIN(s.actual_rank)::int,
       ARRAY_AGG(s.actual_rank ORDER BY s.actual_rank ASC),
-      (ARRAY_AGG(LEFT(s.search_term_raw_original, 200) ORDER BY s.actual_rank ASC))[1:3]
+      ARRAY_AGG(LEFT(s.search_term_raw_original, 200) ORDER BY s.actual_rank ASC)
     FROM staging_weekly_metrics s
     JOIN search_terms st ON st.search_term_normalized = s.search_term_normalized
     WHERE s.uploaded_file_id = ${fileId}
