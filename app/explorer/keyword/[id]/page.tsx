@@ -94,6 +94,11 @@ export default async function KeywordDetailPage({
         />
       </section>
 
+      <section className="mt-8">
+        <h2 className="text-sm font-semibold text-gray-700 mb-2">Weekly history</h2>
+        <RawDataTable rows={history} />
+      </section>
+
       {(() => {
         // Variants box: only show for active keywords whose most recent week
         // had >1 raw CSV phrasing for this normalized term.
@@ -106,11 +111,6 @@ export default async function KeywordDetailPage({
           </section>
         );
       })()}
-
-      <section className="mt-8">
-        <h2 className="text-sm font-semibold text-gray-700 mb-2">Weekly history</h2>
-        <RawDataTable rows={history} />
-      </section>
     </div>
   );
 }
