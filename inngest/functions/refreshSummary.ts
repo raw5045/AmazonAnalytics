@@ -104,10 +104,9 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       await stageRankAtOffset(client, weeks);
     }
 
-    // 3. Stage loose-match flags into a temp table so each per-(term, slot)
-    //    regex match is evaluated once (vs. 2x if computed inline in the
-    //    INSERT — once for the boolean, once inside the count CASE).
-    await stageLooseMatchFlags(client);
+    // 3. Loose-match flags are now read directly from kwm (the source of
+    //    truth after migration 0016+). They're already pulled into
+    //    latest_per_term, so no separate computation stage needed.
 
     // ever_top_50k DEFERRED to Plan 3.5: a full-history scan of kwm joined
     // to latest_per_term takes 1+ hours via Neon's cold-page prefetch
@@ -172,17 +171,12 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         l.keyword_in_title_2,
         l.keyword_in_title_3,
         l.keyword_title_match_count,
-        lf.f1 AS in_title_1_loose,
-        lf.f2 AS in_title_2_loose,
-        lf.f3 AS in_title_3_loose,
-        (
-          (CASE WHEN lf.f1 IS TRUE THEN 1 ELSE 0 END) +
-          (CASE WHEN lf.f2 IS TRUE THEN 1 ELSE 0 END) +
-          (CASE WHEN lf.f3 IS TRUE THEN 1 ELSE 0 END)
-        )::smallint AS title_match_count_loose,
+        l.keyword_in_title_1_loose AS in_title_1_loose,
+        l.keyword_in_title_2_loose AS in_title_2_loose,
+        l.keyword_in_title_3_loose AS in_title_3_loose,
+        l.keyword_title_match_count_loose AS title_match_count_loose,
         NOW()
       FROM latest_per_term l
-      JOIN loose_flags lf ON lf.search_term_id = l.search_term_id
       LEFT JOIN rank_at_1w r1 ON r1.search_term_id = l.search_term_id
       LEFT JOIN rank_at_4w r4 ON r4.search_term_id = l.search_term_id
       LEFT JOIN rank_at_13w r13 ON r13.search_term_id = l.search_term_id
@@ -238,10 +232,10 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
 }
 
 async function stageLatestPerTerm(client: PoolClient): Promise<void> {
-  // We pull all 3 product titles + search_term_raw into the temp table even
-  // though kcs only stores title 1, because the loose-match computation in
-  // the final INSERT needs to compare every search-term token against each
-  // of the 3 titles. search_term_raw is joined from search_terms.
+  // We pull all 3 product titles + 3 strict flags + 4 loose columns into
+  // the temp table. Loose columns are read directly from kwm (which is
+  // the source of truth after migration 0016+ and the backfill); kcs no
+  // longer recomputes them.
   await client.query(`
     CREATE TEMP TABLE latest_per_term ON COMMIT DROP AS
     WITH ref AS (
@@ -264,7 +258,11 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
       k.keyword_in_title_1,
       k.keyword_in_title_2,
       k.keyword_in_title_3,
-      k.keyword_title_match_count
+      k.keyword_title_match_count,
+      k.keyword_in_title_1_loose,
+      k.keyword_in_title_2_loose,
+      k.keyword_in_title_3_loose,
+      k.keyword_title_match_count_loose
     FROM keyword_weekly_metrics k
     JOIN search_terms st ON st.id = k.search_term_id,
     ref
@@ -297,84 +295,9 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
 // stageEverTop50k removed — see "ever_top_50k DEFERRED" comment in main flow.
 // Will return in Plan 3.5 once we have a faster aggregate strategy.
 
-/**
- * Compute, for every term in latest_per_term, three booleans (f1/f2/f3)
- * — TRUE iff every non-stopword token in the search term appears in the
- * corresponding product title with word-boundary semantics, case-
- * insensitive. NULL when that slot's title is NULL.
- *
- * Implementation: a two-stage approach for performance.
- *
- *   1. Build `term_normalized` — lowercase the search term + each title,
- *      replace runs of non-alphanumeric chars with spaces, and pad with
- *      a leading and trailing space. Punctuation/hyphens become spaces
- *      so that "monohydrate-flavored" tokenizes as two words.
- *
- *   2. For each (term, slot) pair, check that every non-stopword token
- *      in the search term appears in the title via `POSITION(' word ' IN
- *      padded_title) > 0` — a substring search that's dramatically
- *      faster than a regex word-boundary match (which the database
- *      can't pre-compile because the pattern is constructed per row).
- *
- * Equivalence to the old regex approach: identical for all alphanumeric
- * tokens. The padding-with-spaces trick + punctuation-to-space
- * preprocessing reproduces the `\m...\M` word-boundary semantics for
- * anything we care about (the strict/loose divergence we observed in
- * verification was unicode-symbol / weird-char edge cases that affect
- * BOTH approaches the same way).
- *
- * Stopword list is intentionally small — common English function words
- * that contribute no semantic information when matching brand-style
- * search terms.
- */
-async function stageLooseMatchFlags(client: PoolClient): Promise<void> {
-  // Stage 1: normalize and pad. One regexp_replace per (term, slot) — done
-  // once and the result is reused by all three slot checks below.
-  await client.query(`
-    CREATE TEMP TABLE term_normalized ON COMMIT DROP AS
-    SELECT
-      l.search_term_id,
-      ' ' || regexp_replace(LOWER(l.search_term_raw), '[^a-z0-9]+', ' ', 'g') || ' ' AS s,
-      CASE WHEN l.top_clicked_product_1_title IS NULL THEN NULL
-           ELSE ' ' || regexp_replace(LOWER(l.top_clicked_product_1_title), '[^a-z0-9]+', ' ', 'g') || ' '
-      END AS t1,
-      CASE WHEN l.top_clicked_product_2_title IS NULL THEN NULL
-           ELSE ' ' || regexp_replace(LOWER(l.top_clicked_product_2_title), '[^a-z0-9]+', ' ', 'g') || ' '
-      END AS t2,
-      CASE WHEN l.top_clicked_product_3_title IS NULL THEN NULL
-           ELSE ' ' || regexp_replace(LOWER(l.top_clicked_product_3_title), '[^a-z0-9]+', ' ', 'g') || ' '
-      END AS t3
-    FROM latest_per_term l;
-    CREATE INDEX ON term_normalized (search_term_id);
-  `);
-
-  // Stage 2: for each (term, slot), check that every non-stopword token
-  // in the search term appears in the padded title.
-  // POSITION returns 0 when the substring is not found — so the NOT EXISTS
-  // returns true iff every token IS found (= the term matches the title).
-  const slotExpr = (titleCol: string): string => `(
-    CASE
-      WHEN ${titleCol} IS NULL THEN NULL
-      ELSE NOT EXISTS (
-        SELECT 1 FROM unnest(string_to_array(trim(tn.s), ' ')) AS word
-        WHERE word <> ''
-          AND word NOT IN (
-            'a','an','and','are','as','at','be','by','for','from','has','have',
-            'in','is','it','its','of','on','or','that','the','this','to','with'
-          )
-          AND POSITION(' ' || word || ' ' IN ${titleCol}) = 0
-      )
-    END
-  )`;
-
-  await client.query(`
-    CREATE TEMP TABLE loose_flags ON COMMIT DROP AS
-    SELECT
-      tn.search_term_id,
-      ${slotExpr('tn.t1')} AS f1,
-      ${slotExpr('tn.t2')} AS f2,
-      ${slotExpr('tn.t3')} AS f3
-    FROM term_normalized tn;
-    CREATE INDEX ON loose_flags (search_term_id);
-  `);
-}
+// stageLooseMatchFlags removed — loose flags are now read directly from
+// kwm via latest_per_term. The source of truth is the import-path /
+// backfill that populates keyword_in_title_*_loose using the migration
+// 0016+ matcher (padded-string + bidirectional plural candidates).
+// Recomputing here would (a) duplicate logic, (b) risk drift, and
+// (c) waste ~half the refresh wall time.
