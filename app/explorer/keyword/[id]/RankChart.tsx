@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import {
   LineChart,
   Line,
@@ -19,10 +20,17 @@ import {
 } from '@/lib/explorer/formatHistory';
 
 /**
- * 52-week rank trend line. Y-axis is reversed so rank 1 (best) is at
- * the top. Reference lines at well-known rank thresholds give context
- * — a line bouncing between 50k and 100k means "long-tail term," a
- * line consistently under 10k means "head-tier."
+ * 52-week rank trend line.
+ *
+ * Y-axis is reversed so rank 1 (best) is at the top.
+ *
+ * Defaults to LOG scale because rank distribution is heavily non-linear
+ * — a move from 2M to 60K is functionally huge but visually invisible
+ * on a linear axis (compressed into the bottom 3% of the chart),
+ * whereas a move from 100 to 10 (also a huge improvement) is visible
+ * but barely. Log scale makes proportional rank changes visible across
+ * the whole range. A toggle lets users switch back to linear if they
+ * prefer that view.
  *
  * Gap weeks (term not observed) are emitted as `null` actualRank;
  * recharts' connectNulls={false} renders this as a break in the line.
@@ -35,6 +43,7 @@ export function RankChart({
   /** Anchor of the 52-week window. Usually the kcs current_week_end_date. */
   latestWeek: string;
 }) {
+  const [scale, setScale] = useState<'log' | 'linear'>('log');
   const calendar = buildWeekCalendar(latestWeek, 52);
   const data = gapFillHistory(history, calendar);
 
@@ -48,11 +57,21 @@ export function RankChart({
     (v) => v >= minRank && v <= maxRank,
   );
 
+  // Log scale ticks at decade boundaries inside the data range. Recharts
+  // auto-pick is OK but explicit ticks make labels predictable and the
+  // axis read more naturally for SFR-style data.
+  const logTicks = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000].filter(
+    (v) => v >= 1 && v <= maxRank * 1.5,
+  );
+
   return (
     <div className="border rounded p-4">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-semibold text-gray-700">Rank trend (52w)</h2>
-        <p className="text-xs text-gray-500">Lower = more searched. Gaps = unranked weeks.</p>
+        <div className="flex items-center gap-3">
+          <p className="text-xs text-gray-500">Lower = more searched. Gaps = unranked weeks.</p>
+          <ScaleToggle scale={scale} onChange={setScale} />
+        </div>
       </div>
       <ResponsiveContainer width="100%" height={280}>
         <LineChart data={data} margin={{ top: 8, right: 24, bottom: 8, left: 8 }}>
@@ -65,8 +84,12 @@ export function RankChart({
           />
           <YAxis
             reversed
+            scale={scale === 'log' ? 'log' : 'linear'}
+            domain={scale === 'log' ? [1, 'auto'] : ['auto', 'auto']}
+            ticks={scale === 'log' ? logTicks : undefined}
+            allowDataOverflow={false}
             tick={{ fontSize: 11 }}
-            tickFormatter={(v) => v.toLocaleString()}
+            tickFormatter={formatRankTick}
             width={70}
           />
           {referenceLines.map((v) => (
@@ -93,6 +116,35 @@ export function RankChart({
           />
         </LineChart>
       </ResponsiveContainer>
+    </div>
+  );
+}
+
+function ScaleToggle({
+  scale,
+  onChange,
+}: {
+  scale: 'log' | 'linear';
+  onChange: (s: 'log' | 'linear') => void;
+}) {
+  return (
+    <div className="inline-flex rounded border border-gray-200 overflow-hidden text-xs">
+      <button
+        type="button"
+        onClick={() => onChange('log')}
+        className={`px-2 py-0.5 ${scale === 'log' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+        aria-pressed={scale === 'log'}
+      >
+        Log
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange('linear')}
+        className={`px-2 py-0.5 border-l border-gray-200 ${scale === 'linear' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
+        aria-pressed={scale === 'linear'}
+      >
+        Linear
+      </button>
     </div>
   );
 }
@@ -126,6 +178,12 @@ function formatWeekTick(v: string): string {
   const monthIndex = parseInt(m, 10) - 1;
   if (monthIndex < 0 || monthIndex > 11) return v;
   return `${monthNames[monthIndex]} ${parseInt(d, 10)}`;
+}
+
+function formatRankTick(v: number): string {
+  if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(v % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (v >= 1_000) return `${(v / 1_000).toFixed(v % 1_000 === 0 ? 0 : 1)}k`;
+  return v.toLocaleString();
 }
 
 function formatRefLabel(v: number): string {

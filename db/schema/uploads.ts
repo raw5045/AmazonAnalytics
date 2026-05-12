@@ -38,6 +38,11 @@ export const fakeVolumeEvalStatusEnum = pgEnum('fake_volume_eval_status', [
   'evaluated',
   'unknown_missing_conversion',
   'unknown_missing_click',
+  // Added in migration 0019. Row's actual_rank > FAKE_VOLUME_RANK_THRESHOLD
+  // (100,000) — we deliberately skipped evaluation because search volume
+  // at that rank is too low for click_share/conversion_share signals to
+  // be meaningful. Severity is forced to 'none' for these rows.
+  'rank_below_threshold',
 ]);
 // Two-tier fake-volume severity (Plan 3.1).
 //   none     — rule evaluated cleanly and neither tier matched

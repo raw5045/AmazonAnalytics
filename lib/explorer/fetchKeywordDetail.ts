@@ -106,7 +106,15 @@ export async function fetchKeywordDetail(
         current_rank,
         prior_week_rank,
         improvement_1w,
-        fake_volume_severity_current,
+        -- Defensive: apply the same rank > 100k mask as for history.
+        -- The kcs row should already reflect this rule (after the
+        -- one-shot fixKcs script + future refresh logic), but masking
+        -- at read time means correctness doesn't depend on operational
+        -- ordering.
+        CASE
+          WHEN current_rank > 100000 THEN 'none'::fake_volume_severity
+          ELSE fake_volume_severity_current
+        END AS fake_volume_severity_current,
         top_clicked_product_1_asin_current,
         top_clicked_product_1_title_current,
         top_clicked_product_1_click_share_current,
@@ -139,8 +147,20 @@ export async function fetchKeywordDetail(
         keyword_in_title_2_loose,
         keyword_in_title_3_loose,
         keyword_title_match_count_loose,
-        fake_volume_severity,
-        fake_volume_eval_status
+        -- Apply the rank > 100,000 threshold mask at read time: at low
+        -- volume the click_share/conversion_share signals that drive
+        -- severity are too noisy to be meaningful. Raw value stays in
+        -- kwm (no historical backfill needed); we just mask on read.
+        -- See inngest/functions/importFile.ts FAKE_VOLUME_RANK_THRESHOLD
+        -- for the equivalent forward-going rule applied at insert time.
+        CASE
+          WHEN actual_rank > 100000 THEN 'none'::fake_volume_severity
+          ELSE fake_volume_severity
+        END AS fake_volume_severity,
+        CASE
+          WHEN actual_rank > 100000 THEN 'rank_below_threshold'::fake_volume_eval_status
+          ELSE fake_volume_eval_status
+        END AS fake_volume_eval_status
       FROM keyword_weekly_metrics
       WHERE search_term_id = ${searchTermId}
       ORDER BY week_end_date ASC

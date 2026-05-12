@@ -161,7 +161,17 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         l.week_end_date AS last_seen_week,
         -- date - date returns int (days). Divide by 7 for weeks.
         (($1::date - l.week_end_date) / 7)::int AS weeks_since_seen,
-        l.fake_volume_severity,
+        -- Apply the rank-threshold mask: at actual_rank > 100,000 the
+        -- click_share/conversion_share signals are too noisy to be
+        -- meaningful, so we treat severity as 'none' regardless of what
+        -- was computed at import time. See importFile.ts
+        -- FAKE_VOLUME_RANK_THRESHOLD for the equivalent forward-going
+        -- rule. Keeps explorer's severity filter clean of low-volume
+        -- noise without requiring a kwm backfill.
+        CASE
+          WHEN l.actual_rank > 100000 THEN 'none'::fake_volume_severity
+          ELSE l.fake_volume_severity
+        END AS fake_volume_severity,
         l.top_clicked_category_1,
         l.top_clicked_product_1_asin,
         l.top_clicked_product_1_title,

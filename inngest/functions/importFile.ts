@@ -86,6 +86,17 @@ function titleContainsKeyword(normalizedKeyword: string, title: string | null | 
 const LOOSE_RANK_THRESHOLD = 1_000_000;
 
 /**
+ * Rank threshold for fake-volume severity computation. At ranks past
+ * this, the search volume is so small that click_share / conversion_share
+ * signals are dominated by rounding noise — high click_share at rank
+ * 800,000 is "1 of 2 observed clicks went to one product," not
+ * manipulation. We force severity to 'none' and eval_status to
+ * 'rank_below_threshold' for these rows so they don't clutter the
+ * fake-volume filter results.
+ */
+const FAKE_VOLUME_RANK_THRESHOLD = 100_000;
+
+/**
  * Build a SQL expression that calls loose_title_flags_3() — the
  * single-function-call matcher introduced in migration 0016. Returns
  * a `loose_title_flags` composite (f1, f2, f3, match_count). The
@@ -276,6 +287,7 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
       (lf).f3 AS keyword_in_title_3_loose,
       (lf).match_count AS keyword_title_match_count_loose,
       CASE
+        WHEN actual_rank > ${sql.raw(String(FAKE_VOLUME_RANK_THRESHOLD))} THEN 'none'::fake_volume_severity
         WHEN top_clicked_product_1_click_share IS NULL
           OR top_clicked_product_1_conversion_share IS NULL THEN NULL
         WHEN (top_clicked_product_1_click_share > 20 AND top_clicked_product_1_conversion_share < 0.5)
@@ -287,6 +299,7 @@ async function runStagingToKwmInsert(fileId: string): Promise<void> {
         ELSE 'none'::fake_volume_severity
       END AS fake_volume_severity,
       CASE
+        WHEN actual_rank > ${sql.raw(String(FAKE_VOLUME_RANK_THRESHOLD))} THEN 'rank_below_threshold'::fake_volume_eval_status
         WHEN top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
         WHEN top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
         ELSE 'evaluated'::fake_volume_eval_status
@@ -457,6 +470,7 @@ async function runStagingToKwmTargetedRepair(fileId: string): Promise<void> {
         (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title', 'actual_rank'))}).f3 AS keyword_in_title_3_loose,
         (${sql.raw(looseFlagsCall('search_term_normalized', 'top_clicked_product', 'keyword_in_title', 'actual_rank'))}).match_count,
         CASE
+          WHEN actual_rank > ${sql.raw(String(FAKE_VOLUME_RANK_THRESHOLD))} THEN 'none'::fake_volume_severity
           WHEN top_clicked_product_1_click_share IS NULL
             OR top_clicked_product_1_conversion_share IS NULL THEN NULL
           WHEN (top_clicked_product_1_click_share > 20 AND top_clicked_product_1_conversion_share < 0.5)
@@ -468,6 +482,7 @@ async function runStagingToKwmTargetedRepair(fileId: string): Promise<void> {
           ELSE 'none'::fake_volume_severity
         END,
         CASE
+          WHEN actual_rank > ${sql.raw(String(FAKE_VOLUME_RANK_THRESHOLD))} THEN 'rank_below_threshold'::fake_volume_eval_status
           WHEN top_clicked_product_1_click_share IS NULL THEN 'unknown_missing_click'::fake_volume_eval_status
           WHEN top_clicked_product_1_conversion_share IS NULL THEN 'unknown_missing_conversion'::fake_volume_eval_status
           ELSE 'evaluated'::fake_volume_eval_status
