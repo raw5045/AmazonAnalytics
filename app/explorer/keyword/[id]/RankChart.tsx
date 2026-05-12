@@ -57,11 +57,19 @@ export function RankChart({
     (v) => v >= minRank && v <= maxRank,
   );
 
-  // Log scale ticks at decade boundaries inside the data range. Recharts
-  // auto-pick is OK but explicit ticks make labels predictable and the
-  // axis read more naturally for SFR-style data.
+  // Log-scale domain: anchor to the actual data range with a little
+  // padding rather than forcing the top at rank 1. Forcing 1 means
+  // wasting most of the chart on empty decades — e.g. a keyword that
+  // moves 50K → 500K would have its entire line squished into the
+  // bottom 25% of the chart with the rest blank. With data-driven
+  // bounds the visible chart matches the visible data.
+  const logDomainLower = ranksObserved.length > 0 ? Math.max(1, Math.floor(minRank * 0.8)) : 1;
+  const logDomainUpper = ranksObserved.length > 0 ? Math.ceil(maxRank * 1.25) : 1_000_000;
+
+  // Log scale ticks: include only decade boundaries that actually fall
+  // inside the data-driven domain. Anything outside is cropped.
   const logTicks = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000].filter(
-    (v) => v >= 1 && v <= maxRank * 1.5,
+    (v) => v >= logDomainLower && v <= logDomainUpper,
   );
 
   return (
@@ -85,7 +93,7 @@ export function RankChart({
           <YAxis
             reversed
             scale={scale === 'log' ? 'log' : 'linear'}
-            domain={scale === 'log' ? [1, 'auto'] : ['auto', 'auto']}
+            domain={scale === 'log' ? [logDomainLower, logDomainUpper] : ['auto', 'auto']}
             ticks={scale === 'log' ? logTicks : undefined}
             allowDataOverflow={false}
             tick={{ fontSize: 11 }}
