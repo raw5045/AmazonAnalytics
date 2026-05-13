@@ -206,20 +206,12 @@ export function buildExplorerQuery(
   // count up to COUNT_CAP+1 rows. If we hit the cap, the UI shows "10,000+"
   // and pagination caps at the same number — the user almost certainly
   // wants to refine filters before page 100 anyway.
-  //
-  // JOIN optimization: only join search_terms when filters.q is set
-  // (only filter that references the joined table). For all other
-  // filters the WHERE clause is entirely against kcs, so the JOIN is
-  // pure overhead — 10001 PK lookups against search_terms, each a
-  // random read on cold Neon storage. Skipping shaves seconds off the
-  // cold count for non-q filter combinations.
-  const countNeedsSearchTermsJoin = filters.q !== null && filters.q.length >= 3;
   const countSql = `
     SELECT COUNT(*)::int AS total
     FROM (
       SELECT 1
       FROM keyword_current_summary kcs
-      ${countNeedsSearchTermsJoin ? 'JOIN search_terms st ON st.id = kcs.search_term_id' : ''}
+      JOIN search_terms st ON st.id = kcs.search_term_id
       ${whereClause}
       LIMIT ${COUNT_CAP + 1}
     ) sub

@@ -1,30 +1,56 @@
 /**
- * Server-side runner for the explorer queries.
+ * Server-side runner for the explorer query. Executes the (sql, args) pair
+ * produced by buildExplorerQuery against Neon via the http driver and
+ * returns typed rows + total count for the pagination footer.
  *
- * Split into two entrypoints so the page can render the table without
- * waiting for the (sometimes slow) COUNT query:
+ * Uses neon-http rather than pg.Pool because:
+ * 1. The explorer page runs on Vercel serverless — no long-lived connections
+ *    to maintain, and Neon's HTTP transport is the recommended path.
+ * 2. The query is short (<1s on indexed kcs reads) so serverless cold-start
+ *    penalties don't hurt us.
  *
- *   - runExplorerRows(filters): meta lookup + paged rows.
- *   - runExplorerCount(filters): COUNT(*) for the pagination footer,
- *     with short-circuits for default landing + category-only.
+ * Per-layer perf optimizations active in this file:
  *
- * Both share a meta-lookup helper that's memoized for the request
- * via React's `cache()`, so back-to-back calls don't double-hit the
- * one-row meta table.
+ *  - current_week_end_date predicate injection (migration 0020): unlocks
+ *    Index Scan on kcs_rank_idx for the rows query.
+ *  - default_severity_total short-circuit (migration 0021): the
+ *    default landing footer count comes from a precomputed integer on
+ *    meta, not a live COUNT(*) over kcs.
+ *  - category facets short-circuit (migration 0021): when filters are
+ *    "category-only + default severity," count comes from
+ *    keyword_current_summary_category_facets, not a live COUNT(*).
  *
- * The page wraps the count call in a <Suspense> boundary so the
- * table appears as soon as rows are ready; the pagination footer
- * streams in when the count finishes (or instantly when the
- * short-circuit applies).
+ * Each short-circuit has a graceful fallback to the live count if the
+ * meta/facets data is missing, so behavior is never broken.
  *
- * See the explorer-perf RFC + migrations 0020 / 0021.
+ * The page.tsx server component imports this; raw SQL stays in buildQuery.ts
+ * so it remains pure and easy to unit-test.
  */
-import { cache } from 'react';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import { buildExplorerQuery, COUNT_CAP } from './buildQuery';
 import type { ExplorerFilters, ExplorerRow, SeverityKey } from './types';
 import { EXPLORER_DEFAULTS } from './parseFilters';
+
+interface ExplorerQueryResult {
+  rows: ExplorerRow[];
+  total: number;
+  /** True when total === COUNT_CAP and the real total may be larger. */
+  totalIsCapped: boolean;
+  /** Per-layer wall-clock timings for the perf instrumentation strip. */
+  timings: {
+    /** Meta-row lookup that supplies the current_week_end_date predicate. */
+    metaLookupMs: number;
+    /** Main paged SELECT (LIMIT 100 OFFSET …). */
+    rowsMs: number;
+    /** Bail-out COUNT(*) with LIMIT 10001, or 0 if skipped via short-circuit. */
+    countMs: number;
+    /** True if buildExplorerQuery was given a currentWeekEndDate (fast path). */
+    usedPredicate: boolean;
+    /** Which COUNT path served the total: 'live' (slow), 'meta' (default landing), 'facet' (category-only). */
+    countSource: 'live' | 'meta' | 'facet';
+  };
+}
 
 interface RawRow {
   search_term_id: string;
@@ -48,70 +74,28 @@ interface RawRow {
   top_clicked_product_1_conversion_share_current: string | null;
 }
 
-interface ExplorerMeta {
-  currentWeekEndDate?: string;
-  snapshotVersion?: string;
-  defaultSeverityTotal?: number;
-  metaLookupMs: number;
-}
-
-export interface ExplorerRowsResult {
-  rows: ExplorerRow[];
-  timings: {
-    metaLookupMs: number;
-    rowsMs: number;
-    usedPredicate: boolean;
-  };
-}
-
-export interface ExplorerCountResult {
-  total: number;
-  /** True when total === COUNT_CAP and the real total may be larger. */
-  totalIsCapped: boolean;
-  timings: {
-    countMs: number;
-    /** Where the count came from: 'meta' / 'facet' = precomputed (instant); 'live' = actual SQL. */
-    countSource: 'live' | 'meta' | 'facet';
-  };
+interface MetaRow {
+  current_week_end_date: string | null;
+  snapshot_version: string | null;
+  default_severity_total: number | null;
 }
 
 /**
- * Memoized within a request so runExplorerRows + runExplorerCount
- * share one DB roundtrip.
+ * Severity defaults match parseFilters.ts EXPLORER_DEFAULTS.severities.
+ * The precomputed counts (default_severity_total, default_severity_count
+ * on facets) only apply when severities match this exact set.
  */
-const fetchMeta = cache(async (): Promise<ExplorerMeta> => {
-  const sqlClient = neon(env.DATABASE_URL);
-  const tStart = Date.now();
-  try {
-    const rows = (await sqlClient`
-      SELECT
-        current_week_end_date::text AS current_week_end_date,
-        snapshot_version::text       AS snapshot_version,
-        default_severity_total       AS default_severity_total
-      FROM keyword_current_summary_meta
-      WHERE singleton = true
-    `) as Array<{
-      current_week_end_date: string | null;
-      snapshot_version: string | null;
-      default_severity_total: number | null;
-    }>;
-    return {
-      currentWeekEndDate: rows[0]?.current_week_end_date ?? undefined,
-      snapshotVersion: rows[0]?.snapshot_version ?? undefined,
-      defaultSeverityTotal: rows[0]?.default_severity_total ?? undefined,
-      metaLookupMs: Date.now() - tStart,
-    };
-  } catch {
-    return { metaLookupMs: Date.now() - tStart };
-  }
-});
-
 function isDefaultSeverity(severities: SeverityKey[]): boolean {
   const def = [...EXPLORER_DEFAULTS.severities].sort();
   const cur = [...severities].sort();
   return def.length === cur.length && def.every((s, i) => s === cur[i]);
 }
 
+/**
+ * True when the filter set is "default landing": no narrowing filters
+ * beyond the default severity. Lets us skip the live COUNT(*) and use
+ * the precomputed total on meta.
+ */
 function canUseDefaultTotal(f: ExplorerFilters): boolean {
   return (
     f.q === null
@@ -124,6 +108,11 @@ function canUseDefaultTotal(f: ExplorerFilters): boolean {
   );
 }
 
+/**
+ * True when the filter set is "category-only + default severity":
+ * exactly one category filter, no other narrowing. Lets us use the
+ * per-category precomputed count from facets.
+ */
 function canUseCategoryFacet(f: ExplorerFilters): boolean {
   return (
     f.q === null
@@ -136,16 +125,81 @@ function canUseCategoryFacet(f: ExplorerFilters): boolean {
   );
 }
 
-export async function runExplorerRows(filters: ExplorerFilters): Promise<ExplorerRowsResult> {
+export async function runExplorerQuery(
+  filters: ExplorerFilters,
+): Promise<ExplorerQueryResult> {
   const sqlClient = neon(env.DATABASE_URL);
-  const meta = await fetchMeta();
-  const { sql, args } = buildExplorerQuery(filters, meta.currentWeekEndDate);
 
+  // Fast path setup: one meta lookup gives us everything we need —
+  // the current_week_end_date predicate, the snapshot_version (for
+  // facet lookups), and the default_severity_total (for landing-page
+  // count short-circuit).
+  let currentWeekEndDate: string | undefined;
+  let snapshotVersion: string | undefined;
+  let defaultSeverityTotal: number | undefined;
+  const tMetaStart = Date.now();
+  try {
+    const metaRows = (await sqlClient`
+      SELECT
+        current_week_end_date::text AS current_week_end_date,
+        snapshot_version::text       AS snapshot_version,
+        default_severity_total       AS default_severity_total
+      FROM keyword_current_summary_meta
+      WHERE singleton = true
+    `) as MetaRow[];
+    currentWeekEndDate = metaRows[0]?.current_week_end_date ?? undefined;
+    snapshotVersion = metaRows[0]?.snapshot_version ?? undefined;
+    defaultSeverityTotal = metaRows[0]?.default_severity_total ?? undefined;
+  } catch {
+    // Fallthrough: everything stays undefined, queries use legacy paths.
+  }
+  const metaLookupMs = Date.now() - tMetaStart;
+
+  const { sql, args, countSql, countArgs } = buildExplorerQuery(filters, currentWeekEndDate);
+
+  // Decide whether to short-circuit the count.
+  let countSource: 'live' | 'meta' | 'facet' = 'live';
+  let precomputedTotal: number | null = null;
+
+  if (canUseDefaultTotal(filters) && defaultSeverityTotal !== undefined) {
+    precomputedTotal = defaultSeverityTotal;
+    countSource = 'meta';
+  } else if (canUseCategoryFacet(filters) && snapshotVersion) {
+    try {
+      const facetRows = (await sqlClient`
+        SELECT default_severity_count AS n
+        FROM keyword_current_summary_category_facets
+        WHERE snapshot_version = ${snapshotVersion}::uuid
+          AND category = ${filters.category}
+      `) as Array<{ n: number }>;
+      if (facetRows.length > 0) {
+        precomputedTotal = facetRows[0].n;
+        countSource = 'facet';
+      }
+    } catch {
+      // Fall through to live count
+    }
+  }
+
+  // Run rows query (always live) and count query (only if not short-circuited)
+  // in parallel. Both timings captured.
   const tRowsStart = Date.now();
-  const rawRowsAny = (await sqlClient.query(sql, args)) as unknown as RawRow[];
-  const rowsMs = Date.now() - tRowsStart;
+  const rowsPromise = sqlClient.query(sql, args).then((r) => {
+    return { result: r, ms: Date.now() - tRowsStart };
+  });
 
-  const rows: ExplorerRow[] = rawRowsAny.map((r) => ({
+  const tCountStart = Date.now();
+  const countPromise = precomputedTotal !== null
+    ? Promise.resolve({ result: null as unknown, ms: 0 })
+    : sqlClient.query(countSql, countArgs).then((r) => {
+        return { result: r, ms: Date.now() - tCountStart };
+      });
+
+  const [rowsTimed, countTimed] = await Promise.all([rowsPromise, countPromise]);
+  const rawRowsAny = rowsTimed.result;
+  const rawRows = rawRowsAny as unknown as RawRow[];
+
+  const rows: ExplorerRow[] = rawRows.map((r) => ({
     searchTermId: r.search_term_id,
     searchTermRaw: r.search_term_raw,
     currentRank: r.current_rank,
@@ -167,68 +221,35 @@ export async function runExplorerRows(filters: ExplorerFilters): Promise<Explore
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
   }));
 
+  // Final total: precomputed wins; otherwise extract from live count
+  // (capped via the COUNT_CAP+1 bail-out).
+  let total: number;
+  let totalIsCapped: boolean;
+  if (precomputedTotal !== null) {
+    totalIsCapped = precomputedTotal > COUNT_CAP;
+    total = totalIsCapped ? COUNT_CAP : precomputedTotal;
+  } else {
+    const countRowsAny = countTimed.result;
+    const countRows = countRowsAny as unknown as Array<{ total: number | string }>;
+    const rawTotal = countRows && countRows.length > 0
+      ? typeof countRows[0].total === 'string'
+        ? parseInt(countRows[0].total, 10)
+        : countRows[0].total
+      : 0;
+    totalIsCapped = rawTotal > COUNT_CAP;
+    total = totalIsCapped ? COUNT_CAP : rawTotal;
+  }
+
   return {
     rows,
+    total,
+    totalIsCapped,
     timings: {
-      metaLookupMs: meta.metaLookupMs,
-      rowsMs,
-      usedPredicate: meta.currentWeekEndDate !== undefined,
+      metaLookupMs,
+      rowsMs: rowsTimed.ms,
+      countMs: countTimed.ms,
+      usedPredicate: currentWeekEndDate !== undefined,
+      countSource,
     },
-  };
-}
-
-export async function runExplorerCount(filters: ExplorerFilters): Promise<ExplorerCountResult> {
-  const sqlClient = neon(env.DATABASE_URL);
-  const meta = await fetchMeta();
-
-  // Short-circuit 1: default landing → use precomputed total.
-  if (canUseDefaultTotal(filters) && meta.defaultSeverityTotal !== undefined) {
-    const t = meta.defaultSeverityTotal;
-    const capped = t > COUNT_CAP;
-    return {
-      total: capped ? COUNT_CAP : t,
-      totalIsCapped: capped,
-      timings: { countMs: 0, countSource: 'meta' },
-    };
-  }
-
-  // Short-circuit 2: category-only + default severity → use facets.
-  if (canUseCategoryFacet(filters) && meta.snapshotVersion) {
-    try {
-      const facetRows = (await sqlClient`
-        SELECT default_severity_count AS n
-        FROM keyword_current_summary_category_facets
-        WHERE snapshot_version = ${meta.snapshotVersion}::uuid
-          AND category = ${filters.category}
-      `) as Array<{ n: number }>;
-      if (facetRows.length > 0) {
-        const n = facetRows[0].n;
-        const capped = n > COUNT_CAP;
-        return {
-          total: capped ? COUNT_CAP : n,
-          totalIsCapped: capped,
-          timings: { countMs: 0, countSource: 'facet' },
-        };
-      }
-    } catch {
-      // Fall through to live count
-    }
-  }
-
-  // Slow path: live COUNT(*) with the bail-out cap.
-  const { countSql, countArgs } = buildExplorerQuery(filters, meta.currentWeekEndDate);
-  const tStart = Date.now();
-  const countRowsAny = (await sqlClient.query(countSql, countArgs)) as unknown as Array<{ total: number | string }>;
-  const countMs = Date.now() - tStart;
-  const rawTotal = countRowsAny.length > 0
-    ? typeof countRowsAny[0].total === 'string'
-      ? parseInt(countRowsAny[0].total, 10)
-      : countRowsAny[0].total
-    : 0;
-  const capped = rawTotal > COUNT_CAP;
-  return {
-    total: capped ? COUNT_CAP : rawTotal,
-    totalIsCapped: capped,
-    timings: { countMs, countSource: 'live' },
   };
 }
