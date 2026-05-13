@@ -141,6 +141,13 @@
       "when": 1778788800000,
       "tag": "0019_fake_volume_rank_threshold",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1778875200000,
+      "tag": "0020_kcs_meta",
+      "breakpoints": true
     }
   ]
 }

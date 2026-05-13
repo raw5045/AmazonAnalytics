@@ -12,3 +12,4 @@ export * from './fakeVolumeRules';
 export * from './keywordCurrentSummary';
 export * from './importDuplicateSearchTerms';
 export * from './searchTermLooseRequirements';
+export * from './keywordCurrentSummaryMeta';
