@@ -289,6 +289,29 @@ describe('buildExplorerQuery', () => {
       expect(norm(countSql)).not.toContain('OFFSET');
     });
 
+    it('countSql skips JOIN search_terms when q is not set', () => {
+      // Filters that touch only kcs columns — no need to join
+      // search_terms in the count subquery. Saves 10001 PK lookups
+      // against search_terms on cold Neon.
+      const { countSql } = buildExplorerQuery({
+        ...baseFilters,
+        category: 'Electronics',
+        rankMin: 1,
+        rankMax: 50000,
+      });
+      expect(norm(countSql)).not.toContain('JOIN search_terms');
+      expect(norm(countSql)).not.toContain('st.id');
+    });
+
+    it('countSql includes JOIN search_terms when q is set (need st.search_term_normalized)', () => {
+      const { countSql } = buildExplorerQuery({
+        ...baseFilters,
+        q: 'wireless',
+      });
+      expect(norm(countSql)).toContain('JOIN search_terms');
+      expect(norm(countSql)).toContain('search_term_normalized LIKE');
+    });
+
     it('countArgs is a strict prefix of args', () => {
       const filters: ExplorerFilters = {
         ...baseFilters,
