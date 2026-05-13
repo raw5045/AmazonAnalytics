@@ -225,19 +225,78 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     await client.query(
       'ALTER TABLE keyword_current_summary_swap_old RENAME TO keyword_current_summary_stage',
     );
-    // Update the metadata row inside the same transaction as the swap
-    // so explorer queries (which read this row to inject a
-    // current_week_end_date predicate) and the live kcs table always
-    // agree on which week is current. See migration 0020.
+
+    // Update metadata + populate facets atomically with the swap.
+    // See migration 0020 (meta) and migration 0021 (snapshot_version,
+    // default_severity_total, facets). All readers key by
+    // snapshot_version, so a consistent set of (meta, facets) for the
+    // new snapshot becomes visible at commit time.
+    //
+    // - snapshot_version: fresh UUID per refresh, lets caches invalidate
+    //   even on a same-week rebuild.
+    // - default_severity_total: precomputed COUNT for the default
+    //   landing — replaces the cold-slow live count.
+    // - facets: per-category counts — replaces the cold-slow
+    //   listCategories DISTINCT scan AND the cold-slow per-category
+    //   COUNT for category filters.
+
+    // 1. Generate a new snapshot_version + compute the default total.
+    //    The COUNT(*) FILTER aggregate runs over the just-swapped
+    //    kcs (which has the new data). Pages are warm from the build
+    //    we just finished, so it's cheap (~1-3s).
+    const { rows: countRows } = await client.query<{ snapshot_version: string; default_severity_total: number }>(
+      `SELECT gen_random_uuid()::text AS snapshot_version,
+              COUNT(*) FILTER (
+                WHERE fake_volume_severity_current IS NULL
+                   OR fake_volume_severity_current IN ('none', 'warning')
+              )::int AS default_severity_total
+       FROM keyword_current_summary`,
+    );
+    const newSnapshotVersion = countRows[0].snapshot_version;
+    const newDefaultTotal = countRows[0].default_severity_total;
+
+    // 2. Insert facets for the new snapshot.
     await client.query(
-      `INSERT INTO keyword_current_summary_meta (singleton, current_week_end_date, refreshed_at)
-       VALUES (true, $1::date, now())
+      `INSERT INTO keyword_current_summary_category_facets
+         (snapshot_version, category, default_severity_count, all_count)
+       SELECT
+         $1::uuid,
+         top_clicked_category_1_current,
+         COUNT(*) FILTER (
+           WHERE fake_volume_severity_current IS NULL
+              OR fake_volume_severity_current IN ('none', 'warning')
+         )::int,
+         COUNT(*)::int
+       FROM keyword_current_summary
+       WHERE top_clicked_category_1_current IS NOT NULL
+       GROUP BY top_clicked_category_1_current`,
+      [newSnapshotVersion],
+    );
+
+    // 3. Update meta to point at the new snapshot.
+    await client.query(
+      `INSERT INTO keyword_current_summary_meta
+         (singleton, current_week_end_date, refreshed_at, snapshot_version, default_severity_total)
+       VALUES (true, $1::date, now(), $2::uuid, $3::int)
        ON CONFLICT (singleton) DO UPDATE
          SET current_week_end_date = EXCLUDED.current_week_end_date,
-             refreshed_at = EXCLUDED.refreshed_at`,
-      [currentWeekEndDate],
+             refreshed_at = EXCLUDED.refreshed_at,
+             snapshot_version = EXCLUDED.snapshot_version,
+             default_severity_total = EXCLUDED.default_severity_total`,
+      [currentWeekEndDate, newSnapshotVersion, newDefaultTotal],
     );
+
     await client.query('COMMIT');
+
+    // 4. Outside the transaction, clean up facets rows for older
+    //    snapshots. Safe to do after commit because nothing depends
+    //    on them anymore (meta points at the new snapshot, and any
+    //    in-flight readers either see the new snapshot consistently
+    //    or briefly see the old facets until their request resolves).
+    await client.query(
+      'DELETE FROM keyword_current_summary_category_facets WHERE snapshot_version <> $1::uuid',
+      [newSnapshotVersion],
+    );
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
