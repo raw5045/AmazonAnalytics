@@ -26,26 +26,36 @@ export interface PerfStripData {
   metaLookupMs: number;
   /** Main paged SELECT. */
   rowsMs: number;
-  /** Bail-out COUNT(*) capped at 10001. */
+  /** Bail-out COUNT(*) capped at 10001 (0 when short-circuited via meta/facet). */
   countMs: number;
   /**
-   * Wall-clock for the listCategories() call. Cached by Next via
-   * `unstable_cache` with 1-hour TTL; a hit is sub-millisecond, a
-   * miss is the full DISTINCT scan over kcs (~300-3000ms).
+   * Wall-clock for the listCategories() call. Reads from
+   * keyword_current_summary_category_facets (post migration 0021) —
+   * a small PK lookup, usually <50ms.
    */
   categoriesMs: number;
   /** True if the fast-path predicate was applied (meta row found). */
   usedPredicate: boolean;
+  /**
+   * Where the COUNT came from. 'meta' = default-landing total
+   * precomputed on meta. 'facet' = category-only count precomputed
+   * on facets. 'live' = ran the bail-out COUNT(*).
+   */
+  countSource: 'live' | 'meta' | 'facet';
   /** Categories cache heuristic — fast = cache hit, slow = miss. */
   categoriesCacheHint: 'fast' | 'slow';
 }
 
 export function PerfStrip({ data }: { data: PerfStripData }) {
+  const countLabel = data.countSource === 'live'
+    ? `count=${data.countMs}ms (live)`
+    : `count=0ms (${data.countSource})`;
+
   const summary = [
     `total=${data.handlerTotalMs}ms`,
     `meta=${data.metaLookupMs}ms`,
     `rows=${data.rowsMs}ms`,
-    `count=${data.countMs}ms`,
+    countLabel,
     `categories=${data.categoriesMs}ms${data.categoriesCacheHint === 'fast' ? ' (cached)' : ' (cold)'}`,
     data.usedPredicate ? 'predicate=on' : 'predicate=off',
   ].join(' · ');
@@ -61,7 +71,7 @@ export function PerfStrip({ data }: { data: PerfStripData }) {
         <Row label="server handler total" value={data.handlerTotalMs} />
         <Row label="  ↳ meta lookup" value={data.metaLookupMs} />
         <Row label="  ↳ rows query" value={data.rowsMs} />
-        <Row label="  ↳ count query" value={data.countMs} />
+        <Row label="  ↳ count query" value={data.countMs} note={data.countSource} />
         <Row label="  ↳ listCategories" value={data.categoriesMs} note={data.categoriesCacheHint} />
         <Row
           label="  ↳ remainder (render + serialization + unsequenced overhead)"

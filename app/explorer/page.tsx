@@ -72,6 +72,7 @@ export default async function ExplorerPage({
             countMs: rqTimings.countMs,
             categoriesMs: categoriesTimed.ms,
             usedPredicate: rqTimings.usedPredicate,
+            countSource: rqTimings.countSource,
             // Heuristic: cached calls usually return <20ms; uncached
             // DISTINCT scan is at least 300ms.
             categoriesCacheHint: categoriesTimed.ms < 50 ? 'fast' : 'slow',
