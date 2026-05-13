@@ -161,8 +161,17 @@ export async function fetchKeywordDetail(
           WHEN actual_rank > 100000 THEN 'rank_below_threshold'::fake_volume_eval_status
           ELSE fake_volume_eval_status
         END AS fake_volume_eval_status
-      FROM keyword_weekly_metrics
-      WHERE search_term_id = ${searchTermId}
+      FROM (
+        -- Cap history at the most-recent 52 weeks. As more weeks
+        -- accumulate over time, the RawDataTable would otherwise grow
+        -- unbounded; capping here also matches the 52-week windows
+        -- used by RankChart / TitleMatchHistory / FakeVolumeStrip.
+        SELECT *
+        FROM keyword_weekly_metrics
+        WHERE search_term_id = ${searchTermId}
+        ORDER BY week_end_date DESC
+        LIMIT 52
+      ) kwm_recent
       ORDER BY week_end_date ASC
     `,
     sql`
