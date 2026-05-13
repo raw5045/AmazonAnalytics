@@ -22,6 +22,17 @@ interface ExplorerQueryResult {
   total: number;
   /** True when total === COUNT_CAP and the real total may be larger. */
   totalIsCapped: boolean;
+  /** Per-layer wall-clock timings for the perf instrumentation strip. */
+  timings: {
+    /** Meta-row lookup that supplies the current_week_end_date predicate. */
+    metaLookupMs: number;
+    /** Main paged SELECT (LIMIT 100 OFFSET …). */
+    rowsMs: number;
+    /** Bail-out COUNT(*) with LIMIT 10001. */
+    countMs: number;
+    /** True if buildExplorerQuery was given a currentWeekEndDate (fast path). */
+    usedPredicate: boolean;
+  };
 }
 
 interface RawRow {
@@ -64,6 +75,7 @@ export async function runExplorerQuery(
   // disable the new fast path without redeploying, TRUNCATE the meta
   // table.
   let currentWeekEndDate: string | undefined;
+  const tMetaStart = Date.now();
   try {
     const metaRows = (await sqlClient`
       SELECT current_week_end_date::text AS d
@@ -74,13 +86,23 @@ export async function runExplorerQuery(
   } catch {
     currentWeekEndDate = undefined;
   }
+  const metaLookupMs = Date.now() - tMetaStart;
 
   const { sql, args, countSql, countArgs } = buildExplorerQuery(filters, currentWeekEndDate);
 
-  const [rawRowsAny, countRowsAny] = await Promise.all([
-    sqlClient.query(sql, args),
-    sqlClient.query(countSql, countArgs),
-  ]);
+  // Run rows + count in parallel but capture each timing individually
+  // so we can see which one (if either) dominates.
+  const tRowsStart = Date.now();
+  const rowsPromise = sqlClient.query(sql, args).then((r) => {
+    return { result: r, ms: Date.now() - tRowsStart };
+  });
+  const tCountStart = Date.now();
+  const countPromise = sqlClient.query(countSql, countArgs).then((r) => {
+    return { result: r, ms: Date.now() - tCountStart };
+  });
+  const [rowsTimed, countTimed] = await Promise.all([rowsPromise, countPromise]);
+  const rawRowsAny = rowsTimed.result;
+  const countRowsAny = countTimed.result;
   const rawRows = rawRowsAny as unknown as RawRow[];
   const countRows = countRowsAny as unknown as Array<{ total: number | string }>;
 
@@ -117,5 +139,15 @@ export async function runExplorerQuery(
   const totalIsCapped = rawTotal > COUNT_CAP;
   const total = totalIsCapped ? COUNT_CAP : rawTotal;
 
-  return { rows, total, totalIsCapped };
+  return {
+    rows,
+    total,
+    totalIsCapped,
+    timings: {
+      metaLookupMs,
+      rowsMs: rowsTimed.ms,
+      countMs: countTimed.ms,
+      usedPredicate: currentWeekEndDate !== undefined,
+    },
+  };
 }

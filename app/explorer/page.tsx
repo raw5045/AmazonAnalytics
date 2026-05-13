@@ -14,6 +14,7 @@ import { listCategories } from '@/lib/explorer/listCategories';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { Pagination } from './Pagination';
+import { PerfStrip } from './PerfStrip';
 
 export const metadata: Metadata = {
   title: 'Keyword Explorer',
@@ -38,10 +39,21 @@ export default async function ExplorerPage({
   }
   const backUrl = backQuery.toString() ? `/explorer?${backQuery.toString()}` : '/explorer';
 
-  const [{ rows, total, totalIsCapped }, categories] = await Promise.all([
+  const handlerStartedAt = Date.now();
+  // Time listCategories at the call site so we can heuristically tell
+  // cache hit vs miss (cached call returns <20ms; uncached DISTINCT scan
+  // is 300ms+).
+  const tCategoriesStart = Date.now();
+  const categoriesPromise = listCategories().then((r) => {
+    return { result: r, ms: Date.now() - tCategoriesStart };
+  });
+  const [queryResult, categoriesTimed] = await Promise.all([
     runExplorerQuery(filters),
-    listCategories(),
+    categoriesPromise,
   ]);
+  const { rows, total, totalIsCapped, timings: rqTimings } = queryResult;
+  const categories = categoriesTimed.result;
+  const handlerTotalMs = Date.now() - handlerStartedAt;
 
   const totalPages = Math.max(1, Math.ceil(total / filters.perPage));
   const totalLabel = totalIsCapped
@@ -52,6 +64,19 @@ export default async function ExplorerPage({
     <div className="flex">
       <FilterSidebar filters={filters} categories={categories} />
       <div className="flex-1 p-6">
+        <PerfStrip
+          data={{
+            handlerTotalMs,
+            metaLookupMs: rqTimings.metaLookupMs,
+            rowsMs: rqTimings.rowsMs,
+            countMs: rqTimings.countMs,
+            categoriesMs: categoriesTimed.ms,
+            usedPredicate: rqTimings.usedPredicate,
+            // Heuristic: cached calls usually return <20ms; uncached
+            // DISTINCT scan is at least 300ms.
+            categoriesCacheHint: categoriesTimed.ms < 50 ? 'fast' : 'slow',
+          }}
+        />
         <div className="mb-4 flex items-center justify-between">
           <p className="text-sm text-gray-600">
             {total === 0
