@@ -51,7 +51,23 @@ const WINDOW_TO_IMPROVEMENT_COLUMN: Record<WindowKey, string> = {
   '52w': 'improvement_52w',
 };
 
-export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery {
+export function buildExplorerQuery(
+  filters: ExplorerFilters,
+  /**
+   * Optional. When provided, injects `kcs.current_week_end_date = ?`
+   * as the FIRST WHERE clause so the existing composite indexes
+   * (kcs_rank_idx, kcs_category_idx, etc., all leading with
+   * current_week_end_date) become usable for sorted output. kcs only
+   * holds one current_week_end_date value at a time, so this is a
+   * no-op semantically — purely a planner hint.
+   *
+   * Source is the single-row keyword_current_summary_meta table,
+   * updated atomically with the kcs stage-and-swap. When omitted
+   * (e.g. meta row missing or fetch failed), the query falls back to
+   * today's behavior: seq scan + sort. See the explorer-perf RFC.
+   */
+  currentWeekEndDate?: string,
+): BuiltExplorerQuery {
   const args: unknown[] = [];
   const where: string[] = [];
 
@@ -62,6 +78,14 @@ export function buildExplorerQuery(filters: ExplorerFilters): BuiltExplorerQuery
 
   const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[filters.window];
+
+  // 1.1 — current_week_end_date predicate (the planner hint). Goes
+  // first in the WHERE so it's the leading column-equality the
+  // composite indexes need.
+  if (currentWeekEndDate) {
+    const p = next(currentWeekEndDate);
+    where.push(`kcs.current_week_end_date = ${p}::date`);
+  }
 
   // 1.2 — search term substring (q): ILIKE on the trigram-indexed normalized column
   if (filters.q && filters.q.length >= 3) {

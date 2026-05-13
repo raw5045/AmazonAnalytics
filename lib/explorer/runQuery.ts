@@ -49,9 +49,33 @@ interface RawRow {
 export async function runExplorerQuery(
   filters: ExplorerFilters,
 ): Promise<ExplorerQueryResult> {
-  const { sql, args, countSql, countArgs } = buildExplorerQuery(filters);
-
   const sqlClient = neon(env.DATABASE_URL);
+
+  // Fast path: fetch the current_week_end_date from the one-row meta
+  // table so we can inject it as a leading-column equality predicate.
+  // This lets the existing composite indexes (kcs_rank_idx etc.) serve
+  // sorted output instead of falling back to seq scan + sort-to-disk.
+  // See db/migrations/0020_kcs_meta.sql + the explorer-perf RFC.
+  //
+  // Graceful fallback: if the meta row is missing or the fetch throws
+  // for any reason, leave currentWeekEndDate undefined and let
+  // buildExplorerQuery emit the predicate-free shape (today's slow
+  // behavior, but never broken). This is also the kill switch — to
+  // disable the new fast path without redeploying, TRUNCATE the meta
+  // table.
+  let currentWeekEndDate: string | undefined;
+  try {
+    const metaRows = (await sqlClient`
+      SELECT current_week_end_date::text AS d
+      FROM keyword_current_summary_meta
+      WHERE singleton = true
+    `) as Array<{ d: string }>;
+    currentWeekEndDate = metaRows[0]?.d;
+  } catch {
+    currentWeekEndDate = undefined;
+  }
+
+  const { sql, args, countSql, countArgs } = buildExplorerQuery(filters, currentWeekEndDate);
 
   const [rawRowsAny, countRowsAny] = await Promise.all([
     sqlClient.query(sql, args),
