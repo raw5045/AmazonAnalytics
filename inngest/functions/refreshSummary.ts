@@ -225,6 +225,18 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     await client.query(
       'ALTER TABLE keyword_current_summary_swap_old RENAME TO keyword_current_summary_stage',
     );
+    // Update the metadata row inside the same transaction as the swap
+    // so explorer queries (which read this row to inject a
+    // current_week_end_date predicate) and the live kcs table always
+    // agree on which week is current. See migration 0020.
+    await client.query(
+      `INSERT INTO keyword_current_summary_meta (singleton, current_week_end_date, refreshed_at)
+       VALUES (true, $1::date, now())
+       ON CONFLICT (singleton) DO UPDATE
+         SET current_week_end_date = EXCLUDED.current_week_end_date,
+             refreshed_at = EXCLUDED.refreshed_at`,
+      [currentWeekEndDate],
+    );
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
