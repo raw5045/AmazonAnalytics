@@ -148,6 +148,13 @@
       "when": 1778875200000,
       "tag": "0020_kcs_meta",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1778961600000,
+      "tag": "0021_kcs_facets",
+      "breakpoints": true
     }
   ]
 }
