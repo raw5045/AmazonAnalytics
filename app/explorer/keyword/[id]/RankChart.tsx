@@ -66,11 +66,12 @@ export function RankChart({
   const logDomainLower = ranksObserved.length > 0 ? Math.max(1, Math.floor(minRank * 0.8)) : 1;
   const logDomainUpper = ranksObserved.length > 0 ? Math.ceil(maxRank * 1.25) : 1_000_000;
 
-  // Log scale ticks: include only decade boundaries that actually fall
-  // inside the data-driven domain. Anything outside is cropped.
-  const logTicks = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000].filter(
-    (v) => v >= logDomainLower && v <= logDomainUpper,
-  );
+  // Log scale ticks: always label the top + bottom of the visible
+  // range, plus any decade boundaries (1, 10, 100, 1k, 10k, …) that
+  // fall inside it. For tightly-ranged keywords with no decade in
+  // range (e.g. always 90k–130k), also include the geometric midpoint
+  // so the user always sees at least 3 labels.
+  const logTicks = computeLogTicks(logDomainLower, logDomainUpper);
 
   return (
     <div className="border rounded p-4">
@@ -186,6 +187,27 @@ function formatWeekTick(v: string): string {
   const monthIndex = parseInt(m, 10) - 1;
   if (monthIndex < 0 || monthIndex > 11) return v;
   return `${monthNames[monthIndex]} ${parseInt(d, 10)}`;
+}
+
+/**
+ * Tick set for the log-scale Y axis. Guarantees the top and bottom
+ * of the visible domain are always labeled, includes decade
+ * boundaries (1, 10, 100, 1k, …) in between, and falls back to a
+ * geometric midpoint if a tight range has no decades.
+ */
+function computeLogTicks(lower: number, upper: number): number[] {
+  const decades = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 10_000_000];
+  const ticks = new Set<number>([lower, upper]);
+  for (const d of decades) {
+    if (d > lower && d < upper) ticks.add(d);
+  }
+  // For tight ranges with no decade between lower and upper, add the
+  // geometric midpoint so the user always sees at least 3 labels.
+  // Skip when the range is so tight that a third tick would clutter.
+  if (ticks.size < 3 && upper / lower > 1.05) {
+    ticks.add(Math.round(Math.sqrt(lower * upper)));
+  }
+  return Array.from(ticks).sort((a, b) => a - b);
 }
 
 function formatRankTick(v: number): string {
