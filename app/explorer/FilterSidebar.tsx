@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState, useTransition } from 'react';
+import { useState } from 'react';
 import type {
   ExplorerFilters,
   JumpKey,
@@ -127,22 +127,28 @@ export function FilterSidebar({
   categories: string[];
 }) {
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
   const [pending, setPending] = useState<PendingFilters>(filtersToPending(filters));
 
+  // We deliberately do NOT wrap router.replace in useTransition here.
+  // Transitions keep the previous UI visible until the new render is
+  // fully ready, which defeats Suspense streaming — the slow COUNT
+  // Suspense boundary would block the entire UI swap, leaving the
+  // user staring at the old filter results for the full COUNT duration.
+  //
+  // Plain router.replace triggers Next.js's loading.tsx for the route
+  // segment (the thin blue progress bar at the top), then the new page
+  // streams in with Suspense placeholders for the slow parts. The user
+  // sees the new table within ~1.5s; pagination and the "Showing X of Y"
+  // line fill in when COUNT resolves.
   const apply = () => {
     const params = pendingToParams(pending);
     const qs = params.toString();
-    startTransition(() => {
-      router.replace(qs ? `/explorer?${qs}` : '/explorer', { scroll: false });
-    });
+    router.replace(qs ? `/explorer?${qs}` : '/explorer', { scroll: false });
   };
 
   const reset = () => {
     setPending(filtersToPending(EXPLORER_DEFAULTS));
-    startTransition(() => {
-      router.replace('/explorer', { scroll: false });
-    });
+    router.replace('/explorer', { scroll: false });
   };
 
   const dirty = JSON.stringify(filtersToPending(filters)) !== JSON.stringify(pending);
@@ -173,7 +179,6 @@ export function FilterSidebar({
     <aside className="w-72 border-r p-4 space-y-5 sticky top-0 self-start">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-700">Filters</h2>
-        {isPending && <span className="text-xs text-gray-400">Updating…</span>}
       </div>
 
       <FieldGroup label="Window">
@@ -380,10 +385,10 @@ export function FilterSidebar({
         <button
           type="button"
           onClick={apply}
-          disabled={!dirty || isPending}
+          disabled={!dirty}
           className="flex-1 bg-blue-600 text-white text-sm font-medium px-3 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
-          {isPending ? 'Applying…' : dirty ? 'Apply filters' : 'Filters applied'}
+          {dirty ? 'Apply filters' : 'Filters applied'}
         </button>
         <button
           type="button"
