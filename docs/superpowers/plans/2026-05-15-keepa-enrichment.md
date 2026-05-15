@@ -47,7 +47,10 @@ Scope locked from earlier brainstorming:
 - `lib/keepa/categoryExclusions.ts` — the 24-category exclusion list (single source of truth, imported by both the Inngest job and `countEnrichableAsins.ts`)
 - `scripts/keepaSmokeTest.ts` — dev smoke test against a 50-ASIN slice (Task 3). Validates the full pipeline before we trust the Inngest function.
 - `scripts/verifyKeepaCoverage.ts` — sanity check post-backfill: how many top-3 ASINs in the current week have asin_weekly_data rows
-- `inngest/functions/enrichKeepaForWeek.ts` — the recurring weekly job, configured `concurrency: 1` so a duplicate trigger event can't spawn a parallel run that fights for tokens. Also the path used for the initial backfill (Task 5 — we just fire the event manually for the current week).
+- `inngest/functions/enrichKeepaForWeek.ts` — the recurring weekly job, configured `concurrency: 1` so a duplicate trigger event can't spawn a parallel run that fights for tokens. Also the path used for the initial backfill (Task 5 — we just fire the event manually for the current week). Sends a completion email at the end via `sendEnrichmentEmail`.
+- `lib/notifications/buildEnrichmentEmail.ts` — pure function rendering the "enrichment completed" admin email (subject + text + html). Mirrors `buildImportEmail.ts`.
+- `lib/notifications/sendEnrichmentEmail.ts` — Resend wrapper. Fail-soft: missing RESEND_API_KEY or send error logs a warning, never breaks the Inngest run.
+- `lib/notifications/buildEnrichmentEmail.test.ts` — vitest snapshot tests of the rendered email.
 - `lib/explorer/listLeafCategories.ts` — list of leaf-category options for the cascading filter
 - `app/explorer/keyword/[id]/ProductCard.tsx` — enhanced product card with Keepa data on the detail page
 - `docs/keepa-spot-check-2026-05-15.md` — already exists from the spot-check run; commit it here as the baseline reference
@@ -452,12 +455,43 @@ git commit -m "test(keepa): 50-ASIN end-to-end smoke test"
 
 **Files:**
 - Create: `inngest/functions/enrichKeepaForWeek.ts`
+- Create: `lib/notifications/buildEnrichmentEmail.ts`
+- Create: `lib/notifications/sendEnrichmentEmail.ts`
+- Create: `lib/notifications/buildEnrichmentEmail.test.ts`
 - Modify: `inngest/functions/index.ts` (register the new function)
 - Modify: `inngest/functions/refreshSummary.ts` (emit the trigger event after the swap)
 
-This is the production path for both the initial backfill (Task 5) and ongoing weekly maintenance. Runs on the Railway worker (no Vercel timeout), step.run-checkpointed (resilient to restart), and configured `concurrency: 1` so a duplicate trigger event can't spawn a parallel run that would fight for Keepa tokens.
+This is the production path for both the initial backfill (Task 5) and ongoing weekly maintenance. Runs on the Railway worker (no Vercel timeout), step.run-checkpointed (resilient to restart), and configured `concurrency: 1` so a duplicate trigger event can't spawn a parallel run that would fight for Keepa tokens. Sends a completion email to admin users at the end.
 
-- [ ] **Step 4.1: Write the function (with `concurrency: 1`)**
+- [ ] **Step 4.1: Write the enrichment-completion email module**
+
+Mirror the existing `lib/notifications/buildImportEmail.ts` + `sendImportEmail.ts` pattern.
+
+- `buildEnrichmentEmail.ts` — pure function. Input: `{ weekEndDate, counts: Record<AsinEnrichmentStatus, number>, durationMs, tokensSpent, appUrl }`. Output: `{ subject, text, html }`. Single `'completed'` variant for Phase 1; revisit later if we want a `'completed_with_errors'` variant when error % is unusually high.
+- `sendEnrichmentEmail.ts` — Resend wrapper. Same recipient lookup as `sendImportEmail` (`role='admin'` users with non-null email). Fail-soft: missing `RESEND_API_KEY` or Resend API error logs a warning and returns — never crashes the Inngest run.
+- `buildEnrichmentEmail.test.ts` — vitest snapshot of the rendered subject + text + html, mirrors `buildImportEmail.test.ts` shape.
+
+Example rendered text body:
+
+```
+Enrichment of the 2026-05-02 week's top-3 ASINs is complete.
+
+Duration:           18h 42min
+ASINs processed:    140,857
+Status breakdown:
+  Active            139,201   (98.8%)
+  No price            1,389   (1.0%)
+  Delisted              198   (0.1%)
+  Error                  69   (<0.1%)
+Tokens spent:       ~281,600
+
+Detail-page product cards and review/rating columns for this week
+are now showing fresh Keepa data.
+
+View latest data: https://amazon-analytics-beta.vercel.app/explorer
+```
+
+- [ ] **Step 4.2: Write the function (with `concurrency: 1`)**
 
 Create `inngest/functions/enrichKeepaForWeek.ts`. Trigger: event `keepa.enrich-week-requested` with payload `{ weekEndDate: string }`.
 
@@ -486,8 +520,10 @@ Function body shape:
 
 ```ts
 const { weekEndDate } = event.data;
+const startedAt = Date.now();
 const todo = await step.run('list-asins-to-enrich', async () => listScope(weekEndDate));
 const batches = chunk(todo, 250);
+
 for (let i = 0; i < batches.length; i++) {
   await step.run(`batch-${i}`, async () => {
     const pacer = new KeepaPacer();
@@ -505,6 +541,22 @@ for (let i = 0; i < batches.length; i++) {
     }
   });
 }
+
+// After all batches: roll up the status histogram from the DB
+// (don't trust in-memory counters — step.run replays might double-count)
+// then send the admin completion email. Wrap in step.run so a Resend
+// flake gets retried independently of the enrichment work.
+await step.run('send-completion-email', async () => {
+  const counts = await readStatusHistogram(weekEndDate);
+  const tokensSpent = todo.length * 2; // approximate: 2 tokens / ASIN
+  await sendEnrichmentEmail({
+    weekEndDate,
+    counts,
+    durationMs: Date.now() - startedAt,
+    tokensSpent,
+  });
+});
+
 return { totalAsins: todo.length, batches: batches.length };
 ```
 
@@ -519,7 +571,7 @@ Notes:
 - A fresh `KeepaPacer` per batch. Each `step.run` is a fresh function invocation in Inngest's model — state doesn't persist across step boundaries. First call in a batch never sleeps; if tokensLeft is low coming out of that first call, the pacer kicks in for the rest.
 - `step.run` deduplicates by step ID; on resume after crash/restart, batches already completed are skipped entirely.
 
-- [ ] **Step 4.2: Wire up the trigger in refreshSummary**
+- [ ] **Step 4.3: Wire up the trigger in refreshSummary**
 
 In `inngest/functions/refreshSummary.ts`, after the kcs swap commits successfully and the old facets are deleted, emit:
 
@@ -532,27 +584,32 @@ await step.sendEvent('emit-keepa-enrich-trigger', {
 
 This decouples kcs refresh latency from the (much longer) enrichment work.
 
-- [ ] **Step 4.3: Register the function**
+- [ ] **Step 4.4: Register the function**
 
 In `inngest/functions/index.ts`, add `enrichKeepaForWeek` to the exported `functions` array.
 
-- [ ] **Step 4.4: Deploy to Railway**
+- [ ] **Step 4.5: Deploy to Railway**
 
 `KEEPA_API_KEY` must be set in Railway env vars before this can run. Deploy the worker (push to main, or whatever the deploy flow is — Railway auto-redeploys on `main` push by default per `railway.json`).
 
 Hit the worker health endpoint after deploy: `curl https://<worker-url>/` — confirm the function count includes the new function (it should bump from 3 to 4 in the `functions` field of the health JSON).
 
-- [ ] **Step 4.5: Test with a 5-ASIN payload**
+- [ ] **Step 4.6: Test with a 5-ASIN payload (verify the email lands)**
 
 Before firing for real, send a synthetic event with a tiny ASIN list to confirm the deployed function works end-to-end through Inngest Cloud → Railway worker → Postgres. Use the Inngest dashboard's "Send event" tool with a dummy payload or use `inngest.send(...)` from a one-off script.
 
 Actually: since the function reads its own ASIN list from `listScope(weekEndDate)`, the simplest test is to fire the event for an OLD week we've already enriched (e.g. 2026-04-something). The function will find nothing new to enrich (everything already in asin_weekly_data), complete in seconds, and confirm wiring works.
 
-- [ ] **Step 4.6: Commit**
+- [ ] **Step 4.7: Commit**
 
 ```bash
-git add inngest/functions/enrichKeepaForWeek.ts inngest/functions/index.ts inngest/functions/refreshSummary.ts
-git commit -m "feat(inngest): weekly Keepa enrichment job
+git add inngest/functions/enrichKeepaForWeek.ts \
+        inngest/functions/index.ts \
+        inngest/functions/refreshSummary.ts \
+        lib/notifications/buildEnrichmentEmail.ts \
+        lib/notifications/sendEnrichmentEmail.ts \
+        lib/notifications/buildEnrichmentEmail.test.ts
+git commit -m "feat(inngest): weekly Keepa enrichment job + completion email
 
 New Inngest function enrichKeepaForWeek fires on the
 keepa.enrich-week-requested event (emitted by refreshSummary
@@ -561,7 +618,13 @@ after each kcs swap). Processes the ~140K in-scope ASINs in
 weekEndDate prevents duplicate triggers from spawning parallel
 runs that would fight for tokens. Errors per-ASIN are caught
 and recorded as status='error' rows so a single bad fetch
-doesn't kill the batch."
+doesn't kill the batch.
+
+Sends a completion email to admin users at the end via
+sendEnrichmentEmail (mirrors sendImportEmail; fail-soft on
+Resend errors). Separate email from the import-complete
+notification because enrichment is ~19h and users care about
+those completion signals independently."
 ```
 
 ---
