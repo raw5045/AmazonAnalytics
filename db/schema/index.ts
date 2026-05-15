@@ -14,3 +14,4 @@ export * from './importDuplicateSearchTerms';
 export * from './searchTermLooseRequirements';
 export * from './keywordCurrentSummaryMeta';
 export * from './keywordCurrentSummaryCategoryFacets';
+export * from './asinWeeklyData';

@@ -155,6 +155,13 @@
       "when": 1778961600000,
       "tag": "0021_kcs_facets",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1779148800000,
+      "tag": "0022_asin_weekly_data",
+      "breakpoints": true
     }
   ]
 }
