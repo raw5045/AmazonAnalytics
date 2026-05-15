@@ -45,9 +45,9 @@ Scope locked from earlier brainstorming:
 - `lib/keepa/parse.test.ts` — vitest unit tests with captured Keepa responses as fixtures
 - `lib/keepa/client.ts` — fetch wrapper with token-bucket pacing
 - `lib/keepa/categoryExclusions.ts` — the 24-category exclusion list (single source of truth, imported by both the Inngest job and `countEnrichableAsins.ts`)
-- `scripts/backfillKeepaCurrentWeek.ts` — one-shot initial fill for the current kcs week
+- `scripts/keepaSmokeTest.ts` — dev smoke test against a 50-ASIN slice (Task 3). Validates the full pipeline before we trust the Inngest function.
 - `scripts/verifyKeepaCoverage.ts` — sanity check post-backfill: how many top-3 ASINs in the current week have asin_weekly_data rows
-- `inngest/functions/enrichKeepaForWeek.ts` — the recurring weekly job
+- `inngest/functions/enrichKeepaForWeek.ts` — the recurring weekly job, configured `concurrency: 1` so a duplicate trigger event can't spawn a parallel run that fights for tokens. Also the path used for the initial backfill (Task 5 — we just fire the event manually for the current week).
 - `lib/explorer/listLeafCategories.ts` — list of leaf-category options for the cascading filter
 - `app/explorer/keyword/[id]/ProductCard.tsx` — enhanced product card with Keepa data on the detail page
 - `docs/keepa-spot-check-2026-05-15.md` — already exists from the spot-check run; commit it here as the baseline reference
@@ -375,90 +375,241 @@ module."
 
 ---
 
-## Task 3: One-shot backfill for the current week
+## Task 3: Dev smoke test (50-ASIN slice)
 
 **Files:**
-- Create: `scripts/backfillKeepaCurrentWeek.ts`
+- Create: `scripts/keepaSmokeTest.ts`
 
-This is the cold-fill pass. We grab the ~140K top-3 ASINs in the current kcs week that pass the scope filter, call Keepa for each (with the pacer), and INSERT into `asin_weekly_data`. Idempotent via `ON CONFLICT (asin, week_end_date) DO NOTHING` — re-running picks up only the ASINs that didn't land last time.
+End-to-end pipeline validation against a 50-ASIN slice before we trust
+the Inngest function with the full 140K. Tests every link: candidate
+SQL → Keepa fetch → pacer → parser → DB INSERT with the real enum
+type. Cost: 100 tokens (~25 s wall). Lives in `scripts/` because it's
+a one-off — not part of recurring production flow.
+
+Crucially **not** the cold-fill: the actual 140K enrichment runs
+through the Inngest function (Task 5), not this script. Doing 19 h of
+work on a local laptop would be a resilience disaster; that's what
+the Railway worker is for.
 
 - [ ] **Step 3.1: Write the script**
 
-Create `scripts/backfillKeepaCurrentWeek.ts`. Structure:
+Create `scripts/keepaSmokeTest.ts`:
 
-1. Connect to Postgres (pg.Pool, TCP, statement_timeout 60s — we use it for short queries only).
+1. Connect to Postgres (pg.Pool, TCP, statement_timeout 60s).
 2. Read `current_week_end_date` from `keyword_current_summary_meta`.
-3. Run the same union query as `countEnrichableAsins.ts` to get the distinct list of (asin, ?) tuples to enrich for this week, **excluding** any ASIN that already has a row in `asin_weekly_data` for this week.
-4. Initialize `KeepaPacer`.
+3. Run a candidate query: top-3 in-scope ASINs at rank ≤ 100K, NOT excluded category, NOT already in `asin_weekly_data` for this week — `LIMIT 50`. Use `EXCLUDED_CATEGORIES_ARRAY` from `lib/keepa/categoryExclusions.ts`.
+4. Initialize `KeepaPacer` (won't actually fire for only 50 calls but exercise the wiring).
 5. For each ASIN:
    - `await pacer.maybeSleep()`
-   - Call `callKeepa(asin, { rating: true })`
-   - `pacer.observe(result.tokensLeft)`
-   - `parseKeepaProduct(result.data.products?.[0], asin, weekEndDate)` → `EnrichmentRow`
-   - INSERT into `asin_weekly_data` with `ON CONFLICT DO NOTHING`
-   - Every 100 ASINs, print a progress line: `[12345/140000] tokensLeft=189 spent=2 status=active asin=B07...`
-6. On exit, print: total runtime, status histogram (active/no_price/delisted/error), total tokens spent.
+   - `const r = await callKeepa(asin, { rating: true })`
+   - `pacer.observe(r.tokensLeft)`
+   - `const row = parseKeepaProduct(r.data.products?.[0], asin, weekEndDate)`
+   - INSERT into `asin_weekly_data` via drizzle with `.onConflictDoNothing()`
+   - On error: build an `emptyRow` with status `error`, INSERT that, log + keep going.
+6. Print per-ASIN: `[i/50] tokensLeft=X spent=Y status=Z asin=ABC123`
+7. On exit, print: status histogram, sample 1 row per non-active status (so we can eyeball them), total tokens spent, wall time.
 
-Keep the function bodies small and well-commented. Catch fetch errors per-ASIN — log + mark as `error`, don't crash the run.
+Keep functions small. Each error caught and recorded — never crash the run.
 
-- [ ] **Step 3.2: Test on a 50-ASIN slice**
+- [ ] **Step 3.2: Run the smoke test**
 
-Edit the script temporarily to add `LIMIT 50` to the candidate query. Run and verify:
-- All 50 rows land in `asin_weekly_data`
-- Status distribution looks healthy (most `active`, occasional `no_price`)
-- Pacer sleeps when expected (~tokensLeft drops below 50)
+```
+pnpm tsx scripts/keepaSmokeTest.ts
+```
 
-Don't commit the LIMIT 50 edit.
+Expected: 50 rows inserted in ~25 s, mostly `active` status, possibly 1-2 `no_price`. Pacer almost certainly never triggers at 50 ASINs (would need 50+ left in the bucket below floor; we start full).
 
-- [ ] **Step 3.3: Commit (with LIMIT removed)**
+- [ ] **Step 3.3: Spot-check the rows**
+
+Quick SQL to inspect what landed:
+
+```sql
+SELECT enrichment_status, COUNT(*)
+FROM asin_weekly_data
+WHERE week_end_date = (SELECT current_week_end_date FROM keyword_current_summary_meta)
+GROUP BY 1;
+
+SELECT asin, title, current_price_cents / 100.0 AS price,
+       review_count, average_rating_x10 / 10.0 AS rating, category_path,
+       enrichment_status
+FROM asin_weekly_data
+WHERE week_end_date = (SELECT current_week_end_date FROM keyword_current_summary_meta)
+ORDER BY enriched_at DESC LIMIT 10;
+```
+
+Look for: titles populated, prices sensible (not all NULL, not all $0), categories filled, ratings 0-50, reviews non-negative. If anything looks off, fix the parser and re-run (script picks up only the not-yet-enriched ASINs each time).
+
+- [ ] **Step 3.4: Commit**
 
 ```bash
-git add scripts/backfillKeepaCurrentWeek.ts
-git commit -m "feat(keepa): one-shot backfill for the current kcs week
-
-Pulls the ~140K top-3 ASINs at rank ≤ 100K (excluding 24 cats) and
-enriches each into asin_weekly_data. Idempotent: ON CONFLICT DO
-NOTHING skips already-enriched ASINs, so re-running resumes from
-where the last run left off."
+git add scripts/keepaSmokeTest.ts
+git commit -m "test(keepa): 50-ASIN end-to-end smoke test"
 ```
 
 ---
 
-## Task 4: Run the initial backfill
+## Task 4: Inngest function — weekly enrichment
 
-- [ ] **Step 4.1: Confirm Keepa balance + tier on the dashboard**
+**Files:**
+- Create: `inngest/functions/enrichKeepaForWeek.ts`
+- Modify: `inngest/functions/index.ts` (register the new function)
+- Modify: `inngest/functions/refreshSummary.ts` (emit the trigger event after the swap)
 
-Log into Keepa, confirm the account is on the 250 tokens/min tier and has enough monthly tokens for a full backfill (~280K tokens ≈ 7-8% of a month's quota on the cheapest plan). If running close to the cap, wait until the next monthly refill or upgrade.
+This is the production path for both the initial backfill (Task 5) and ongoing weekly maintenance. Runs on the Railway worker (no Vercel timeout), step.run-checkpointed (resilient to restart), and configured `concurrency: 1` so a duplicate trigger event can't spawn a parallel run that would fight for Keepa tokens.
 
-- [ ] **Step 4.2: Run the full backfill**
+- [ ] **Step 4.1: Write the function (with `concurrency: 1`)**
 
-In foreground or background — your call. Foreground gives you live progress; background lets you keep working.
+Create `inngest/functions/enrichKeepaForWeek.ts`. Trigger: event `keepa.enrich-week-requested` with payload `{ weekEndDate: string }`.
 
-Foreground: `pnpm tsx scripts/backfillKeepaCurrentWeek.ts`
+Strategy: chunk the work into batches of ~250 ASINs, each batch wrapped in `step.run(\`batch-\${i}\`, ...)`. 250 ASINs × 2 tokens = 500 tokens = ~2 min API time per batch, well under Inngest's HTTP timeout. Inside a batch, sequentially process each ASIN with the pacer.
 
-Expected runtime: ~18-19 hours for full ~140K ASINs at 250 tokens/min.
+Configuration:
 
-If the script crashes mid-run (network blip, your laptop sleeps, etc.), just re-run it — the `ON CONFLICT DO NOTHING` plus the "exclude already-enriched ASINs" pre-filter make it fully resumable.
+```ts
+export const enrichKeepaForWeek = inngest.createFunction(
+  {
+    id: 'enrich-keepa-for-week',
+    name: 'Enrich Keepa data for a week',
+    // Single-run mutex: prevents a duplicate trigger event (or a
+    // re-fire while a prior run is still in flight) from spawning
+    // a parallel function that fights for Keepa tokens.
+    concurrency: { limit: 1, key: 'event.data.weekEndDate' },
+  },
+  { event: 'keepa.enrich-week-requested' },
+  async ({ event, step }) => {
+    // ...
+  },
+);
+```
 
-- [ ] **Step 4.3: Verify coverage post-backfill**
+Function body shape:
+
+```ts
+const { weekEndDate } = event.data;
+const todo = await step.run('list-asins-to-enrich', async () => listScope(weekEndDate));
+const batches = chunk(todo, 250);
+for (let i = 0; i < batches.length; i++) {
+  await step.run(`batch-${i}`, async () => {
+    const pacer = new KeepaPacer();
+    for (const asin of batches[i]) {
+      await pacer.maybeSleep();
+      try {
+        const r = await callKeepa(asin, { rating: true });
+        pacer.observe(r.tokensLeft);
+        const row = parseKeepaProduct(r.data?.products?.[0], asin, weekEndDate);
+        await db.insert(asinWeeklyData).values(row).onConflictDoNothing();
+      } catch (e) {
+        const row = emptyRow(asin, weekEndDate, 'error', (e as Error).message);
+        await db.insert(asinWeeklyData).values(row).onConflictDoNothing();
+      }
+    }
+  });
+}
+return { totalAsins: todo.length, batches: batches.length };
+```
+
+The `listScope` candidate query must:
+
+- Pull top-3 in-scope ASINs at rank ≤ 100K, excluded categories filtered out
+- Exclude ASINs already in `asin_weekly_data` for this week (lets re-runs resume)
+- Include the "delisted re-check" set per Task 6: ASINs whose most-recent `enriched_at` for status `delisted` is > 30 days ago
+
+Notes:
+
+- A fresh `KeepaPacer` per batch. Each `step.run` is a fresh function invocation in Inngest's model — state doesn't persist across step boundaries. First call in a batch never sleeps; if tokensLeft is low coming out of that first call, the pacer kicks in for the rest.
+- `step.run` deduplicates by step ID; on resume after crash/restart, batches already completed are skipped entirely.
+
+- [ ] **Step 4.2: Wire up the trigger in refreshSummary**
+
+In `inngest/functions/refreshSummary.ts`, after the kcs swap commits successfully and the old facets are deleted, emit:
+
+```ts
+await step.sendEvent('emit-keepa-enrich-trigger', {
+  name: 'keepa.enrich-week-requested',
+  data: { weekEndDate: newCurrentWeekEndDate },
+});
+```
+
+This decouples kcs refresh latency from the (much longer) enrichment work.
+
+- [ ] **Step 4.3: Register the function**
+
+In `inngest/functions/index.ts`, add `enrichKeepaForWeek` to the exported `functions` array.
+
+- [ ] **Step 4.4: Deploy to Railway**
+
+`KEEPA_API_KEY` must be set in Railway env vars before this can run. Deploy the worker (push to main, or whatever the deploy flow is — Railway auto-redeploys on `main` push by default per `railway.json`).
+
+Hit the worker health endpoint after deploy: `curl https://<worker-url>/` — confirm the function count includes the new function (it should bump from 3 to 4 in the `functions` field of the health JSON).
+
+- [ ] **Step 4.5: Test with a 5-ASIN payload**
+
+Before firing for real, send a synthetic event with a tiny ASIN list to confirm the deployed function works end-to-end through Inngest Cloud → Railway worker → Postgres. Use the Inngest dashboard's "Send event" tool with a dummy payload or use `inngest.send(...)` from a one-off script.
+
+Actually: since the function reads its own ASIN list from `listScope(weekEndDate)`, the simplest test is to fire the event for an OLD week we've already enriched (e.g. 2026-04-something). The function will find nothing new to enrich (everything already in asin_weekly_data), complete in seconds, and confirm wiring works.
+
+- [ ] **Step 4.6: Commit**
+
+```bash
+git add inngest/functions/enrichKeepaForWeek.ts inngest/functions/index.ts inngest/functions/refreshSummary.ts
+git commit -m "feat(inngest): weekly Keepa enrichment job
+
+New Inngest function enrichKeepaForWeek fires on the
+keepa.enrich-week-requested event (emitted by refreshSummary
+after each kcs swap). Processes the ~140K in-scope ASINs in
+250-ASIN batches via step.run; concurrency: 1 keyed on
+weekEndDate prevents duplicate triggers from spawning parallel
+runs that would fight for tokens. Errors per-ASIN are caught
+and recorded as status='error' rows so a single bad fetch
+doesn't kill the batch."
+```
+
+---
+
+## Task 5: Fire the event for current week + verify coverage
+
+This is the cold-fill of `asin_weekly_data`. Done via the production Inngest function (Task 4), not a local script — gives us resilience to laptop sleep / network blips / Railway restarts that a 19h local run wouldn't have.
+
+- [ ] **Step 5.1: Confirm Keepa balance + Railway env**
+
+- Keepa dashboard: enough monthly tokens for ~280K-token backfill (refresh date, balance, plan tier).
+- Railway dashboard: `KEEPA_API_KEY` is set on the worker service. Health endpoint shows the new function registered.
+
+- [ ] **Step 5.2: Fire the event for the current week**
+
+Send the event via Inngest dashboard ("Send event" → name `keepa.enrich-week-requested`, data `{"weekEndDate": "<current-week-iso>"}`), or via a one-off script:
+
+```ts
+import { inngest } from '@/inngest/client';
+await inngest.send({
+  name: 'keepa.enrich-week-requested',
+  data: { weekEndDate: '2026-05-02' }, // whatever current_week_end_date is at the time
+});
+```
+
+- [ ] **Step 5.3: Watch progress in the Inngest dashboard**
+
+The function runs ~280K tokens / 250 per min = ~18-19 h total. Dashboard shows step-by-step progress (`batch-0 done`, `batch-1 done`, ...). Each batch is ~2 min of API time. If a batch fails, Inngest retries that step from scratch; already-processed ASINs inside that batch will skip via `ON CONFLICT DO NOTHING`. We may double-spend tokens on already-inserted ASINs in a retried batch — that's a known minor cost of the per-batch retry granularity, and tiny in practice.
+
+- [ ] **Step 5.4: Verify coverage post-run**
 
 Create `scripts/verifyKeepaCoverage.ts`:
 
 ```ts
 // Reports, for the current kcs week:
-//   - How many top-3 ASINs are in scope (rank ≤ 100K, not excluded category)
-//   - How many of those have an asin_weekly_data row
-//   - Status breakdown: active / no_price / delisted / error
-//   - For 'error' rows, a sample of error messages so we can fix
+//   - How many top-3 in-scope ASINs exist for this week
+//   - How many have an asin_weekly_data row
+//   - Status histogram: active / no_price / delisted / error
+//   - For 'error' rows, a sample of error messages so we can fix patterns
 ```
 
 Run: `pnpm tsx scripts/verifyKeepaCoverage.ts`
 
-Expected: ≥99% of in-scope ASINs have a row; `error` count is small (< 1%) and the messages look transient (timeouts, occasional 5xx). If `error` is substantial or systematic, fix `lib/keepa/client.ts` or `parse.ts` and re-run the backfill to pick up the failures.
+Expected: ≥99% of in-scope ASINs have a row; `error` count < 1% and the messages look transient (timeouts, occasional 5xx). If `error` is substantial or systematic, fix `lib/keepa/client.ts` or `parse.ts`, then refire the event — the function will pick up only the not-yet-enriched ASINs.
 
-- [ ] **Step 4.4: Spot-check a few rows against the markdown reference**
+- [ ] **Step 5.5: Spot-check against the markdown reference**
 
-The 15 ASINs in `docs/keepa-spot-check-2026-05-15.md` should all have asin_weekly_data rows now. Run:
+The 15 ASINs in `docs/keepa-spot-check-2026-05-15.md` should all have asin_weekly_data rows:
 
 ```sql
 SELECT a.asin, a.title, a.current_price_cents / 100.0 AS price,
@@ -475,105 +626,16 @@ AND a.week_end_date = (SELECT current_week_end_date FROM keyword_current_summary
 
 Confirm values match the spot-check markdown. B0GX1XP72Z should be `no_price`.
 
-- [ ] **Step 4.5: Commit the verification script**
+- [ ] **Step 5.6: Commit the verification script**
 
 ```bash
-git add scripts/verifyKeepaCoverage.ts docs/keepa-spot-check-2026-05-15.md
-git commit -m "test(keepa): coverage check + commit spot-check reference
+git add scripts/verifyKeepaCoverage.ts
+git commit -m "test(keepa): post-backfill coverage check
 
-Post-backfill verification script: counts in-scope ASINs vs
-enriched rows, breaks down by enrichment_status, samples error
-messages. Also commits the 2026-05-15 spot-check markdown as the
-baseline 'this is what good Keepa data looks like' reference."
-```
-
----
-
-## Task 5: Inngest function — weekly enrichment
-
-**Files:**
-- Create: `inngest/functions/enrichKeepaForWeek.ts`
-- Modify: `inngest/functions/index.ts` (register the new function)
-- Modify: `inngest/functions/refreshSummary.ts` (emit the trigger event after the swap)
-
-The function logic mirrors the backfill script but lives inside Inngest so it's observable, resumable, and gracefully handles long runtimes via `step.run` checkpoints.
-
-- [ ] **Step 5.1: Write the function**
-
-Create `inngest/functions/enrichKeepaForWeek.ts`. Trigger: event `keepa.enrich-week-requested` with payload `{ weekEndDate: string }`.
-
-Strategy: chunk the work into batches of ~500 ASINs, each batch wrapped in `step.run(\`batch-\${i}\`, ...)`. Inside a batch, sequentially process each ASIN with the pacer (same as the script). Between batches, optionally `await step.sleep(...)` for a few seconds if `tokensLeft` is low going into the next batch.
-
-Pseudocode shape:
-
-```ts
-export const enrichKeepaForWeek = inngest.createFunction(
-  { id: 'enrich-keepa-for-week', name: 'Enrich Keepa data for a week' },
-  { event: 'keepa.enrich-week-requested' },
-  async ({ event, step }) => {
-    const { weekEndDate } = event.data;
-    const todo = await step.run('list-asins-to-enrich', async () => listScope(weekEndDate));
-    const batches = chunk(todo, 500);
-    for (let i = 0; i < batches.length; i++) {
-      await step.run(`batch-${i}`, async () => {
-        for (const asin of batches[i]) {
-          await pacer.maybeSleep();
-          const r = await callKeepa(asin, { rating: true });
-          pacer.observe(r.tokensLeft);
-          const row = parseKeepaProduct(r.data?.products?.[0], asin, weekEndDate);
-          await db.insert(...).values(row).onConflictDoNothing();
-        }
-      });
-    }
-    return { totalAsins: todo.length, batches: batches.length };
-  },
-);
-```
-
-Notes for the implementation:
-
-- The pacer needs to be re-created per batch (each `step.run` is a fresh invocation in Inngest's model). That's fine — when a batch starts, we just don't sleep on the first call; if tokensLeft from the first call is low, we'll sleep before the second.
-- Even better: pass the last `tokensLeft` value as the return of one `step.run` and use it to initialize the next pacer. But that's an optimization; start without it.
-- `step.run` deduplicates by step ID, so re-running the function after a partial failure resumes correctly.
-
-- [ ] **Step 5.2: Wire up the trigger in refreshSummary**
-
-In `inngest/functions/refreshSummary.ts`, after the kcs swap commits successfully and the old facets are deleted, emit the event:
-
-```ts
-await step.sendEvent('emit-keepa-enrich-trigger', {
-  name: 'keepa.enrich-week-requested',
-  data: { weekEndDate: newCurrentWeekEndDate },
-});
-```
-
-This decouples the kcs refresh from the (much longer) enrichment work — kcs is back online fast, Keepa enrichment runs over the next ~19 hours.
-
-- [ ] **Step 5.3: Register the function**
-
-In `inngest/functions/index.ts`, add `enrichKeepaForWeek` to the exported `functions` array.
-
-- [ ] **Step 5.4: Test by manually firing the event**
-
-In dev: trigger a kcs refresh (or just send the event directly via the Inngest dev tools) with `weekEndDate` set to the current week. The function should:
-- Find that ~all ASINs are already enriched (from the Task 4 backfill)
-- Skip them all via `ON CONFLICT DO NOTHING`
-- Complete in seconds rather than hours
-
-That confirms the wiring works without burning a fresh ~19h of compute.
-
-- [ ] **Step 5.5: Commit**
-
-```bash
-git add inngest/functions/enrichKeepaForWeek.ts inngest/functions/index.ts inngest/functions/refreshSummary.ts
-git commit -m "feat(inngest): weekly Keepa enrichment job
-
-New Inngest function enrichKeepaForWeek fires on the
-keepa.enrich-week-requested event (emitted by refreshSummary
-after each kcs swap). Processes the ~140K in-scope ASINs in
-500-ASIN batches via step.run, idempotent via
-ON CONFLICT DO NOTHING. Decouples enrichment latency from
-kcs refresh latency."
+Counts in-scope ASINs vs enriched rows for the current week,
+breaks down by enrichment_status, samples error messages.
+Run after firing a keepa.enrich-week-requested event to
+confirm the Inngest function completed cleanly."
 ```
 
 ---
