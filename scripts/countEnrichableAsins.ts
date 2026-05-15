@@ -12,36 +12,9 @@
 import { config } from 'dotenv';
 config({ path: '.env.local' });
 import { Pool } from 'pg';
+import { EXCLUDED_CATEGORIES_ARRAY } from '@/lib/keepa/categoryExclusions';
 
-const EXCLUDED_CATEGORIES = [
-  // Digital (non-accessory)
-  'Digital_Video_Download',
-  'Digital_Ebook_Purchase',
-  'Digital_Music_Purchase',
-  'Mobile_Apps',
-  'Audible',
-  'Digital_Video_Games',
-  'Digital_Products_3',
-  'Digital_Text',
-  'Digital_Software',
-  'Digital_Devices_4',
-  'Digital_Text_2',
-  'Digital_Periodicals',
-  'Digital_Health_Services',
-  'Digital_Products_9',
-  'Digital_Products_10',
-  'Video',
-  'Software',
-  // Grocery (per user's "Fresh_ and protein")
-  'Fresh_Perishable',
-  'Fresh_Produce',
-  'Fresh_Prepared',
-  'Protein',
-  // Gift cards
-  'Gift Card',
-  'Consumables_Physical_Gift_Cards',
-  'Consumables_Email_Gift_Cards',
-];
+const EXCLUDED_CATEGORIES = EXCLUDED_CATEGORIES_ARRAY;
 
 async function main() {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL!, statement_timeout: 600_000 });
