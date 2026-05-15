@@ -1029,6 +1029,33 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       })
       .where(eq(uploadedFiles.id, file.id));
 
+    // Trigger Keepa enrichment for the new current week. Long-running
+    // (~19h on the 250 tokens/min tier) so we kick it off as a fire-
+    // and-forget Inngest event — the Railway worker picks it up,
+    // checkpoints batches via step.run, and emails admins separately
+    // when it completes. See inngest/functions/enrichKeepaForWeek.ts.
+    //
+    // Gated on (!isReplay && summaryRefreshOk): replay runs do their
+    // own bulk-final enrichment, and a stale kcs would point at the
+    // wrong week. Send failures are logged but don't fail the import
+    // — the event can be manually refired from the Inngest dashboard.
+    if (!isReplay && summaryRefreshOk && refreshResult?.currentWeekEndDate) {
+      try {
+        await inngest.send({
+          name: 'keepa.enrich-week-requested',
+          data: { weekEndDate: refreshResult.currentWeekEndDate },
+        });
+        console.log(
+          `[keepa.enrich-week-requested] event sent for week ${refreshResult.currentWeekEndDate}`,
+        );
+      } catch (sendErr) {
+        console.error(
+          `[keepa.enrich-week-requested] failed to send event for week ${refreshResult.currentWeekEndDate}:`,
+          sendErr,
+        );
+      }
+    }
+
     // Notify admins via email — but skip for bulk replay runs to avoid
     // 53 emails landing in the admin's inbox over the course of an
     // overnight job. The replay caller emails one summary at the end.

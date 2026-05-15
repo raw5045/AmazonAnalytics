@@ -459,7 +459,7 @@ git commit -m "test(keepa): 50-ASIN end-to-end smoke test"
 - Create: `lib/notifications/sendEnrichmentEmail.ts`
 - Create: `lib/notifications/buildEnrichmentEmail.test.ts`
 - Modify: `inngest/functions/index.ts` (register the new function)
-- Modify: `inngest/functions/refreshSummary.ts` (emit the trigger event after the swap)
+- Modify: `inngest/functions/importFile.ts` (emit the trigger event after `refreshKeywordCurrentSummary()` succeeds — `refreshSummary.ts` is a plain function, the call site that owns the post-refresh side effects is `processFileImport` in `importFile.ts`)
 
 This is the production path for both the initial backfill (Task 5) and ongoing weekly maintenance. Runs on the Railway worker (no Vercel timeout), step.run-checkpointed (resilient to restart), and configured `concurrency: 1` so a duplicate trigger event can't spawn a parallel run that would fight for Keepa tokens. Sends a completion email to admin users at the end.
 
@@ -571,16 +571,27 @@ Notes:
 - A fresh `KeepaPacer` per batch. Each `step.run` is a fresh function invocation in Inngest's model — state doesn't persist across step boundaries. First call in a batch never sleeps; if tokensLeft is low coming out of that first call, the pacer kicks in for the rest.
 - `step.run` deduplicates by step ID; on resume after crash/restart, batches already completed are skipped entirely.
 
-- [ ] **Step 4.3: Wire up the trigger in refreshSummary**
+- [ ] **Step 4.3: Wire up the trigger in `processFileImport`**
 
-In `inngest/functions/refreshSummary.ts`, after the kcs swap commits successfully and the old facets are deleted, emit:
+`refreshSummary.ts` is a plain async function, not an Inngest function — there's no `step.sendEvent` available. The right call site is `processFileImport` in `inngest/functions/importFile.ts`, right after `refreshKeywordCurrentSummary()` returns successfully:
 
 ```ts
-await step.sendEvent('emit-keepa-enrich-trigger', {
-  name: 'keepa.enrich-week-requested',
-  data: { weekEndDate: newCurrentWeekEndDate },
-});
+if (!isReplay && summaryRefreshOk && refreshResult?.currentWeekEndDate) {
+  try {
+    await inngest.send({
+      name: 'keepa.enrich-week-requested',
+      data: { weekEndDate: refreshResult.currentWeekEndDate },
+    });
+  } catch (sendErr) {
+    console.error('[keepa.enrich-week-requested] send failed:', sendErr);
+    // Don't fail the import — refire from Inngest dashboard if needed.
+  }
+}
 ```
+
+Gated on:
+- `!isReplay` — replay runs do bulk-final refresh + enrichment elsewhere; per-file events would emit 53 enrichment runs.
+- `summaryRefreshOk` — if kcs is stale, firing enrichment for the new week would race ahead of the data it's enriching.
 
 This decouples kcs refresh latency from the (much longer) enrichment work.
 
