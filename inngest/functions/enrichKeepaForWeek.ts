@@ -285,14 +285,31 @@ export const enrichKeepaForWeek = inngest.createFunction(
     }
 
     // Each batch is its own step.run — checkpointed by Inngest. If a
-    // batch errors mid-way, Inngest retries the entire batch; the
-    // ON CONFLICT DO NOTHING in insertRow makes already-inserted ASINs
-    // idempotent (we double-spend tokens on retry but never corrupt
-    // data).
+    // batch errors mid-way, Inngest retries the entire batch (default
+    // 3 retries); the ON CONFLICT DO NOTHING in insertRow makes
+    // already-inserted ASINs idempotent (we double-spend tokens on
+    // retry but never corrupt data).
+    //
+    // The try/catch is the second layer of resilience: if step.run
+    // exhausts Inngest's internal retries on a single batch, we LOG
+    // and CONTINUE rather than failing the whole function. Without
+    // this, a single bad batch out of ~2,800 would kill the entire
+    // ~19h run. The skipped ASINs naturally reappear on the next
+    // listScope (since they weren't enriched), so a re-fire picks
+    // them up. Track the count so we can include it in the email.
+    let failedBatches = 0;
     for (let i = 0; i < batches.length; i++) {
-      await step.run(`batch-${i.toString().padStart(4, '0')}`, () =>
-        processBatch(batches[i], weekEndDate),
-      );
+      try {
+        await step.run(`batch-${i.toString().padStart(4, '0')}`, () =>
+          processBatch(batches[i], weekEndDate),
+        );
+      } catch (e) {
+        failedBatches += 1;
+        console.error(
+          `[enrichKeepaForWeek] batch ${i} (${batches[i].length} ASINs) failed after retries — continuing.`,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
 
     // Final step: read the status histogram from the DB, send the
@@ -312,6 +329,7 @@ export const enrichKeepaForWeek = inngest.createFunction(
       weekEndDate,
       totalAsins: asins.length,
       batches: batches.length,
+      failedBatches,
       durationMs: Date.now() - startedAt,
     };
   },
