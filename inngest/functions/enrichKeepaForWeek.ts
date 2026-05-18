@@ -30,7 +30,19 @@ import { EXCLUDED_CATEGORIES_ARRAY } from '@/lib/keepa/categoryExclusions';
 import type { EnrichmentRow, AsinEnrichmentStatus } from '@/lib/keepa/types';
 import { sendEnrichmentEmail } from '@/lib/notifications/sendEnrichmentEmail';
 
-const BATCH_SIZE = 250;
+// Why 50 (not 250 as initially):
+// On 2026-05-15 the first real backfill attempt with BATCH_SIZE=250 failed
+// after 71s with Inngest's "Application failed to respond" — each step.run
+// HTTP execution has a connection timeout (observed ~60-70s window). At
+// our measured pace of ~0.5s/ASIN, a 250-ASIN batch = ~2 minutes, well
+// over the timeout. 50-ASIN batches = ~25s per step.run, safe margin.
+//
+// Trade-off: more batches (140K / 50 = ~2.8K vs 560), so more Inngest
+// step.run overhead. Each step.run boundary is a network round-trip
+// between Inngest Cloud and the Railway worker — but each is small,
+// and the total wall time is dominated by Keepa's 250 tokens/min rate
+// limit, not by batch overhead. We can revisit if needed.
+const BATCH_SIZE = 50;
 
 /**
  * Run a callback against a freshly-opened pg.Pool, ensure it's torn
