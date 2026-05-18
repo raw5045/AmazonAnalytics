@@ -258,7 +258,22 @@ export const enrichKeepaForWeek = inngest.createFunction(
     // would race for Keepa tokens. Different weeks could in principle
     // run concurrently — but we'll only ever fire one at a time anyway.
     concurrency: { limit: 1, key: 'event.data.weekEndDate' },
-    retries: 0, // step.run handles batch-level retries; no function-level retry
+    // Function-level retries handle the failure mode where the FUNCTION
+    // itself can't execute — e.g. Inngest Cloud → Railway worker TCP
+    // reset, worker crash, deploy mid-run. Inngest retries the function
+    // entry point, and step.run memoization preserves all previously-
+    // completed batches across retries (so a retry resumes from the
+    // failed batch rather than starting over).
+    //
+    // Distinct from:
+    //   - step.run's internal retries (default 3, handles errors thrown
+    //     inside the batch body)
+    //   - our try/catch around step.run (handles errors after step.run's
+    //     internal retries are exhausted but the function is still alive)
+    //
+    // 2026-05-18: bumped 0 → 5 after batch 0154 hit "connection reset"
+    // and killed an otherwise-healthy run with no retry budget.
+    retries: 5,
     triggers: [{ event: 'keepa.enrich-week-requested' }],
   },
   async ({ event, step }) => {
