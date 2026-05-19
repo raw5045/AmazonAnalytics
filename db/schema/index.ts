@@ -15,3 +15,4 @@ export * from './searchTermLooseRequirements';
 export * from './keywordCurrentSummaryMeta';
 export * from './keywordCurrentSummaryCategoryFacets';
 export * from './asinWeeklyData';
+export * from './keepaEnrichmentRuns';

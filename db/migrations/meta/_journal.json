@@ -162,6 +162,13 @@
       "when": 1779148800000,
       "tag": "0022_asin_weekly_data",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1779408000000,
+      "tag": "0023_keepa_enrichment_runs",
+      "breakpoints": true
     }
   ]
 }
