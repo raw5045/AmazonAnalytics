@@ -44,6 +44,23 @@ import { sendEnrichmentEmail } from '@/lib/notifications/sendEnrichmentEmail';
 // limit, not by batch overhead. We can revisit if needed.
 const BATCH_SIZE = 50;
 
+// Inngest imposes a hard 1000-step ceiling per function INVOCATION. At
+// BATCH_SIZE=50 that caps a single invocation at ~50K ASINs — but our
+// weekly workload is ~140K. To get around the limit we chain
+// invocations: each invocation processes up to MAX_BATCHES_PER_INVOCATION
+// batches, then if there's still work left it fires a continuation event
+// (same name, same weekEndDate). The concurrency:1 mutex on weekEndDate
+// makes the continuation queue until the current invocation returns;
+// the next invocation then starts with a fresh 1000-step budget.
+//
+// We reserve 200 of the 1000 step budget for safety + init + email +
+// the continuation event itself, leaving 800 for batches.
+//
+// For 140K ASINs at 50 ASINs/batch, that's 2,800 batches → ~3.5
+// invocations to complete. Each invocation is its own Inngest run in
+// the dashboard, with its own retry semantics and observability.
+const MAX_BATCHES_PER_INVOCATION = 800;
+
 /**
  * Run a callback against a freshly-opened pg.Pool, ensure it's torn
  * down afterward. Each Inngest step.run is a fresh function invocation
@@ -288,15 +305,25 @@ export const enrichKeepaForWeek = inngest.createFunction(
     const { startedAt, asins } = init;
 
     if (asins.length === 0) {
-      // Nothing to do — skip email and exit. Common case: re-firing the
-      // event for a week that's already fully enriched.
+      // Nothing to enrich. Could mean (a) the week is fully done — in
+      // which case we should NOT send another email (the previous
+      // chained invocation already did), or (b) the week was never
+      // started and a re-fire found nothing in scope. Either way,
+      // exit silently — readStatusHistogram in the dashboard tells
+      // the real story.
       return { weekEndDate, totalAsins: 0, batches: 0, skipped: true };
     }
 
+    // Cap the work this invocation handles at MAX_BATCHES_PER_INVOCATION
+    // (× BATCH_SIZE ASINs). If there's more work left, we'll chain a
+    // continuation event below.
+    const thisInvocationAsins = asins.slice(0, MAX_BATCHES_PER_INVOCATION * BATCH_SIZE);
+    const hasMore = asins.length > thisInvocationAsins.length;
+
     // Slice into BATCH_SIZE batches.
     const batches: string[][] = [];
-    for (let i = 0; i < asins.length; i += BATCH_SIZE) {
-      batches.push(asins.slice(i, i + BATCH_SIZE));
+    for (let i = 0; i < thisInvocationAsins.length; i += BATCH_SIZE) {
+      batches.push(thisInvocationAsins.slice(i, i + BATCH_SIZE));
     }
 
     // Each batch is its own step.run — checkpointed by Inngest. If a
@@ -307,11 +334,11 @@ export const enrichKeepaForWeek = inngest.createFunction(
     //
     // The try/catch is the second layer of resilience: if step.run
     // exhausts Inngest's internal retries on a single batch, we LOG
-    // and CONTINUE rather than failing the whole function. Without
-    // this, a single bad batch out of ~2,800 would kill the entire
-    // ~19h run. The skipped ASINs naturally reappear on the next
-    // listScope (since they weren't enriched), so a re-fire picks
-    // them up. Track the count so we can include it in the email.
+    // and CONTINUE rather than failing the whole invocation. Without
+    // this, a single bad batch could kill the invocation. The skipped
+    // ASINs naturally reappear on the next listScope (since they
+    // weren't enriched), so a re-fire (or the next chained invocation)
+    // picks them up.
     let failedBatches = 0;
     for (let i = 0; i < batches.length; i++) {
       try {
@@ -327,22 +354,48 @@ export const enrichKeepaForWeek = inngest.createFunction(
       }
     }
 
-    // Final step: read the status histogram from the DB, send the
-    // admin email. Wrapping in step.run means a Resend flake gets
-    // retried independently of the enrichment work.
+    if (hasMore) {
+      // Still more ASINs to enrich than fits in this invocation's
+      // step budget. Fire a continuation event and exit — the
+      // concurrency:1 mutex on weekEndDate makes this event queue
+      // until the current invocation returns, then a new invocation
+      // starts with a fresh 1000-step budget.
+      await step.sendEvent('fire-continuation', {
+        name: 'keepa.enrich-week-requested',
+        data: { weekEndDate },
+      });
+      return {
+        weekEndDate,
+        processedThisInvocation: thisInvocationAsins.length,
+        batches: batches.length,
+        failedBatches,
+        continued: true,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+
+    // Last invocation — send the completion email. Wrapping in step.run
+    // means a Resend flake gets retried independently of the enrichment
+    // work. The histogram is read fresh from the DB, so it reflects
+    // EVERY chained invocation's contribution (active + no_price +
+    // delisted + error rows for this week).
     await step.run('send-completion-email', async () => {
       const counts = await readStatusHistogram(weekEndDate);
+      const totalRows = counts.active + counts.no_price + counts.delisted + counts.error;
       await sendEnrichmentEmail({
         weekEndDate,
         counts,
+        // Duration here is just this final invocation's wall time —
+        // not total time across chained invocations. Acceptable
+        // approximation for the email; can improve later if needed.
         durationMs: Date.now() - startedAt,
-        tokensSpent: asins.length * 2,
+        tokensSpent: totalRows * 2,
       });
     });
 
     return {
       weekEndDate,
-      totalAsins: asins.length,
+      processedThisInvocation: thisInvocationAsins.length,
       batches: batches.length,
       failedBatches,
       durationMs: Date.now() - startedAt,
