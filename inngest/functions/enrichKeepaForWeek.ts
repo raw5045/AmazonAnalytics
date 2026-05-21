@@ -39,11 +39,20 @@ import { sendEnrichmentEmail } from '@/lib/notifications/sendEnrichmentEmail';
 
 const POLL_INTERVAL = '5m';
 const MAX_POLLS = 288; // 288 × 5m = 24 hours total polling budget
-// Heartbeat staleness threshold. If heartbeat hasn't ticked in this
-// long, the worker is presumed dead. The background runner writes
-// heartbeat every 60s AND after every 50-ASIN batch (a few seconds),
-// so 10 minutes of silence is well past normal variance.
-const HEARTBEAT_STALE_MS = 10 * 60_000;
+
+// Note (2026-05-21): the previous implementation also tripped 'orphaned'
+// when heartbeat_at was > 10 min stale. That check was the source of
+// false-positive orphan markings — observed on both the 5/19 and 5/20
+// runs, where the orchestrator marked the run orphaned while the worker
+// was actively writing batch updates. Root cause never fully diagnosed
+// (suspected Inngest step.run replay or event-filter interaction). The
+// defensive fix: trust ONLY the explicit DB status fields and the
+// poll-budget timeout. Orphan detection still happens via:
+//   - MAX_POLLS budget exhaustion (24h cap) — orchestrator marks orphaned
+//   - claimEnrichmentRun on the next event-fire — if a previous run's
+//     heartbeat is stale, that path marks it orphaned and creates a new
+//     run (so re-firing after any worker death naturally heals)
+// We accept slower orphan detection in exchange for no false positives.
 
 export const enrichKeepaForWeek = inngest.createFunction(
   {
@@ -89,10 +98,10 @@ export const enrichKeepaForWeek = inngest.createFunction(
       return { started: result.started, reason: result.reason ?? null };
     });
 
-    // Step 3: poll loop. Short waitForEvents that also check DB state.
-    // The background Promise fires `keepa/enrich.completed` when done;
-    // if heartbeat goes stale before that, we detect the orphan and
-    // bail (rather than waiting the full 24h budget).
+    // Step 3: poll loop. Short waitForEvents punctuated by DB status
+    // checks. The break conditions are explicit DB status values only —
+    // no heartbeat-staleness check (see the note above on the false-
+    // positive history).
     let outcome: 'completed' | 'failed' | 'orphaned' | 'timeout' = 'timeout';
     let pollIter = 0;
 
@@ -102,7 +111,6 @@ export const enrichKeepaForWeek = inngest.createFunction(
         return row
           ? {
               status: row.status,
-              heartbeatAt: row.heartbeatAt?.toISOString() ?? null,
               processedAsins: row.processedAsins,
               totalAsins: row.totalAsins,
             }
@@ -110,7 +118,9 @@ export const enrichKeepaForWeek = inngest.createFunction(
       });
 
       if (!status) {
-        outcome = 'failed'; // shouldn't happen — we just inserted it
+        // Row deleted? Shouldn't happen. Treat as failure for safety.
+        console.warn(`[enrichKeepaForWeek] status row missing for runId=${runId} at iter ${pollIter}`);
+        outcome = 'failed';
         break;
       }
 
@@ -118,23 +128,21 @@ export const enrichKeepaForWeek = inngest.createFunction(
         outcome = 'completed';
         break;
       }
-      if (status.status === 'failed' || status.status === 'orphaned') {
-        outcome = status.status as 'failed' | 'orphaned';
+      if (status.status === 'failed') {
+        outcome = 'failed';
         break;
       }
-
-      // Skip staleness check on iteration 0 — kickoff just happened
-      // and the worker may not have written its first heartbeat yet.
-      const hbAt = status.heartbeatAt ? new Date(status.heartbeatAt).getTime() : null;
-      if (pollIter > 0 && hbAt !== null && Date.now() - hbAt > HEARTBEAT_STALE_MS) {
+      if (status.status === 'orphaned') {
+        // Worker won't reach this state on its own — it'd happen if a
+        // separate orchestrator instance marked our run orphaned. Rare
+        // (concurrency:1 + DB partial index guard) but possible. Defer.
         outcome = 'orphaned';
         break;
       }
 
-      // Wait for the completion event or a 5-minute timeout, whichever
-      // comes first. If the event fires we re-check status next iter
-      // (background sets DB before firing). If it doesn't, we re-poll
-      // for heartbeat staleness.
+      // Wait for the completion event or a 5-minute timeout. If it fires
+      // we'll catch status=completed/failed on the next iteration's DB
+      // check (the worker writes status BEFORE firing the event).
       await step.waitForEvent(`await-${pollIter}`, {
         event: 'keepa/enrich.completed',
         if: `async.data.runId == "${runId}"`,
@@ -144,31 +152,31 @@ export const enrichKeepaForWeek = inngest.createFunction(
       pollIter++;
     }
 
-    // Step 4: handle orphaned/timeout outcomes. CAS-style — only
-    // mark orphaned if the run is still 'running'. If the worker
-    // raced and completed between our last check and now, respect that.
-    if (outcome === 'orphaned' || outcome === 'timeout') {
-      const reason =
-        outcome === 'orphaned'
-          ? `Heartbeat stale > ${HEARTBEAT_STALE_MS / 60_000} min while orchestrator was waiting`
-          : `Orchestrator poll budget exhausted (${MAX_POLLS} × ${POLL_INTERVAL})`;
-      const marked = await step.run('mark-orphaned', () =>
+    // Step 4: handle the only soft outcome — poll-budget timeout.
+    // CAS-style: only flip to orphaned if status is still 'running'.
+    // If the worker raced and completed/failed between our last check
+    // and now, respect that.
+    if (outcome === 'timeout') {
+      const reason = `Orchestrator poll budget exhausted (${MAX_POLLS} × ${POLL_INTERVAL})`;
+      const marked = await step.run('mark-orphaned-timeout', () =>
         markRunOrphanedByOrchestrator(runId, reason),
       );
-      if (!marked) {
-        // Worker won the race — re-read to get the actual terminal state.
+      if (marked) {
+        outcome = 'orphaned';
+      } else {
+        // Worker won the race — re-read for actual terminal state.
         const final = await step.run('recheck-after-cas-loss', async () => {
           const row = await getRunStatus(runId);
           return row ? { status: row.status } : null;
         });
         if (final?.status === 'completed') outcome = 'completed';
         else if (final?.status === 'failed') outcome = 'failed';
+        else outcome = 'orphaned';
       }
     }
 
-    // Step 5: send completion email regardless of outcome (operator
-    // signal — they should know if enrichment ran, succeeded, or
-    // failed, especially if they were waiting on the data).
+    // Step 5: send the appropriate-variant email. The outcome variable
+    // determines subject/color/wording (completed / failed / orphaned).
     await step.run('send-completion-email', async () => {
       const final = await getRunStatus(runId);
       const counts = await readStatusHistogram(weekEndDate);
@@ -176,11 +184,16 @@ export const enrichKeepaForWeek = inngest.createFunction(
         ? (final.completedAt ?? new Date()).getTime() - final.startedAt.getTime()
         : 0;
       const tokensSpent = (final?.processedAsins ?? 0) * 2;
+      // outcome is statically narrowed to completed | failed | orphaned
+      // by the timeout-handling block above (the `if outcome === 'timeout'`
+      // path always reassigns outcome).
       await sendEnrichmentEmail({
+        outcome,
         weekEndDate,
         counts,
         durationMs,
         tokensSpent,
+        errorMessage: final?.errorMessage ?? undefined,
       });
     });
 

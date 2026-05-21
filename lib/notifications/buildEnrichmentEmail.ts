@@ -1,20 +1,28 @@
 /**
  * Pure function: produce the subject/text/html for the Keepa enrichment
- * completion email. Snapshot-tested via buildEnrichmentEmail.test.ts so
- * we can iterate on the template without hitting Resend.
+ * outcome email. Snapshot-tested via buildEnrichmentEmail.test.ts so we
+ * can iterate on the template without hitting Resend.
  *
- * Phase 1 has a single 'completed' variant. If error-rate-based variants
- * become useful later (e.g. 'completed_with_high_error_rate' when error
- * % is > 2), add additional cases here following the buildImportEmail
- * three-variant pattern.
+ * Three outcomes, each with its own subject line + headline color:
  *
- * Separate from the import-completion email because enrichment runs much
- * longer (~19h vs minutes) — users want each completion signal
- * independently rather than batched.
+ *   'completed' — green ✓ — run finished successfully. The dataset is fresh.
+ *   'failed'    — red ✗  — run aborted due to an error in the worker code
+ *                          or DB layer. Some rows may have landed but the
+ *                          dataset is incomplete and the user should
+ *                          investigate before relying on it.
+ *   'orphaned'  — amber ⚠ — orchestrator gave up waiting (worker died
+ *                          silently, or 24h poll budget exhausted). The
+ *                          worker may still be running or may be gone;
+ *                          re-firing the event will resume cleanly.
+ *
+ * Mirrors the three-variant pattern in lib/notifications/buildImportEmail.ts.
  */
 import type { AsinEnrichmentStatus } from '@/lib/keepa/types';
 
+export type EnrichmentEmailOutcome = 'completed' | 'failed' | 'orphaned';
+
 export interface EnrichmentEmailInput {
+  outcome: EnrichmentEmailOutcome;
   /** Week being reported on (ISO date YYYY-MM-DD). */
   weekEndDate: string;
   /** Status histogram from asin_weekly_data for this week. */
@@ -25,6 +33,12 @@ export interface EnrichmentEmailInput {
   tokensSpent: number;
   /** App's public URL — used to build the explorer link. */
   appUrl: string;
+  /**
+   * Required for 'failed' and 'orphaned' variants when known. Surfaced in
+   * the email body so the operator has an immediate diagnostic without
+   * needing to open Inngest / Railway logs.
+   */
+  errorMessage?: string;
 }
 
 export interface BuiltEnrichmentEmail {
@@ -34,50 +48,154 @@ export interface BuiltEnrichmentEmail {
 }
 
 export function buildEnrichmentEmail(i: EnrichmentEmailInput): BuiltEnrichmentEmail {
-  const total = i.counts.active + i.counts.no_price + i.counts.delisted + i.counts.error;
-  const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0);
+  switch (i.outcome) {
+    case 'completed':
+      return buildCompleted(i);
+    case 'failed':
+      return buildFailed(i);
+    case 'orphaned':
+      return buildOrphaned(i);
+  }
+}
+
+function buildCompleted(i: EnrichmentEmailInput): BuiltEnrichmentEmail {
+  const total = countTotal(i.counts);
   const explorerUrl = `${i.appUrl}/explorer`;
-
   const subject = `✓ Keepa enrichment completed — week of ${i.weekEndDate}`;
-
-  const text = [
+  const lines = [
     `Enrichment of the ${i.weekEndDate} week's top-3 ASINs is complete.`,
     '',
     `Duration:           ${formatHours(i.durationMs)}`,
     `ASINs processed:    ${formatNumber(total)}`,
     `Status breakdown:`,
-    `  Active            ${formatNumber(i.counts.active).padStart(8)}   (${pct(i.counts.active).toFixed(1)}%)`,
-    `  No price          ${formatNumber(i.counts.no_price).padStart(8)}   (${pct(i.counts.no_price).toFixed(1)}%)`,
-    `  Delisted          ${formatNumber(i.counts.delisted).padStart(8)}   (${pct(i.counts.delisted).toFixed(1)}%)`,
-    `  Error             ${formatNumber(i.counts.error).padStart(8)}   (${pct(i.counts.error).toFixed(1)}%)`,
+    ...formatStatusLines(i.counts, total),
     `Tokens spent:       ~${formatNumber(i.tokensSpent)}`,
     '',
     `Detail-page product cards and review/rating columns for this week`,
     `are now showing fresh Keepa data.`,
     '',
     `View latest data: ${explorerUrl}`,
-  ].join('\n');
-
+  ];
   const html = htmlShell({
     headlineColor: '#15803d',
     headline: '✓ Keepa enrichment completed',
     subhead: `Week of ${escapeHtml(i.weekEndDate)}`,
-    rows: [
-      ['Duration', formatHours(i.durationMs)],
-      ['ASINs processed', formatNumber(total)],
-      [
-        'Status breakdown',
-        formatStatusBreakdownHtml(i.counts, total),
-      ],
-      ['Tokens spent', `~${formatNumber(i.tokensSpent)}`],
-    ],
+    rows: standardRows(i, total),
     afterRowsHtml:
       '<p style="margin: 16px 0 0 0; color: #555;">Detail-page product cards and review/rating columns for this week are now showing fresh Keepa data.</p>',
     linkUrl: explorerUrl,
     linkText: 'Open the explorer',
   });
+  return { subject, text: lines.join('\n'), html };
+}
 
-  return { subject, text, html };
+function buildFailed(i: EnrichmentEmailInput): BuiltEnrichmentEmail {
+  const total = countTotal(i.counts);
+  const explorerUrl = `${i.appUrl}/explorer`;
+  const subject = `✗ Keepa enrichment failed — week of ${i.weekEndDate}`;
+  const lines = [
+    `The Keepa enrichment run for week ${i.weekEndDate} did not complete.`,
+    '',
+    `Duration before failure:  ${formatHours(i.durationMs)}`,
+    `ASINs processed so far:   ${formatNumber(total)}`,
+    `Status breakdown:`,
+    ...formatStatusLines(i.counts, total),
+    `Tokens spent:             ~${formatNumber(i.tokensSpent)}`,
+    '',
+    `Error:`,
+    `  ${i.errorMessage ?? '(no error message captured)'}`,
+    '',
+    `Some rows may have landed in asin_weekly_data, but the dataset for`,
+    `this week is incomplete. Re-fire the keepa.enrich-week-requested`,
+    `event once the underlying issue is fixed; the candidate query`,
+    `excludes already-enriched ASINs, so the retry will only fetch what's`,
+    `missing.`,
+    '',
+    `View partial data: ${explorerUrl}`,
+  ];
+  const html = htmlShell({
+    headlineColor: '#b91c1c',
+    headline: '✗ Keepa enrichment failed',
+    subhead: `Week of ${escapeHtml(i.weekEndDate)}`,
+    rows: [
+      ...standardRows(i, total),
+      ['Error', `<code style="font-size: 12px;">${escapeHtml(i.errorMessage ?? '(no error message captured)')}</code>`],
+    ],
+    afterRowsHtml:
+      '<p style="margin: 16px 0 0 0; color: #555;">Some rows may have landed; the dataset for this week is incomplete. Re-fire <code>keepa.enrich-week-requested</code> after fixing the underlying issue — the candidate query excludes already-enriched ASINs.</p>',
+    linkUrl: explorerUrl,
+    linkText: 'View partial data',
+  });
+  return { subject, text: lines.join('\n'), html };
+}
+
+function buildOrphaned(i: EnrichmentEmailInput): BuiltEnrichmentEmail {
+  const total = countTotal(i.counts);
+  const explorerUrl = `${i.appUrl}/explorer`;
+  const subject = `⚠ Keepa enrichment interrupted — week of ${i.weekEndDate}`;
+  const lines = [
+    `The Keepa enrichment run for week ${i.weekEndDate} was interrupted.`,
+    '',
+    `Duration before interrupt:  ${formatHours(i.durationMs)}`,
+    `ASINs processed so far:     ${formatNumber(total)}`,
+    `Status breakdown:`,
+    ...formatStatusLines(i.counts, total),
+    `Tokens spent:               ~${formatNumber(i.tokensSpent)}`,
+    '',
+    `Likely cause:`,
+    `  ${i.errorMessage ?? 'Worker process stopped responding (Railway redeploy, platform outage, or hung process). The orchestrator gave up waiting for the completion event.'}`,
+    '',
+    `The data already in asin_weekly_data is correct and complete for the`,
+    `ASINs that were processed. Re-firing the keepa.enrich-week-requested`,
+    `event will resume from where we left off — the candidate query`,
+    `excludes already-enriched ASINs.`,
+    '',
+    `View partial data: ${explorerUrl}`,
+  ];
+  const html = htmlShell({
+    headlineColor: '#b45309',
+    headline: '⚠ Keepa enrichment interrupted',
+    subhead: `Week of ${escapeHtml(i.weekEndDate)}`,
+    rows: [
+      ...standardRows(i, total),
+      ['Likely cause', `<span style="font-size: 13px;">${escapeHtml(i.errorMessage ?? 'Worker stopped responding before sending completion signal.')}</span>`],
+    ],
+    afterRowsHtml:
+      '<p style="margin: 16px 0 0 0; color: #555;">The data already in <code>asin_weekly_data</code> is correct. Re-fire <code>keepa.enrich-week-requested</code> to resume — the candidate query excludes already-enriched ASINs.</p>',
+    linkUrl: explorerUrl,
+    linkText: 'View partial data',
+  });
+  return { subject, text: lines.join('\n'), html };
+}
+
+/** Shared row set for the HTML rendering of all three variants. */
+function standardRows(
+  i: EnrichmentEmailInput,
+  total: number,
+): Array<[string, string]> {
+  return [
+    ['Duration', formatHours(i.durationMs)],
+    ['ASINs processed', formatNumber(total)],
+    ['Status breakdown', formatStatusBreakdownHtml(i.counts, total)],
+    ['Tokens spent', `~${formatNumber(i.tokensSpent)}`],
+  ];
+}
+
+function countTotal(counts: Record<AsinEnrichmentStatus, number>): number {
+  return counts.active + counts.no_price + counts.delisted + counts.error;
+}
+
+function formatStatusLines(
+  counts: Record<AsinEnrichmentStatus, number>,
+  total: number,
+): string[] {
+  const pct = (n: number) => (total > 0 ? (n / total) * 100 : 0);
+  return [
+    `  Active            ${formatNumber(counts.active).padStart(8)}   (${pct(counts.active).toFixed(1)}%)`,
+    `  No price          ${formatNumber(counts.no_price).padStart(8)}   (${pct(counts.no_price).toFixed(1)}%)`,
+    `  Delisted          ${formatNumber(counts.delisted).padStart(8)}   (${pct(counts.delisted).toFixed(1)}%)`,
+    `  Error             ${formatNumber(counts.error).padStart(8)}   (${pct(counts.error).toFixed(1)}%)`,
+  ];
 }
 
 function formatStatusBreakdownHtml(
@@ -137,10 +255,6 @@ function htmlShell({
 </div>`.trim();
 }
 
-/**
- * Format a millisecond duration as e.g. "18h 42min" or "47min". For very
- * short runs (under a minute), shows seconds.
- */
 function formatHours(ms: number | undefined | null): string {
   if (ms === undefined || ms === null || !Number.isFinite(ms)) return '—';
   const totalSec = Math.round(ms / 1000);
