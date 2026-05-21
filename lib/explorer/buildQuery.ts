@@ -180,7 +180,8 @@ export function buildExplorerQuery(
       kcs.top_clicked_product_1_asin_current,
       kcs.top_clicked_product_1_title_current,
       kcs.top_clicked_product_1_click_share_current,
-      kcs.top_clicked_product_1_conversion_share_current
+      kcs.top_clicked_product_1_conversion_share_current,
+      kcs.estimated_monthly_volume_current
   `.trim();
 
   const whereClause = where.length > 0 ? `WHERE ${where.join('\n      AND ')}` : '';

@@ -101,6 +101,24 @@ export default async function KeywordDetailPage({
               <span className="text-gray-500">Current rank:</span>{' '}
               <span className="font-mono font-medium">{current.currentRank.toLocaleString()}</span>
             </span>
+            {current.estimatedMonthlyVolumeCurrent !== null && (
+              <span>
+                <span className="text-gray-500">Est. monthly searches:</span>{' '}
+                <span
+                  className="font-mono font-medium"
+                  title={
+                    current.estimatedMonthlyVolumeIsExtrapolated
+                      ? `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — estimate uses extrapolated parameters (this week predates the earliest calibration fit)`
+                      : `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — rough estimate from rank → volume calibration fit (~50% MAPE)`
+                  }
+                >
+                  ~{formatHeadlineVolume(current.estimatedMonthlyVolumeCurrent)}
+                  {current.estimatedMonthlyVolumeIsExtrapolated && (
+                    <span className="ml-1 text-amber-600">*</span>
+                  )}
+                </span>
+              </span>
+            )}
             {current.improvement1w !== null && (
               <span>
                 <span className="text-gray-500">vs prior week:</span>{' '}
@@ -178,6 +196,17 @@ export default async function KeywordDetailPage({
       })()}
     </div>
   );
+}
+
+/**
+ * Header-line volume format. Slightly more legible than the table-cell
+ * compact format — uses commas for full numbers, M/K only when really
+ * big. The ~ prefix in the header text signals "this is an estimate."
+ */
+function formatHeadlineVolume(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M / mo`;
+  if (n >= 10_000) return `${Math.round(n / 1_000)}K / mo`;
+  return `${n.toLocaleString()} / mo`;
 }
 
 function ImprovementChip({ improvement }: { improvement: number }) {

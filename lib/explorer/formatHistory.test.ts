@@ -28,6 +28,8 @@ const blankRow = (overrides: Partial<KeywordDetailHistoryRow>): KeywordDetailHis
   keywordTitleMatchCountLoose: null,
   fakeVolumeSeverity: null,
   fakeVolumeEvalStatus: null,
+  estimatedMonthlyVolume: null,
+  estimatedMonthlyVolumeIsExtrapolated: false,
   variants: null,
   ...overrides,
 });

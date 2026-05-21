@@ -37,6 +37,20 @@ export const keywordCurrentSummaryMeta = pgTable('keyword_current_summary_meta',
    * landing pagination footer doesn't need to run a live COUNT.
    */
   defaultSeverityTotal: integer('default_severity_total').notNull(),
+  /**
+   * The model_calibration_runs row whose (β, scale_factor) produced
+   * every estimated_monthly_volume_current value in the current
+   * snapshot. NULL when no fit existed at refresh time. See
+   * migration 0027 + refreshSummary for the selection logic
+   * (pickFitForWeek).
+   */
+  volumeFitRunId: uuid('volume_fit_run_id'),
+  /**
+   * True when the chosen fit's calibration month is AFTER the
+   * current week's month (i.e., we fell back to the earliest
+   * available fit). UI uses this to render an "extrapolated" chip.
+   */
+  volumeFitIsExtrapolated: boolean('volume_fit_is_extrapolated').notNull().default(false),
 });
 
 export type KeywordCurrentSummaryMeta = typeof keywordCurrentSummaryMeta.$inferSelect;

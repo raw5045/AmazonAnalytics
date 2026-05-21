@@ -29,7 +29,7 @@
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import { buildExplorerQuery, COUNT_CAP } from './buildQuery';
-import type { ExplorerFilters, ExplorerRow, SeverityKey } from './types';
+import type { ExplorerFilters, ExplorerRow, SeverityKey, VolumeFitMeta } from './types';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 
 interface ExplorerQueryResult {
@@ -37,6 +37,14 @@ interface ExplorerQueryResult {
   total: number;
   /** True when total === COUNT_CAP and the real total may be larger. */
   totalIsCapped: boolean;
+  /**
+   * Volume-fit metadata for the current snapshot, sourced from the
+   * same meta lookup that supplies current_week_end_date. `null` when
+   * no fit was selected at refresh time (cold start) — the column
+   * just stays empty rather than showing a chip. UI renders a
+   * "{Month YYYY} fit" chip and an "extrapolated" warning when set.
+   */
+  volumeFit: VolumeFitMeta | null;
   /** Per-layer wall-clock timings for the perf instrumentation strip. */
   timings: {
     /** Meta-row lookup that supplies the current_week_end_date predicate. */
@@ -72,12 +80,17 @@ interface RawRow {
   top_clicked_product_1_title_current: string | null;
   top_clicked_product_1_click_share_current: string | null;
   top_clicked_product_1_conversion_share_current: string | null;
+  // bigint comes back as string from pg/neon-http to avoid 53-bit
+  // precision loss. Mapper parses to number.
+  estimated_monthly_volume_current: string | number | null;
 }
 
 interface MetaRow {
   current_week_end_date: string | null;
   snapshot_version: string | null;
   default_severity_total: number | null;
+  volume_fit_calibration_month_end_date: string | null;
+  volume_fit_is_extrapolated: boolean | null;
 }
 
 /**
@@ -132,24 +145,36 @@ export async function runExplorerQuery(
 
   // Fast path setup: one meta lookup gives us everything we need —
   // the current_week_end_date predicate, the snapshot_version (for
-  // facet lookups), and the default_severity_total (for landing-page
-  // count short-circuit).
+  // facet lookups), the default_severity_total (for landing-page
+  // count short-circuit), and the volume-fit info (for the page
+  // chip).
   let currentWeekEndDate: string | undefined;
   let snapshotVersion: string | undefined;
   let defaultSeverityTotal: number | undefined;
+  let volumeFit: VolumeFitMeta | null = null;
   const tMetaStart = Date.now();
   try {
     const metaRows = (await sqlClient`
       SELECT
-        current_week_end_date::text AS current_week_end_date,
-        snapshot_version::text       AS snapshot_version,
-        default_severity_total       AS default_severity_total
-      FROM keyword_current_summary_meta
-      WHERE singleton = true
+        m.current_week_end_date::text AS current_week_end_date,
+        m.snapshot_version::text       AS snapshot_version,
+        m.default_severity_total       AS default_severity_total,
+        r.calibration_month_end_date::text AS volume_fit_calibration_month_end_date,
+        m.volume_fit_is_extrapolated   AS volume_fit_is_extrapolated
+      FROM keyword_current_summary_meta m
+      LEFT JOIN model_calibration_runs r ON r.id = m.volume_fit_run_id
+      WHERE m.singleton = true
     `) as MetaRow[];
-    currentWeekEndDate = metaRows[0]?.current_week_end_date ?? undefined;
-    snapshotVersion = metaRows[0]?.snapshot_version ?? undefined;
-    defaultSeverityTotal = metaRows[0]?.default_severity_total ?? undefined;
+    const meta = metaRows[0];
+    currentWeekEndDate = meta?.current_week_end_date ?? undefined;
+    snapshotVersion = meta?.snapshot_version ?? undefined;
+    defaultSeverityTotal = meta?.default_severity_total ?? undefined;
+    if (meta?.volume_fit_calibration_month_end_date) {
+      volumeFit = {
+        calibrationMonthEndDate: meta.volume_fit_calibration_month_end_date,
+        isExtrapolated: meta.volume_fit_is_extrapolated ?? false,
+      };
+    }
   } catch {
     // Fallthrough: everything stays undefined, queries use legacy paths.
   }
@@ -219,6 +244,12 @@ export async function runExplorerQuery(
     topClickedProduct1Title: r.top_clicked_product_1_title_current,
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
+    estimatedMonthlyVolumeCurrent:
+      r.estimated_monthly_volume_current === null || r.estimated_monthly_volume_current === undefined
+        ? null
+        : typeof r.estimated_monthly_volume_current === 'string'
+          ? parseInt(r.estimated_monthly_volume_current, 10)
+          : r.estimated_monthly_volume_current,
   }));
 
   // Final total: precomputed wins; otherwise extract from live count
@@ -244,6 +275,7 @@ export async function runExplorerQuery(
     rows,
     total,
     totalIsCapped,
+    volumeFit,
     timings: {
       metaLookupMs,
       rowsMs: rowsTimed.ms,

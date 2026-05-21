@@ -85,6 +85,27 @@ export interface ExplorerRow {
   topClickedProduct1Title: string | null;
   topClickedProduct1ClickShare: string | null;
   topClickedProduct1ConversionShare: string | null;
+  /**
+   * Precomputed estimated monthly search volume from the rank-to-
+   * volume model fit selected by pickFitForWeek at refresh time.
+   * NULL only when no calibration fit existed when the kcs snapshot
+   * was built. See migration 0027.
+   */
+  estimatedMonthlyVolumeCurrent: number | null;
+}
+
+/**
+ * One-shot info about the volume-model fit that produced every
+ * estimated_monthly_volume_current value in the current explorer
+ * snapshot. The explorer reads this from `keyword_current_summary_meta`
+ * and renders a single page-level chip — there is nothing per-row to
+ * render (every row uses the same fit).
+ *
+ * `null` when no fit was selected at refresh time (cold start).
+ */
+export interface VolumeFitMeta {
+  calibrationMonthEndDate: string;
+  isExtrapolated: boolean;
 }
 
 /**

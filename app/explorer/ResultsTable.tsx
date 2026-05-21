@@ -45,6 +45,12 @@ export function ResultsTable({
           <tr>
             <th className="p-2">Search term</th>
             <th className="p-2 text-right">Current rank</th>
+            <th
+              className="p-2 text-right"
+              title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Rough estimate (~50% MAPE on current fit)."
+            >
+              Est. monthly vol.
+            </th>
             <th className="p-2 text-right">{WINDOW_LABEL[window]}</th>
             <th className="p-2 text-right">Δ</th>
             <th className="p-2">Category</th>
@@ -68,6 +74,9 @@ export function ResultsTable({
                 </Link>
               </td>
               <td className="p-2 text-right tabular-nums">{r.currentRank.toLocaleString()}</td>
+              <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolumeCurrent !== null ? `${r.estimatedMonthlyVolumeCurrent.toLocaleString()} searches / month (est.)` : undefined}>
+                {formatVolume(r.estimatedMonthlyVolumeCurrent)}
+              </td>
               <td className="p-2 text-right tabular-nums text-gray-600">
                 {r.priorRank?.toLocaleString() ?? <span className="text-gray-400">—</span>}
               </td>
@@ -148,4 +157,19 @@ function fmtPct(s: string | null): string {
   if (s === null) return '—';
   const n = parseFloat(s);
   return Number.isFinite(n) ? `${n.toFixed(1)}%` : '—';
+}
+
+/**
+ * Format an estimated monthly volume for the table cell. Compact (1.2M /
+ * 423K / 1,234) so the column stays narrow without losing magnitude.
+ * Null renders as a gray em-dash.
+ */
+function formatVolume(n: number | null): React.ReactNode {
+  if (n === null || !Number.isFinite(n)) {
+    return <span className="text-gray-400">—</span>;
+  }
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
 }

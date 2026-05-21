@@ -35,6 +35,7 @@
  * out on long INSERTs).
  */
 import { Pool, type PoolClient } from 'pg';
+import { pickFitForWeek, type FitParams } from '@/lib/analytics/volumeModel';
 
 export interface RefreshSummaryResult {
   rowsWritten: number;
@@ -68,6 +69,45 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       throw new Error('refreshSummary: no completed reporting_weeks found');
     }
     currentWeekEndDate = refRows[0].current_week as unknown as string;
+
+    // 0a. Pick the volume-model fit that applies to current_week_end_date.
+    //     pickFitForWeek picks the latest fit with calibration_month
+    //     ≤ end-of-current-week's-month (or earliest available with
+    //     isExtrapolated=true if none qualifies). Both numbers are
+    //     bound as INSERT params below to compute volumes in SQL via
+    //     power(rank, -β) — avoids per-row JS callbacks against 4M rows.
+    //
+    //     When zero fits exist (cold start), volumeSelection is null
+    //     and the column stays NULL. Next refresh after a fit lands
+    //     will fill it in.
+    const { rows: fitRows } = await client.query<{
+      id: string;
+      calibration_month_end_date: string;
+      fitted_at: string;
+      beta: string;
+      scale_factor: string;
+    }>(
+      `SELECT id, calibration_month_end_date::text, fitted_at::text,
+              beta::text, scale_factor::text
+       FROM model_calibration_runs`,
+    );
+    const fits: FitParams[] = fitRows.map((r) => ({
+      calibrationMonthEndDate: r.calibration_month_end_date,
+      fittedAt: r.fitted_at,
+      beta: parseFloat(r.beta),
+      scaleFactor: parseFloat(r.scale_factor),
+    }));
+    const volumeSelection = pickFitForWeek(currentWeekEndDate, fits);
+    const fitRunIdById = new Map<string, string>();
+    for (const r of fitRows) fitRunIdById.set(`${r.calibration_month_end_date}|${r.fitted_at}`, r.id);
+    const chosenFitRunId = volumeSelection
+      ? fitRunIdById.get(
+          `${volumeSelection.fit.calibrationMonthEndDate}|${volumeSelection.fit.fittedAt}`,
+        ) ?? null
+      : null;
+    const chosenBeta = volumeSelection?.fit.beta ?? null;
+    const chosenScaleFactor = volumeSelection?.fit.scaleFactor ?? null;
+    const chosenIsExtrapolated = volumeSelection?.isExtrapolated ?? false;
 
     // Stage-and-swap pattern (Plan 3.2 perf fix #4):
     //   - Build the new snapshot inside `keyword_current_summary_stage`,
@@ -118,6 +158,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // or maintain it incrementally on each import.
 
     // 4. INSERT into the stage table (the live table is untouched).
+    //    estimated_monthly_volume_current is computed inline via
+    //    power($beta, -current_rank) * $scale_factor. Both params are
+    //    bound from the volumeSelection picked above. When no fit
+    //    exists (cold start), $beta and $scale_factor are NULL — the
+    //    CASE expression then leaves the column NULL.
     const insertResult = await client.query(
       `
       INSERT INTO keyword_current_summary_stage (
@@ -137,6 +182,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         keyword_title_match_count_current,
         keyword_in_title_1_loose_current, keyword_in_title_2_loose_current, keyword_in_title_3_loose_current,
         keyword_title_match_count_loose_current,
+        estimated_monthly_volume_current,
         updated_at
       )
       SELECT
@@ -185,6 +231,12 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         l.keyword_in_title_2_loose AS in_title_2_loose,
         l.keyword_in_title_3_loose AS in_title_3_loose,
         l.keyword_title_match_count_loose AS title_match_count_loose,
+        -- Estimated volume: scaleFactor * rank^-beta, computed in SQL.
+        -- NULL out when either parameter is missing (no fit selected).
+        CASE
+          WHEN $2::numeric IS NULL OR $3::numeric IS NULL THEN NULL::bigint
+          ELSE ($3::numeric * power(l.actual_rank::numeric, -$2::numeric))::bigint
+        END AS estimated_monthly_volume_current,
         NOW()
       FROM latest_per_term l
       LEFT JOIN rank_at_1w r1 ON r1.search_term_id = l.search_term_id
@@ -193,7 +245,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       LEFT JOIN rank_at_26w r26 ON r26.search_term_id = l.search_term_id
       LEFT JOIN rank_at_52w r52 ON r52.search_term_id = l.search_term_id
       `,
-      [currentWeekEndDate],
+      [currentWeekEndDate, chosenBeta, chosenScaleFactor],
     );
     rowsWritten = insertResult.rowCount ?? 0;
 
@@ -273,17 +325,24 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       [newSnapshotVersion],
     );
 
-    // 3. Update meta to point at the new snapshot.
+    // 3. Update meta to point at the new snapshot. Also records the
+    //    volume-fit info: the run id that produced the snapshot's
+    //    estimated_monthly_volume_current values, and whether that fit
+    //    was extrapolated. Explorer reads these to render a small
+    //    page-level chip.
     await client.query(
       `INSERT INTO keyword_current_summary_meta
-         (singleton, current_week_end_date, refreshed_at, snapshot_version, default_severity_total)
-       VALUES (true, $1::date, now(), $2::uuid, $3::int)
+         (singleton, current_week_end_date, refreshed_at, snapshot_version,
+          default_severity_total, volume_fit_run_id, volume_fit_is_extrapolated)
+       VALUES (true, $1::date, now(), $2::uuid, $3::int, $4::uuid, $5::boolean)
        ON CONFLICT (singleton) DO UPDATE
          SET current_week_end_date = EXCLUDED.current_week_end_date,
              refreshed_at = EXCLUDED.refreshed_at,
              snapshot_version = EXCLUDED.snapshot_version,
-             default_severity_total = EXCLUDED.default_severity_total`,
-      [currentWeekEndDate, newSnapshotVersion, newDefaultTotal],
+             default_severity_total = EXCLUDED.default_severity_total,
+             volume_fit_run_id = EXCLUDED.volume_fit_run_id,
+             volume_fit_is_extrapolated = EXCLUDED.volume_fit_is_extrapolated`,
+      [currentWeekEndDate, newSnapshotVersion, newDefaultTotal, chosenFitRunId, chosenIsExtrapolated],
     );
 
     await client.query('COMMIT');

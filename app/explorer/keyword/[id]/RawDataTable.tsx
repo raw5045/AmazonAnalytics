@@ -51,6 +51,12 @@ export function RawDataTable({ rows }: { rows: KeywordDetailHistoryRow[] }) {
             <tr>
               <th className="p-2">Week</th>
               <th className="p-2 text-right">Rank</th>
+              <th
+                className="p-2 text-right"
+                title="Estimated monthly Amazon search volume for this specific week, computed from the rank → volume calibration fit that covers this week's month. Rough estimate (~50% MAPE on current fit)."
+              >
+                Est. monthly vol.
+              </th>
               <th className="p-2">Top product #1</th>
               <th className="p-2 font-mono">ASIN</th>
               <th className="p-2 text-right">Click %</th>
@@ -100,6 +106,21 @@ function Row({ row: r }: { row: KeywordDetailHistoryRow }) {
     <tr className="hover:bg-gray-50">
       <td className="p-2 font-mono text-gray-700 whitespace-nowrap">{r.weekEndDate}</td>
       <td className="p-2 text-right tabular-nums font-mono">{r.actualRank.toLocaleString()}</td>
+      <td
+        className="p-2 text-right tabular-nums"
+        title={
+          r.estimatedMonthlyVolume === null
+            ? undefined
+            : r.estimatedMonthlyVolumeIsExtrapolated
+              ? `${r.estimatedMonthlyVolume.toLocaleString()} searches / month — estimate uses extrapolated parameters (this week predates the earliest calibration fit)`
+              : `${r.estimatedMonthlyVolume.toLocaleString()} searches / month (est.)`
+        }
+      >
+        {formatVolume(r.estimatedMonthlyVolume)}
+        {r.estimatedMonthlyVolume !== null && r.estimatedMonthlyVolumeIsExtrapolated && (
+          <span className="ml-1 text-amber-600" aria-label="extrapolated">*</span>
+        )}
+      </td>
       <td className="p-2 max-w-xs">
         {r.topClickedProduct1Title ? (
           <span title={r.topClickedProduct1Title} className="block truncate">
@@ -146,4 +167,15 @@ function formatPct(s: string | null): React.ReactNode {
   const n = parseFloat(s);
   if (!Number.isFinite(n)) return <span className="text-gray-400">—</span>;
   return `${n.toFixed(1)}%`;
+}
+
+/** Compact display: 1.2M / 423K / 1,234. Null → gray em-dash. */
+function formatVolume(n: number | null): React.ReactNode {
+  if (n === null || !Number.isFinite(n)) {
+    return <span className="text-gray-400">—</span>;
+  }
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
 }

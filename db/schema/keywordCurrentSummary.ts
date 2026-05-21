@@ -1,4 +1,4 @@
-import { pgTable, uuid, integer, date, varchar, text, boolean, smallint, timestamp, numeric, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, integer, bigint, date, varchar, text, boolean, smallint, timestamp, numeric, index } from 'drizzle-orm/pg-core';
 import { searchTerms } from './searchTerms';
 import { fakeVolumeSeverityEnum } from './uploads';
 
@@ -75,6 +75,18 @@ export const keywordCurrentSummary = pgTable(
     // (Plan 3.1 review 2026-05-01 — low expected signal in low-volume
     // keywords; add later via ALTER TABLE if user demand emerges)
 
+    /**
+     * Precomputed estimated monthly Amazon search volume for this
+     * keyword at the current week, derived from the rank-to-volume
+     * power-law fit selected by pickFitForWeek(current_week_end_date,
+     * fits). NULL when no calibration fit exists at all.
+     *
+     * Refreshed atomically with the rest of kcs (see refreshSummary).
+     * Detail page computes per-historical-week values at render time
+     * instead — this column only covers the current week.
+     */
+    estimatedMonthlyVolumeCurrent: bigint('estimated_monthly_volume_current', { mode: 'number' }),
+
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -94,6 +106,7 @@ export const keywordCurrentSummary = pgTable(
     jump13wIdx: index('kcs_jump_13w_idx').on(t.rank13wAgo, t.currentRank),
     jump26wIdx: index('kcs_jump_26w_idx').on(t.rank26wAgo, t.currentRank),
     jump52wIdx: index('kcs_jump_52w_idx').on(t.rank52wAgo, t.currentRank),
+    estVolIdx: index('kcs_est_vol_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolumeCurrent),
   }),
 );
 

@@ -11,6 +11,7 @@ import type { Metadata } from 'next';
 import { parseExplorerFilters, EXPLORER_DEFAULTS, type SearchParamsLike } from '@/lib/explorer/parseFilters';
 import { runExplorerQuery } from '@/lib/explorer/runQuery';
 import { listCategories } from '@/lib/explorer/listCategories';
+import type { VolumeFitMeta } from '@/lib/explorer/types';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { Pagination } from './Pagination';
@@ -51,7 +52,7 @@ export default async function ExplorerPage({
     runExplorerQuery(filters),
     categoriesPromise,
   ]);
-  const { rows, total, totalIsCapped, timings: rqTimings } = queryResult;
+  const { rows, total, totalIsCapped, volumeFit, timings: rqTimings } = queryResult;
   const categories = categoriesTimed.result;
   const handlerTotalMs = Date.now() - handlerStartedAt;
 
@@ -95,11 +96,47 @@ export default async function ExplorerPage({
             Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
           </p>
         )}
+        {volumeFit && <VolumeFitChip fit={volumeFit} />}
         <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} backUrl={backUrl} />
         <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>
   );
+}
+
+/**
+ * Small inline chip that tells the user where the est-monthly-volume
+ * numbers came from. Shown above the results table.
+ */
+function VolumeFitChip({ fit }: { fit: VolumeFitMeta }) {
+  // calibrationMonthEndDate is YYYY-MM-DD (the last day of the month).
+  // Render as "Month YYYY" — friendlier than the raw date.
+  const monthLabel = formatMonthLabel(fit.calibrationMonthEndDate);
+  return (
+    <div className="mb-3 inline-flex items-center gap-2 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-600">
+      <span>
+        Est. monthly volume from <strong>{monthLabel}</strong> calibration fit
+      </span>
+      {fit.isExtrapolated && (
+        <span
+          className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-amber-800"
+          title="No calibration data exists yet for this week or any earlier week — the explorer falls back to the earliest available fit. Numbers should be treated as rough estimates."
+        >
+          extrapolated
+        </span>
+      )}
+    </div>
+  );
+}
+
+function formatMonthLabel(isoYyyyMmDd: string): string {
+  const [y, m] = isoYyyyMmDd.split('-');
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December',
+  ];
+  const idx = parseInt(m, 10) - 1;
+  return idx >= 0 && idx < 12 ? `${monthNames[idx]} ${y}` : isoYyyyMmDd;
 }
 
 function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boolean {

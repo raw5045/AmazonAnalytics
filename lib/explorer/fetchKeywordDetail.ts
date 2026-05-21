@@ -11,6 +11,7 @@
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import type { SeverityKey } from './types';
+import { pickFitForWeek, predictVolume, type FitParams } from '@/lib/analytics/volumeModel';
 
 export interface KeywordDetailHistoryRow {
   weekEndDate: string;
@@ -36,6 +37,18 @@ export interface KeywordDetailHistoryRow {
   keywordTitleMatchCountLoose: number | null;
   fakeVolumeSeverity: SeverityKey | null;
   fakeVolumeEvalStatus: string | null;
+  /**
+   * Estimated monthly Amazon search volume for THIS week, derived
+   * at fetch time from the fit selected by pickFitForWeek for this
+   * specific week's month. NULL when no fits exist at all.
+   */
+  estimatedMonthlyVolume: number | null;
+  /**
+   * True when the fit used for this week's volume was selected via
+   * the earliest-fit-with-extrapolation fallback (the week predates
+   * all calibration runs). UI shows a tooltip.
+   */
+  estimatedMonthlyVolumeIsExtrapolated: boolean;
   // Variant info from import_duplicate_search_terms — populated when
   // Amazon's CSV had multiple rows for this (week, normalized term).
   // null when no variants existed for this week (the common case).
@@ -92,6 +105,14 @@ export interface KeywordDetailCurrent {
   keywordInTitle2LooseCurrent: boolean | null;
   keywordInTitle3LooseCurrent: boolean | null;
   keywordTitleMatchCountLooseCurrent: number | null;
+  /**
+   * Estimated current monthly search volume. Computed from
+   * the fit picked for current_week_end_date (or the precomputed kcs
+   * value when it matches). Null when no fits exist at all.
+   */
+  estimatedMonthlyVolumeCurrent: number | null;
+  /** True when the chosen fit is extrapolated (see VolumeFitMeta). */
+  estimatedMonthlyVolumeIsExtrapolated: boolean;
 }
 
 export interface KeywordDetail {
@@ -126,7 +147,7 @@ export async function fetchKeywordDetail(
 ): Promise<KeywordDetail | null> {
   const sql = neon(env.DATABASE_URL);
 
-  const [termRowsAny, currentRowsAny, historyRowsAny, variantRowsAny, enrichedRowsAny] = await Promise.all([
+  const [termRowsAny, currentRowsAny, historyRowsAny, variantRowsAny, enrichedRowsAny, fitRowsAny] = await Promise.all([
     sql`
       SELECT id, search_term_raw, search_term_normalized,
              first_seen_week, last_seen_week
@@ -237,6 +258,19 @@ export async function fetchKeywordDetail(
           kwm.top_clicked_product_3_asin
         ]::text[])
     `,
+    // All calibration fits — used to compute per-week estimated volume.
+    // Cardinality is small (a handful of monthly fits over the app's
+    // lifetime), so fetching all and picking per-row in JS is cheaper
+    // than a per-row SQL join.
+    sql`
+      SELECT
+        id,
+        calibration_month_end_date::text AS calibration_month_end_date,
+        fitted_at::text                  AS fitted_at,
+        beta::text                       AS beta,
+        scale_factor::text               AS scale_factor
+      FROM model_calibration_runs
+    `,
   ]);
   const termRows = termRowsAny as unknown as Array<{
     id: string;
@@ -254,12 +288,25 @@ export async function fetchKeywordDetail(
     raw_examples: string[];
   }>;
   const enrichedRows = enrichedRowsAny as unknown as Array<Record<string, unknown>>;
+  const fitRows = fitRowsAny as unknown as Array<{
+    id: string;
+    calibration_month_end_date: string;
+    fitted_at: string;
+    beta: string;
+    scale_factor: string;
+  }>;
+  const fits: FitParams[] = fitRows.map((r) => ({
+    calibrationMonthEndDate: r.calibration_month_end_date,
+    fittedAt: r.fitted_at,
+    beta: parseFloat(r.beta),
+    scaleFactor: parseFloat(r.scale_factor),
+  }));
 
   if (termRows.length === 0) return null;
   const term = termRows[0];
 
   const current: KeywordDetailCurrent | null = currentRows.length > 0
-    ? mapCurrent(currentRows[0])
+    ? mapCurrent(currentRows[0], fits)
     : null;
 
   // Index variants by week for O(1) lookup during history mapping.
@@ -303,15 +350,19 @@ export async function fetchKeywordDetail(
     firstSeenWeek: toIsoDate(term.first_seen_week),
     lastSeenWeek: toIsoDate(term.last_seen_week),
     current,
-    history: historyRows.map((r) => mapHistory(r, variantsByWeek)),
+    history: historyRows.map((r) => mapHistory(r, variantsByWeek, fits)),
     enrichedProductsByAsin,
   };
 }
 
-function mapCurrent(r: Record<string, unknown>): KeywordDetailCurrent {
+function mapCurrent(r: Record<string, unknown>, fits: ReadonlyArray<FitParams>): KeywordDetailCurrent {
+  const currentWeekEndDate = toIsoDate(r.current_week_end_date as string);
+  const currentRank = r.current_rank as number;
+  const sel = pickFitForWeek(currentWeekEndDate, fits);
+  const estVol = sel ? Math.round(predictVolume(currentRank, sel.fit.beta, sel.fit.scaleFactor)) : null;
   return {
-    currentWeekEndDate: toIsoDate(r.current_week_end_date as string),
-    currentRank: r.current_rank as number,
+    currentWeekEndDate,
+    currentRank,
     priorWeekRank: (r.prior_week_rank as number | null) ?? null,
     improvement1w: (r.improvement_1w as number | null) ?? null,
     fakeVolumeSeverityCurrent: (r.fake_volume_severity_current as SeverityKey | null) ?? null,
@@ -323,17 +374,26 @@ function mapCurrent(r: Record<string, unknown>): KeywordDetailCurrent {
     keywordInTitle2LooseCurrent: (r.keyword_in_title_2_loose_current as boolean | null) ?? null,
     keywordInTitle3LooseCurrent: (r.keyword_in_title_3_loose_current as boolean | null) ?? null,
     keywordTitleMatchCountLooseCurrent: (r.keyword_title_match_count_loose_current as number | null) ?? null,
+    estimatedMonthlyVolumeCurrent: estVol,
+    estimatedMonthlyVolumeIsExtrapolated: sel?.isExtrapolated ?? false,
   };
 }
 
 function mapHistory(
   r: Record<string, unknown>,
   variantsByWeek: Map<string, KeywordVariantInfo>,
+  fits: ReadonlyArray<FitParams>,
 ): KeywordDetailHistoryRow {
   const weekEndDate = toIsoDate(r.week_end_date as string);
+  const actualRank = r.actual_rank as number;
+  // Each history row picks its OWN fit — different weeks land in
+  // different calibration months. Math.pow over ~52 rows is microseconds;
+  // no need to batch.
+  const sel = pickFitForWeek(weekEndDate, fits);
+  const estVol = sel ? Math.round(predictVolume(actualRank, sel.fit.beta, sel.fit.scaleFactor)) : null;
   return {
     weekEndDate,
-    actualRank: r.actual_rank as number,
+    actualRank,
     topClickedProduct1Asin: (r.top_clicked_product_1_asin as string | null) ?? null,
     topClickedProduct1Title: (r.top_clicked_product_1_title as string | null) ?? null,
     topClickedProduct1ClickShare: (r.top_clicked_product_1_click_share as string | null) ?? null,
@@ -353,6 +413,8 @@ function mapHistory(
     keywordTitleMatchCountLoose: (r.keyword_title_match_count_loose as number | null) ?? null,
     fakeVolumeSeverity: (r.fake_volume_severity as SeverityKey | null) ?? null,
     fakeVolumeEvalStatus: (r.fake_volume_eval_status as string | null) ?? null,
+    estimatedMonthlyVolume: estVol,
+    estimatedMonthlyVolumeIsExtrapolated: sel?.isExtrapolated ?? false,
     variants: variantsByWeek.get(weekEndDate) ?? null,
   };
 }
