@@ -481,27 +481,36 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
 
 /**
  * Stage Keepa-enriched data for every ASIN that appears as a top-3
- * clicked product in latest_per_term, scoped to the current week.
- * Pulled into a temp table indexed by ASIN so the main INSERT can
- * LEFT JOIN three times (one per slot) without re-scanning the
- * full asin_weekly_data table for each lookup.
+ * clicked product in latest_per_term. Pulled into a temp table
+ * indexed by ASIN so the main INSERT can LEFT JOIN three times
+ * (one per slot) without re-scanning the full asin_weekly_data
+ * table for each lookup.
  *
- * Note: we read asin_weekly_data WHERE enrichment_status = 'active'
- * — 'no_price' / 'delisted' / 'error' rows are excluded because their
- * price/review fields are mostly NULL anyway.
+ * Important timing note: Keepa enrichment for the new week typically
+ * takes ~a day after the weekly SFR import. So `refreshSummary`
+ * running immediately after import would otherwise see ZERO Keepa
+ * rows for the new week, leaving the new kcs columns NULL until the
+ * next weekly refresh — a poor UX. To bridge that gap we pick the
+ * MOST RECENT enrichment per ASIN at or before the current week
+ * (DISTINCT ON + ORDER BY week_end_date DESC). Falls back to last
+ * week's prices when this week's haven't landed yet — prices/reviews
+ * change slowly enough that this is a much better default than NULL.
+ *
+ * Only includes enrichment_status = 'active' rows; 'no_price' /
+ * 'delisted' / 'error' rows have mostly NULL fields anyway.
  */
 async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string): Promise<void> {
   await client.query(
     `
     CREATE TEMP TABLE asin_enriched_current ON COMMIT DROP AS
-    SELECT
+    SELECT DISTINCT ON (a.asin)
       a.asin,
       a.current_price_cents,
       a.review_count,
       a.average_rating_x10,
       a.category_leaf
     FROM asin_weekly_data a
-    WHERE a.week_end_date = $1::date
+    WHERE a.week_end_date <= $1::date
       AND a.enrichment_status = 'active'
       AND a.asin IN (
         SELECT DISTINCT asin FROM (
@@ -511,7 +520,8 @@ async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string
           UNION
           SELECT top_clicked_product_3_asin FROM latest_per_term WHERE top_clicked_product_3_asin IS NOT NULL
         ) all_asins
-      );
+      )
+    ORDER BY a.asin, a.week_end_date DESC;
     CREATE INDEX ON asin_enriched_current (asin);
     `,
     [currentWeekEndDate],
