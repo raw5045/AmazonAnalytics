@@ -3,6 +3,7 @@ import { validateFileFn } from './validate';
 import { importBatchFn } from './importBatch';
 import { enrichKeepaForWeek } from './enrichKeepaForWeek';
 import { processMonthlySfr } from './processMonthlySfr';
+import { processCalibrationUpload } from './processCalibrationUpload';
 
 // Note: `importFileFn` is no longer registered. The batch path
 // (importBatchFn) now calls processFileImport directly via the worker's
@@ -15,4 +16,5 @@ export const functions = [
   importBatchFn,
   enrichKeepaForWeek,
   processMonthlySfr,
+  processCalibrationUpload,
 ];
