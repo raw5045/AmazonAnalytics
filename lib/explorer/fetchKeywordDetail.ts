@@ -51,6 +51,32 @@ export interface KeywordVariantInfo {
   rawExamples: string[];
 }
 
+/**
+ * Keepa-enriched product data for one of the top-3 ASINs on the keyword
+ * detail page. Sourced from `asin_weekly_data` at the keyword's current
+ * week. `null` when the ASIN isn't yet enriched (e.g. dormant keyword,
+ * or an ASIN that was excluded from enrichment scope).
+ */
+export interface EnrichedProduct {
+  asin: string;
+  title: string | null;
+  brand: string | null;
+  imageUrl: string | null;
+  categoryPath: string | null;
+  categoryRoot: string | null;
+  categoryLeaf: string | null;
+  currentPriceCents: number | null;
+  salesRank: number | null;
+  reviewCount: number | null;
+  /** 0-50 scale (divide by 10 to display as 0.0-5.0 stars). */
+  averageRatingX10: number | null;
+  avg30PriceCents: number | null;
+  avg90PriceCents: number | null;
+  avg180PriceCents: number | null;
+  avg365PriceCents: number | null;
+  enrichmentStatus: 'active' | 'no_price' | 'delisted' | 'error';
+}
+
 export interface KeywordDetailCurrent {
   currentWeekEndDate: string;
   currentRank: number;
@@ -83,6 +109,13 @@ export interface KeywordDetail {
   current: KeywordDetailCurrent | null;
   /** Up to 52 rows, oldest first. (Page renderer reverses for display.) */
   history: KeywordDetailHistoryRow[];
+  /**
+   * Keepa-enriched product data for the top-3 ASINs at the current week,
+   * keyed by ASIN. Empty when the keyword is dormant (no current week) or
+   * when none of the top-3 ASINs have been enriched yet (e.g. ASINs in
+   * the excluded-category scope).
+   */
+  enrichedProductsByAsin: Record<string, EnrichedProduct>;
 }
 
 /**
@@ -93,7 +126,7 @@ export async function fetchKeywordDetail(
 ): Promise<KeywordDetail | null> {
   const sql = neon(env.DATABASE_URL);
 
-  const [termRowsAny, currentRowsAny, historyRowsAny, variantRowsAny] = await Promise.all([
+  const [termRowsAny, currentRowsAny, historyRowsAny, variantRowsAny, enrichedRowsAny] = await Promise.all([
     sql`
       SELECT id, search_term_raw, search_term_normalized,
              first_seen_week, last_seen_week
@@ -179,6 +212,31 @@ export async function fetchKeywordDetail(
       FROM import_duplicate_search_terms
       WHERE search_term_id = ${searchTermId}
     `,
+    // Keepa-enriched data for the top-3 ASINs at the current week. The
+    // JOIN narrows asin_weekly_data to (week = kcs.current_week,
+    // asin IN [top_1, top_2, top_3]) — at most 3 rows. Returns 0 rows
+    // for dormant keywords (no kcs row) or ones whose top-3 ASINs fall
+    // outside the enrichment scope (excluded category / rank > 100K).
+    sql`
+      SELECT
+        a.asin, a.title, a.brand, a.image_url,
+        a.category_path, a.category_root, a.category_leaf,
+        a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
+        a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
+        a.enrichment_status::text AS enrichment_status
+      FROM asin_weekly_data a
+      JOIN keyword_current_summary kcs
+        ON kcs.search_term_id = ${searchTermId}
+      JOIN keyword_weekly_metrics kwm
+        ON kwm.search_term_id = kcs.search_term_id
+        AND kwm.week_end_date = kcs.current_week_end_date
+      WHERE a.week_end_date = kcs.current_week_end_date
+        AND a.asin = ANY(ARRAY[
+          kwm.top_clicked_product_1_asin,
+          kwm.top_clicked_product_2_asin,
+          kwm.top_clicked_product_3_asin
+        ]::text[])
+    `,
   ]);
   const termRows = termRowsAny as unknown as Array<{
     id: string;
@@ -195,6 +253,7 @@ export async function fetchKeywordDetail(
     losing_ranks: number[];
     raw_examples: string[];
   }>;
+  const enrichedRows = enrichedRowsAny as unknown as Array<Record<string, unknown>>;
 
   if (termRows.length === 0) return null;
   const term = termRows[0];
@@ -213,6 +272,30 @@ export async function fetchKeywordDetail(
     });
   }
 
+  // Map enriched products by ASIN for O(1) lookup at render time.
+  const enrichedProductsByAsin: Record<string, EnrichedProduct> = {};
+  for (const r of enrichedRows) {
+    const asin = r.asin as string;
+    enrichedProductsByAsin[asin] = {
+      asin,
+      title: (r.title as string | null) ?? null,
+      brand: (r.brand as string | null) ?? null,
+      imageUrl: (r.image_url as string | null) ?? null,
+      categoryPath: (r.category_path as string | null) ?? null,
+      categoryRoot: (r.category_root as string | null) ?? null,
+      categoryLeaf: (r.category_leaf as string | null) ?? null,
+      currentPriceCents: (r.current_price_cents as number | null) ?? null,
+      salesRank: (r.sales_rank as number | null) ?? null,
+      reviewCount: (r.review_count as number | null) ?? null,
+      averageRatingX10: (r.average_rating_x10 as number | null) ?? null,
+      avg30PriceCents: (r.avg30_price_cents as number | null) ?? null,
+      avg90PriceCents: (r.avg90_price_cents as number | null) ?? null,
+      avg180PriceCents: (r.avg180_price_cents as number | null) ?? null,
+      avg365PriceCents: (r.avg365_price_cents as number | null) ?? null,
+      enrichmentStatus: r.enrichment_status as EnrichedProduct['enrichmentStatus'],
+    };
+  }
+
   return {
     searchTermId: term.id,
     searchTermRaw: term.search_term_raw,
@@ -221,6 +304,7 @@ export async function fetchKeywordDetail(
     lastSeenWeek: toIsoDate(term.last_seen_week),
     current,
     history: historyRows.map((r) => mapHistory(r, variantsByWeek)),
+    enrichedProductsByAsin,
   };
 }
 

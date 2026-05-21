@@ -18,6 +18,7 @@ import { RankChart } from './RankChart';
 import { FakeVolumeStrip } from './FakeVolumeStrip';
 import { TitleMatchHistory } from './TitleMatchHistory';
 import { KeywordVariantsBox } from './KeywordVariantsBox';
+import { ProductCard } from './ProductCard';
 
 export const metadata: Metadata = {
   title: 'Keyword detail',
@@ -43,9 +44,44 @@ export default async function KeywordDetailPage({
   // Only allow same-origin /explorer URLs (defense against open-redirect via from=).
   const backHref = fromRaw && fromRaw.startsWith('/explorer') ? fromRaw : '/explorer';
 
-  const { searchTermRaw, searchTermNormalized, current, history } = detail;
+  const { searchTermRaw, searchTermNormalized, current, history, enrichedProductsByAsin } = detail;
   const showNormalized =
     searchTermNormalized && searchTermNormalized.toLowerCase() !== searchTermRaw.toLowerCase();
+
+  // Top-clicked products: source the 3 ASINs from the latest history row
+  // matching kcs's current_week_end_date. (kcs itself only stores slot 1
+  // explicitly; slots 2 + 3 live in kwm.) Only renders for active keywords.
+  const currentWeekRow = current
+    ? history.find((r) => r.weekEndDate === current.currentWeekEndDate) ?? null
+    : null;
+  const topClickedSlots: Array<{
+    slot: 1 | 2 | 3;
+    asin: string | null;
+    fallbackTitle: string | null;
+    clickShare?: string | null;
+    conversionShare?: string | null;
+  }> = currentWeekRow
+    ? [
+        {
+          slot: 1,
+          asin: currentWeekRow.topClickedProduct1Asin,
+          fallbackTitle: currentWeekRow.topClickedProduct1Title,
+          clickShare: current?.topClickedProduct1ClickShareCurrent ?? null,
+          conversionShare: current?.topClickedProduct1ConversionShareCurrent ?? null,
+        },
+        {
+          slot: 2,
+          asin: currentWeekRow.topClickedProduct2Asin,
+          fallbackTitle: currentWeekRow.topClickedProduct2Title,
+        },
+        {
+          slot: 3,
+          asin: currentWeekRow.topClickedProduct3Asin,
+          fallbackTitle: currentWeekRow.topClickedProduct3Title,
+        },
+      ]
+    : [];
+  const hasAnyProduct = topClickedSlots.some((s) => s.asin);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -89,6 +125,28 @@ export default async function KeywordDetailPage({
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
       </section>
+
+      {hasAnyProduct && (
+        <section className="mt-6">
+          <h2 className="text-sm font-semibold text-gray-700 mb-3">Top clicked products</h2>
+          <div className="space-y-3">
+            {topClickedSlots.map(
+              (s) =>
+                s.asin && (
+                  <ProductCard
+                    key={`${s.slot}-${s.asin}`}
+                    slotIndex={s.slot}
+                    asin={s.asin}
+                    fallbackTitle={s.fallbackTitle}
+                    clickShare={s.clickShare ?? null}
+                    conversionShare={s.conversionShare ?? null}
+                    enriched={enrichedProductsByAsin[s.asin]}
+                  />
+                ),
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
         <FakeVolumeStrip
