@@ -47,7 +47,7 @@ export function ResultsTable({
             <th className="p-2 text-right">Current rank</th>
             <th
               className="p-2 text-right"
-              title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Rough estimate (~50% MAPE on current fit)."
+              title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Typical accuracy ±30% (current fit's holdout MAPE). Note: Fresh_Produce keywords are NOT calibrated — those estimates can be wildly off."
             >
               Est. monthly vol.
             </th>

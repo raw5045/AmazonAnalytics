@@ -15,6 +15,14 @@
  * trustworthy), with iterative 10× under-trim to drop pairs where POE
  * clearly under-reports relative to the SFR rank.
  *
+ * Category exclusion: keywords whose latest-week top-clicked category
+ * is in EXCLUDED_CATEGORIES are filtered out before fitting. Currently:
+ * Fresh_Produce and Fresh_Perishable, which fit terribly because
+ * Amazon Fresh's browse-driven impressions inflate BA SFR rank while
+ * POE captures only literal typed searches — a fundamental metric
+ * mismatch we can't fix in the math layer. See category-level error
+ * analysis from 2026-05-21 conversation.
+ *
  * Returns the persisted run id + the full result for reporting (email,
  * console summary, UI surfacing).
  */
@@ -32,6 +40,20 @@ interface Pair {
   volume: number;
 }
 
+/**
+ * Categories whose (rank, volume) pairs are excluded from the fit.
+ * See the file header for rationale. Match is case-sensitive against
+ * `keyword_weekly_metrics.top_clicked_category_1`.
+ *
+ * Predictions for keywords IN these categories still get computed by
+ * the model at refresh / detail-page time — they're just not used to
+ * TRAIN the model. Treat any such prediction as low-confidence.
+ */
+export const EXCLUDED_CATEGORIES_FROM_FIT: readonly string[] = [
+  'Fresh_Produce',
+  'Fresh_Perishable',
+];
+
 export interface FitOrchestrationResult {
   runId: string;
   calibrationMonthEndDate: string;
@@ -41,7 +63,12 @@ export interface FitOrchestrationResult {
   scaleFactor: number;
   /** Full piecewise fit. */
   fitParams: FitParamsJson;
+  /** Pairs available before category exclusion. */
+  nPairsBeforeFilter: number;
+  /** Pairs available AFTER category exclusion (becomes train + holdout). */
   nPairs: number;
+  /** Count of pairs dropped by category filter (Fresh_Produce, etc.). */
+  nExcludedByCategory: number;
   nTraining: number;
   nHoldout: number;
   nDroppedAsOutliers: number;
@@ -80,10 +107,11 @@ export async function runFitOrchestration(args: {
     });
 
   try {
-    const pairs = await fetchPairs(pool, args.monthEndDate);
+    const { pairs, nBeforeFilter } = await fetchPairs(pool, args.monthEndDate);
     if (pairs.length < 20) {
       throw new FitInsufficientDataError(pairs.length);
     }
+    const nExcludedByCategory = nBeforeFilter - pairs.length;
 
     const { train, holdout } = stratifiedSplit(pairs);
 
@@ -135,7 +163,9 @@ export async function runFitOrchestration(args: {
       beta: fit.segments[0].beta,
       scaleFactor: fit.segments[0].scaleFactor,
       fitParams,
+      nPairsBeforeFilter: nBeforeFilter,
       nPairs: pairs.length,
+      nExcludedByCategory,
       nTraining: train.length,
       nHoldout: holdout.length,
       nDroppedAsOutliers: result.nDropped,
@@ -198,26 +228,61 @@ function stratifiedMapeFromFit(
   };
 }
 
-async function fetchPairs(pool: Pool, monthEndDate: string): Promise<Pair[]> {
+/**
+ * Returns matched (BA, POE) pairs for the month, with category-
+ * excluded pairs filtered out. Also reports `nBeforeFilter` for
+ * diagnostics so the orchestrator can record how many were dropped.
+ *
+ * Category source: the most recent `top_clicked_category_1` from
+ * `keyword_weekly_metrics` for each term. NULL (no kwm row recently)
+ * is treated as "unknown" and NOT excluded — we'd rather train on
+ * unknown-category pairs than throw them away.
+ */
+async function fetchPairs(pool: Pool, monthEndDate: string): Promise<{ pairs: Pair[]; nBeforeFilter: number }> {
   const c = await pool.connect();
   try {
-    const { rows } = await c.query<{ actual_rank: number; poe_30_day_volume: string }>(
+    // First the total available, then the filtered set in one query so
+    // we can report both counts. LEFT JOIN LATERAL pulls the latest-week
+    // category from kwm; the WHERE NOT IN clause drops excluded pairs.
+    const excludedList = EXCLUDED_CATEGORIES_FROM_FIT.map((_, i) => `$${i + 2}`).join(', ');
+    const queryParams: (string | string[])[] = [monthEndDate, ...EXCLUDED_CATEGORIES_FROM_FIT];
+    const { rows } = await c.query<{
+      actual_rank: number;
+      poe_30_day_volume: string;
+      category: string | null;
+      is_excluded: boolean;
+    }>(
       `
-      SELECT m.actual_rank, p.poe_30_day_volume::text AS poe_30_day_volume
+      SELECT
+        m.actual_rank,
+        p.poe_30_day_volume::text AS poe_30_day_volume,
+        cat.top_clicked_category_1 AS category,
+        (cat.top_clicked_category_1 IS NOT NULL
+          AND cat.top_clicked_category_1 IN (${excludedList})) AS is_excluded
       FROM monthly_sfr m
       JOIN poe_calibration_data p
         ON p.search_term_normalized = m.search_term_normalized
        AND p.month_end_date = m.month_end_date
+      JOIN search_terms st
+        ON st.search_term_normalized = m.search_term_normalized
+      LEFT JOIN LATERAL (
+        SELECT top_clicked_category_1
+        FROM keyword_weekly_metrics
+        WHERE search_term_id = st.id
+        ORDER BY week_end_date DESC
+        LIMIT 1
+      ) cat ON true
       WHERE m.month_end_date = $1::date
         AND m.actual_rank > 0
         AND p.poe_30_day_volume > 0
       `,
-      [monthEndDate],
+      queryParams,
     );
-    return rows.map((r) => ({
-      rank: r.actual_rank,
-      volume: Number(r.poe_30_day_volume),
-    }));
+    const nBeforeFilter = rows.length;
+    const pairs: Pair[] = rows
+      .filter((r) => !r.is_excluded)
+      .map((r) => ({ rank: r.actual_rank, volume: Number(r.poe_30_day_volume) }));
+    return { pairs, nBeforeFilter };
   } finally {
     c.release();
   }

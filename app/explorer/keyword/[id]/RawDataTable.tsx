@@ -53,7 +53,7 @@ export function RawDataTable({ rows }: { rows: KeywordDetailHistoryRow[] }) {
               <th className="p-2 text-right">Rank</th>
               <th
                 className="p-2 text-right"
-                title="Estimated monthly Amazon search volume for this specific week, computed from the rank → volume calibration fit that covers this week's month. Rough estimate (~50% MAPE on current fit)."
+                title="Estimated monthly Amazon search volume for this specific week, computed from the rank → volume calibration fit that covers this week's month. Typical accuracy ±30% on current fit. Note: Fresh_Produce keywords are not calibrated (their estimates can be wildly off)."
               >
                 Est. monthly vol.
               </th>

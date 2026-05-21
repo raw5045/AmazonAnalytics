@@ -109,7 +109,7 @@ export default async function KeywordDetailPage({
                   title={
                     current.estimatedMonthlyVolumeIsExtrapolated
                       ? `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — estimate uses extrapolated parameters (this week predates the earliest calibration fit)`
-                      : `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — rough estimate from rank → volume calibration fit (~50% MAPE)`
+                      : `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — rough estimate from rank → volume calibration fit (typical accuracy ±30%)`
                   }
                 >
                   ~{formatHeadlineVolume(current.estimatedMonthlyVolumeCurrent)}
