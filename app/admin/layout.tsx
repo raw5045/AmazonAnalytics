@@ -31,6 +31,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <Link href="/admin/batches" className="hover:underline">
             Upload history
           </Link>
+          <Link href="/admin/upload-monthly-sfr" className="hover:underline">
+            Monthly SFR upload
+          </Link>
           <hr className="my-2 border-gray-200" />
           <Link href="/explorer" className="hover:underline">
             Keyword explorer
