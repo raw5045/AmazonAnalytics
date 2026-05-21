@@ -11,6 +11,7 @@ import type { Metadata } from 'next';
 import { parseExplorerFilters, EXPLORER_DEFAULTS, type SearchParamsLike } from '@/lib/explorer/parseFilters';
 import { runExplorerQuery } from '@/lib/explorer/runQuery';
 import { listCategories } from '@/lib/explorer/listCategories';
+import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
 import type { VolumeFitMeta } from '@/lib/explorer/types';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
@@ -48,9 +49,11 @@ export default async function ExplorerPage({
   const categoriesPromise = listCategories().then((r) => {
     return { result: r, ms: Date.now() - tCategoriesStart };
   });
-  const [queryResult, categoriesTimed] = await Promise.all([
+  const leafCategoriesPromise = listLeafCategories();
+  const [queryResult, categoriesTimed, leafCategories] = await Promise.all([
     runExplorerQuery(filters),
     categoriesPromise,
+    leafCategoriesPromise,
   ]);
   const { rows, total, totalIsCapped, volumeFit, timings: rqTimings } = queryResult;
   const categories = categoriesTimed.result;
@@ -63,7 +66,7 @@ export default async function ExplorerPage({
 
   return (
     <div className="flex">
-      <FilterSidebar filters={filters} categories={categories} />
+      <FilterSidebar filters={filters} categories={categories} leafCategories={leafCategories} />
       <div className="flex-1 p-6">
         <PerfStrip
           data={{
@@ -147,6 +150,11 @@ function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boole
     f.rankMax !== null ||
     f.jump !== null ||
     f.category !== null ||
+    f.leafCategory !== null ||
+    f.priceMinCents !== null ||
+    f.priceMaxCents !== null ||
+    f.reviewsMin !== null ||
+    f.reviewsMax !== null ||
     JSON.stringify(f.severities) !== JSON.stringify(EXPLORER_DEFAULTS.severities) ||
     JSON.stringify(f.titleSlots) !== JSON.stringify(EXPLORER_DEFAULTS.titleSlots) ||
     f.titleMatchMode !== null ||

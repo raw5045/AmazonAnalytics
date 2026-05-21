@@ -50,10 +50,30 @@ export interface ExplorerFilters {
   /** Only consulted when jump === 'custom'. The "now ranked better than" threshold. */
   jumpTo: number | null;
   category: string | null;
+  /**
+   * Keepa leaf category (e.g. "Face Moisturizers") for the slot-1
+   * top-clicked ASIN. Independent from `category` (the broad BA cat).
+   */
+  leafCategory: string | null;
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | null;
   matchMode: MatchMode;
+  /**
+   * Range filters on the Keepa price/review aggregates over top-3
+   * ASINs. Match semantics:
+   *   - priceMin → row's HIGHEST price >= priceMin
+   *     ("at least one product in the top-3 costs >= $X")
+   *   - priceMax → row's LOWEST price <= priceMax
+   *     ("at least one product in the top-3 costs <= $X")
+   *   - reviewsMin → row's MOST reviews >= reviewsMin
+   *   - reviewsMax → row's LEAST reviews <= reviewsMax
+   * Stored in CENTS for prices, raw count for reviews.
+   */
+  priceMinCents: number | null;
+  priceMaxCents: number | null;
+  reviewsMin: number | null;
+  reviewsMax: number | null;
   sort: SortKey;
   page: number;
   perPage: number;
@@ -92,6 +112,17 @@ export interface ExplorerRow {
    * was built. See migration 0027.
    */
   estimatedMonthlyVolumeCurrent: number | null;
+  /**
+   * Keepa-derived aggregates over the top-3 clicked ASINs at the
+   * current week. NULL when all 3 ASINs are unenriched (e.g. dormant
+   * keyword, ASIN in excluded category). See migration 0029.
+   */
+  lowestPriceCents: number | null;
+  highestPriceCents: number | null;
+  leastReviews: number | null;
+  mostReviews: number | null;
+  /** Keepa leaf category of the slot-1 ASIN. NULL if not enriched. */
+  topClickedLeafCategory: string | null;
 }
 
 /**

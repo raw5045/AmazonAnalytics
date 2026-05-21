@@ -307,6 +307,7 @@ describe('buildExplorerQuery', () => {
   describe('combined filters', () => {
     it('handles all filters together', () => {
       const { sql, args, countSql, countArgs } = buildExplorerQuery({
+        ...EXPLORER_DEFAULTS,
         window: '4w',
         q: 'phone case',
         rankMin: 1,

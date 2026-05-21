@@ -51,7 +51,20 @@ export function ResultsTable({
             >
               Est. monthly vol.
             </th>
-            <th className="p-2">Category</th>
+            <th
+              className="p-2 text-right"
+              title="Price range across the top-3 clicked products (lowest – highest). Single value if all 3 share the same price. Em-dash if none of the top-3 are Keepa-enriched."
+            >
+              Price range
+            </th>
+            <th
+              className="p-2 text-right"
+              title="Review-count range across the top-3 clicked products."
+            >
+              Reviews range
+            </th>
+            <th className="p-2" title="Top clicked category #1 (broad)">Category</th>
+            <th className="p-2" title="Keepa leaf category for the slot-1 ASIN">Leaf category</th>
             <th className="p-2 text-center" title="Fake volume severity">Fake?</th>
             <th className="p-2 text-center w-12" title={`Keyword in title slot 1 (${matchMode} match)`}>In #1</th>
             <th className="p-2 text-center w-12" title={`Keyword in title slot 2 (${matchMode} match)`}>In #2</th>
@@ -79,7 +92,16 @@ export function ResultsTable({
               <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolumeCurrent !== null ? `${r.estimatedMonthlyVolumeCurrent.toLocaleString()} searches / month (est.)` : undefined}>
                 {formatVolume(r.estimatedMonthlyVolumeCurrent)}
               </td>
+              <td className="p-2 text-right tabular-nums whitespace-nowrap">
+                {formatPriceRange(r.lowestPriceCents, r.highestPriceCents)}
+              </td>
+              <td className="p-2 text-right tabular-nums whitespace-nowrap">
+                {formatReviewsRange(r.leastReviews, r.mostReviews)}
+              </td>
               <td className="p-2 text-gray-700">{r.topClickedCategory1 ?? <span className="text-gray-400">—</span>}</td>
+              <td className="p-2 text-gray-700 text-xs max-w-xs truncate" title={r.topClickedLeafCategory ?? undefined}>
+                {r.topClickedLeafCategory ?? <span className="text-gray-400">—</span>}
+              </td>
               <td className="p-2 text-center"><SeverityBadge severity={r.fakeVolumeSeverity} /></td>
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 1)} /></td>
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 2)} /></td>
@@ -136,5 +158,42 @@ function formatVolume(n: number | null): React.ReactNode {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+function formatPriceRange(lowCents: number | null, highCents: number | null): React.ReactNode {
+  if (lowCents === null && highCents === null) {
+    return <span className="text-gray-400">—</span>;
+  }
+  // Only one side present (rare; means only 1 of 3 is enriched and
+  // LEAST/GREATEST returned the same value for both).
+  if (lowCents === null) return formatDollars(highCents);
+  if (highCents === null) return formatDollars(lowCents);
+  if (lowCents === highCents) return formatDollars(lowCents);
+  return `${formatDollars(lowCents)} – ${formatDollars(highCents)}`;
+}
+
+function formatDollars(cents: number | null): string {
+  if (cents === null || !Number.isFinite(cents)) return '—';
+  const dollars = cents / 100;
+  if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}k`;
+  if (dollars >= 100) return `$${dollars.toFixed(0)}`;
+  return `$${dollars.toFixed(2)}`;
+}
+
+function formatReviewsRange(low: number | null, high: number | null): React.ReactNode {
+  if (low === null && high === null) {
+    return <span className="text-gray-400">—</span>;
+  }
+  if (low === null) return formatReviewCount(high);
+  if (high === null) return formatReviewCount(low);
+  if (low === high) return formatReviewCount(low);
+  return `${formatReviewCount(low)} – ${formatReviewCount(high)}`;
+}
+
+function formatReviewCount(n: number | null): string {
+  if (n === null || !Number.isFinite(n)) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return n.toLocaleString();
 }

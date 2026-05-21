@@ -60,6 +60,12 @@ interface PendingFilters {
   /** Numeric string; only used when jump === 'custom'. */
   jumpTo: string;
   category: string;
+  leafCategory: string;
+  /** Numeric strings in DOLLARS (e.g. "12.50"). */
+  priceMinDollars: string;
+  priceMaxDollars: string;
+  reviewsMin: string;
+  reviewsMax: string;
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | '';
@@ -77,6 +83,11 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     jumpFrom: f.jumpFrom?.toString() ?? '',
     jumpTo: f.jumpTo?.toString() ?? '',
     category: f.category ?? '',
+    leafCategory: f.leafCategory ?? '',
+    priceMinDollars: f.priceMinCents !== null ? (f.priceMinCents / 100).toFixed(2).replace(/\.00$/, '') : '',
+    priceMaxDollars: f.priceMaxCents !== null ? (f.priceMaxCents / 100).toFixed(2).replace(/\.00$/, '') : '',
+    reviewsMin: f.reviewsMin?.toString() ?? '',
+    reviewsMax: f.reviewsMax?.toString() ?? '',
     severities: f.severities,
     titleSlots: f.titleSlots,
     titleMatchMode: f.titleMatchMode ?? '',
@@ -100,6 +111,11 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
     }
   }
   if (p.category) params.set('category', p.category);
+  if (p.leafCategory) params.set('leaf', p.leafCategory);
+  if (p.priceMinDollars) params.set('price_min', p.priceMinDollars);
+  if (p.priceMaxDollars) params.set('price_max', p.priceMaxDollars);
+  if (p.reviewsMin) params.set('reviews_min', p.reviewsMin);
+  if (p.reviewsMax) params.set('reviews_max', p.reviewsMax);
   // Default severities = ['none', 'warning']. Only emit when different.
   const defaultSev = JSON.stringify([...EXPLORER_DEFAULTS.severities].sort());
   const currentSev = JSON.stringify([...p.severities].sort());
@@ -122,9 +138,11 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
 export function FilterSidebar({
   filters,
   categories,
+  leafCategories,
 }: {
   filters: ExplorerFilters;
   categories: string[];
+  leafCategories: string[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -291,7 +309,7 @@ export function FilterSidebar({
         )}
       </FieldGroup>
 
-      <FieldGroup label="Top clicked category #1">
+      <FieldGroup label="Top clicked category #1 (broad)">
         <select
           value={pending.category}
           onChange={(e) => set('category', e.target.value)}
@@ -304,6 +322,79 @@ export function FilterSidebar({
             </option>
           ))}
         </select>
+      </FieldGroup>
+
+      <FieldGroup label="Leaf category (Keepa, slot-1)">
+        <select
+          value={pending.leafCategory}
+          onChange={(e) => set('leafCategory', e.target.value)}
+          className="filter-input"
+        >
+          <option value="">All leaf categories</option>
+          {leafCategories.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-500 mt-1">
+          Long-tail category for the most-clicked product (e.g. &quot;Face Moisturizers&quot;).
+        </p>
+      </FieldGroup>
+
+      <FieldGroup label="Price range (any of top-3 products, $)">
+        <div className="flex gap-2">
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={pending.priceMinDollars}
+            onChange={(e) => set('priceMinDollars', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Min (e.g. 10)"
+            className="filter-input flex-1"
+            aria-label="Min price"
+          />
+          <input
+            type="number"
+            min={0}
+            step="0.01"
+            value={pending.priceMaxDollars}
+            onChange={(e) => set('priceMaxDollars', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Max (e.g. 50)"
+            className="filter-input flex-1"
+            aria-label="Max price"
+          />
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Matches keywords where the top-3 price range overlaps your range.
+        </p>
+      </FieldGroup>
+
+      <FieldGroup label="Reviews range (any of top-3 products)">
+        <div className="flex gap-2">
+          <input
+            type="number"
+            min={0}
+            value={pending.reviewsMin}
+            onChange={(e) => set('reviewsMin', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Min"
+            className="filter-input flex-1"
+            aria-label="Min reviews"
+          />
+          <input
+            type="number"
+            min={0}
+            value={pending.reviewsMax}
+            onChange={(e) => set('reviewsMax', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Max"
+            className="filter-input flex-1"
+            aria-label="Max reviews"
+          />
+        </div>
       </FieldGroup>
 
       <FieldGroup label="Fake volume severity">

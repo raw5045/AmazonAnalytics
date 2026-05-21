@@ -26,10 +26,15 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   jumpFrom: null,
   jumpTo: null,
   category: null,
+  leafCategory: null,
   severities: ['none', 'warning'],
   titleSlots: [1, 2, 3],
   titleMatchMode: null,
   matchMode: 'loose',
+  priceMinCents: null,
+  priceMaxCents: null,
+  reviewsMin: null,
+  reviewsMax: null,
   sort: 'rank',
   page: 1,
   perPage: 100,
@@ -112,6 +117,16 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const severities = parseSeverities(getOne(searchParams.severity));
   const titleSlots = parseTitleSlots(getOne(searchParams.titles));
 
+  // Price filter values are accepted as DOLLARS in the URL
+  // (price_min=10 → $10) and stored as cents internally for
+  // exact comparison against the bigint cents columns.
+  const priceMinDollars = parsePositiveFloat(getOne(searchParams.price_min));
+  const priceMaxDollars = parsePositiveFloat(getOne(searchParams.price_max));
+  const priceMinCents = priceMinDollars !== null ? Math.round(priceMinDollars * 100) : null;
+  const priceMaxCents = priceMaxDollars !== null ? Math.round(priceMaxDollars * 100) : null;
+  const reviewsMin = parsePositiveInt(getOne(searchParams.reviews_min));
+  const reviewsMax = parsePositiveInt(getOne(searchParams.reviews_max));
+
   const page = parsePositiveInt(getOne(searchParams.page)) ?? EXPLORER_DEFAULTS.page;
   const perPageRaw = parsePositiveInt(getOne(searchParams.per_page)) ?? EXPLORER_DEFAULTS.perPage;
   // Hard cap — protect the DB from a hostile per_page value.
@@ -126,12 +141,24 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     jumpFrom: jump === 'custom' ? jumpFrom : null,
     jumpTo: jump === 'custom' ? jumpTo : null,
     category: getOne(searchParams.category) ?? null,
+    leafCategory: getOne(searchParams.leaf) ?? null,
     severities,
     titleSlots,
     titleMatchMode,
     matchMode,
+    priceMinCents,
+    priceMaxCents,
+    reviewsMin,
+    reviewsMax,
     sort,
     page,
     perPage,
   };
+}
+
+function parsePositiveFloat(value: string | undefined): number | null {
+  if (!value) return null;
+  const n = parseFloat(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
 }

@@ -83,6 +83,11 @@ interface RawRow {
   // bigint comes back as string from pg/neon-http to avoid 53-bit
   // precision loss. Mapper parses to number.
   estimated_monthly_volume_current: string | number | null;
+  lowest_price_cents: string | number | null;
+  highest_price_cents: string | number | null;
+  least_reviews: number | null;
+  most_reviews: number | null;
+  top_clicked_leaf_category: string | null;
 }
 
 interface MetaRow {
@@ -104,6 +109,17 @@ function isDefaultSeverity(severities: SeverityKey[]): boolean {
   return def.length === cur.length && def.every((s, i) => s === cur[i]);
 }
 
+/** True when none of the new Keepa-aggregate filters are set. */
+function noKeepaFilters(f: ExplorerFilters): boolean {
+  return (
+    f.leafCategory === null
+    && f.priceMinCents === null
+    && f.priceMaxCents === null
+    && f.reviewsMin === null
+    && f.reviewsMax === null
+  );
+}
+
 /**
  * True when the filter set is "default landing": no narrowing filters
  * beyond the default severity. Lets us skip the live COUNT(*) and use
@@ -118,13 +134,14 @@ function canUseDefaultTotal(f: ExplorerFilters): boolean {
     && f.category === null
     && f.titleMatchMode === null
     && isDefaultSeverity(f.severities)
+    && noKeepaFilters(f)
   );
 }
 
 /**
- * True when the filter set is "category-only + default severity":
- * exactly one category filter, no other narrowing. Lets us use the
- * per-category precomputed count from facets.
+ * True when the filter set is "broad-category-only + default severity":
+ * exactly one broad category filter, no other narrowing. Lets us use
+ * the per-category precomputed count from facets.
  */
 function canUseCategoryFacet(f: ExplorerFilters): boolean {
   return (
@@ -135,6 +152,29 @@ function canUseCategoryFacet(f: ExplorerFilters): boolean {
     && f.category !== null
     && f.titleMatchMode === null
     && isDefaultSeverity(f.severities)
+    && noKeepaFilters(f)
+  );
+}
+
+/**
+ * True when the filter set is "leaf-category-only + default severity":
+ * exactly one leaf category filter, no broad cat, no other narrowing.
+ * Lets us use the precomputed leaf-facet count.
+ */
+function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
+  return (
+    f.q === null
+    && f.rankMin === null
+    && f.rankMax === null
+    && f.jump === null
+    && f.category === null
+    && f.leafCategory !== null
+    && f.titleMatchMode === null
+    && isDefaultSeverity(f.severities)
+    && f.priceMinCents === null
+    && f.priceMaxCents === null
+    && f.reviewsMin === null
+    && f.reviewsMax === null
   );
 }
 
@@ -204,6 +244,21 @@ export async function runExplorerQuery(
     } catch {
       // Fall through to live count
     }
+  } else if (canUseLeafCategoryFacet(filters) && snapshotVersion) {
+    try {
+      const facetRows = (await sqlClient`
+        SELECT default_severity_count AS n
+        FROM keyword_current_summary_leaf_category_facets
+        WHERE snapshot_version = ${snapshotVersion}::uuid
+          AND leaf_category = ${filters.leafCategory}
+      `) as Array<{ n: number }>;
+      if (facetRows.length > 0) {
+        precomputedTotal = facetRows[0].n;
+        countSource = 'facet';
+      }
+    } catch {
+      // Fall through to live count
+    }
   }
 
   // Run rows query (always live) and count query (only if not short-circuited)
@@ -244,12 +299,12 @@ export async function runExplorerQuery(
     topClickedProduct1Title: r.top_clicked_product_1_title_current,
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
-    estimatedMonthlyVolumeCurrent:
-      r.estimated_monthly_volume_current === null || r.estimated_monthly_volume_current === undefined
-        ? null
-        : typeof r.estimated_monthly_volume_current === 'string'
-          ? parseInt(r.estimated_monthly_volume_current, 10)
-          : r.estimated_monthly_volume_current,
+    estimatedMonthlyVolumeCurrent: parseBigint(r.estimated_monthly_volume_current),
+    lowestPriceCents: parseBigint(r.lowest_price_cents),
+    highestPriceCents: parseBigint(r.highest_price_cents),
+    leastReviews: r.least_reviews ?? null,
+    mostReviews: r.most_reviews ?? null,
+    topClickedLeafCategory: r.top_clicked_leaf_category ?? null,
   }));
 
   // Final total: precomputed wins; otherwise extract from live count
@@ -284,4 +339,14 @@ export async function runExplorerQuery(
       countSource,
     },
   };
+}
+
+/**
+ * Postgres bigint columns come back as strings from pg/neon-http to
+ * preserve full 64-bit precision. For the volume / price columns we
+ * top out well under 2^53, so parseInt is safe.
+ */
+function parseBigint(v: string | number | null | undefined): number | null {
+  if (v === null || v === undefined) return null;
+  return typeof v === 'string' ? parseInt(v, 10) : v;
 }

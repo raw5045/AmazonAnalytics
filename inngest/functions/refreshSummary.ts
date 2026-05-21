@@ -154,6 +154,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     //    without re-scanning kwm.
     await stageLatestPerTerm(client);
 
+    // 1a. Stage Keepa-enriched (price/reviews/leaf-category) data for
+    //     every top-3 ASIN at the current week. Joined into the INSERT
+    //     below to populate the new aggregate columns.
+    await stageEnrichedAsins(client, currentWeekEndDate);
+
     // 2. rank_at_offset(N) for N in {1, 4, 13, 26, 52} weeks ago.
     //    Each offset is the actual_rank in the EXACT week N*7 days before
     //    each term's current_week_end_date. NULL when the term wasn't
@@ -203,6 +208,9 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         keyword_in_title_1_loose_current, keyword_in_title_2_loose_current, keyword_in_title_3_loose_current,
         keyword_title_match_count_loose_current,
         estimated_monthly_volume_current,
+        lowest_price_cents, highest_price_cents,
+        least_reviews, most_reviews,
+        top_clicked_leaf_category,
         updated_at
       )
       SELECT
@@ -254,6 +262,21 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         -- Estimated volume — see buildPiecewiseSql (single or
         -- multi-segment CASE WHEN). NULL when no fit was selected.
         ${volumeExpression} AS estimated_monthly_volume_current,
+        -- Keepa price/review aggregates over the top-3 ASINs at the
+        -- current week. LEAST/GREATEST ignore NULLs, so a row whose
+        -- top-3 are only partially enriched still gets sensible
+        -- min/max over whatever IS enriched. All NULL → all 3 ASINs
+        -- unenriched → the row won't appear in price/reviews filters.
+        LEAST(p1.current_price_cents, p2.current_price_cents, p3.current_price_cents) AS lowest_price_cents,
+        GREATEST(p1.current_price_cents, p2.current_price_cents, p3.current_price_cents) AS highest_price_cents,
+        LEAST(p1.review_count, p2.review_count, p3.review_count) AS least_reviews,
+        GREATEST(p1.review_count, p2.review_count, p3.review_count) AS most_reviews,
+        -- Leaf category from the slot-1 (most-clicked) ASIN.
+        -- Falls back to NULL if slot-1 isn't enriched (we could
+        -- fall through to slot-2/3 but that would muddy the signal —
+        -- the leaf cat of the SECOND product isn't really "this
+        -- keyword's category").
+        p1.category_leaf AS top_clicked_leaf_category,
         NOW()
       FROM latest_per_term l
       LEFT JOIN rank_at_1w r1 ON r1.search_term_id = l.search_term_id
@@ -261,6 +284,9 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       LEFT JOIN rank_at_13w r13 ON r13.search_term_id = l.search_term_id
       LEFT JOIN rank_at_26w r26 ON r26.search_term_id = l.search_term_id
       LEFT JOIN rank_at_52w r52 ON r52.search_term_id = l.search_term_id
+      LEFT JOIN asin_enriched_current p1 ON p1.asin = l.top_clicked_product_1_asin
+      LEFT JOIN asin_enriched_current p2 ON p2.asin = l.top_clicked_product_2_asin
+      LEFT JOIN asin_enriched_current p3 ON p3.asin = l.top_clicked_product_3_asin
       `,
       [currentWeekEndDate, ...volumeParams],
     );
@@ -324,7 +350,8 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     const newSnapshotVersion = countRows[0].snapshot_version;
     const newDefaultTotal = countRows[0].default_severity_total;
 
-    // 2. Insert facets for the new snapshot.
+    // 2. Insert facets for the new snapshot (both broad category and
+    //    Keepa leaf category — same shape, different group-by column).
     await client.query(
       `INSERT INTO keyword_current_summary_category_facets
          (snapshot_version, category, default_severity_count, all_count)
@@ -339,6 +366,22 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
        FROM keyword_current_summary
        WHERE top_clicked_category_1_current IS NOT NULL
        GROUP BY top_clicked_category_1_current`,
+      [newSnapshotVersion],
+    );
+    await client.query(
+      `INSERT INTO keyword_current_summary_leaf_category_facets
+         (snapshot_version, leaf_category, default_severity_count, all_count)
+       SELECT
+         $1::uuid,
+         top_clicked_leaf_category,
+         COUNT(*) FILTER (
+           WHERE fake_volume_severity_current IS NULL
+              OR fake_volume_severity_current IN ('none', 'warning')
+         )::int,
+         COUNT(*)::int
+       FROM keyword_current_summary
+       WHERE top_clicked_leaf_category IS NOT NULL
+       GROUP BY top_clicked_leaf_category`,
       [newSnapshotVersion],
     );
 
@@ -373,6 +416,10 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       'DELETE FROM keyword_current_summary_category_facets WHERE snapshot_version <> $1::uuid',
       [newSnapshotVersion],
     );
+    await client.query(
+      'DELETE FROM keyword_current_summary_leaf_category_facets WHERE snapshot_version <> $1::uuid',
+      [newSnapshotVersion],
+    );
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
@@ -389,10 +436,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
 }
 
 async function stageLatestPerTerm(client: PoolClient): Promise<void> {
-  // We pull all 3 product titles + 3 strict flags + 4 loose columns into
-  // the temp table. Loose columns are read directly from kwm (which is
-  // the source of truth after migration 0016+ and the backfill); kcs no
-  // longer recomputes them.
+  // We pull all 3 product titles + 3 ASIN slots (asin_2 and asin_3 are
+  // new in 0029 — needed for Keepa price/review aggregates) + 3 strict
+  // flags + 4 loose columns into the temp table. Loose columns are read
+  // directly from kwm (which is the source of truth after migration
+  // 0016+ and the backfill); kcs no longer recomputes them.
   await client.query(`
     CREATE TEMP TABLE latest_per_term ON COMMIT DROP AS
     WITH ref AS (
@@ -407,6 +455,8 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
       k.fake_volume_severity,
       k.top_clicked_category_1,
       k.top_clicked_product_1_asin,
+      k.top_clicked_product_2_asin,
+      k.top_clicked_product_3_asin,
       k.top_clicked_product_1_title,
       k.top_clicked_product_2_title,
       k.top_clicked_product_3_title,
@@ -427,6 +477,45 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
     ORDER BY k.search_term_id, k.week_end_date DESC;
     CREATE INDEX ON latest_per_term (search_term_id);
   `);
+}
+
+/**
+ * Stage Keepa-enriched data for every ASIN that appears as a top-3
+ * clicked product in latest_per_term, scoped to the current week.
+ * Pulled into a temp table indexed by ASIN so the main INSERT can
+ * LEFT JOIN three times (one per slot) without re-scanning the
+ * full asin_weekly_data table for each lookup.
+ *
+ * Note: we read asin_weekly_data WHERE enrichment_status = 'active'
+ * — 'no_price' / 'delisted' / 'error' rows are excluded because their
+ * price/review fields are mostly NULL anyway.
+ */
+async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string): Promise<void> {
+  await client.query(
+    `
+    CREATE TEMP TABLE asin_enriched_current ON COMMIT DROP AS
+    SELECT
+      a.asin,
+      a.current_price_cents,
+      a.review_count,
+      a.average_rating_x10,
+      a.category_leaf
+    FROM asin_weekly_data a
+    WHERE a.week_end_date = $1::date
+      AND a.enrichment_status = 'active'
+      AND a.asin IN (
+        SELECT DISTINCT asin FROM (
+          SELECT top_clicked_product_1_asin AS asin FROM latest_per_term WHERE top_clicked_product_1_asin IS NOT NULL
+          UNION
+          SELECT top_clicked_product_2_asin FROM latest_per_term WHERE top_clicked_product_2_asin IS NOT NULL
+          UNION
+          SELECT top_clicked_product_3_asin FROM latest_per_term WHERE top_clicked_product_3_asin IS NOT NULL
+        ) all_asins
+      );
+    CREATE INDEX ON asin_enriched_current (asin);
+    `,
+    [currentWeekEndDate],
+  );
 }
 
 async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<void> {

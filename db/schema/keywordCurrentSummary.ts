@@ -87,6 +87,18 @@ export const keywordCurrentSummary = pgTable(
      */
     estimatedMonthlyVolumeCurrent: bigint('estimated_monthly_volume_current', { mode: 'number' }),
 
+    /**
+     * Keepa-derived aggregates over the top-3 clicked ASINs at the
+     * current week. NULL when all 3 ASINs are unenriched. See
+     * migration 0029.
+     */
+    lowestPriceCents: bigint('lowest_price_cents', { mode: 'number' }),
+    highestPriceCents: bigint('highest_price_cents', { mode: 'number' }),
+    leastReviews: integer('least_reviews'),
+    mostReviews: integer('most_reviews'),
+    /** Keepa leaf category for the slot-1 (most-clicked) ASIN. */
+    topClickedLeafCategory: text('top_clicked_leaf_category'),
+
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -107,6 +119,9 @@ export const keywordCurrentSummary = pgTable(
     jump26wIdx: index('kcs_jump_26w_idx').on(t.rank26wAgo, t.currentRank),
     jump52wIdx: index('kcs_jump_52w_idx').on(t.rank52wAgo, t.currentRank),
     estVolIdx: index('kcs_est_vol_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolumeCurrent),
+    leafCategoryIdx: index('kcs_leaf_category_idx').on(t.currentWeekEndDate, t.topClickedLeafCategory),
+    lowestPriceIdx: index('kcs_lowest_price_idx').on(t.currentWeekEndDate, t.lowestPriceCents),
+    mostReviewsIdx: index('kcs_most_reviews_idx').on(t.currentWeekEndDate, t.mostReviews),
   }),
 );
 

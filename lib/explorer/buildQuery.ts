@@ -121,10 +121,41 @@ export function buildExplorerQuery(
     where.push(`kcs.${priorRankCol} > ${fromParam} AND kcs.current_rank < ${toParam}`);
   }
 
-  // 1.5 — top clicked category #1
+  // 1.5 — top clicked category #1 (broad)
   if (filters.category) {
     const p = next(filters.category);
     where.push(`kcs.top_clicked_category_1_current = ${p}`);
+  }
+
+  // 1.5b — leaf category (Keepa, from slot-1 ASIN)
+  if (filters.leafCategory) {
+    const p = next(filters.leafCategory);
+    where.push(`kcs.top_clicked_leaf_category = ${p}`);
+  }
+
+  // 1.5c — price range (cents).
+  //   priceMin → "at least one product in top-3 costs >= $X"
+  //              → kcs.highest_price_cents >= priceMin
+  //   priceMax → "at least one product in top-3 costs <= $X"
+  //              → kcs.lowest_price_cents  <= priceMax
+  // Together: "top-3 spans a range that overlaps [min, max]".
+  if (filters.priceMinCents !== null) {
+    const p = next(filters.priceMinCents);
+    where.push(`kcs.highest_price_cents >= ${p}`);
+  }
+  if (filters.priceMaxCents !== null) {
+    const p = next(filters.priceMaxCents);
+    where.push(`kcs.lowest_price_cents <= ${p}`);
+  }
+
+  // 1.5d — review-count range (same any-of-top-3 semantics).
+  if (filters.reviewsMin !== null) {
+    const p = next(filters.reviewsMin);
+    where.push(`kcs.most_reviews >= ${p}`);
+  }
+  if (filters.reviewsMax !== null) {
+    const p = next(filters.reviewsMax);
+    where.push(`kcs.least_reviews <= ${p}`);
   }
 
   // 1.6 — fake volume severity (default = none, warning)
@@ -181,7 +212,12 @@ export function buildExplorerQuery(
       kcs.top_clicked_product_1_title_current,
       kcs.top_clicked_product_1_click_share_current,
       kcs.top_clicked_product_1_conversion_share_current,
-      kcs.estimated_monthly_volume_current
+      kcs.estimated_monthly_volume_current,
+      kcs.lowest_price_cents,
+      kcs.highest_price_cents,
+      kcs.least_reviews,
+      kcs.most_reviews,
+      kcs.top_clicked_leaf_category
   `.trim();
 
   const whereClause = where.length > 0 ? `WHERE ${where.join('\n      AND ')}` : '';
