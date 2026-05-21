@@ -160,6 +160,97 @@ export function meanAbsolutePercentageError(
 }
 
 /**
+ * Time-aware model selection.
+ *
+ * Each fit is associated with a calibration_month_end_date (the month
+ * whose POE + BA data trained it). For any given week W, we want the
+ * fit whose calibration_month_end_date is the MAX value ≤ end-of-W's-
+ * month. (Most-recent-past-or-equal — never use a future month's fit
+ * for an earlier week, since the total-volume scale factor genuinely
+ * shifts with season.)
+ *
+ * Fall-back: if no fits qualify (week is before our earliest fit),
+ * use the earliest available fit and flag `isExtrapolated: true` so
+ * the UI can render a "extrapolated" tooltip.
+ *
+ * Tiebreaker for multiple fits in the same calibration month: prefer
+ * the latest `fittedAt` (a re-fit within the same month overrides
+ * the older one).
+ */
+export interface FitParams {
+  /** Month whose data trained this fit (ISO date YYYY-MM-DD). */
+  calibrationMonthEndDate: string;
+  /** When this fit was computed (ISO timestamp). Tiebreaker. */
+  fittedAt: string;
+  beta: number;
+  scaleFactor: number;
+}
+
+export interface FitSelection {
+  fit: FitParams;
+  /**
+   * True when we fell back to the earliest-fit because no qualifying
+   * past-or-equal fit was found. UI shows a tooltip in this case.
+   */
+  isExtrapolated: boolean;
+}
+
+/**
+ * Pick the best fit for a given week. Returns null only when `fits`
+ * is empty (no calibration runs have happened yet).
+ */
+export function pickFitForWeek(
+  weekEndDate: string,
+  fits: ReadonlyArray<FitParams>,
+): FitSelection | null {
+  if (fits.length === 0) return null;
+
+  const monthEnd = endOfMonthIso(weekEndDate);
+  // Qualifying fits: calibrationMonthEndDate <= W's month-end.
+  const qualifying = fits.filter((f) => f.calibrationMonthEndDate <= monthEnd);
+
+  if (qualifying.length > 0) {
+    // MAX calibrationMonthEndDate, tiebreak by latest fittedAt within
+    // the matching calibration month.
+    const sorted = [...qualifying].sort(compareFitsLatestFirst);
+    return { fit: sorted[0], isExtrapolated: false };
+  }
+
+  // Fall-back: week is before any of our fits. Use the earliest available
+  // and flag for UI tooltip.
+  const sortedAsc = [...fits].sort((a, b) => {
+    // Earliest calibrationMonthEndDate first; tiebreak by earliest fittedAt.
+    if (a.calibrationMonthEndDate !== b.calibrationMonthEndDate) {
+      return a.calibrationMonthEndDate < b.calibrationMonthEndDate ? -1 : 1;
+    }
+    return a.fittedAt < b.fittedAt ? -1 : 1;
+  });
+  return { fit: sortedAsc[0], isExtrapolated: true };
+}
+
+/** Helper: end-of-month ISO date for a given YYYY-MM-DD. */
+export function endOfMonthIso(yyyyMmDd: string): string {
+  const m = yyyyMmDd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) throw new Error(`Invalid date format: ${yyyyMmDd}`);
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  // Day 0 of next month = last day of this month
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+}
+
+/**
+ * Sort: latest calibration_month first, then latest fitted_at as tiebreaker.
+ * Used to pick the winner among qualifying fits.
+ */
+function compareFitsLatestFirst(a: FitParams, b: FitParams): number {
+  if (a.calibrationMonthEndDate !== b.calibrationMonthEndDate) {
+    return a.calibrationMonthEndDate > b.calibrationMonthEndDate ? -1 : 1;
+  }
+  return a.fittedAt > b.fittedAt ? -1 : 1;
+}
+
+/**
  * Stratified MAPE: partition pairs by rank band, compute MAPE for each.
  * Lets us see whether the model is uniformly good or only good in some
  * regions (e.g., great on top-1K, terrible on 10K+).

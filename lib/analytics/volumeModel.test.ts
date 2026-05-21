@@ -6,6 +6,9 @@ import {
   gridSearchBeta,
   meanAbsolutePercentageError,
   stratifiedMape,
+  pickFitForWeek,
+  endOfMonthIso,
+  type FitParams,
 } from './volumeModel';
 
 describe('predictVolume', () => {
@@ -149,6 +152,95 @@ describe('meanAbsolutePercentageError', () => {
     const { mape, nUsed } = meanAbsolutePercentageError([{ rank: 0, volume: 100 }], 0.7, 1000);
     expect(Number.isNaN(mape)).toBe(true);
     expect(nUsed).toBe(0);
+  });
+});
+
+describe('endOfMonthIso', () => {
+  it('returns the last day of the month for the given date', () => {
+    expect(endOfMonthIso('2026-04-15')).toBe('2026-04-30');
+    expect(endOfMonthIso('2026-04-01')).toBe('2026-04-30');
+    expect(endOfMonthIso('2026-04-30')).toBe('2026-04-30');
+  });
+  it('handles February correctly (leap and non-leap)', () => {
+    expect(endOfMonthIso('2026-02-15')).toBe('2026-02-28'); // 2026 is not a leap year
+    expect(endOfMonthIso('2024-02-15')).toBe('2024-02-29'); // 2024 IS a leap year
+  });
+  it('handles December', () => {
+    expect(endOfMonthIso('2026-12-21')).toBe('2026-12-31');
+  });
+  it('throws on bad format', () => {
+    expect(() => endOfMonthIso('2026/04/15')).toThrow();
+    expect(() => endOfMonthIso('not-a-date')).toThrow();
+  });
+});
+
+describe('pickFitForWeek', () => {
+  const fits: FitParams[] = [
+    { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-01T00:00:00Z', beta: 0.75, scaleFactor: 2_000_000 },
+    { calibrationMonthEndDate: '2026-05-31', fittedAt: '2026-06-01T00:00:00Z', beta: 0.74, scaleFactor: 1_800_000 },
+    { calibrationMonthEndDate: '2026-11-30', fittedAt: '2026-12-01T00:00:00Z', beta: 0.76, scaleFactor: 3_500_000 },
+    { calibrationMonthEndDate: '2026-12-31', fittedAt: '2027-01-01T00:00:00Z', beta: 0.77, scaleFactor: 4_200_000 },
+  ];
+
+  it('returns null when no fits are available', () => {
+    expect(pickFitForWeek('2026-12-15', [])).toBeNull();
+  });
+
+  it('picks the fit matching the week\'s calendar month when one exists', () => {
+    const result = pickFitForWeek('2026-12-21', fits);
+    expect(result?.fit.calibrationMonthEndDate).toBe('2026-12-31');
+    expect(result?.isExtrapolated).toBe(false);
+  });
+
+  it('picks the most-recent past fit when no exact-month match exists', () => {
+    // Pretend we don't have December's fit yet
+    const noDec = fits.filter((f) => f.calibrationMonthEndDate !== '2026-12-31');
+    const result = pickFitForWeek('2026-12-21', noDec);
+    expect(result?.fit.calibrationMonthEndDate).toBe('2026-11-30');
+    expect(result?.isExtrapolated).toBe(false);
+  });
+
+  it('NEVER uses a future fit for a past week (the load-bearing rule)', () => {
+    // April week: should use April fit, NOT May/Nov/Dec
+    const result = pickFitForWeek('2026-04-07', fits);
+    expect(result?.fit.calibrationMonthEndDate).toBe('2026-04-30');
+    expect(result?.isExtrapolated).toBe(false);
+  });
+
+  it('falls back to earliest fit (with isExtrapolated=true) for weeks before any fit', () => {
+    // March 2026 week — earlier than all our fits
+    const result = pickFitForWeek('2026-03-15', fits);
+    expect(result?.fit.calibrationMonthEndDate).toBe('2026-04-30'); // earliest available
+    expect(result?.isExtrapolated).toBe(true);
+  });
+
+  it('tiebreaks multiple fits in the same calibration month by latest fittedAt', () => {
+    const withDupes: FitParams[] = [
+      { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-01T00:00:00Z', beta: 0.70, scaleFactor: 1_000_000 },
+      { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-15T00:00:00Z', beta: 0.75, scaleFactor: 2_000_000 },
+    ];
+    const result = pickFitForWeek('2026-04-21', withDupes);
+    expect(result?.fit.beta).toBe(0.75); // the later-fitted of the two April fits
+    expect(result?.fit.scaleFactor).toBe(2_000_000);
+  });
+
+  it('handles a single-fit edge case (only one fit available)', () => {
+    const oneFit: FitParams[] = [
+      { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-01T00:00:00Z', beta: 0.7, scaleFactor: 1e6 },
+    ];
+    // Same month: not extrapolated
+    expect(pickFitForWeek('2026-04-15', oneFit)?.isExtrapolated).toBe(false);
+    // Later month: not extrapolated (uses past fit)
+    expect(pickFitForWeek('2026-08-15', oneFit)?.isExtrapolated).toBe(false);
+    // Earlier month: IS extrapolated
+    expect(pickFitForWeek('2026-02-15', oneFit)?.isExtrapolated).toBe(true);
+  });
+
+  it('treats fits sorted in any input order identically', () => {
+    const shuffled = [...fits].reverse();
+    const a = pickFitForWeek('2026-12-21', fits);
+    const b = pickFitForWeek('2026-12-21', shuffled);
+    expect(a?.fit.calibrationMonthEndDate).toBe(b?.fit.calibrationMonthEndDate);
   });
 });
 

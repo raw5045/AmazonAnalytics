@@ -5,6 +5,7 @@ import {
   numeric,
   text,
   timestamp,
+  date,
   index,
 } from 'drizzle-orm/pg-core';
 
@@ -25,6 +26,14 @@ export const modelCalibrationRuns = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     fittedAt: timestamp('fitted_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Month whose POE + BA data was used to fit this model.
+     * Drives `pickFitForWeek` — for each week W, we use the fit with
+     * the MAX `calibrationMonthEndDate` that's ≤ W's month-end. Falls
+     * back to the earliest fit if none qualify (UI shows "extrapolated"
+     * tooltip in that case).
+     */
+    calibrationMonthEndDate: date('calibration_month_end_date').notNull(),
     /** Power-law exponent (rank^-β). Expected: 0.4-1.2; data decides. */
     beta: numeric('beta', { precision: 6, scale: 4 }).notNull(),
     /** Constant A in `estimated_volume = A * rank^-β`. */
@@ -41,6 +50,7 @@ export const modelCalibrationRuns = pgTable(
   },
   (t) => ({
     latestIdx: index('model_calibration_runs_latest_idx').on(t.fittedAt.desc()),
+    calMonthIdx: index('model_calibration_runs_cal_month_idx').on(t.calibrationMonthEndDate.desc()),
   }),
 );
 

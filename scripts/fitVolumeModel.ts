@@ -48,11 +48,16 @@ function parseArgs(): { monthEndDate: string; notes: string | null } {
 async function fetchPairs(pool: Pool, monthEndDate: string): Promise<Pair[]> {
   const c = await pool.connect();
   try {
+    // Join monthly_sfr ⋈ poe_calibration_data on BOTH normalized term AND
+    // month_end_date — POE now has a month dimension, so we want the
+    // monthly snapshot that matches our BA report month.
     const { rows } = await c.query<{ actual_rank: number; poe_30_day_volume: string }>(
       `
       SELECT m.actual_rank, p.poe_30_day_volume::text AS poe_30_day_volume
       FROM monthly_sfr m
-      JOIN poe_calibration_data p USING (search_term_normalized)
+      JOIN poe_calibration_data p
+        ON p.search_term_normalized = m.search_term_normalized
+       AND p.month_end_date = m.month_end_date
       WHERE m.month_end_date = $1::date
         AND m.actual_rank > 0
         AND p.poe_30_day_volume > 0
@@ -100,6 +105,7 @@ function stratifiedSplit(pairs: Pair[]): { train: Pair[]; holdout: Pair[] } {
 async function recordRun(
   pool: Pool,
   args: {
+    calibrationMonthEndDate: string;
     beta: number;
     scaleFactor: number;
     nTraining: number;
@@ -117,15 +123,16 @@ async function recordRun(
     const { rows } = await c.query<{ id: string }>(
       `
       INSERT INTO model_calibration_runs (
-        beta, scale_factor,
+        calibration_month_end_date, beta, scale_factor,
         n_training_keywords, n_holdout_keywords,
         mape_overall, mape_top_1k, mape_1k_10k, mape_10k_100k, mape_above_100k,
         notes
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
       RETURNING id
       `,
       [
+        args.calibrationMonthEndDate,
         args.beta.toFixed(4),
         args.scaleFactor.toFixed(6),
         args.nTraining,
@@ -203,8 +210,11 @@ async function main() {
       `  100k+:           ${fmtPct(stratified.above100k)}  (n=${stratified.counts.above100k})`,
     );
 
-    // Persist to model_calibration_runs
+    // Persist to model_calibration_runs. calibration_month_end_date is the
+    // SAME as monthEndDate (the month whose calibration data we used).
+    // pickFitForWeek uses this to decide which fit applies to each week.
     const runId = await recordRun(pool, {
+      calibrationMonthEndDate: monthEndDate,
       beta: fit.beta,
       scaleFactor: fit.scaleFactor,
       nTraining: train.length,

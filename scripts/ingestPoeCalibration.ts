@@ -7,7 +7,14 @@
  * `search_term_normalized` during model fitting.
  *
  * Usage:
- *   pnpm tsx scripts/ingestPoeCalibration.ts <csv-path>
+ *   pnpm tsx scripts/ingestPoeCalibration.ts <csv-path> <month-end-date>
+ *
+ * Example:
+ *   pnpm tsx scripts/ingestPoeCalibration.ts data/poe-30d-april.csv 2026-04-30
+ *
+ * The month-end-date tags this POE snapshot — it's the month the
+ * 30-day window represents. Combined with search_term_normalized as
+ * the composite PK, so historical monthly snapshots coexist.
  *
  * The CSV file format is the standard 2-column shape Amazon's POE
  * tool exports (after saving xlsx → csv):
@@ -39,13 +46,18 @@ interface ParsedRow {
   volume30d: number;
 }
 
-function validateArgs(): { csvPath: string } {
+function validateArgs(): { csvPath: string; monthEndDate: string } {
   const csvPath = process.argv[2];
-  if (!csvPath) {
-    console.error('Usage: pnpm tsx scripts/ingestPoeCalibration.ts <csv-path>');
+  const monthEndDate = process.argv[3];
+  if (!csvPath || !monthEndDate) {
+    console.error('Usage: pnpm tsx scripts/ingestPoeCalibration.ts <csv-path> <month-end-date YYYY-MM-DD>');
     process.exit(1);
   }
-  return { csvPath };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(monthEndDate)) {
+    console.error(`Invalid month-end-date "${monthEndDate}". Use YYYY-MM-DD.`);
+    process.exit(1);
+  }
+  return { csvPath, monthEndDate };
 }
 
 async function readAndDedupe(csvPath: string): Promise<{
@@ -97,6 +109,7 @@ async function readAndDedupe(csvPath: string): Promise<{
 async function bulkUpsert(
   client: PoolClient,
   rows: ParsedRow[],
+  monthEndDate: string,
   sourceFilename: string,
 ): Promise<number> {
   if (rows.length === 0) return 0;
@@ -108,14 +121,15 @@ async function bulkUpsert(
     const params: unknown[] = [];
     let p = 1;
     for (const r of slice) {
-      valueRows.push(`($${p}, $${p + 1}, $${p + 2})`);
-      params.push(r.normalizedTerm, r.volume30d, sourceFilename);
-      p += 3;
+      valueRows.push(`($${p}, $${p + 1}, $${p + 2}, $${p + 3})`);
+      params.push(r.normalizedTerm, monthEndDate, r.volume30d, sourceFilename);
+      p += 4;
     }
     const sql = `
-      INSERT INTO poe_calibration_data (search_term_normalized, poe_30_day_volume, source_filename)
+      INSERT INTO poe_calibration_data
+        (search_term_normalized, month_end_date, poe_30_day_volume, source_filename)
       VALUES ${valueRows.join(', ')}
-      ON CONFLICT (search_term_normalized)
+      ON CONFLICT (search_term_normalized, month_end_date)
       DO UPDATE SET
         poe_30_day_volume = EXCLUDED.poe_30_day_volume,
         source_filename = EXCLUDED.source_filename,
@@ -128,8 +142,8 @@ async function bulkUpsert(
 }
 
 async function main() {
-  const { csvPath } = validateArgs();
-  console.log(`Reading ${csvPath}...`);
+  const { csvPath, monthEndDate } = validateArgs();
+  console.log(`Reading ${csvPath} for month_end_date=${monthEndDate}...`);
 
   const t0 = Date.now();
   const { byTerm, totalRows, skippedRows, collapses } = await readAndDedupe(csvPath);
@@ -158,6 +172,7 @@ async function main() {
     const inserted = await bulkUpsert(
       client,
       Array.from(byTerm.values()),
+      monthEndDate,
       basename(csvPath),
     );
     const tInsert = Date.now() - t1;
