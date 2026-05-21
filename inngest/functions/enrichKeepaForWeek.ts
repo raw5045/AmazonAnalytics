@@ -175,6 +175,20 @@ export const enrichKeepaForWeek = inngest.createFunction(
       }
     }
 
+    // Step 4b: if enrichment SUCCEEDED, fire the post-enrichment
+    // kcs Keepa-aggregate sync. Done as a fire-and-forget event so
+    // the sync runs in its own orchestrator + detached worker without
+    // blocking the email step here. The sync brings fresh Keepa data
+    // for newly-enriched ASINs into the explorer's precomputed
+    // columns (lowest/highest price, reviews, leaf category) — without
+    // waiting for the next weekly refresh.
+    if (outcome === 'completed') {
+      await step.sendEvent('trigger-kcs-keepa-sync', {
+        name: 'keepa/aggregates-sync-requested',
+        data: { weekEndDate },
+      });
+    }
+
     // Step 5: send the appropriate-variant email. The outcome variable
     // determines subject/color/wording (completed / failed / orphaned).
     await step.run('send-completion-email', async () => {
