@@ -11,7 +11,8 @@
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import type { SeverityKey } from './types';
-import { pickFitForWeek, predictVolume, type FitParams } from '@/lib/analytics/volumeModel';
+import { pickFitForWeek, predictVolumeFromFit, type FitParams } from '@/lib/analytics/volumeModel';
+import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 
 export interface KeywordDetailHistoryRow {
   weekEndDate: string;
@@ -261,14 +262,17 @@ export async function fetchKeywordDetail(
     // All calibration fits — used to compute per-week estimated volume.
     // Cardinality is small (a handful of monthly fits over the app's
     // lifetime), so fetching all and picking per-row in JS is cheaper
-    // than a per-row SQL join.
+    // than a per-row SQL join. fit_params is the full piecewise
+    // structure when present; legacy rows fall back to (beta,
+    // scale_factor) as a single segment.
     sql`
       SELECT
         id,
         calibration_month_end_date::text AS calibration_month_end_date,
         fitted_at::text                  AS fitted_at,
         beta::text                       AS beta,
-        scale_factor::text               AS scale_factor
+        scale_factor::text               AS scale_factor,
+        fit_params                       AS fit_params
       FROM model_calibration_runs
     `,
   ]);
@@ -294,13 +298,21 @@ export async function fetchKeywordDetail(
     fitted_at: string;
     beta: string;
     scale_factor: string;
+    fit_params: FitParamsJson | null;
   }>;
-  const fits: FitParams[] = fitRows.map((r) => ({
-    calibrationMonthEndDate: r.calibration_month_end_date,
-    fittedAt: r.fitted_at,
-    beta: parseFloat(r.beta),
-    scaleFactor: parseFloat(r.scale_factor),
-  }));
+  const fits: FitParams[] = fitRows.map((r) => {
+    const fp = r.fit_params;
+    const segments = fp?.segments ?? [{ beta: parseFloat(r.beta), scaleFactor: parseFloat(r.scale_factor) }];
+    const breakpoints = fp?.breakpoints ?? [];
+    return {
+      calibrationMonthEndDate: r.calibration_month_end_date,
+      fittedAt: r.fitted_at,
+      beta: segments[0].beta,
+      scaleFactor: segments[0].scaleFactor,
+      breakpoints,
+      segments,
+    };
+  });
 
   if (termRows.length === 0) return null;
   const term = termRows[0];
@@ -359,7 +371,7 @@ function mapCurrent(r: Record<string, unknown>, fits: ReadonlyArray<FitParams>):
   const currentWeekEndDate = toIsoDate(r.current_week_end_date as string);
   const currentRank = r.current_rank as number;
   const sel = pickFitForWeek(currentWeekEndDate, fits);
-  const estVol = sel ? Math.round(predictVolume(currentRank, sel.fit.beta, sel.fit.scaleFactor)) : null;
+  const estVol = sel ? Math.round(predictVolumeFromFit(currentRank, sel.fit)) : null;
   return {
     currentWeekEndDate,
     currentRank,
@@ -390,7 +402,7 @@ function mapHistory(
   // different calibration months. Math.pow over ~52 rows is microseconds;
   // no need to batch.
   const sel = pickFitForWeek(weekEndDate, fits);
-  const estVol = sel ? Math.round(predictVolume(actualRank, sel.fit.beta, sel.fit.scaleFactor)) : null;
+  const estVol = sel ? Math.round(predictVolumeFromFit(actualRank, sel.fit)) : null;
   return {
     weekEndDate,
     actualRank,

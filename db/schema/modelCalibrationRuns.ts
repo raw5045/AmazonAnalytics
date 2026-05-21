@@ -7,6 +7,7 @@ import {
   timestamp,
   date,
   index,
+  jsonb,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -34,10 +35,25 @@ export const modelCalibrationRuns = pgTable(
      * tooltip in that case).
      */
     calibrationMonthEndDate: date('calibration_month_end_date').notNull(),
-    /** Power-law exponent (rank^-β). Expected: 0.4-1.2; data decides. */
+    /**
+     * Power-law exponent (rank^-β) of the first (or only) segment.
+     * For piecewise fits, this is the head-segment β; refresh +
+     * detail-page predictors read fit_params for the full multi-
+     * segment data and only use this column as a fallback. Expected
+     * range: 0.3-1.5; data decides.
+     */
     beta: numeric('beta', { precision: 6, scale: 4 }).notNull(),
-    /** Constant A in `estimated_volume = A * rank^-β`. */
+    /**
+     * Constant A for the first (or only) segment.
+     * For piecewise fits, this is the head-segment A.
+     */
     scaleFactor: numeric('scale_factor', { precision: 20, scale: 6 }).notNull(),
+    /**
+     * Structured fit data — see migration 0028. Supports single and
+     * piecewise fits in one column. NULL on legacy rows (they fall
+     * back to (beta, scale_factor) as a single segment).
+     */
+    fitParams: jsonb('fit_params').$type<FitParamsJson | null>(),
     nTrainingKeywords: integer('n_training_keywords').notNull(),
     nHoldoutKeywords: integer('n_holdout_keywords').notNull(),
     /** Validation: median absolute % error on holdout, by rank band. */
@@ -55,3 +71,22 @@ export const modelCalibrationRuns = pgTable(
 );
 
 export type ModelCalibrationRun = typeof modelCalibrationRuns.$inferSelect;
+
+/**
+ * Shape of `fit_params` stored in the jsonb column. Mirrors the
+ * production `PiecewiseFit` type from lib/analytics/volumeModel.ts
+ * but kept inline here so the schema is self-describing.
+ */
+export interface FitParamsJson {
+  kind: 'single' | 'piecewise';
+  /** Anchor pair (rank, volume) the head segment passes through, if any. */
+  anchor: { rank: number; volume: number } | null;
+  /** Breakpoint ranks between segments. Length = segments.length - 1. */
+  breakpoints: number[];
+  /** Per-segment (β, A). Always at least one entry. */
+  segments: Array<{ beta: number; scaleFactor: number }>;
+  /** Threshold used for iterative outlier trimming during the fit. */
+  trimDropRatio: number | null;
+  /** How many calibration pairs were dropped as outliers. */
+  nDropped: number;
+}

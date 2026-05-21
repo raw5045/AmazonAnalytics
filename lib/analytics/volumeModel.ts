@@ -177,13 +177,73 @@ export function meanAbsolutePercentageError(
  * the latest `fittedAt` (a re-fit within the same month overrides
  * the older one).
  */
-export interface FitParams {
+/**
+ * Per-segment fit data. A single-segment fit has one of these; a
+ * piecewise fit has N segments separated by N-1 breakpoints. See
+ * PiecewiseFit below.
+ */
+export interface FitSegment {
+  beta: number;
+  scaleFactor: number;
+}
+
+/**
+ * Full structured fit. Either a single power-law segment OR a
+ * piecewise N-segment power law with N-1 breakpoints. Continuity
+ * between segments is enforced at fit time (A_{n+1} = A_n × K_n^{β_{n+1} - β_n}).
+ *
+ * - `segments.length === 1`  ⇒ single power law, no breakpoints
+ * - `segments.length >= 2`   ⇒ piecewise, breakpoints sorted ascending
+ *
+ * The applied segment for a given rank R is segments[i] where i is
+ * the smallest index such that R ≤ breakpoints[i] (or the last
+ * segment if R exceeds every breakpoint).
+ */
+export interface PiecewiseFit {
+  /**
+   * Sorted ascending. Length = segments.length - 1. Empty for
+   * single-segment fits.
+   */
+  breakpoints: number[];
+  segments: FitSegment[];
+}
+
+export interface FitParams extends PiecewiseFit {
   /** Month whose data trained this fit (ISO date YYYY-MM-DD). */
   calibrationMonthEndDate: string;
   /** When this fit was computed (ISO timestamp). Tiebreaker. */
   fittedAt: string;
+  /**
+   * Convenience: equals segments[0].beta. Kept for backward compat
+   * with callers that read a flat (β, A) before piecewise existed.
+   * Always references the FIRST (head) segment.
+   */
   beta: number;
+  /**
+   * Convenience: equals segments[0].scaleFactor. Kept for backward
+   * compat (see above).
+   */
   scaleFactor: number;
+}
+
+/**
+ * Predict volume from rank using a possibly-piecewise fit.
+ *
+ * - Single segment (no breakpoints): equivalent to predictVolume.
+ * - Piecewise: dispatches to the segment whose range covers `rank`.
+ *
+ * Returns 0 for invalid input (defensive).
+ */
+export function predictVolumeFromFit(rank: number, fit: PiecewiseFit): number {
+  if (!Number.isFinite(rank) || rank <= 0) return 0;
+  if (fit.segments.length === 0) return 0;
+  for (let i = 0; i < fit.breakpoints.length; i++) {
+    if (rank <= fit.breakpoints[i]) {
+      return predictVolume(rank, fit.segments[i].beta, fit.segments[i].scaleFactor);
+    }
+  }
+  const last = fit.segments[fit.segments.length - 1];
+  return predictVolume(rank, last.beta, last.scaleFactor);
 }
 
 export interface FitSelection {
@@ -248,6 +308,184 @@ function compareFitsLatestFirst(a: FitParams, b: FitParams): number {
     return a.calibrationMonthEndDate > b.calibrationMonthEndDate ? -1 : 1;
   }
   return a.fittedAt > b.fittedAt ? -1 : 1;
+}
+
+/**
+ * Anchored 4-segment piecewise grid search with iterative outlier
+ * trimming. Replaces the single-segment `gridSearchBeta` for
+ * production fits.
+ *
+ * Design (see scripts/fourSegmentFit.ts for the analysis that
+ * motivated each choice):
+ *   - **Breakpoints fixed at 1k / 10k / 100k**. These match the MAPE
+ *     reporting bands. Auto-tuning didn't outperform fixed values in
+ *     the EDA, and fixed breakpoints make the fit far more
+ *     interpretable.
+ *   - **Anchor in segment 1**: A1 = anchor.volume × anchor.rank^β1.
+ *     Forces the curve to pass through a trusted reference point
+ *     (the lowest-SFR pair in the matched dataset, where Amazon's
+ *     own POE volume is most likely to be a real number).
+ *   - **Continuity**: each subsequent segment's A is derived from the
+ *     previous segment's A at the breakpoint:
+ *       A_{n+1} = A_n × K_n^{β_{n+1} - β_n}
+ *     So free params are just (β1, β2, β3, β4) — 4 numbers, grid-
+ *     searched over BETA_GRID. 33^4 ≈ 1.2M combos, ~1s wall time.
+ *   - **Iterative under-trim**: after each fit, drop pairs whose
+ *     actual is < 1/dropRatio × predicted, then refit. Repeats until
+ *     no new drops (~3-5 iterations). Only the under direction is
+ *     trimmed — the over direction (POE-reported volumes vastly
+ *     higher than predicted) reflects real POE broad-match behavior
+ *     and removing those biases the fit toward too-low predictions.
+ */
+export const DEFAULT_PIECEWISE_BREAKPOINTS = [1_000, 10_000, 100_000];
+
+export interface AnchoredPiecewiseFitResult {
+  fit: PiecewiseFit;
+  nKept: number;
+  nDropped: number;
+  iterations: number;
+}
+
+const PIECEWISE_BETA_GRID: number[] = (() => {
+  const grid: number[] = [];
+  for (let b = 0.2; b <= 1.6 + 1e-9; b += 0.025) grid.push(parseFloat(b.toFixed(4)));
+  return grid;
+})();
+
+export function anchoredPiecewiseGridSearch(
+  pairs: ReadonlyArray<{ rank: number; volume: number }>,
+  options: {
+    anchor: { rank: number; volume: number };
+    breakpoints?: number[];
+    /**
+     * Iterative outlier trim threshold. Pairs where actual < 1/N ×
+     * predicted are dropped between iterations. Pass `Infinity` to
+     * disable trimming.
+     */
+    trimDropRatio?: number;
+  },
+): AnchoredPiecewiseFitResult {
+  const breakpoints = options.breakpoints ?? DEFAULT_PIECEWISE_BREAKPOINTS;
+  const trimRatio = options.trimDropRatio ?? 10;
+  const nSegments = breakpoints.length + 1;
+  if (nSegments < 1) throw new Error('At least one segment required');
+
+  let kept = pairs.filter((p) => p.rank > 0 && p.volume > 0);
+  let fit = gridSearchSegments(kept, breakpoints, options.anchor);
+  let iterations = 0;
+  let nDropped = 0;
+  while (iterations < 20) {
+    iterations += 1;
+    const next: { rank: number; volume: number }[] = [];
+    let dropThisRound = 0;
+    for (const p of kept) {
+      const pred = predictVolumeFromFit(p.rank, fit);
+      const ratio = p.volume / pred;
+      if (Number.isFinite(trimRatio) && ratio < 1 / trimRatio) dropThisRound += 1;
+      else next.push(p);
+    }
+    if (dropThisRound === 0) break;
+    nDropped += dropThisRound;
+    kept = next;
+    fit = gridSearchSegments(kept, breakpoints, options.anchor);
+  }
+  return { fit, nKept: kept.length, nDropped, iterations };
+}
+
+/**
+ * Inner grid search — finds the (β1, β2, ..., βN) tuple minimizing
+ * log-space SSE on the given pairs. A1 is determined by the anchor;
+ * subsequent A_n are derived by continuity.
+ *
+ * Returns a PiecewiseFit (no statistics). Used both for the initial
+ * fit and for re-fits after each trim iteration.
+ */
+function gridSearchSegments(
+  pairs: ReadonlyArray<{ rank: number; volume: number }>,
+  breakpoints: number[],
+  anchor: { rank: number; volume: number },
+): PiecewiseFit {
+  const nSegments = breakpoints.length + 1;
+  // Partition pairs into segments once
+  const partitioned: Array<Array<{ rank: number; volume: number }>> = Array.from(
+    { length: nSegments },
+    () => [],
+  );
+  for (const p of pairs) {
+    let idx = nSegments - 1;
+    for (let i = 0; i < breakpoints.length; i++) {
+      if (p.rank <= breakpoints[i]) {
+        idx = i;
+        break;
+      }
+    }
+    partitioned[idx].push(p);
+  }
+
+  // Recurse: for each candidate β1, compute A1 from anchor, compute
+  // segment 1 SSE, then recurse to find best (β2, ..., βN). Returns
+  // best tuple + its SSE.
+  const best = chooseBetas(0, breakpoints, partitioned, anchor.volume * Math.pow(anchor.rank, 0), anchor);
+  return {
+    breakpoints,
+    segments: best.betas.map((b, i) => ({ beta: b, scaleFactor: best.As[i] })),
+  };
+}
+
+/**
+ * Recursive grid descent. At each segment index, try every candidate
+ * β, compute that segment's A from the previous-segment continuity
+ * (or anchor for index 0), tally its SSE, and recurse to the next
+ * segment.
+ *
+ * Pure function — `partitioned[i]` holds the pairs whose rank falls
+ * in segment i.
+ */
+function chooseBetas(
+  segIdx: number,
+  breakpoints: number[],
+  partitioned: ReadonlyArray<ReadonlyArray<{ rank: number; volume: number }>>,
+  prevA: number,
+  anchor: { rank: number; volume: number },
+  prevBeta = 0,
+): { sse: number; betas: number[]; As: number[] } {
+  const nSegments = breakpoints.length + 1;
+  let bestSse = Infinity;
+  let bestBetas: number[] = [];
+  let bestAs: number[] = [];
+  for (const beta of PIECEWISE_BETA_GRID) {
+    // Derive A for this segment.
+    let A: number;
+    if (segIdx === 0) {
+      A = anchor.volume * Math.pow(anchor.rank, beta);
+    } else {
+      const K = breakpoints[segIdx - 1];
+      A = prevA * Math.pow(K, beta - prevBeta);
+    }
+    // SSE for this segment's pairs.
+    const logA = Math.log(A);
+    let sse = 0;
+    for (const p of partitioned[segIdx]) {
+      const e = (logA - beta * Math.log(p.rank)) - Math.log(p.volume);
+      sse += e * e;
+    }
+    if (segIdx === nSegments - 1) {
+      if (sse < bestSse) {
+        bestSse = sse;
+        bestBetas = [beta];
+        bestAs = [A];
+      }
+    } else {
+      const rec = chooseBetas(segIdx + 1, breakpoints, partitioned, A, anchor, beta);
+      const totalSse = sse + rec.sse;
+      if (totalSse < bestSse) {
+        bestSse = totalSse;
+        bestBetas = [beta, ...rec.betas];
+        bestAs = [A, ...rec.As];
+      }
+    }
+  }
+  return { sse: bestSse, betas: bestBetas, As: bestAs };
 }
 
 /**

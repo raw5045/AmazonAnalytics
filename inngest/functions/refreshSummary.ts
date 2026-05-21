@@ -35,7 +35,8 @@
  * out on long INSERTs).
  */
 import { Pool, type PoolClient } from 'pg';
-import { pickFitForWeek, type FitParams } from '@/lib/analytics/volumeModel';
+import { pickFitForWeek, type FitParams, type PiecewiseFit } from '@/lib/analytics/volumeModel';
+import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 
 export interface RefreshSummaryResult {
   rowsWritten: number;
@@ -73,11 +74,15 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // 0a. Pick the volume-model fit that applies to current_week_end_date.
     //     pickFitForWeek picks the latest fit with calibration_month
     //     ≤ end-of-current-week's-month (or earliest available with
-    //     isExtrapolated=true if none qualifies). Both numbers are
-    //     bound as INSERT params below to compute volumes in SQL via
-    //     power(rank, -β) — avoids per-row JS callbacks against 4M rows.
+    //     isExtrapolated=true if none qualifies).
     //
-    //     When zero fits exist (cold start), volumeSelection is null
+    //     The fit may be piecewise (multiple (β, A) segments separated
+    //     by breakpoints) — we build a SQL CASE WHEN expression
+    //     dynamically and bind the segment + breakpoint values as
+    //     params. For legacy single-segment fits, the expression
+    //     collapses to a single (A * power(rank, -β))::bigint.
+    //
+    //     When zero fits exist (cold start), the chosenFit is null
     //     and the column stays NULL. Next refresh after a fit lands
     //     will fill it in.
     const { rows: fitRows } = await client.query<{
@@ -86,17 +91,25 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       fitted_at: string;
       beta: string;
       scale_factor: string;
+      fit_params: FitParamsJson | null;
     }>(
       `SELECT id, calibration_month_end_date::text, fitted_at::text,
-              beta::text, scale_factor::text
+              beta::text, scale_factor::text, fit_params
        FROM model_calibration_runs`,
     );
-    const fits: FitParams[] = fitRows.map((r) => ({
-      calibrationMonthEndDate: r.calibration_month_end_date,
-      fittedAt: r.fitted_at,
-      beta: parseFloat(r.beta),
-      scaleFactor: parseFloat(r.scale_factor),
-    }));
+    const fits: FitParams[] = fitRows.map((r) => {
+      const fp = r.fit_params;
+      const segments = fp?.segments ?? [{ beta: parseFloat(r.beta), scaleFactor: parseFloat(r.scale_factor) }];
+      const breakpoints = fp?.breakpoints ?? [];
+      return {
+        calibrationMonthEndDate: r.calibration_month_end_date,
+        fittedAt: r.fitted_at,
+        beta: segments[0].beta,
+        scaleFactor: segments[0].scaleFactor,
+        breakpoints,
+        segments,
+      };
+    });
     const volumeSelection = pickFitForWeek(currentWeekEndDate, fits);
     const fitRunIdById = new Map<string, string>();
     for (const r of fitRows) fitRunIdById.set(`${r.calibration_month_end_date}|${r.fitted_at}`, r.id);
@@ -105,9 +118,14 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
           `${volumeSelection.fit.calibrationMonthEndDate}|${volumeSelection.fit.fittedAt}`,
         ) ?? null
       : null;
-    const chosenBeta = volumeSelection?.fit.beta ?? null;
-    const chosenScaleFactor = volumeSelection?.fit.scaleFactor ?? null;
     const chosenIsExtrapolated = volumeSelection?.isExtrapolated ?? false;
+
+    // Build the SQL CASE WHEN expression + param list for the picked
+    // fit. Params start at $2 because $1 is currentWeekEndDate (used
+    // later in the INSERT for the `weeks_since_seen` calculation).
+    const piecewiseSql = volumeSelection
+      ? buildPiecewiseSql(volumeSelection.fit, 'l.actual_rank', 2)
+      : null;
 
     // Stage-and-swap pattern (Plan 3.2 perf fix #4):
     //   - Build the new snapshot inside `keyword_current_summary_stage`,
@@ -158,11 +176,13 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // or maintain it incrementally on each import.
 
     // 4. INSERT into the stage table (the live table is untouched).
-    //    estimated_monthly_volume_current is computed inline via
-    //    power($beta, -current_rank) * $scale_factor. Both params are
-    //    bound from the volumeSelection picked above. When no fit
-    //    exists (cold start), $beta and $scale_factor are NULL — the
-    //    CASE expression then leaves the column NULL.
+    //    estimated_monthly_volume_current is computed inline via a
+    //    piecewise SQL CASE expression built from the chosen fit
+    //    (or NULL when no fit exists). Param indices for the
+    //    piecewise expression start at $2; the existing
+    //    weeks_since_seen calc uses $1.
+    const volumeExpression = piecewiseSql ? piecewiseSql.sql : 'NULL::bigint';
+    const volumeParams = piecewiseSql ? piecewiseSql.params : [];
     const insertResult = await client.query(
       `
       INSERT INTO keyword_current_summary_stage (
@@ -231,12 +251,9 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         l.keyword_in_title_2_loose AS in_title_2_loose,
         l.keyword_in_title_3_loose AS in_title_3_loose,
         l.keyword_title_match_count_loose AS title_match_count_loose,
-        -- Estimated volume: scaleFactor * rank^-beta, computed in SQL.
-        -- NULL out when either parameter is missing (no fit selected).
-        CASE
-          WHEN $2::numeric IS NULL OR $3::numeric IS NULL THEN NULL::bigint
-          ELSE ($3::numeric * power(l.actual_rank::numeric, -$2::numeric))::bigint
-        END AS estimated_monthly_volume_current,
+        -- Estimated volume — see buildPiecewiseSql (single or
+        -- multi-segment CASE WHEN). NULL when no fit was selected.
+        ${volumeExpression} AS estimated_monthly_volume_current,
         NOW()
       FROM latest_per_term l
       LEFT JOIN rank_at_1w r1 ON r1.search_term_id = l.search_term_id
@@ -245,7 +262,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       LEFT JOIN rank_at_26w r26 ON r26.search_term_id = l.search_term_id
       LEFT JOIN rank_at_52w r52 ON r52.search_term_id = l.search_term_id
       `,
-      [currentWeekEndDate, chosenBeta, chosenScaleFactor],
+      [currentWeekEndDate, ...volumeParams],
     );
     rowsWritten = insertResult.rowCount ?? 0;
 
@@ -441,3 +458,73 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
 // 0016+ matcher (padded-string + bidirectional plural candidates).
 // Recomputing here would (a) duplicate logic, (b) risk drift, and
 // (c) waste ~half the refresh wall time.
+
+/**
+ * Build a SQL CASE WHEN expression that computes estimated monthly
+ * volume from a piecewise (or single-segment) fit, given:
+ *   - the fit (segments + breakpoints)
+ *   - the SQL column reference for rank (e.g., "l.actual_rank")
+ *   - the starting param index ($N) for the bound params
+ *
+ * Returns the SQL string + the ordered param values to append to
+ * the existing pg query args array.
+ *
+ * For a 4-segment fit with breakpoints [1000, 10000, 100000], the
+ * output looks like:
+ *
+ *   CASE
+ *     WHEN l.actual_rank <= $2::int  THEN ($4::numeric  * power(l.actual_rank::numeric, -$3::numeric))::bigint
+ *     WHEN l.actual_rank <= $5::int  THEN ($7::numeric  * power(l.actual_rank::numeric, -$6::numeric))::bigint
+ *     WHEN l.actual_rank <= $8::int  THEN ($10::numeric * power(l.actual_rank::numeric, -$9::numeric))::bigint
+ *     ELSE                                 ($12::numeric * power(l.actual_rank::numeric, -$11::numeric))::bigint
+ *   END
+ *
+ * For a single-segment fit (no breakpoints), it collapses to:
+ *   ($3::numeric * power(l.actual_rank::numeric, -$2::numeric))::bigint
+ *
+ * Params order: for each non-last segment, (breakpoint, β, A). For
+ * the last segment, just (β, A) since there's no breakpoint.
+ */
+function buildPiecewiseSql(
+  fit: PiecewiseFit,
+  rankCol: string,
+  startParamIdx: number,
+): { sql: string; params: unknown[] } {
+  const params: unknown[] = [];
+  let nextIdx = startParamIdx;
+  if (fit.segments.length === 0) {
+    return { sql: 'NULL::bigint', params: [] };
+  }
+  if (fit.segments.length === 1) {
+    const s = fit.segments[0];
+    params.push(s.beta.toFixed(6), s.scaleFactor.toFixed(6));
+    const bIdx = nextIdx++;
+    const aIdx = nextIdx++;
+    return {
+      sql: `($${aIdx}::numeric * power(${rankCol}::numeric, -$${bIdx}::numeric))::bigint`,
+      params,
+    };
+  }
+  // Piecewise: WHEN clauses for all but the last segment, ELSE for last.
+  const whenClauses: string[] = [];
+  for (let i = 0; i < fit.segments.length - 1; i++) {
+    const seg = fit.segments[i];
+    const bp = fit.breakpoints[i];
+    params.push(bp, seg.beta.toFixed(6), seg.scaleFactor.toFixed(6));
+    const bpIdx = nextIdx++;
+    const bIdx = nextIdx++;
+    const aIdx = nextIdx++;
+    whenClauses.push(
+      `WHEN ${rankCol} <= $${bpIdx}::int THEN ($${aIdx}::numeric * power(${rankCol}::numeric, -$${bIdx}::numeric))::bigint`,
+    );
+  }
+  const last = fit.segments[fit.segments.length - 1];
+  params.push(last.beta.toFixed(6), last.scaleFactor.toFixed(6));
+  const lastBIdx = nextIdx++;
+  const lastAIdx = nextIdx++;
+  const elseClause = `ELSE ($${lastAIdx}::numeric * power(${rankCol}::numeric, -$${lastBIdx}::numeric))::bigint`;
+  return {
+    sql: `CASE ${whenClauses.join(' ')} ${elseClause} END`,
+    params,
+  };
+}

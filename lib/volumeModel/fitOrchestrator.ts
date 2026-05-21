@@ -1,6 +1,7 @@
 /**
  * Orchestrates the rank-to-volume model fit: fetches calibration pairs
- * for a month, splits 70/30 by volume decile, grid-searches β, validates
+ * for a month, splits 70/30 by volume decile, runs the anchored
+ * piecewise grid search with iterative outlier trimming, validates
  * MAPE by rank band on holdout, persists the result to
  * model_calibration_runs.
  *
@@ -9,15 +10,22 @@
  *   - worker/calibrationJobs.ts (in-app upload path, fits automatically
  *     after a combined BA + POE upload)
  *
+ * Model: 4-segment piecewise power law with breakpoints at 1k/10k/100k,
+ * anchored to the lowest-SFR pair (where Amazon's POE volume is most
+ * trustworthy), with iterative 10× under-trim to drop pairs where POE
+ * clearly under-reports relative to the SFR rank.
+ *
  * Returns the persisted run id + the full result for reporting (email,
  * console summary, UI surfacing).
  */
 import { Pool } from 'pg';
 import {
-  gridSearchBeta,
-  meanAbsolutePercentageError,
-  stratifiedMape,
+  anchoredPiecewiseGridSearch,
+  DEFAULT_PIECEWISE_BREAKPOINTS,
+  predictVolumeFromFit,
+  type PiecewiseFit,
 } from '@/lib/analytics/volumeModel';
+import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 
 interface Pair {
   rank: number;
@@ -27,11 +35,16 @@ interface Pair {
 export interface FitOrchestrationResult {
   runId: string;
   calibrationMonthEndDate: string;
+  /** Head-segment β (for legacy callers and console display). */
   beta: number;
+  /** Head-segment A. */
   scaleFactor: number;
+  /** Full piecewise fit. */
+  fitParams: FitParamsJson;
   nPairs: number;
   nTraining: number;
   nHoldout: number;
+  nDroppedAsOutliers: number;
   mapeOverall: number | null;
   mapeTop1k: number | null;
   mape1k10k: number | null;
@@ -73,14 +86,39 @@ export async function runFitOrchestration(args: {
     }
 
     const { train, holdout } = stratifiedSplit(pairs);
-    const fit = gridSearchBeta(train, { minBeta: 0.4, maxBeta: 1.2, step: 0.025 });
-    const mapeOverallRes = meanAbsolutePercentageError(holdout, fit.beta, fit.scaleFactor);
-    const stratified = stratifiedMape(holdout, fit.beta, fit.scaleFactor);
+
+    // Anchor on the lowest-SFR pair in the matched set — that's
+    // where Amazon's POE volume is most likely to be a real number
+    // (head terms; less aggressive POE rounding/banding). Using the
+    // FULL pair set (not just train) for the anchor selection so the
+    // anchor doesn't shift based on the train/holdout split.
+    const anchorPair = pairs.reduce((best, p) => (p.rank < best.rank ? p : best), pairs[0]);
+    const anchor = { rank: anchorPair.rank, volume: anchorPair.volume };
+
+    const result = anchoredPiecewiseGridSearch(train, {
+      anchor,
+      breakpoints: DEFAULT_PIECEWISE_BREAKPOINTS,
+      trimDropRatio: 10,
+    });
+    const fit = result.fit;
+
+    const stratified = stratifiedMapeFromFit(holdout, fit);
+
+    const fitParams: FitParamsJson = {
+      kind: fit.segments.length === 1 ? 'single' : 'piecewise',
+      anchor,
+      breakpoints: fit.breakpoints,
+      segments: fit.segments,
+      trimDropRatio: 10,
+      nDropped: result.nDropped,
+    };
 
     const runId = await recordRun(pool, {
       calibrationMonthEndDate: args.monthEndDate,
-      beta: fit.beta,
-      scaleFactor: fit.scaleFactor,
+      // Legacy columns: head segment
+      beta: fit.segments[0].beta,
+      scaleFactor: fit.segments[0].scaleFactor,
+      fitParams,
       nTraining: train.length,
       nHoldout: holdout.length,
       mapeOverall: stratified.overall,
@@ -91,17 +129,16 @@ export async function runFitOrchestration(args: {
       notes: args.notes ?? null,
     });
 
-    // Mute "unused but useful for debugging" warning
-    void mapeOverallRes;
-
     return {
       runId,
       calibrationMonthEndDate: args.monthEndDate,
-      beta: fit.beta,
-      scaleFactor: fit.scaleFactor,
+      beta: fit.segments[0].beta,
+      scaleFactor: fit.segments[0].scaleFactor,
+      fitParams,
       nPairs: pairs.length,
       nTraining: train.length,
       nHoldout: holdout.length,
+      nDroppedAsOutliers: result.nDropped,
       mapeOverall: stratified.overall,
       mapeTop1k: stratified.top1k,
       mape1k10k: stratified.rank1kTo10k,
@@ -112,6 +149,53 @@ export async function runFitOrchestration(args: {
   } finally {
     if (ownPool) await pool.end();
   }
+}
+
+/**
+ * Per-band MAPE on holdout, using a piecewise fit. Equivalent to the
+ * single-segment `stratifiedMape` helper but accepts the new fit
+ * structure. Returns the same shape so the orchestrator + email
+ * builder don't need to know which type of fit they're reporting.
+ */
+function stratifiedMapeFromFit(
+  pairs: ReadonlyArray<Pair>,
+  fit: PiecewiseFit,
+): {
+  overall: number | null;
+  top1k: number | null;
+  rank1kTo10k: number | null;
+  rank10kTo100k: number | null;
+  above100k: number | null;
+} {
+  const bands = {
+    top1k: [] as Pair[],
+    rank1kTo10k: [] as Pair[],
+    rank10kTo100k: [] as Pair[],
+    above100k: [] as Pair[],
+  };
+  for (const p of pairs) {
+    if (p.rank <= 0 || p.volume <= 0) continue;
+    if (p.rank <= 1_000) bands.top1k.push(p);
+    else if (p.rank <= 10_000) bands.rank1kTo10k.push(p);
+    else if (p.rank <= 100_000) bands.rank10kTo100k.push(p);
+    else bands.above100k.push(p);
+  }
+  const mape = (set: Pair[]) => {
+    if (set.length === 0) return null;
+    let sum = 0;
+    for (const p of set) {
+      const pred = predictVolumeFromFit(p.rank, fit);
+      sum += Math.abs(pred - p.volume) / p.volume;
+    }
+    return sum / set.length;
+  };
+  return {
+    overall: mape(pairs.filter((p) => p.rank > 0 && p.volume > 0)),
+    top1k: mape(bands.top1k),
+    rank1kTo10k: mape(bands.rank1kTo10k),
+    rank10kTo100k: mape(bands.rank10kTo100k),
+    above100k: mape(bands.above100k),
+  };
 }
 
 async function fetchPairs(pool: Pool, monthEndDate: string): Promise<Pair[]> {
@@ -171,6 +255,7 @@ async function recordRun(
     calibrationMonthEndDate: string;
     beta: number;
     scaleFactor: number;
+    fitParams: FitParamsJson;
     nTraining: number;
     nHoldout: number;
     mapeOverall: number | null;
@@ -186,18 +271,19 @@ async function recordRun(
     const { rows } = await c.query<{ id: string }>(
       `
       INSERT INTO model_calibration_runs (
-        calibration_month_end_date, beta, scale_factor,
+        calibration_month_end_date, beta, scale_factor, fit_params,
         n_training_keywords, n_holdout_keywords,
         mape_overall, mape_top_1k, mape_1k_10k, mape_10k_100k, mape_above_100k,
         notes
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11, $12)
       RETURNING id
       `,
       [
         args.calibrationMonthEndDate,
         args.beta.toFixed(4),
         args.scaleFactor.toFixed(6),
+        JSON.stringify(args.fitParams),
         args.nTraining,
         args.nHoldout,
         args.mapeOverall !== null ? (args.mapeOverall * 100).toFixed(2) : null,

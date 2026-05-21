@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   predictVolume,
+  predictVolumeFromFit,
   fitScaleFactorForBeta,
   logSpaceSSE,
   gridSearchBeta,
@@ -8,7 +9,9 @@ import {
   stratifiedMape,
   pickFitForWeek,
   endOfMonthIso,
+  anchoredPiecewiseGridSearch,
   type FitParams,
+  type PiecewiseFit,
 } from './volumeModel';
 
 describe('predictVolume', () => {
@@ -174,12 +177,30 @@ describe('endOfMonthIso', () => {
   });
 });
 
+// Helper: build a single-segment FitParams from (β, A). Lets these
+// tests stay readable; piecewise structure is unit-tested separately.
+function singleFit(
+  calibrationMonthEndDate: string,
+  fittedAt: string,
+  beta: number,
+  scaleFactor: number,
+): FitParams {
+  return {
+    calibrationMonthEndDate,
+    fittedAt,
+    beta,
+    scaleFactor,
+    breakpoints: [],
+    segments: [{ beta, scaleFactor }],
+  };
+}
+
 describe('pickFitForWeek', () => {
   const fits: FitParams[] = [
-    { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-01T00:00:00Z', beta: 0.75, scaleFactor: 2_000_000 },
-    { calibrationMonthEndDate: '2026-05-31', fittedAt: '2026-06-01T00:00:00Z', beta: 0.74, scaleFactor: 1_800_000 },
-    { calibrationMonthEndDate: '2026-11-30', fittedAt: '2026-12-01T00:00:00Z', beta: 0.76, scaleFactor: 3_500_000 },
-    { calibrationMonthEndDate: '2026-12-31', fittedAt: '2027-01-01T00:00:00Z', beta: 0.77, scaleFactor: 4_200_000 },
+    singleFit('2026-04-30', '2026-05-01T00:00:00Z', 0.75, 2_000_000),
+    singleFit('2026-05-31', '2026-06-01T00:00:00Z', 0.74, 1_800_000),
+    singleFit('2026-11-30', '2026-12-01T00:00:00Z', 0.76, 3_500_000),
+    singleFit('2026-12-31', '2027-01-01T00:00:00Z', 0.77, 4_200_000),
   ];
 
   it('returns null when no fits are available', () => {
@@ -216,8 +237,8 @@ describe('pickFitForWeek', () => {
 
   it('tiebreaks multiple fits in the same calibration month by latest fittedAt', () => {
     const withDupes: FitParams[] = [
-      { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-01T00:00:00Z', beta: 0.70, scaleFactor: 1_000_000 },
-      { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-15T00:00:00Z', beta: 0.75, scaleFactor: 2_000_000 },
+      singleFit('2026-04-30', '2026-05-01T00:00:00Z', 0.70, 1_000_000),
+      singleFit('2026-04-30', '2026-05-15T00:00:00Z', 0.75, 2_000_000),
     ];
     const result = pickFitForWeek('2026-04-21', withDupes);
     expect(result?.fit.beta).toBe(0.75); // the later-fitted of the two April fits
@@ -225,9 +246,7 @@ describe('pickFitForWeek', () => {
   });
 
   it('handles a single-fit edge case (only one fit available)', () => {
-    const oneFit: FitParams[] = [
-      { calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-01T00:00:00Z', beta: 0.7, scaleFactor: 1e6 },
-    ];
+    const oneFit: FitParams[] = [singleFit('2026-04-30', '2026-05-01T00:00:00Z', 0.7, 1e6)];
     // Same month: not extrapolated
     expect(pickFitForWeek('2026-04-15', oneFit)?.isExtrapolated).toBe(false);
     // Later month: not extrapolated (uses past fit)
@@ -280,5 +299,113 @@ describe('stratifiedMape', () => {
     expect(result.top1k).not.toBeNull();
     expect(result.top1k).toBeCloseTo(0, 5);
     expect(result.overall).toBeCloseTo(0, 5);
+  });
+});
+
+describe('predictVolumeFromFit', () => {
+  it('matches predictVolume for single-segment fits', () => {
+    const fit: PiecewiseFit = { breakpoints: [], segments: [{ beta: 0.6, scaleFactor: 5_000_000 }] };
+    for (const rank of [1, 5, 100, 1000, 10000, 100000]) {
+      expect(predictVolumeFromFit(rank, fit)).toBeCloseTo(predictVolume(rank, 0.6, 5_000_000), 1);
+    }
+  });
+
+  it('dispatches to the correct segment in a 4-segment fit', () => {
+    const fit: PiecewiseFit = {
+      breakpoints: [1000, 10000, 100000],
+      segments: [
+        { beta: 0.4, scaleFactor: 6_500_000 },   // rank ≤ 1k
+        { beta: 0.6, scaleFactor: 30_000_000 },  // 1k < rank ≤ 10k
+        { beta: 0.8, scaleFactor: 300_000_000 }, // 10k < rank ≤ 100k
+        { beta: 1.0, scaleFactor: 1_000_000_000 }, // rank > 100k
+      ],
+    };
+    // rank=500 lives in segment 0
+    expect(predictVolumeFromFit(500, fit)).toBeCloseTo(6_500_000 * Math.pow(500, -0.4), 1);
+    // rank=5000 lives in segment 1
+    expect(predictVolumeFromFit(5000, fit)).toBeCloseTo(30_000_000 * Math.pow(5000, -0.6), 1);
+    // rank=50000 lives in segment 2
+    expect(predictVolumeFromFit(50000, fit)).toBeCloseTo(300_000_000 * Math.pow(50000, -0.8), 1);
+    // rank=500000 lives in segment 3
+    expect(predictVolumeFromFit(500000, fit)).toBeCloseTo(1_000_000_000 * Math.pow(500000, -1.0), 1);
+  });
+
+  it('exact-equal rank at breakpoint goes to LEFT segment (inclusive upper bound)', () => {
+    const fit: PiecewiseFit = {
+      breakpoints: [1000],
+      segments: [
+        { beta: 0.5, scaleFactor: 1_000_000 },
+        { beta: 1.0, scaleFactor: 1_000_000_000 },
+      ],
+    };
+    // rank=1000 → segment 0 (since the rule is rank <= breakpoint[i])
+    expect(predictVolumeFromFit(1000, fit)).toBeCloseTo(1_000_000 * Math.pow(1000, -0.5), 1);
+  });
+
+  it('returns 0 for invalid rank', () => {
+    const fit: PiecewiseFit = { breakpoints: [], segments: [{ beta: 0.5, scaleFactor: 1_000_000 }] };
+    expect(predictVolumeFromFit(0, fit)).toBe(0);
+    expect(predictVolumeFromFit(-1, fit)).toBe(0);
+    expect(predictVolumeFromFit(NaN, fit)).toBe(0);
+  });
+});
+
+describe('anchoredPiecewiseGridSearch', () => {
+  it('passes through the anchor point exactly (within grid precision)', () => {
+    // Synthesize a perfect 4-segment power-law dataset
+    const anchor = { rank: 5, volume: 1_000_000 };
+    // True params we'll try to recover:
+    //   seg1 (rank≤1k): β=0.5, A1 = anchor.volume × anchor.rank^β = 1M × 5^0.5
+    const A1 = anchor.volume * Math.pow(anchor.rank, 0.5);
+    const pairs: Array<{ rank: number; volume: number }> = [];
+    // Generate a noiseless dataset across all 4 segments
+    for (const rank of [3, 5, 8, 20, 100, 500, 1000, 2000, 5000, 9000, 15000, 50000, 99000, 150000, 500000, 1_000_000]) {
+      let vol: number;
+      if (rank <= 1000) vol = A1 * Math.pow(rank, -0.5);
+      else if (rank <= 10000) {
+        const A2 = A1 * Math.pow(1000, 0.7 - 0.5);
+        vol = A2 * Math.pow(rank, -0.7);
+      } else if (rank <= 100000) {
+        const A2 = A1 * Math.pow(1000, 0.7 - 0.5);
+        const A3 = A2 * Math.pow(10000, 0.9 - 0.7);
+        vol = A3 * Math.pow(rank, -0.9);
+      } else {
+        const A2 = A1 * Math.pow(1000, 0.7 - 0.5);
+        const A3 = A2 * Math.pow(10000, 0.9 - 0.7);
+        const A4 = A3 * Math.pow(100000, 1.1 - 0.9);
+        vol = A4 * Math.pow(rank, -1.1);
+      }
+      pairs.push({ rank, volume: vol });
+    }
+    const result = anchoredPiecewiseGridSearch(pairs, { anchor, trimDropRatio: Infinity });
+    // Fit should pass exactly through the anchor (modulo grid step 0.025)
+    const predAtAnchor = predictVolumeFromFit(anchor.rank, result.fit);
+    expect(Math.abs(predAtAnchor - anchor.volume) / anchor.volume).toBeLessThan(0.01);
+    // Should recover ~the right βs
+    expect(result.fit.segments).toHaveLength(4);
+    expect(result.fit.segments[0].beta).toBeCloseTo(0.5, 1);
+    expect(result.fit.segments[1].beta).toBeCloseTo(0.7, 1);
+    expect(result.fit.segments[2].beta).toBeCloseTo(0.9, 1);
+    expect(result.fit.segments[3].beta).toBeCloseTo(1.1, 1);
+  });
+
+  it('iteratively drops outlier pairs with the trim threshold', () => {
+    const anchor = { rank: 5, volume: 1_000_000 };
+    const A1 = anchor.volume * Math.pow(anchor.rank, 0.5);
+    const goodPairs: Array<{ rank: number; volume: number }> = [];
+    for (const rank of [3, 5, 8, 20, 100, 500, 1000, 2000, 5000, 9000, 15000, 50000, 99000, 150000, 500000]) {
+      let vol = A1 * Math.pow(rank, -0.5);
+      if (rank > 1000) vol = A1 * Math.pow(1000, 0.7 - 0.5) * Math.pow(rank, -0.7);
+      goodPairs.push({ rank, volume: vol });
+    }
+    // Inject 3 obvious outliers (POE-too-low, like "broccoli=11")
+    const outliers = [
+      { rank: 200, volume: 5 },   // predicted ~100K, actual 5 → ratio 1/20000
+      { rank: 2000, volume: 10 }, // predicted ~30K, actual 10 → ratio 1/3000
+      { rank: 50000, volume: 2 }, // predicted ~6K, actual 2 → ratio 1/3000
+    ];
+    const result = anchoredPiecewiseGridSearch([...goodPairs, ...outliers], { anchor, trimDropRatio: 10 });
+    expect(result.nDropped).toBe(3); // all 3 outliers found and dropped
+    expect(result.iterations).toBeGreaterThanOrEqual(1);
   });
 });
