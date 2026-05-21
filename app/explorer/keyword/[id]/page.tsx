@@ -12,13 +12,12 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { fetchKeywordDetail } from '@/lib/explorer/fetchKeywordDetail';
+import { fetchKeywordDetail, type EnrichedProduct } from '@/lib/explorer/fetchKeywordDetail';
 import { RawDataTable } from './RawDataTable';
 import { RankChart } from './RankChart';
 import { FakeVolumeStrip } from './FakeVolumeStrip';
 import { TitleMatchHistory } from './TitleMatchHistory';
 import { KeywordVariantsBox } from './KeywordVariantsBox';
-import { ProductCard } from './ProductCard';
 
 export const metadata: Metadata = {
   title: 'Keyword detail',
@@ -147,22 +146,7 @@ export default async function KeywordDetailPage({
       {hasAnyProduct && (
         <section className="mt-6">
           <h2 className="text-sm font-semibold text-gray-700 mb-3">Top clicked products</h2>
-          <div className="space-y-3">
-            {topClickedSlots.map(
-              (s) =>
-                s.asin && (
-                  <ProductCard
-                    key={`${s.slot}-${s.asin}`}
-                    slotIndex={s.slot}
-                    asin={s.asin}
-                    fallbackTitle={s.fallbackTitle}
-                    clickShare={s.clickShare ?? null}
-                    conversionShare={s.conversionShare ?? null}
-                    enriched={enrichedProductsByAsin[s.asin]}
-                  />
-                ),
-            )}
-          </div>
+          <TopProductsTable slots={topClickedSlots} enrichedByAsin={enrichedProductsByAsin} />
         </section>
       )}
 
@@ -207,6 +191,100 @@ function formatHeadlineVolume(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M / mo`;
   if (n >= 10_000) return `${Math.round(n / 1_000)}K / mo`;
   return `${n.toLocaleString()} / mo`;
+}
+
+interface TopProductSlot {
+  slot: 1 | 2 | 3;
+  asin: string | null;
+  fallbackTitle: string | null;
+  clickShare?: string | null;
+  conversionShare?: string | null;
+}
+
+/**
+ * Compact table replacing the old image-heavy ProductCard layout
+ * (which was the dominant cause of slow page loads). Shows the three
+ * top-clicked products' price, review count + star rating, and
+ * leaf category — all from already-fetched Keepa data.
+ */
+function TopProductsTable({
+  slots,
+  enrichedByAsin,
+}: {
+  slots: TopProductSlot[];
+  enrichedByAsin: Record<string, EnrichedProduct>;
+}) {
+  const rows = slots.filter((s): s is TopProductSlot & { asin: string } => !!s.asin);
+  return (
+    <div className="overflow-x-auto border rounded">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">
+          <tr>
+            <th className="p-2 w-8">#</th>
+            <th className="p-2">Product</th>
+            <th className="p-2 text-right">Price</th>
+            <th className="p-2 text-right">Reviews</th>
+            <th className="p-2">Leaf category</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {rows.map((s) => {
+            const enriched = enrichedByAsin[s.asin];
+            const title = enriched?.title ?? s.fallbackTitle ?? null;
+            return (
+              <tr key={`${s.slot}-${s.asin}`} className="align-top">
+                <td className="p-2 font-mono text-gray-600">{s.slot}</td>
+                <td className="p-2 max-w-md">
+                  <div className="truncate" title={title ?? undefined}>
+                    {title ?? <span className="text-gray-400">—</span>}
+                  </div>
+                  <div className="text-xs text-gray-500 font-mono">
+                    <a
+                      href={`https://www.amazon.com/dp/${s.asin}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="hover:underline"
+                    >
+                      {s.asin}
+                    </a>
+                  </div>
+                </td>
+                <td className="p-2 text-right tabular-nums">
+                  {formatPrice(enriched?.currentPriceCents ?? null)}
+                </td>
+                <td className="p-2 text-right tabular-nums whitespace-nowrap">
+                  {formatReviews(enriched?.reviewCount ?? null, enriched?.averageRatingX10 ?? null)}
+                </td>
+                <td className="p-2 text-xs text-gray-700">
+                  {enriched?.categoryLeaf ?? enriched?.categoryPath ?? <span className="text-gray-400">—</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function formatPrice(cents: number | null): React.ReactNode {
+  if (cents === null || !Number.isFinite(cents)) return <span className="text-gray-400">—</span>;
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function formatReviews(count: number | null, ratingX10: number | null): React.ReactNode {
+  if (count === null || !Number.isFinite(count)) return <span className="text-gray-400">—</span>;
+  const star =
+    ratingX10 !== null && Number.isFinite(ratingX10)
+      ? <span className="text-yellow-600">★ {(ratingX10 / 10).toFixed(1)}</span>
+      : null;
+  const reviewStr = count >= 1000 ? `${(count / 1000).toFixed(1)}k` : count.toLocaleString();
+  return (
+    <span>
+      {reviewStr}
+      {star && <> · {star}</>}
+    </span>
+  );
 }
 
 function ImprovementChip({ improvement }: { improvement: number }) {

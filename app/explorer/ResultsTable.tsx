@@ -28,8 +28,6 @@ export function ResultsTable({
     }
     return slot === 1 ? r.keywordInTitle1 : slot === 2 ? r.keywordInTitle2 : r.keywordInTitle3;
   };
-  const matchCount = (r: ExplorerRow): number | null =>
-    matchMode === 'loose' ? r.keywordTitleMatchCountLoose : r.keywordTitleMatchCount;
   if (rows.length === 0) {
     return (
       <div className="border rounded p-8 text-center text-sm text-gray-500">
@@ -45,21 +43,19 @@ export function ResultsTable({
           <tr>
             <th className="p-2">Search term</th>
             <th className="p-2 text-right">Current rank</th>
+            <th className="p-2 text-right">{WINDOW_LABEL[window]}</th>
+            <th className="p-2 text-right">Δ</th>
             <th
               className="p-2 text-right"
               title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Typical accuracy ±30% (current fit's holdout MAPE). Note: Fresh_Produce keywords are NOT calibrated — those estimates can be wildly off."
             >
               Est. monthly vol.
             </th>
-            <th className="p-2 text-right">{WINDOW_LABEL[window]}</th>
-            <th className="p-2 text-right">Δ</th>
             <th className="p-2">Category</th>
             <th className="p-2 text-center" title="Fake volume severity">Fake?</th>
             <th className="p-2 text-center w-12" title={`Keyword in title slot 1 (${matchMode} match)`}>In #1</th>
             <th className="p-2 text-center w-12" title={`Keyword in title slot 2 (${matchMode} match)`}>In #2</th>
             <th className="p-2 text-center w-12" title={`Keyword in title slot 3 (${matchMode} match)`}>In #3</th>
-            <th className="p-2 text-right" title={`${matchMode} match count`}>Match count</th>
-            <th className="p-2">Top product #1</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -74,26 +70,20 @@ export function ResultsTable({
                 </Link>
               </td>
               <td className="p-2 text-right tabular-nums">{r.currentRank.toLocaleString()}</td>
-              <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolumeCurrent !== null ? `${r.estimatedMonthlyVolumeCurrent.toLocaleString()} searches / month (est.)` : undefined}>
-                {formatVolume(r.estimatedMonthlyVolumeCurrent)}
-              </td>
               <td className="p-2 text-right tabular-nums text-gray-600">
                 {r.priorRank?.toLocaleString() ?? <span className="text-gray-400">—</span>}
               </td>
               <td className="p-2 text-right tabular-nums">
                 {r.improvement !== null ? <DeltaCell value={r.improvement} /> : <span className="text-gray-400">—</span>}
               </td>
+              <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolumeCurrent !== null ? `${r.estimatedMonthlyVolumeCurrent.toLocaleString()} searches / month (est.)` : undefined}>
+                {formatVolume(r.estimatedMonthlyVolumeCurrent)}
+              </td>
               <td className="p-2 text-gray-700">{r.topClickedCategory1 ?? <span className="text-gray-400">—</span>}</td>
               <td className="p-2 text-center"><SeverityBadge severity={r.fakeVolumeSeverity} /></td>
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 1)} /></td>
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 2)} /></td>
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 3)} /></td>
-              <td className="p-2 text-right tabular-nums">
-                {matchCount(r) ?? <span className="text-gray-400">—</span>}
-              </td>
-              <td className="p-2 max-w-xs">
-                <TopProductCell row={r} />
-              </td>
             </tr>
           ))}
         </tbody>
@@ -132,31 +122,6 @@ function TitleIcon({ present }: { present: boolean | null }) {
   if (present === null) return <span className="text-gray-300">—</span>;
   if (present) return <span className="text-green-700" aria-label="Present">✓</span>;
   return <span className="text-gray-400" aria-label="Missing">✗</span>;
-}
-
-function TopProductCell({ row }: { row: ExplorerRow }) {
-  if (!row.topClickedProduct1Title) return <span className="text-gray-400">—</span>;
-  const click = row.topClickedProduct1ClickShare;
-  const conv = row.topClickedProduct1ConversionShare;
-  const showShares = click !== null || conv !== null;
-  return (
-    <span title={row.topClickedProduct1Asin ?? ''}>
-      <span className="block truncate" title={row.topClickedProduct1Title}>
-        {row.topClickedProduct1Title}
-      </span>
-      {showShares && (
-        <span className="block text-xs text-gray-500 mt-0.5">
-          click {fmtPct(click)} · conv {fmtPct(conv)}
-        </span>
-      )}
-    </span>
-  );
-}
-
-function fmtPct(s: string | null): string {
-  if (s === null) return '—';
-  const n = parseFloat(s);
-  return Number.isFinite(n) ? `${n.toFixed(1)}%` : '—';
 }
 
 /**
