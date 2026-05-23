@@ -62,14 +62,17 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
 
   try {
     // 0. Determine the current week — the most recent fully-imported week.
+    //    Cast to ::text so pg returns a string (not a Date) — pickFitForWeek
+    //    calls .match() on it and the previous ::date cast silently broke
+    //    once volume-model integration landed in Phase 3.
     const { rows: refRows } = await client.query<{ current_week: string }>(
-      `SELECT MAX(week_end_date)::date AS current_week
+      `SELECT MAX(week_end_date)::text AS current_week
        FROM reporting_weeks WHERE is_complete = true`,
     );
     if (refRows.length === 0 || !refRows[0].current_week) {
       throw new Error('refreshSummary: no completed reporting_weeks found');
     }
-    currentWeekEndDate = refRows[0].current_week as unknown as string;
+    currentWeekEndDate = refRows[0].current_week;
 
     // 0a. Pick the volume-model fit that applies to current_week_end_date.
     //     pickFitForWeek picks the latest fit with calibration_month
@@ -500,6 +503,8 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
  * 'delisted' / 'error' rows have mostly NULL fields anyway.
  */
 async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string): Promise<void> {
+  // Split into 2 separate calls — pg won't accept a multi-statement
+  // string with bound params (treated as a prepared statement).
   await client.query(
     `
     CREATE TEMP TABLE asin_enriched_current ON COMMIT DROP AS
@@ -521,11 +526,11 @@ async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string
           SELECT top_clicked_product_3_asin FROM latest_per_term WHERE top_clicked_product_3_asin IS NOT NULL
         ) all_asins
       )
-    ORDER BY a.asin, a.week_end_date DESC;
-    CREATE INDEX ON asin_enriched_current (asin);
+    ORDER BY a.asin, a.week_end_date DESC
     `,
     [currentWeekEndDate],
   );
+  await client.query(`CREATE INDEX ON asin_enriched_current (asin)`);
 }
 
 async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<void> {
