@@ -86,21 +86,30 @@ export const importBatchFn = inngest.createFunction(
     let imported = 0;
     let failed = 0;
 
-    // Per-file: kickoff + poll loop of short waitForEvents that also check
-    // DB heartbeat staleness. Replaces the old single 4h waitForEvent which
-    // would happily wait full duration even if the worker had crashed and
-    // could never fire the completion event. Now the orchestrator detects
-    // an orphaned job within ~5–10 min instead of 4 hours.
+    // Per-file: kickoff + poll loop of short waitForEvents.
+    //
+    // Heartbeat staleness check was REMOVED on 2026-05-25 after the
+    // 5/16 import was false-orphaned. The 60-min stale threshold
+    // tripped during a healthy kwm_insert that was still actively
+    // running server-side — we confirmed pid 2246 was holding
+    // RowExclusiveLock on the kwm_2026 partition past the 60-min
+    // mark, with the orchestrator already calling it orphaned.
+    //
+    // Same false-positive pattern fixed earlier in enrichKeepaForWeek
+    // (task #7 of the keepa work). Trust ONLY explicit DB status
+    // (validation_status='imported' or 'import_failed') + the
+    // poll-budget timeout. The worker's CAS-style mark_imported
+    // already protects against status corruption if the worker won
+    // a late race.
+    //
+    // Tradeoff: a genuinely dead worker takes the full MAX_POLLS
+    // budget to be reclaimed (was ~5-10 min via the staleness check).
+    // Acceptable: re-firing the batch event safely takes over via the
+    // worker's own lock+heartbeat reclaim logic (importFile.ts l~598-605).
     const POLL_INTERVAL = '5m';
-    const MAX_POLLS = 24; // 24 × 5m = 2h total per file (well above observed import times)
-    // 60 min — paired with the dedicated heartbeat connection in
-    // processFileImport. With dedicated connection the heartbeat
-    // shouldn't miss ticks under load; if it goes silent for 60+ min,
-    // the worker is genuinely gone. Was 30 min, but observed Jan 10
-    // import had heartbeat go > 30 min stale during a slow kwm_insert
-    // while the worker was healthy and the INSERT was still progressing
-    // server-side.
-    const HEARTBEAT_STALE_MS = 60 * 60_000;
+    // 72 × 5m = 6h. Comfortably above the slowest observed
+    // kwm_insert (~3h) plus the rest of processFileImport's phases.
+    const MAX_POLLS = 72;
 
     for (const f of files) {
       await step.run(`kickoff-${f.id}`, () => {
@@ -117,12 +126,9 @@ export const importBatchFn = inngest.createFunction(
         const status = await step.run(`status-${f.id}-${pollIter}`, async () => {
           const row = await db.query.uploadedFiles.findFirst({
             where: eq(uploadedFiles.id, f.id),
-            columns: { validationStatus: true, importHeartbeatAt: true },
+            columns: { validationStatus: true },
           });
-          return {
-            validationStatus: row?.validationStatus ?? null,
-            heartbeatAt: row?.importHeartbeatAt ?? null,
-          };
+          return { validationStatus: row?.validationStatus ?? null };
         });
 
         if (status.validationStatus === 'imported') {
@@ -134,23 +140,11 @@ export const importBatchFn = inngest.createFunction(
           break;
         }
 
-        // Detect orphaned job: heartbeat is older than the staleness
-        // threshold, meaning the worker that started the import has died.
-        // No completion event will ever fire from a dead Promise; mark
-        // failed and move on. This is the new detection path that prevents
-        // the 4-hour wait when a worker crashed mid-COPY.
-        const hbAt = status.heartbeatAt ? new Date(status.heartbeatAt).getTime() : null;
-        // Skip the staleness check on iteration 0 — kickoff just happened
-        // and the worker may not have written its first heartbeat yet.
-        if (pollIter > 0 && hbAt !== null && Date.now() - hbAt > HEARTBEAT_STALE_MS) {
-          outcome = 'orphaned';
-          break;
-        }
-
-        // Wait for the completion event with a short timeout. If it fires
-        // we exit immediately on the next iteration's status check (the
+        // Wait for the completion event with a short timeout. If it
+        // fires we exit on the next iteration's status check (the
         // worker writes status before firing the event). If it doesn't,
-        // we re-check heartbeat staleness and decide whether to keep waiting.
+        // we just keep polling — no more heartbeat-based orphan
+        // detection (see the file header note).
         await step.waitForEvent(`await-${f.id}-${pollIter}`, {
           event: 'csv/file.import-completed',
           if: `async.data.uploadedFileId == "${f.id}"`,
@@ -162,16 +156,13 @@ export const importBatchFn = inngest.createFunction(
 
       if (outcome === 'imported') {
         imported++;
-      } else if (outcome === 'orphaned' || outcome === 'timeout') {
+      } else if (outcome === 'timeout') {
         // CAS-style flip: only mark failed if the file is STILL in 'pass'
         // status. If the worker won the race (its kwm_insert finished
         // and processFileImport flipped the file to 'imported' between
         // our last status check and this update), respect that — the
         // data is in kwm and the worker's outcome is the source of truth.
-        const reason =
-          outcome === 'orphaned'
-            ? `worker heartbeat stale > ${HEARTBEAT_STALE_MS / 60_000} min while orchestrator was waiting`
-            : `orchestrator poll budget exhausted (>${MAX_POLLS} × ${POLL_INTERVAL})`;
+        const reason = `orchestrator poll budget exhausted (>${MAX_POLLS} × ${POLL_INTERVAL})`;
         const updated = await step.run(`mark-${outcome}-${f.id}`, async () => {
           const result = await db.execute<{ id: string }>(sql`
             UPDATE uploaded_files
