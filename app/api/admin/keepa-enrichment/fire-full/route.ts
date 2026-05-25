@@ -1,0 +1,61 @@
+/**
+ * Admin endpoint: trigger a FULL Keepa enrichment for the current
+ * kcs week. Fires `keepa.enrich-week-requested` with `mode: 'full'`.
+ *
+ * Full mode skips the port-over phase and calls Keepa API for every
+ * in-scope ASIN — used as a monthly refresh to pull fresh prices /
+ * reviews / categories on every ASIN, not just newly-discovered ones.
+ *
+ * Body: optional `{ weekEndDate?: string }`. Defaults to the current
+ * kcs week if omitted.
+ * Response: `{ ok: true, eventId, weekEndDate }`
+ */
+import { NextResponse } from 'next/server';
+import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
+import { inngest } from '@/inngest/client';
+import { db } from '@/db/client';
+import { keywordCurrentSummaryMeta } from '@/db/schema';
+
+export async function POST(req: Request) {
+  try {
+    await requireAdmin();
+  } catch (e) {
+    if (e instanceof AuthError) {
+      return NextResponse.json(
+        { error: e.message },
+        { status: e.code === 'UNAUTHENTICATED' ? 401 : 403 },
+      );
+    }
+    throw e;
+  }
+
+  const body = (await req.json().catch(() => ({}))) as { weekEndDate?: string };
+  let weekEndDate = body.weekEndDate;
+
+  if (!weekEndDate) {
+    const [meta] = await db.select().from(keywordCurrentSummaryMeta).limit(1);
+    if (!meta) {
+      return NextResponse.json(
+        { error: 'No current kcs week available — keyword_current_summary_meta is empty' },
+        { status: 500 },
+      );
+    }
+    weekEndDate = meta.currentWeekEndDate;
+  } else if (!/^\d{4}-\d{2}-\d{2}$/.test(weekEndDate)) {
+    return NextResponse.json({ error: 'weekEndDate must be YYYY-MM-DD' }, { status: 400 });
+  }
+
+  const result = await inngest.send({
+    name: 'keepa.enrich-week-requested',
+    data: { weekEndDate, mode: 'full' },
+  });
+
+  return NextResponse.json({
+    ok: true,
+    eventId: result.ids?.[0] ?? null,
+    weekEndDate,
+    mode: 'full',
+  });
+}
+
+export const runtime = 'nodejs';

@@ -194,9 +194,12 @@ async function markRunFailed(runId: string, errorMessage: string): Promise<void>
  * awaited; its completion is signaled via the
  * `keepa/enrich.completed` event.
  */
+export type KeepaEnrichmentMode = 'full' | 'diff';
+
 export function startKeepaEnrichmentJob(
   runId: string,
   weekEndDate: string,
+  mode: KeepaEnrichmentMode = 'diff',
 ): { started: boolean; reason?: string } {
   if (inflight.has(runId)) {
     return { started: false, reason: 'already-inflight' };
@@ -206,10 +209,13 @@ export function startKeepaEnrichmentJob(
   (async () => {
     let success = false;
     let errorMessage: string | null = null;
+    let portedCount = 0;
     try {
-      await runEnrichment(runId, weekEndDate);
+      portedCount = await runEnrichment(runId, weekEndDate, mode);
       success = true;
-      console.log(`[keepa-job ${runId.slice(0, 8)}] completed for week ${weekEndDate}`);
+      console.log(
+        `[keepa-job ${runId.slice(0, 8)}] completed for week ${weekEndDate} (mode=${mode}, ported=${portedCount})`,
+      );
     } catch (e) {
       errorMessage = e instanceof Error ? e.message : String(e);
       console.error(`[keepa-job ${runId.slice(0, 8)}] failed for week ${weekEndDate}:`, errorMessage);
@@ -228,7 +234,7 @@ export function startKeepaEnrichmentJob(
       try {
         await inngest.send({
           name: 'keepa/enrich.completed',
-          data: { runId, weekEndDate, success, error: errorMessage },
+          data: { runId, weekEndDate, success, error: errorMessage, mode, portedCount },
         });
       } catch (sendErr) {
         console.error(
@@ -246,7 +252,14 @@ export function startKeepaEnrichmentJob(
 // The enrichment loop itself — was previously inside step.run batches
 // ============================================================================
 
-async function runEnrichment(runId: string, weekEndDate: string): Promise<void> {
+/**
+ * @returns the number of rows ported over from prior weeks (0 in 'full' mode).
+ */
+async function runEnrichment(
+  runId: string,
+  weekEndDate: string,
+  mode: KeepaEnrichmentMode,
+): Promise<number> {
   // Dedicated pool for this job. One connection across all batches —
   // much cheaper than the per-batch pool open/close in the prior
   // step.run model.
@@ -268,17 +281,36 @@ async function runEnrichment(runId: string, weekEndDate: string): Promise<void> 
     });
   }, HEARTBEAT_INTERVAL_MS);
 
+  let portedCount = 0;
   try {
+    // PHASE 0 (diff mode only): port forward most-recent 'active'
+    // enrichment per ASIN from prior weeks. This satisfies the
+    // listScope.NOT EXISTS clause for unchanged ASINs, so the Keepa
+    // API only gets called for genuinely new ASINs + any prior
+    // 'no_price' / 'delisted' / 'error' rows that get a fresh retry.
+    //
+    // Skip in 'full' mode — the admin button forces a complete re-fetch
+    // (run monthly to refresh prices/reviews/etc).
+    if (mode === 'diff') {
+      portedCount = await portRowsFromPriorWeeks(workClient, weekEndDate);
+      console.log(
+        `[keepa-job ${runId.slice(0, 8)}] week ${weekEndDate}: ported ${portedCount} rows from prior weeks (diff mode)`,
+      );
+    } else {
+      console.log(`[keepa-job ${runId.slice(0, 8)}] week ${weekEndDate}: FULL mode — no port-over`);
+    }
+
     const asins = await listScope(workClient, weekEndDate);
     console.log(
-      `[keepa-job ${runId.slice(0, 8)}] week ${weekEndDate}: ${asins.length} ASINs to enrich`,
+      `[keepa-job ${runId.slice(0, 8)}] week ${weekEndDate}: ${asins.length} ASINs to enrich via Keepa API`,
     );
     await updateRunTotalAsins(runId, asins.length);
 
     if (asins.length === 0) {
-      // Nothing to do — common case if re-firing for an already-complete week.
+      // Nothing to do — common case if re-firing for an already-complete week,
+      // OR (diff mode) if every in-scope ASIN was already enriched in a prior week.
       await markRunCompleted(runId);
-      return;
+      return portedCount;
     }
 
     const pacer = new KeepaPacer();
@@ -342,11 +374,77 @@ async function runEnrichment(runId: string, weekEndDate: string): Promise<void> 
     }
 
     await markRunCompleted(runId);
+    return portedCount;
   } finally {
     clearInterval(heartbeatTicker);
     workClient.release();
     await pool.end();
   }
+}
+
+/**
+ * Port forward most-recent 'active' enrichments from prior weeks into
+ * the current week, for any ASIN that's in this week's enrichment
+ * scope (top-100k SFR, non-excluded category).
+ *
+ * Single INSERT … SELECT DISTINCT ON. ON CONFLICT DO NOTHING handles
+ * the case where the row was already inserted (e.g., recovery scenarios).
+ *
+ * Only 'active' rows are ported. Prior 'no_price' / 'delisted' / 'error'
+ * rows are intentionally NOT ported so the Keepa worker re-attempts
+ * them this week — they're cheap (~5% of total) and self-healing.
+ *
+ * Returns the count of rows successfully inserted.
+ */
+async function portRowsFromPriorWeeks(client: PoolClient, weekEndDate: string): Promise<number> {
+  const year = new Date(`${weekEndDate}T00:00:00Z`).getUTCFullYear();
+  const partition = `keyword_weekly_metrics_${year}`;
+  const exclPlaceholders = EXCLUDED_CATEGORIES_ARRAY
+    .map((_, i) => `$${i + 2}`)
+    .join(',');
+
+  const { rowCount } = await client.query(
+    `
+    INSERT INTO asin_weekly_data (
+      asin, week_end_date,
+      title, brand, image_url,
+      category_path, category_root, category_leaf,
+      current_price_cents, sales_rank, review_count, average_rating_x10,
+      avg30_price_cents, avg90_price_cents, avg180_price_cents, avg365_price_cents,
+      enrichment_status, enriched_at, error_message, raw_keepa_response
+    )
+    SELECT DISTINCT ON (a.asin)
+      a.asin, $1::date,
+      a.title, a.brand, a.image_url,
+      a.category_path, a.category_root, a.category_leaf,
+      a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
+      a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
+      'active'::asin_enrichment_status, NOW(), NULL, a.raw_keepa_response
+    FROM asin_weekly_data a
+    JOIN (
+      SELECT DISTINCT t.asin
+      FROM ${partition} kwm
+      CROSS JOIN LATERAL (VALUES
+        (kwm.top_clicked_product_1_asin),
+        (kwm.top_clicked_product_2_asin),
+        (kwm.top_clicked_product_3_asin)
+      ) AS t(asin)
+      WHERE kwm.week_end_date = $1::date
+        AND kwm.actual_rank <= 100000
+        AND (
+          kwm.top_clicked_category_1 IS NULL
+          OR kwm.top_clicked_category_1 NOT IN (${exclPlaceholders})
+        )
+        AND t.asin IS NOT NULL
+    ) target ON a.asin = target.asin
+    WHERE a.enrichment_status = 'active'
+      AND a.week_end_date < $1::date
+    ORDER BY a.asin, a.week_end_date DESC
+    ON CONFLICT (asin, week_end_date) DO NOTHING
+    `,
+    [weekEndDate, ...EXCLUDED_CATEGORIES_ARRAY],
+  );
+  return rowCount ?? 0;
 }
 
 // ============================================================================

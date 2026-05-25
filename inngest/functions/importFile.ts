@@ -1043,10 +1043,13 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       try {
         await inngest.send({
           name: 'keepa.enrich-week-requested',
-          data: { weekEndDate: refreshResult.currentWeekEndDate },
+          // diff mode = fast carry-forward path. Auto-fired weekly runs
+          // use this; the 'full' mode is reserved for the monthly admin
+          // button on /admin/keepa-enrichment.
+          data: { weekEndDate: refreshResult.currentWeekEndDate, mode: 'diff' },
         });
         console.log(
-          `[keepa.enrich-week-requested] event sent for week ${refreshResult.currentWeekEndDate}`,
+          `[keepa.enrich-week-requested] event sent for week ${refreshResult.currentWeekEndDate} (mode=diff)`,
         );
       } catch (sendErr) {
         console.error(

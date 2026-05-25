@@ -73,8 +73,13 @@ async function readEnrichmentState(weekEndDate: string): Promise<{
 }
 
 async function main() {
-  // Validate / default the weekEndDate arg.
-  const argWeek = process.argv[2];
+  // Parse args: optional --full flag (default mode is 'diff'), then
+  // optional week-end-date.
+  const argv = process.argv.slice(2);
+  const fullFlag = argv.includes('--full');
+  const mode: 'full' | 'diff' = fullFlag ? 'full' : 'diff';
+  const argWeek = argv.find((a) => !a.startsWith('--'));
+
   let weekEndDate: string;
   if (argWeek) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(argWeek)) {
@@ -86,6 +91,7 @@ async function main() {
     weekEndDate = await readCurrentWeekFromMeta();
     console.log(`No week specified — using current kcs week: ${weekEndDate}`);
   }
+  console.log(`Mode: ${mode}${mode === 'diff' ? ' (carry-forward, ~5h)' : ' (full re-enrich, ~24h)'}`);
 
   // Pre-flight: how much of this week's enrichment is already done?
   const { alreadyEnriched, countsByStatus } = await readEnrichmentState(weekEndDate);
@@ -109,10 +115,10 @@ async function main() {
   // Dynamic import AFTER dotenv has populated process.env. See top-of-file note.
   const { inngest } = await import('@/inngest/client');
 
-  console.log(`\nFiring keepa.enrich-week-requested for ${weekEndDate}...`);
+  console.log(`\nFiring keepa.enrich-week-requested for ${weekEndDate} (mode=${mode})...`);
   const result = await inngest.send({
     name: 'keepa.enrich-week-requested',
-    data: { weekEndDate },
+    data: { weekEndDate, mode },
   });
 
   // inngest.send returns { ids: [...] } — one ID per event sent.

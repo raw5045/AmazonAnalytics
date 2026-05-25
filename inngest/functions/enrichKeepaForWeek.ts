@@ -70,7 +70,14 @@ export const enrichKeepaForWeek = inngest.createFunction(
     triggers: [{ event: 'keepa.enrich-week-requested' }],
   },
   async ({ event, step }) => {
-    const { weekEndDate } = event.data as { weekEndDate: string };
+    const { weekEndDate, mode: rawMode } = event.data as {
+      weekEndDate: string;
+      mode?: 'full' | 'diff';
+    };
+    // Default to 'diff' — the fast carry-forward path used for normal
+    // weekly maintenance. 'full' is only set by the monthly admin
+    // button + manual CLI flag.
+    const mode: 'full' | 'diff' = rawMode === 'full' ? 'full' : 'diff';
 
     // Step 1: claim a run. May create new, may take over orphaned,
     // may skip if a fresh-heartbeat run already exists.
@@ -94,7 +101,7 @@ export const enrichKeepaForWeek = inngest.createFunction(
     // OUTSIDE step.run's lifecycle — Inngest's per-step HTTP timeout
     // doesn't apply.
     await step.run('kickoff-background-job', () => {
-      const result = startKeepaEnrichmentJob(runId, weekEndDate);
+      const result = startKeepaEnrichmentJob(runId, weekEndDate, mode);
       return { started: result.started, reason: result.reason ?? null };
     });
 
