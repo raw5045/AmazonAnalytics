@@ -410,16 +410,20 @@ async function portRowsFromPriorWeeks(client: PoolClient, weekEndDate: string): 
       title, brand, image_url,
       category_path, category_root, category_leaf,
       current_price_cents, sales_rank, review_count, average_rating_x10,
+      last_rating_update,
       avg30_price_cents, avg90_price_cents, avg180_price_cents, avg365_price_cents,
-      enrichment_status, enriched_at, error_message, raw_keepa_response
+      variations, promotions,
+      enrichment_status, enriched_at, error_message
     )
     SELECT DISTINCT ON (a.asin)
       a.asin, $1::date,
       a.title, a.brand, a.image_url,
       a.category_path, a.category_root, a.category_leaf,
       a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
+      a.last_rating_update,
       a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
-      'active'::asin_enrichment_status, NOW(), NULL, a.raw_keepa_response
+      a.variations, a.promotions,
+      'active'::asin_enrichment_status, NOW(), NULL
     FROM asin_weekly_data a
     JOIN (
       SELECT DISTINCT t.asin
