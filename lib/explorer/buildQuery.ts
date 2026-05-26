@@ -133,31 +133,6 @@ export function buildExplorerQuery(
     where.push(`kcs.top_clicked_leaf_category = ${p}`);
   }
 
-  // 1.5c — price range (cents).
-  //   priceMin → "at least one product in top-3 costs >= $X"
-  //              → kcs.highest_price_cents >= priceMin
-  //   priceMax → "at least one product in top-3 costs <= $X"
-  //              → kcs.lowest_price_cents  <= priceMax
-  // Together: "top-3 spans a range that overlaps [min, max]".
-  if (filters.priceMinCents !== null) {
-    const p = next(filters.priceMinCents);
-    where.push(`kcs.highest_price_cents >= ${p}`);
-  }
-  if (filters.priceMaxCents !== null) {
-    const p = next(filters.priceMaxCents);
-    where.push(`kcs.lowest_price_cents <= ${p}`);
-  }
-
-  // 1.5d — review-count range (same any-of-top-3 semantics).
-  if (filters.reviewsMin !== null) {
-    const p = next(filters.reviewsMin);
-    where.push(`kcs.most_reviews >= ${p}`);
-  }
-  if (filters.reviewsMax !== null) {
-    const p = next(filters.reviewsMax);
-    where.push(`kcs.least_reviews <= ${p}`);
-  }
-
   // 1.6 — fake volume severity (default = none, warning)
   // NULL severity means "couldn't evaluate"; treat NULL as belonging to 'none'
   // since the visual default hides nothing more than the chosen levels.
@@ -213,10 +188,8 @@ export function buildExplorerQuery(
       kcs.top_clicked_product_1_click_share_current,
       kcs.top_clicked_product_1_conversion_share_current,
       kcs.estimated_monthly_volume_current,
-      kcs.lowest_price_cents,
-      kcs.highest_price_cents,
-      kcs.least_reviews,
-      kcs.most_reviews,
+      kcs.avg_price_cents,
+      kcs.avg_reviews,
       kcs.top_clicked_leaf_category
   `.trim();
 
@@ -284,6 +257,14 @@ function buildOrderBy(
         : 'keyword_title_match_count_current';
       return `ORDER BY kcs.${col} ASC NULLS FIRST`;
     }
+    case 'avg_price_asc':
+      return 'ORDER BY kcs.avg_price_cents ASC NULLS LAST';
+    case 'avg_price_desc':
+      return 'ORDER BY kcs.avg_price_cents DESC NULLS LAST';
+    case 'avg_reviews_asc':
+      return 'ORDER BY kcs.avg_reviews ASC NULLS LAST';
+    case 'avg_reviews_desc':
+      return 'ORDER BY kcs.avg_reviews DESC NULLS LAST';
   }
 }
 

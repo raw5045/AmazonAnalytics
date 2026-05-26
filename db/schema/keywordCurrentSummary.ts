@@ -90,12 +90,16 @@ export const keywordCurrentSummary = pgTable(
     /**
      * Keepa-derived aggregates over the top-3 clicked ASINs at the
      * current week. NULL when all 3 ASINs are unenriched. See
-     * migration 0029.
+     * migrations 0029 (ranges) + 0030 (averages).
      */
     lowestPriceCents: bigint('lowest_price_cents', { mode: 'number' }),
     highestPriceCents: bigint('highest_price_cents', { mode: 'number' }),
     leastReviews: integer('least_reviews'),
     mostReviews: integer('most_reviews'),
+    /** Mean price across top-3 ASINs (NULL-tolerant). */
+    avgPriceCents: bigint('avg_price_cents', { mode: 'number' }),
+    /** Mean review_count across top-3 ASINs (NULL-tolerant). */
+    avgReviews: integer('avg_reviews'),
     /** Keepa leaf category for the slot-1 (most-clicked) ASIN. */
     topClickedLeafCategory: text('top_clicked_leaf_category'),
 
@@ -122,6 +126,8 @@ export const keywordCurrentSummary = pgTable(
     leafCategoryIdx: index('kcs_leaf_category_idx').on(t.currentWeekEndDate, t.topClickedLeafCategory),
     lowestPriceIdx: index('kcs_lowest_price_idx').on(t.currentWeekEndDate, t.lowestPriceCents),
     mostReviewsIdx: index('kcs_most_reviews_idx').on(t.currentWeekEndDate, t.mostReviews),
+    avgPriceIdx: index('kcs_avg_price_idx').on(t.currentWeekEndDate, t.avgPriceCents),
+    avgReviewsIdx: index('kcs_avg_reviews_idx').on(t.currentWeekEndDate, t.avgReviews),
   }),
 );
 

@@ -213,6 +213,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         estimated_monthly_volume_current,
         lowest_price_cents, highest_price_cents,
         least_reviews, most_reviews,
+        avg_price_cents, avg_reviews,
         top_clicked_leaf_category,
         updated_at
       )
@@ -274,6 +275,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         GREATEST(p1.current_price_cents, p2.current_price_cents, p3.current_price_cents) AS highest_price_cents,
         LEAST(p1.review_count, p2.review_count, p3.review_count) AS least_reviews,
         GREATEST(p1.review_count, p2.review_count, p3.review_count) AS most_reviews,
+        -- Averages: NULL-tolerant via unnest+WHERE, so partial
+        -- enrichment averages whatever's available. Returns NULL only
+        -- when all 3 are NULL (no top-3 ASINs enriched).
+        (SELECT AVG(v)::bigint FROM unnest(ARRAY[p1.current_price_cents, p2.current_price_cents, p3.current_price_cents]) v WHERE v IS NOT NULL) AS avg_price_cents,
+        (SELECT AVG(v)::int FROM unnest(ARRAY[p1.review_count, p2.review_count, p3.review_count]) v WHERE v IS NOT NULL) AS avg_reviews,
         -- Leaf category from the slot-1 (most-clicked) ASIN.
         -- Falls back to NULL if slot-1 isn't enriched (we could
         -- fall through to slot-2/3 but that would muddy the signal —

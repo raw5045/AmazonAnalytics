@@ -32,10 +32,6 @@ describe('parseExplorerFilters', () => {
       jumpTo: null,
       category: 'Electronics',
       leafCategory: null,
-      priceMinCents: null,
-      priceMaxCents: null,
-      reviewsMin: null,
-      reviewsMax: null,
       severities: ['warning', 'critical'],
       titleSlots: [1, 2],
       titleMatchMode: 'all',
@@ -46,19 +42,9 @@ describe('parseExplorerFilters', () => {
     });
   });
 
-  it('parses leaf-category + price + reviews filters', () => {
-    const f = parseExplorerFilters({
-      leaf: 'Face Moisturizers',
-      price_min: '12.50',
-      price_max: '99.99',
-      reviews_min: '100',
-      reviews_max: '5000',
-    });
+  it('parses the leaf-category filter', () => {
+    const f = parseExplorerFilters({ leaf: 'Face Moisturizers' });
     expect(f.leafCategory).toBe('Face Moisturizers');
-    expect(f.priceMinCents).toBe(1250);
-    expect(f.priceMaxCents).toBe(9999);
-    expect(f.reviewsMin).toBe(100);
-    expect(f.reviewsMax).toBe(5000);
   });
 
   it('parses custom threshold jump with both bounds', () => {

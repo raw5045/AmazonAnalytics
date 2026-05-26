@@ -83,10 +83,8 @@ interface RawRow {
   // bigint comes back as string from pg/neon-http to avoid 53-bit
   // precision loss. Mapper parses to number.
   estimated_monthly_volume_current: string | number | null;
-  lowest_price_cents: string | number | null;
-  highest_price_cents: string | number | null;
-  least_reviews: number | null;
-  most_reviews: number | null;
+  avg_price_cents: string | number | null;
+  avg_reviews: number | null;
   top_clicked_leaf_category: string | null;
 }
 
@@ -109,15 +107,9 @@ function isDefaultSeverity(severities: SeverityKey[]): boolean {
   return def.length === cur.length && def.every((s, i) => s === cur[i]);
 }
 
-/** True when none of the new Keepa-aggregate filters are set. */
+/** True when none of the Keepa-aggregate filters are set. */
 function noKeepaFilters(f: ExplorerFilters): boolean {
-  return (
-    f.leafCategory === null
-    && f.priceMinCents === null
-    && f.priceMaxCents === null
-    && f.reviewsMin === null
-    && f.reviewsMax === null
-  );
+  return f.leafCategory === null;
 }
 
 /**
@@ -171,10 +163,6 @@ function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
     && f.leafCategory !== null
     && f.titleMatchMode === null
     && isDefaultSeverity(f.severities)
-    && f.priceMinCents === null
-    && f.priceMaxCents === null
-    && f.reviewsMin === null
-    && f.reviewsMax === null
   );
 }
 
@@ -300,10 +288,8 @@ export async function runExplorerQuery(
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
     estimatedMonthlyVolumeCurrent: parseBigint(r.estimated_monthly_volume_current),
-    lowestPriceCents: parseBigint(r.lowest_price_cents),
-    highestPriceCents: parseBigint(r.highest_price_cents),
-    leastReviews: r.least_reviews ?? null,
-    mostReviews: r.most_reviews ?? null,
+    avgPriceCents: parseBigint(r.avg_price_cents),
+    avgReviews: r.avg_reviews ?? null,
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,
   }));
 

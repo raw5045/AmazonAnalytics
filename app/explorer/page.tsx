@@ -151,10 +151,6 @@ function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boole
     f.jump !== null ||
     f.category !== null ||
     f.leafCategory !== null ||
-    f.priceMinCents !== null ||
-    f.priceMaxCents !== null ||
-    f.reviewsMin !== null ||
-    f.reviewsMax !== null ||
     JSON.stringify(f.severities) !== JSON.stringify(EXPLORER_DEFAULTS.severities) ||
     JSON.stringify(f.titleSlots) !== JSON.stringify(EXPLORER_DEFAULTS.titleSlots) ||
     f.titleMatchMode !== null ||

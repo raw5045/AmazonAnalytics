@@ -7,7 +7,12 @@
 
 export type WindowKey = '1w' | '4w' | '13w' | '26w' | '52w';
 
-export type SortKey = 'rank' | 'rank_desc' | 'imp' | 'decline' | 'title_gap';
+export type SortKey =
+  | 'rank' | 'rank_desc'
+  | 'imp' | 'decline'
+  | 'title_gap'
+  | 'avg_price_asc' | 'avg_price_desc'
+  | 'avg_reviews_asc' | 'avg_reviews_desc';
 
 export type SeverityKey = 'none' | 'warning' | 'critical';
 
@@ -59,21 +64,6 @@ export interface ExplorerFilters {
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | null;
   matchMode: MatchMode;
-  /**
-   * Range filters on the Keepa price/review aggregates over top-3
-   * ASINs. Match semantics:
-   *   - priceMin → row's HIGHEST price >= priceMin
-   *     ("at least one product in the top-3 costs >= $X")
-   *   - priceMax → row's LOWEST price <= priceMax
-   *     ("at least one product in the top-3 costs <= $X")
-   *   - reviewsMin → row's MOST reviews >= reviewsMin
-   *   - reviewsMax → row's LEAST reviews <= reviewsMax
-   * Stored in CENTS for prices, raw count for reviews.
-   */
-  priceMinCents: number | null;
-  priceMaxCents: number | null;
-  reviewsMin: number | null;
-  reviewsMax: number | null;
   sort: SortKey;
   page: number;
   perPage: number;
@@ -114,13 +104,11 @@ export interface ExplorerRow {
   estimatedMonthlyVolumeCurrent: number | null;
   /**
    * Keepa-derived aggregates over the top-3 clicked ASINs at the
-   * current week. NULL when all 3 ASINs are unenriched (e.g. dormant
-   * keyword, ASIN in excluded category). See migration 0029.
+   * current week. NULL when all 3 ASINs are unenriched. See
+   * migrations 0029 (ranges, no longer displayed) + 0030 (averages).
    */
-  lowestPriceCents: number | null;
-  highestPriceCents: number | null;
-  leastReviews: number | null;
-  mostReviews: number | null;
+  avgPriceCents: number | null;
+  avgReviews: number | null;
   /** Keepa leaf category of the slot-1 ASIN. NULL if not enriched. */
   topClickedLeafCategory: string | null;
 }

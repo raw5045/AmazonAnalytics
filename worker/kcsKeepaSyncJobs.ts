@@ -111,6 +111,8 @@ export function startKcsKeepaSyncJob(
             highest_price_cents = GREATEST(p1.current_price_cents, p2.current_price_cents, p3.current_price_cents),
             least_reviews       = LEAST(p1.review_count,        p2.review_count,        p3.review_count),
             most_reviews        = GREATEST(p1.review_count,     p2.review_count,        p3.review_count),
+            avg_price_cents     = (SELECT AVG(v)::bigint FROM unnest(ARRAY[p1.current_price_cents, p2.current_price_cents, p3.current_price_cents]) v WHERE v IS NOT NULL),
+            avg_reviews         = (SELECT AVG(v)::int    FROM unnest(ARRAY[p1.review_count,        p2.review_count,        p3.review_count])        v WHERE v IS NOT NULL),
             top_clicked_leaf_category = p1.category_leaf
           FROM keyword_weekly_metrics kwm
           LEFT JOIN tmp_asin_enriched_sync p1 ON p1.asin = kwm.top_clicked_product_1_asin

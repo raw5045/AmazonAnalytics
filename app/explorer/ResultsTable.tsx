@@ -53,15 +53,15 @@ export function ResultsTable({
             </th>
             <th
               className="p-2 text-right"
-              title="Price range across the top-3 clicked products (lowest – highest). Single value if all 3 share the same price. Em-dash if none of the top-3 are Keepa-enriched."
+              title="Mean price across the top-3 clicked products. NULL-tolerant — averages whatever is enriched. Em-dash if none of the top-3 are Keepa-enriched."
             >
-              Price range
+              Avg price
             </th>
             <th
               className="p-2 text-right"
-              title="Review-count range across the top-3 clicked products."
+              title="Mean review count across the top-3 clicked products."
             >
-              Reviews range
+              Avg reviews
             </th>
             <th className="p-2" title="Top clicked category #1 (broad)">Category</th>
             <th className="p-2" title="Keepa leaf category for the slot-1 ASIN">Leaf category</th>
@@ -93,10 +93,10 @@ export function ResultsTable({
                 {formatVolume(r.estimatedMonthlyVolumeCurrent)}
               </td>
               <td className="p-2 text-right tabular-nums whitespace-nowrap">
-                {formatPriceRange(r.lowestPriceCents, r.highestPriceCents)}
+                {formatAvgPrice(r.avgPriceCents)}
               </td>
               <td className="p-2 text-right tabular-nums whitespace-nowrap">
-                {formatReviewsRange(r.leastReviews, r.mostReviews)}
+                {formatAvgReviews(r.avgReviews)}
               </td>
               <td className="p-2 text-gray-700">{r.topClickedCategory1 ?? <span className="text-gray-400">—</span>}</td>
               <td className="p-2 text-gray-700 text-xs max-w-xs truncate" title={r.topClickedLeafCategory ?? undefined}>
@@ -161,38 +161,20 @@ function formatVolume(n: number | null): React.ReactNode {
   return n.toLocaleString();
 }
 
-function formatPriceRange(lowCents: number | null, highCents: number | null): React.ReactNode {
-  if (lowCents === null && highCents === null) {
+function formatAvgPrice(cents: number | null): React.ReactNode {
+  if (cents === null || !Number.isFinite(cents)) {
     return <span className="text-gray-400">—</span>;
   }
-  // Only one side present (rare; means only 1 of 3 is enriched and
-  // LEAST/GREATEST returned the same value for both).
-  if (lowCents === null) return formatDollars(highCents);
-  if (highCents === null) return formatDollars(lowCents);
-  if (lowCents === highCents) return formatDollars(lowCents);
-  return `${formatDollars(lowCents)} – ${formatDollars(highCents)}`;
-}
-
-function formatDollars(cents: number | null): string {
-  if (cents === null || !Number.isFinite(cents)) return '—';
   const dollars = cents / 100;
   if (dollars >= 1000) return `$${(dollars / 1000).toFixed(1)}k`;
   if (dollars >= 100) return `$${dollars.toFixed(0)}`;
   return `$${dollars.toFixed(2)}`;
 }
 
-function formatReviewsRange(low: number | null, high: number | null): React.ReactNode {
-  if (low === null && high === null) {
+function formatAvgReviews(n: number | null): React.ReactNode {
+  if (n === null || !Number.isFinite(n)) {
     return <span className="text-gray-400">—</span>;
   }
-  if (low === null) return formatReviewCount(high);
-  if (high === null) return formatReviewCount(low);
-  if (low === high) return formatReviewCount(low);
-  return `${formatReviewCount(low)} – ${formatReviewCount(high)}`;
-}
-
-function formatReviewCount(n: number | null): string {
-  if (n === null || !Number.isFinite(n)) return '—';
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return n.toLocaleString();
