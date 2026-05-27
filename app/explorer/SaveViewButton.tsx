@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, useTransition } from 'react';
+import { useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { parseExplorerFilters, type SearchParamsLike } from '@/lib/explorer/parseFilters';
 import type { SavedView } from '@/lib/savedViews/types';
@@ -36,7 +36,6 @@ export function SaveViewButton({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const [isPending, startTransition] = useTransition();
   const [isOpen, setIsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -74,9 +73,7 @@ export function SaveViewButton({
       }
       const data = (await res.json()) as { view: SavedView };
       setIsOpen(false);
-      startTransition(() => {
-        router.push(`/explorer?view=${data.view.id}`);
-      });
+      router.push(`/explorer?view=${data.view.id}`);
     } finally {
       setIsSaving(false);
     }
@@ -94,7 +91,7 @@ export function SaveViewButton({
           setError(null);
           setIsOpen(true);
         }}
-        disabled={atLimit || isPending}
+        disabled={atLimit}
         className="text-sm px-3 py-1.5 rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
         title={tooltip}
       >

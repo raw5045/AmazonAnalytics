@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildViewHref } from '@/lib/savedViews/serialize';
 import type { SavedView } from '@/lib/savedViews/types';
@@ -42,7 +42,6 @@ export function SavedViewsDropdown({
     [viewId, views],
   );
   const router = useRouter();
-  const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
   const [renamingView, setRenamingView] = useState<SavedView | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -61,11 +60,18 @@ export function SavedViewsDropdown({
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
+  // Note: these handlers used to wrap router calls in startTransition
+  // + drive a `disabled={isPending}` on the dropdown button. In
+  // practice the transition's isPending got stuck true after a
+  // delete (Next.js 16's transition tracking for router.refresh()
+  // doesn't always resolve when the layout's data fetch is what
+  // changed), which left the dropdown permanently disabled — the
+  // user couldn't reopen it or pick a different view. Direct
+  // router calls work fine: the navigation still happens, we just
+  // don't have a tracked "pending" state to get stuck.
   const applyView = (view: SavedView) => {
     setOpen(false);
-    startTransition(() => {
-      router.push(buildViewHref(view));
-    });
+    router.push(buildViewHref(view));
   };
 
   const deleteView = async (view: SavedView) => {
@@ -77,11 +83,13 @@ export function SavedViewsDropdown({
       alert(`Failed to delete: ${body.error ?? res.statusText}`);
       return;
     }
-    // If the deleted view was the active one, drop the ?view= param
+    // If the deleted view was the active one, drop the ?view= param;
+    // otherwise just refresh so the layout re-fetches savedViews
+    // without the deleted row.
     if (activeView?.id === view.id) {
-      startTransition(() => router.push('/explorer'));
+      router.push('/explorer');
     } else {
-      startTransition(() => router.refresh());
+      router.refresh();
     }
   };
 
@@ -101,7 +109,7 @@ export function SavedViewsDropdown({
         return;
       }
       setRenamingView(null);
-      startTransition(() => router.refresh());
+      router.refresh();
     } finally {
       setIsRenaming(false);
     }
@@ -114,8 +122,7 @@ export function SavedViewsDropdown({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        disabled={isPending}
-        className="w-full flex items-center justify-between border border-gray-300 rounded px-2 py-1.5 text-sm bg-white hover:bg-gray-50 disabled:opacity-60"
+        className="w-full flex items-center justify-between border border-gray-300 rounded px-2 py-1.5 text-sm bg-white hover:bg-gray-50"
         aria-haspopup="listbox"
         aria-expanded={open}
         title={activeView ? `Currently loaded: ${activeView.name}` : 'Pick a saved view'}
