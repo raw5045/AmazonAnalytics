@@ -31,7 +31,7 @@ describe('parseExplorerFilters', () => {
       jumpFrom: null,
       jumpTo: null,
       category: 'Electronics',
-      leafCategory: null,
+      leafCategories: [],
       severities: ['warning', 'critical'],
       titleSlots: [1, 2],
       titleMatchMode: 'all',
@@ -42,9 +42,23 @@ describe('parseExplorerFilters', () => {
     });
   });
 
-  it('parses the leaf-category filter', () => {
+  it('parses single leaf-category filter', () => {
     const f = parseExplorerFilters({ leaf: 'Face Moisturizers' });
-    expect(f.leafCategory).toBe('Face Moisturizers');
+    expect(f.leafCategories).toEqual(['Face Moisturizers']);
+  });
+
+  it('parses multiple comma-separated leaf categories', () => {
+    const f = parseExplorerFilters({ leaf: 'Face Moisturizers,Anti-aging Creams,Toilet Paper' });
+    expect(f.leafCategories).toEqual(['Face Moisturizers', 'Anti-aging Creams', 'Toilet Paper']);
+  });
+
+  it('trims whitespace and drops empty entries from leaf list', () => {
+    const f = parseExplorerFilters({ leaf: '  Foo, , Bar  ,Baz' });
+    expect(f.leafCategories).toEqual(['Foo', 'Bar', 'Baz']);
+  });
+
+  it('returns empty array for missing leaf param', () => {
+    expect(parseExplorerFilters({}).leafCategories).toEqual([]);
   });
 
   it('parses custom threshold jump with both bounds', () => {

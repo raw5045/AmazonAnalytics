@@ -56,10 +56,14 @@ export interface ExplorerFilters {
   jumpTo: number | null;
   category: string | null;
   /**
-   * Keepa leaf category (e.g. "Face Moisturizers") for the slot-1
-   * top-clicked ASIN. Independent from `category` (the broad BA cat).
+   * Keepa leaf categories (e.g. ["Face Moisturizers", "Anti-aging Creams"])
+   * for the slot-1 top-clicked ASIN. Independent from `category` (the
+   * broad BA cat). Multi-select with OR semantics — a keyword matches
+   * if its leaf is in this list. Empty array = no leaf filter.
+   *
+   * Precursor for saved-searches with custom leaf-set filters.
    */
-  leafCategory: string | null;
+  leafCategories: string[];
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | null;

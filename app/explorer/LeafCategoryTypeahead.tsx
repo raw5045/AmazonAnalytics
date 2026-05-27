@@ -3,41 +3,36 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 /**
- * Search-as-you-type combobox for the leaf-category filter. The full
- * list (9k+ entries) is passed in once; filtering happens client-side
- * as the user types. Up to 50 matches shown at once.
+ * Multi-select search-as-you-type combobox for the leaf-category
+ * filter. Selected categories show as chips above the input; typing
+ * filters the dropdown of remaining options.
  *
  * Keyboard:
  *   - ArrowDown / ArrowUp navigates the dropdown
- *   - Enter selects the highlighted match
+ *   - Enter selects the highlighted match (adds chip + clears input)
+ *   - Backspace on empty input removes the last chip
  *   - Escape clears the input + closes the dropdown
- *   - Tab / blur closes
  *
  * Mouse:
- *   - Click a match to select it
- *   - X button next to the input clears the current selection
+ *   - Click a match to add it as a chip
+ *   - Click ×  on a chip to remove it
  */
 export function LeafCategoryTypeahead({
   options,
-  value,
+  selected,
   onChange,
 }: {
   options: string[];
-  /** The currently-selected category, or '' for none. */
-  value: string;
-  onChange: (next: string) => void;
+  selected: string[];
+  onChange: (next: string[]) => void;
 }) {
-  const [draft, setDraft] = useState(value);
+  const [draft, setDraft] = useState('');
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // Re-sync the input when the parent's `value` changes externally
-  // (e.g., Reset button).
-  useEffect(() => {
-    setDraft(value);
-  }, [value]);
+  const selectedSet = useMemo(() => new Set(selected), [selected]);
 
   // Close the dropdown on outside-click.
   useEffect(() => {
@@ -51,89 +46,101 @@ export function LeafCategoryTypeahead({
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  // Filter logic — case-insensitive substring match.
+  // Case-insensitive substring match, excluding already-selected.
   const matches = useMemo(() => {
-    if (draft.trim().length === 0) {
-      return options.slice(0, 50);
-    }
     const needle = draft.trim().toLowerCase();
     const result: string[] = [];
     for (const opt of options) {
-      if (opt.toLowerCase().includes(needle)) {
+      if (selectedSet.has(opt)) continue;
+      if (needle.length === 0 || opt.toLowerCase().includes(needle)) {
         result.push(opt);
         if (result.length >= 50) break;
       }
     }
     return result;
-  }, [draft, options]);
+  }, [draft, options, selectedSet]);
 
-  // Clamp highlight if matches shrink below it.
   useEffect(() => {
     if (highlight >= matches.length) setHighlight(Math.max(0, matches.length - 1));
   }, [matches.length, highlight]);
 
-  const select = (cat: string) => {
-    onChange(cat);
-    setDraft(cat);
-    setOpen(false);
+  const addCategory = (cat: string) => {
+    if (selectedSet.has(cat)) return;
+    onChange([...selected, cat]);
+    setDraft('');
+    setHighlight(0);
+    // Keep dropdown open so the user can add more without re-clicking.
+    inputRef.current?.focus();
   };
 
-  const clear = () => {
-    onChange('');
-    setDraft('');
-    setOpen(false);
+  const removeCategory = (cat: string) => {
+    onChange(selected.filter((c) => c !== cat));
     inputRef.current?.focus();
   };
 
   return (
     <div ref={containerRef} className="relative">
-      <div className="flex gap-1">
-        <input
-          ref={inputRef}
-          type="text"
-          value={draft}
-          onChange={(e) => {
-            setDraft(e.target.value);
+      {/* Chips for currently-selected categories */}
+      {selected.length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1">
+          {selected.map((cat) => (
+            <span
+              key={cat}
+              className="inline-flex items-center gap-1 rounded bg-blue-50 border border-blue-200 px-2 py-0.5 text-xs text-blue-900"
+            >
+              <span className="max-w-[180px] truncate" title={cat}>{cat}</span>
+              <button
+                type="button"
+                onClick={() => removeCategory(cat)}
+                className="text-blue-700 hover:text-blue-900 leading-none"
+                aria-label={`Remove ${cat}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <input
+        ref={inputRef}
+        type="text"
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          setOpen(true);
+          setHighlight(0);
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
             setOpen(true);
-            setHighlight(0);
-          }}
-          onFocus={() => setOpen(true)}
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowDown') {
+            setHighlight((h) => Math.min(h + 1, matches.length - 1));
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            setHighlight((h) => Math.max(h - 1, 0));
+          } else if (e.key === 'Enter') {
+            if (open && matches[highlight]) {
               e.preventDefault();
-              setOpen(true);
-              setHighlight((h) => Math.min(h + 1, matches.length - 1));
-            } else if (e.key === 'ArrowUp') {
-              e.preventDefault();
-              setHighlight((h) => Math.max(h - 1, 0));
-            } else if (e.key === 'Enter') {
-              if (open && matches[highlight]) {
-                e.preventDefault();
-                select(matches[highlight]);
-              }
-            } else if (e.key === 'Escape') {
-              e.preventDefault();
-              setOpen(false);
-              setDraft(value);
+              addCategory(matches[highlight]);
             }
-          }}
-          placeholder={value || 'Type to search 9k+ categories…'}
-          className="filter-input flex-1"
-          aria-label="Leaf category"
-          aria-expanded={open}
-          aria-autocomplete="list"
-        />
-        {value && (
-          <button
-            type="button"
-            onClick={clear}
-            className="px-2 text-xs text-gray-500 hover:text-gray-800 border border-gray-300 rounded"
-            aria-label="Clear leaf category"
-          >
-            ×
-          </button>
-        )}
-      </div>
+          } else if (e.key === 'Backspace' && draft.length === 0 && selected.length > 0) {
+            e.preventDefault();
+            removeCategory(selected[selected.length - 1]);
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setOpen(false);
+            setDraft('');
+          }
+        }}
+        placeholder={selected.length === 0 ? 'Type to search 9k+ categories…' : 'Add another category…'}
+        className="filter-input"
+        aria-label="Add leaf category"
+        aria-expanded={open}
+        aria-autocomplete="list"
+      />
+
       {open && matches.length > 0 && (
         <ul
           role="listbox"
@@ -145,10 +152,8 @@ export function LeafCategoryTypeahead({
               role="option"
               aria-selected={i === highlight}
               onMouseDown={(e) => {
-                // mousedown rather than click so it fires before the
-                // input's blur (which would close the dropdown).
                 e.preventDefault();
-                select(cat);
+                addCategory(cat);
               }}
               onMouseEnter={() => setHighlight(i)}
               className={`px-2 py-1 cursor-pointer ${i === highlight ? 'bg-blue-100' : 'hover:bg-gray-50'}`}
@@ -163,7 +168,7 @@ export function LeafCategoryTypeahead({
           )}
         </ul>
       )}
-      {open && matches.length === 0 && (
+      {open && matches.length === 0 && draft.length > 0 && (
         <div className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded shadow-lg p-2 text-sm text-gray-500">
           No matches.
         </div>

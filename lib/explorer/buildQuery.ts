@@ -127,10 +127,10 @@ export function buildExplorerQuery(
     where.push(`kcs.top_clicked_category_1_current = ${p}`);
   }
 
-  // 1.5b — leaf category (Keepa, from slot-1 ASIN)
-  if (filters.leafCategory) {
-    const p = next(filters.leafCategory);
-    where.push(`kcs.top_clicked_leaf_category = ${p}`);
+  // 1.5b — leaf category (Keepa, from slot-1 ASIN). Multi-select OR.
+  if (filters.leafCategories.length > 0) {
+    const ps = filters.leafCategories.map((c) => next(c)).join(', ');
+    where.push(`kcs.top_clicked_leaf_category IN (${ps})`);
   }
 
   // 1.6 — fake volume severity (default = none, warning)

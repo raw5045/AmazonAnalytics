@@ -65,7 +65,7 @@ interface PendingFilters {
   /** Numeric string; only used when jump === 'custom'. */
   jumpTo: string;
   category: string;
-  leafCategory: string;
+  leafCategories: string[];
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | '';
@@ -83,7 +83,7 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     jumpFrom: f.jumpFrom?.toString() ?? '',
     jumpTo: f.jumpTo?.toString() ?? '',
     category: f.category ?? '',
-    leafCategory: f.leafCategory ?? '',
+    leafCategories: f.leafCategories,
     severities: f.severities,
     titleSlots: f.titleSlots,
     titleMatchMode: f.titleMatchMode ?? '',
@@ -107,7 +107,7 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
     }
   }
   if (p.category) params.set('category', p.category);
-  if (p.leafCategory) params.set('leaf', p.leafCategory);
+  if (p.leafCategories.length > 0) params.set('leaf', p.leafCategories.join(','));
   // Default severities = ['none', 'warning']. Only emit when different.
   const defaultSev = JSON.stringify([...EXPLORER_DEFAULTS.severities].sort());
   const currentSev = JSON.stringify([...p.severities].sort());
@@ -180,7 +180,9 @@ export function FilterSidebar({
   };
 
   return (
-    <aside className="w-72 border-r p-4 space-y-5 sticky top-0 self-start">
+    <aside className="w-72 border-r sticky top-0 self-start h-screen flex flex-col">
+      {/* Scrollable filter content area */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-5">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-gray-700">Filters</h2>
         {isPending && <span className="text-xs text-gray-400">Updating…</span>}
@@ -316,14 +318,15 @@ export function FilterSidebar({
         </select>
       </FieldGroup>
 
-      <FieldGroup label="Leaf category (Keepa, slot-1)">
+      <FieldGroup label="Leaf categories (Keepa, slot-1)">
         <LeafCategoryTypeahead
           options={leafCategories}
-          value={pending.leafCategory}
-          onChange={(next) => set('leafCategory', next)}
+          selected={pending.leafCategories}
+          onChange={(next) => set('leafCategories', next)}
         />
         <p className="text-xs text-gray-500 mt-1">
-          Long-tail category for the most-clicked product. {leafCategories.length.toLocaleString()} options — type to search.
+          Long-tail category for the most-clicked product. {leafCategories.length.toLocaleString()} options —
+          type to search, click or Enter to add. Multiple categories match with OR.
         </p>
       </FieldGroup>
 
@@ -397,7 +400,11 @@ export function FilterSidebar({
         )}
       </FieldGroup>
 
-      <div className="pt-3 border-t flex items-center gap-2">
+      </div>{/* close scrollable area */}
+
+      {/* Sticky footer with Apply / Reset — always visible without
+          scrolling through the filter list. */}
+      <div className="border-t bg-white p-3 flex items-center gap-2 shadow-[0_-2px_4px_rgba(0,0,0,0.04)]">
         <button
           type="button"
           onClick={apply}

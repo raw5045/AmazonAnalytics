@@ -109,7 +109,7 @@ function isDefaultSeverity(severities: SeverityKey[]): boolean {
 
 /** True when none of the Keepa-aggregate filters are set. */
 function noKeepaFilters(f: ExplorerFilters): boolean {
-  return f.leafCategory === null;
+  return f.leafCategories.length === 0;
 }
 
 /**
@@ -149,9 +149,10 @@ function canUseCategoryFacet(f: ExplorerFilters): boolean {
 }
 
 /**
- * True when the filter set is "leaf-category-only + default severity":
- * exactly one leaf category filter, no broad cat, no other narrowing.
- * Lets us use the precomputed leaf-facet count.
+ * True when the filter set is "single-leaf-category-only + default
+ * severity": exactly ONE leaf category filter, no broad cat, no other
+ * narrowing. Lets us use the precomputed leaf-facet count. Multi-leaf
+ * selections fall through to the live COUNT(*) path.
  */
 function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
   return (
@@ -160,7 +161,7 @@ function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
     && f.rankMax === null
     && f.jump === null
     && f.category === null
-    && f.leafCategory !== null
+    && f.leafCategories.length === 1
     && f.titleMatchMode === null
     && isDefaultSeverity(f.severities)
   );
@@ -238,7 +239,7 @@ export async function runExplorerQuery(
         SELECT default_severity_count AS n
         FROM keyword_current_summary_leaf_category_facets
         WHERE snapshot_version = ${snapshotVersion}::uuid
-          AND leaf_category = ${filters.leafCategory}
+          AND leaf_category = ${filters.leafCategories[0]}
       `) as Array<{ n: number }>;
       if (facetRows.length > 0) {
         precomputedTotal = facetRows[0].n;

@@ -26,7 +26,7 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   jumpFrom: null,
   jumpTo: null,
   category: null,
-  leafCategory: null,
+  leafCategories: [],
   severities: ['none', 'warning'],
   titleSlots: [1, 2, 3],
   titleMatchMode: null,
@@ -87,6 +87,17 @@ function parseSeverities(value: string | undefined): SeverityKey[] {
   return parts.length > 0 ? parts : EXPLORER_DEFAULTS.severities;
 }
 
+/**
+ * Comma-separated `leaf` URL param → string[]. URL-encoded commas
+ * inside category names would be ambiguous, but Keepa leaves don't
+ * contain commas so we treat `,` as the delimiter unambiguously.
+ * Empty / missing → empty array.
+ */
+function parseLeafCategories(value: string | undefined): string[] {
+  if (!value) return [];
+  return value.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
 function parseTitleSlots(value: string | undefined): number[] {
   if (!value) return EXPLORER_DEFAULTS.titleSlots;
   const parts = value
@@ -133,7 +144,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     jumpFrom: jump === 'custom' ? jumpFrom : null,
     jumpTo: jump === 'custom' ? jumpTo : null,
     category: getOne(searchParams.category) ?? null,
-    leafCategory: getOne(searchParams.leaf) ?? null,
+    leafCategories: parseLeafCategories(getOne(searchParams.leaf)),
     severities,
     titleSlots,
     titleMatchMode,
