@@ -15,12 +15,13 @@ import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
 import type { VolumeFitMeta } from '@/lib/explorer/types';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { listSavedViewsForUser, loadSavedViewForUser } from '@/lib/savedViews/loadServer';
-import { filtersEqual } from '@/lib/savedViews/serialize';
 import type { SavedView } from '@/lib/savedViews/types';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { Pagination } from './Pagination';
 import { PerfStrip } from './PerfStrip';
+import { SavedViewsDropdown } from './SavedViewsDropdown';
+import { SaveViewButton } from './SaveViewButton';
 
 export const metadata: Metadata = {
   title: 'Keyword Explorer',
@@ -46,25 +47,20 @@ export default async function ExplorerPage({
   // Two URL shapes are supported:
   //   1. Bookmark form: `/explorer?view=<id>` (no other filter params)
   //      → hydrate filters from the view's stored JSON.
-  //   2. Full form: `/explorer?view=<id>&<all filter params>`
-  //      → use the URL filters directly; the view tag is just metadata
-  //        so the dropdown can show the view as selected.
+  //   2. Full form: `/explorer?<filter params>` (no view tag)
+  //      → use the URL filters directly. The dropdown stays blank.
   //
-  // The Apply button always emits the full filter set when a view is
-  // active (see FilterSidebar.pendingToParamsFull), so user-driven
-  // changes always reach the server as URL truth and can never be
-  // silently reverted by stale baseline overrides.
+  // Apply in FilterSidebar always drops the view tag, so the moment a
+  // user modifies a loaded view the URL becomes shape (2), the chip
+  // blanks out, and the URL is the single source of truth. The hybrid
+  // shape `?view=<id>&<filters>` is no longer produced by the UI but
+  // is still accepted (URL filters win, view tag = metadata only).
   const urlHasFilters = Object.keys(sp).some(
     (k) => k !== 'view' && k !== 'page' && k !== 'per_page',
   );
   const filters = activeView && !urlHasFilters
     ? activeView.filters
     : parseExplorerFilters(sp);
-
-  // "Modified" indicator: an active view is loaded, AND the effective
-  // filters differ from the view's stored filters. Drives the dropdown
-  // chip ("My Beauty Niche*") and the Save button's enabled state.
-  const isViewModified = activeView ? !filtersEqual(filters, activeView.filters) : false;
 
   // Build the back-URL that detail pages will return to. Re-serializes
   // the current filter state so users don't lose their filters when
@@ -101,50 +97,71 @@ export default async function ExplorerPage({
     : total.toLocaleString();
 
   return (
-    <div className="flex">
-      <FilterSidebar
-        filters={filters}
-        categories={categories}
-        leafCategories={leafCategories}
-        savedViews={savedViews}
-        activeView={activeView}
-        isViewModified={isViewModified}
-      />
-      <div className="flex-1 p-6">
-        <PerfStrip
-          data={{
-            handlerTotalMs,
-            metaLookupMs: rqTimings.metaLookupMs,
-            rowsMs: rqTimings.rowsMs,
-            countMs: rqTimings.countMs,
-            categoriesMs: categoriesTimed.ms,
-            usedPredicate: rqTimings.usedPredicate,
-            countSource: rqTimings.countSource,
-            // Heuristic: cached calls usually return <20ms; uncached
-            // DISTINCT scan is at least 300ms.
-            categoriesCacheHint: categoriesTimed.ms < 50 ? 'fast' : 'slow',
-          }}
-        />
-        <div className="mb-4 flex items-center justify-between">
-          <p className="text-sm text-gray-600">
-            {total === 0
-              ? 'No results — try removing a filter.'
-              : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
-          </p>
-          {filtersAreCustomized(filters) && (
-            <a href="/explorer" className="text-sm underline text-gray-600">
-              Reset filters
-            </a>
-          )}
-        </div>
-        {totalIsCapped && (
-          <p className="mb-3 text-xs text-gray-500">
-            Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
-          </p>
+    <div className="flex flex-col min-h-screen">
+      {/* Top toolbar: page title + saved-views picker + save button.
+          Promoted from the filter sidebar (where the dropdown was
+          cramped) to give the picker and ⋮ menu room to breathe. */}
+      <header className="sticky top-0 z-30 h-12 bg-white border-b border-gray-200 px-6 flex items-center justify-between gap-4">
+        <h1 className="text-base font-semibold text-gray-900 whitespace-nowrap">
+          Keyword Explorer
+        </h1>
+        {user && (
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-64">
+              <SavedViewsDropdown views={savedViews} activeView={activeView} />
+            </div>
+            <SaveViewButton filters={filters} savedViewsCount={savedViews.length} />
+          </div>
         )}
-        {volumeFit && <VolumeFitChip fit={volumeFit} />}
-        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} currentSort={filters.sort} backUrl={backUrl} />
-        <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
+      </header>
+      <div className="flex flex-1">
+        {/* key forces a remount when the active view changes so the
+            sidebar's `pending` state re-initializes from the new
+            filters. Without this, picking a view in the dropdown
+            updates the URL + results but leaves the sidebar inputs
+            showing the old (pre-selection) values. */}
+        <FilterSidebar
+          key={activeView?.id ?? 'no-view'}
+          filters={filters}
+          categories={categories}
+          leafCategories={leafCategories}
+        />
+        <div className="flex-1 p-6">
+          <PerfStrip
+            data={{
+              handlerTotalMs,
+              metaLookupMs: rqTimings.metaLookupMs,
+              rowsMs: rqTimings.rowsMs,
+              countMs: rqTimings.countMs,
+              categoriesMs: categoriesTimed.ms,
+              usedPredicate: rqTimings.usedPredicate,
+              countSource: rqTimings.countSource,
+              // Heuristic: cached calls usually return <20ms; uncached
+              // DISTINCT scan is at least 300ms.
+              categoriesCacheHint: categoriesTimed.ms < 50 ? 'fast' : 'slow',
+            }}
+          />
+          <div className="mb-4 flex items-center justify-between">
+            <p className="text-sm text-gray-600">
+              {total === 0
+                ? 'No results — try removing a filter.'
+                : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
+            </p>
+            {filtersAreCustomized(filters) && (
+              <a href="/explorer" className="text-sm underline text-gray-600">
+                Reset filters
+              </a>
+            )}
+          </div>
+          {totalIsCapped && (
+            <p className="mb-3 text-xs text-gray-500">
+              Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
+            </p>
+          )}
+          {volumeFit && <VolumeFitChip fit={volumeFit} />}
+          <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} currentSort={filters.sort} backUrl={backUrl} />
+          <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
+        </div>
       </div>
     </div>
   );

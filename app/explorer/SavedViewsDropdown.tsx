@@ -7,25 +7,29 @@ import type { SavedView } from '@/lib/savedViews/types';
 import { NameViewModal } from './NameViewModal';
 
 /**
- * The "Saved Views" picker at the top of FilterSidebar.
+ * The "Saved Views" picker in the explorer top toolbar.
  *
  * Renders:
- *   - A dropdown button showing the currently-selected view name
- *     (with a trailing "*" if filters were modified after loading)
+ *   - A dropdown button showing the currently-selected view name,
+ *     or "Saved views" placeholder when none is active
  *   - On click: a list of the user's saved views, each with an
  *     inline ⋮ menu for Rename / Delete
  *
- * Clicking a view navigates to /explorer?view=<id>&<view's filters>.
+ * Clicking a view navigates to /explorer?view=<id> (the server
+ * hydrates filters from the view's stored JSON). The moment the user
+ * modifies any filter and hits Apply, FilterSidebar drops the view
+ * tag from the URL and this dropdown blanks out — there's no
+ * "modified" indicator because the view is no longer "loaded" after
+ * editing.
+ *
  * Rename + Delete call the saved-views API and refresh the page.
  */
 export function SavedViewsDropdown({
   views,
   activeView,
-  isViewModified,
 }: {
   views: SavedView[];
   activeView: SavedView | null;
-  isViewModified: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -93,9 +97,7 @@ export function SavedViewsDropdown({
     }
   };
 
-  const buttonLabel = activeView
-    ? `${activeView.name}${isViewModified ? ' *' : ''}`
-    : 'Saved views';
+  const buttonLabel = activeView ? activeView.name : 'Saved views';
 
   return (
     <div ref={containerRef} className="relative">
@@ -106,7 +108,7 @@ export function SavedViewsDropdown({
         className="w-full flex items-center justify-between border border-gray-300 rounded px-2 py-1.5 text-sm bg-white hover:bg-gray-50 disabled:opacity-60"
         aria-haspopup="listbox"
         aria-expanded={open}
-        title={activeView ? `Currently loaded: ${activeView.name}${isViewModified ? ' (modified)' : ''}` : 'Pick a saved view'}
+        title={activeView ? `Currently loaded: ${activeView.name}` : 'Pick a saved view'}
       >
         <span className={`truncate ${activeView ? 'text-blue-900 font-medium' : 'text-gray-500'}`}>
           {buttonLabel}
