@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import type { ExplorerRow, MatchMode, SeverityKey, WindowKey } from '@/lib/explorer/types';
+import type { ExplorerRow, MatchMode, SeverityKey, SortKey, WindowKey } from '@/lib/explorer/types';
+import { SortableHeader } from './SortableHeader';
 
 const WINDOW_LABEL: Record<WindowKey, string> = {
   '1w': 'Prior week rank',
@@ -13,11 +14,14 @@ export function ResultsTable({
   rows,
   window,
   matchMode,
+  currentSort,
   backUrl,
 }: {
   rows: ExplorerRow[];
   window: WindowKey;
   matchMode: MatchMode;
+  /** Current sort key — drives the SortableHeader chevrons. */
+  currentSort: SortKey;
   /** The URL the detail page should return to (preserves filter state). */
   backUrl: string;
 }) {
@@ -42,27 +46,49 @@ export function ResultsTable({
         <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">
           <tr>
             <th className="p-2">Search term</th>
-            <th className="p-2 text-right">Current rank</th>
+            <SortableHeader
+              label="Current rank"
+              ascKey="rank"
+              descKey="rank_desc"
+              firstClickKey="rank"
+              currentSort={currentSort}
+              align="right"
+              title="Click to sort by current rank. Lower rank = more search volume."
+            />
             <th className="p-2 text-right">{WINDOW_LABEL[window]}</th>
-            <th className="p-2 text-right">Δ</th>
+            <SortableHeader
+              label="Δ"
+              ascKey="decline"
+              descKey="imp"
+              firstClickKey="imp"
+              currentSort={currentSort}
+              align="right"
+              title="Click to sort by improvement in the selected window. First click shows biggest improvements first."
+            />
             <th
               className="p-2 text-right"
-              title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Typical accuracy ±30% (current fit's holdout MAPE). Note: Fresh_Produce keywords are NOT calibrated — those estimates can be wildly off."
+              title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Typical accuracy ±30% (current fit's holdout MAPE). Note: Fresh_Produce keywords are NOT calibrated — those estimates can be wildly off. (Sort by Current rank for the equivalent volume order.)"
             >
               Est. monthly vol.
             </th>
-            <th
-              className="p-2 text-right"
-              title="Mean price across the top-3 clicked products. NULL-tolerant — averages whatever is enriched. Em-dash if none of the top-3 are Keepa-enriched."
-            >
-              Avg price
-            </th>
-            <th
-              className="p-2 text-right"
-              title="Mean review count across the top-3 clicked products."
-            >
-              Avg reviews
-            </th>
+            <SortableHeader
+              label="Avg price"
+              ascKey="avg_price_asc"
+              descKey="avg_price_desc"
+              firstClickKey="avg_price_asc"
+              currentSort={currentSort}
+              align="right"
+              title="Mean price across the top-3 clicked products. Click to sort — first click shows cheapest first."
+            />
+            <SortableHeader
+              label="Avg reviews"
+              ascKey="avg_reviews_asc"
+              descKey="avg_reviews_desc"
+              firstClickKey="avg_reviews_desc"
+              currentSort={currentSort}
+              align="right"
+              title="Mean review count across the top-3 clicked products. Click to sort — first click shows most-reviewed first."
+            />
             <th className="p-2" title="Top clicked category #1 (broad)">Category</th>
             <th className="p-2" title="Keepa leaf category for the slot-1 ASIN">Leaf category</th>
             <th className="p-2 text-center" title="Fake volume severity">Fake?</th>

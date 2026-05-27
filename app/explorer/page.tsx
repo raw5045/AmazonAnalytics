@@ -100,7 +100,7 @@ export default async function ExplorerPage({
           </p>
         )}
         {volumeFit && <VolumeFitChip fit={volumeFit} />}
-        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} backUrl={backUrl} />
+        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} currentSort={filters.sort} backUrl={backUrl} />
         <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>
