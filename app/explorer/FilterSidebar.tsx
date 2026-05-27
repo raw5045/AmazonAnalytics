@@ -12,7 +12,12 @@ import type {
   WindowKey,
 } from '@/lib/explorer/types';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
+import type { SavedView } from '@/lib/savedViews/types';
 import { LeafCategoryTypeahead } from './LeafCategoryTypeahead';
+import { SavedViewsDropdown } from './SavedViewsDropdown';
+import { NameViewModal } from './NameViewModal';
+import { SaveOrUpdateDialog } from './SaveOrUpdateDialog';
+import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
 
 const WINDOWS: Array<{ value: WindowKey; label: string }> = [
   { value: '1w', label: 'Week' },
@@ -131,10 +136,19 @@ export function FilterSidebar({
   filters,
   categories,
   leafCategories,
+  savedViews = [],
+  activeView = null,
+  isViewModified = false,
 }: {
   filters: ExplorerFilters;
   categories: string[];
   leafCategories: string[];
+  /** All of the current user's saved views (≤ 5). Empty for guests. */
+  savedViews?: SavedView[];
+  /** The view currently tagged in the URL (?view=<id>), if any. */
+  activeView?: SavedView | null;
+  /** True when effective filters differ from activeView.filters. */
+  isViewModified?: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -142,10 +156,104 @@ export function FilterSidebar({
 
   const apply = () => {
     const params = pendingToParams(pending);
+    // Preserve the ?view= tag if a view is currently loaded — the
+    // user is iterating on top of the view, not abandoning it.
+    if (activeView) params.set('view', activeView.id);
     const qs = params.toString();
     startTransition(() => {
       router.replace(qs ? `/explorer?${qs}` : '/explorer', { scroll: false });
     });
+  };
+
+  // Save-view state machine. Three independent flows:
+  //   1. No view active     → click Save → NameViewModal (create)
+  //   2. View active + dirty → click Save → SaveOrUpdateDialog
+  //   3. View active + !dirty → button disabled (nothing to save)
+  const [saveDialog, setSaveDialog] = useState<
+    'closed' | 'choose-update-or-new' | 'name-new'
+  >('closed');
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const filtersForSave = (): ExplorerFilters => {
+    // Capture the current pending state as a full ExplorerFilters
+    // payload to send to the API.
+    return {
+      window: pending.window,
+      q: pending.q.trim().length >= 3 ? pending.q.trim() : null,
+      rankMin: pending.rankBest ? parseInt(pending.rankBest, 10) : null,
+      rankMax: pending.rankWorst ? parseInt(pending.rankWorst, 10) : null,
+      jump: pending.jump || null,
+      jumpFrom: pending.jump === 'custom' && pending.jumpFrom ? parseInt(pending.jumpFrom, 10) : null,
+      jumpTo: pending.jump === 'custom' && pending.jumpTo ? parseInt(pending.jumpTo, 10) : null,
+      category: pending.category || null,
+      leafCategories: pending.leafCategories,
+      severities: pending.severities,
+      titleSlots: pending.titleSlots,
+      titleMatchMode: pending.titleMatchMode || null,
+      matchMode: pending.matchMode,
+      sort: pending.sort,
+      page: 1,
+      perPage: 100,
+    };
+  };
+
+  const onSaveClick = () => {
+    setSaveError(null);
+    if (activeView) {
+      setSaveDialog('choose-update-or-new');
+    } else {
+      setSaveDialog('name-new');
+    }
+  };
+
+  const submitNewView = async (name: string) => {
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch('/api/explorer/saved-views', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name, filters: filtersForSave() }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setSaveError(body.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      const data = (await res.json()) as { view: SavedView };
+      setSaveDialog('closed');
+      // Navigate so the new view becomes "active" + dropdown refreshes
+      startTransition(() => {
+        const params = pendingToParams(pending);
+        params.set('view', data.view.id);
+        router.push(`/explorer?${params.toString()}`);
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const updateExistingView = async () => {
+    if (!activeView) return;
+    setIsSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch(`/api/explorer/saved-views/${activeView.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ filters: filtersForSave() }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        setSaveError(body.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setSaveDialog('closed');
+      startTransition(() => router.refresh());
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const reset = () => {
@@ -187,6 +295,14 @@ export function FilterSidebar({
         <h2 className="text-sm font-semibold text-gray-700">Filters</h2>
         {isPending && <span className="text-xs text-gray-400">Updating…</span>}
       </div>
+
+      <FieldGroup label="Saved views">
+        <SavedViewsDropdown
+          views={savedViews}
+          activeView={activeView}
+          isViewModified={isViewModified}
+        />
+      </FieldGroup>
 
       <FieldGroup label="Window">
         <select
@@ -404,23 +520,71 @@ export function FilterSidebar({
 
       {/* Sticky footer with Apply / Reset — always visible without
           scrolling through the filter list. */}
-      <div className="border-t bg-white p-3 flex items-center gap-2 shadow-[0_-2px_4px_rgba(0,0,0,0.04)]">
+      <div className="border-t bg-white p-3 flex flex-col gap-2 shadow-[0_-2px_4px_rgba(0,0,0,0.04)]">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={apply}
+            disabled={!dirty || isPending}
+            className="flex-1 bg-blue-600 text-white text-sm font-medium px-3 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            {isPending ? 'Applying…' : dirty ? 'Apply filters' : 'Filters applied'}
+          </button>
+          <button
+            type="button"
+            onClick={reset}
+            className="text-xs text-gray-600 underline hover:text-gray-900"
+          >
+            Reset
+          </button>
+        </div>
         <button
           type="button"
-          onClick={apply}
-          disabled={!dirty || isPending}
-          className="flex-1 bg-blue-600 text-white text-sm font-medium px-3 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          onClick={onSaveClick}
+          disabled={
+            isPending ||
+            isSaving ||
+            // Disable when an active view is loaded and nothing has been
+            // modified — there's nothing meaningful to save.
+            (activeView !== null && !isViewModified && !dirty)
+          }
+          className="text-xs px-3 py-1.5 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+          title={
+            savedViews.length >= MAX_VIEWS_PER_USER && !activeView
+              ? `You've reached the ${MAX_VIEWS_PER_USER}-view limit. Delete a saved view to add a new one.`
+              : activeView && !isViewModified && !dirty
+                ? 'No changes to save'
+                : undefined
+          }
         >
-          {isPending ? 'Applying…' : dirty ? 'Apply filters' : 'Filters applied'}
-        </button>
-        <button
-          type="button"
-          onClick={reset}
-          className="text-xs text-gray-600 underline hover:text-gray-900"
-        >
-          Reset
+          {activeView ? '💾 Save / update view' : '💾 Save current view'}
         </button>
       </div>
+
+      <NameViewModal
+        isOpen={saveDialog === 'name-new'}
+        title="Save current view"
+        submitLabel="Save view"
+        errorMessage={saveError}
+        isSubmitting={isSaving}
+        onSubmit={submitNewView}
+        onClose={() => {
+          setSaveDialog('closed');
+          setSaveError(null);
+        }}
+      />
+
+      <SaveOrUpdateDialog
+        isOpen={saveDialog === 'choose-update-or-new'}
+        currentViewName={activeView?.name ?? ''}
+        isSubmitting={isSaving}
+        onUpdate={updateExistingView}
+        onSaveAsNew={() => setSaveDialog('name-new')}
+        onClose={() => {
+          setSaveDialog('closed');
+          setSaveError(null);
+        }}
+      />
 
       <style jsx>{`
         .filter-input {

@@ -19,3 +19,5 @@ export * from './keepaEnrichmentRuns';
 export * from './monthlySfr';
 export * from './poeCalibrationData';
 export * from './modelCalibrationRuns';
+export * from './savedViews';
+export * from './keywordCurrentSummaryLeafCategoryFacets';

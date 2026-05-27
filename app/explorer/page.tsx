@@ -13,6 +13,10 @@ import { runExplorerQuery } from '@/lib/explorer/runQuery';
 import { listCategories } from '@/lib/explorer/listCategories';
 import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
 import type { VolumeFitMeta } from '@/lib/explorer/types';
+import { getCurrentUser } from '@/lib/auth/getCurrentUser';
+import { listSavedViewsForUser, loadSavedViewForUser } from '@/lib/savedViews/loadServer';
+import { mergeViewWithUrlParams, filtersEqual } from '@/lib/savedViews/serialize';
+import type { SavedView } from '@/lib/savedViews/types';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { Pagination } from './Pagination';
@@ -28,7 +32,26 @@ export default async function ExplorerPage({
   searchParams: Promise<SearchParamsLike>;
 }) {
   const sp = await searchParams;
-  const filters = parseExplorerFilters(sp);
+
+  // Load saved views + (optionally) the active view tagged in the URL.
+  // The view is fetched only if `?view=<uuid>` is present AND it
+  // belongs to the current user. Server-side merge: view's stored
+  // filters are the baseline; any URL params layered on top win.
+  const user = await getCurrentUser();
+  const viewId = getOne(sp.view);
+  const [savedViews, activeView] = await Promise.all([
+    user ? listSavedViewsForUser(user.id) : Promise.resolve<SavedView[]>([]),
+    user && viewId ? loadSavedViewForUser(user.id, viewId) : Promise.resolve(null),
+  ]);
+
+  const filters = activeView
+    ? mergeViewWithUrlParams(activeView.filters, sp)
+    : parseExplorerFilters(sp);
+
+  // "Modified" indicator: an active view is loaded, AND the effective
+  // filters differ from the view's stored filters. Drives the dropdown
+  // chip ("My Beauty Niche*") and the Save button's enabled state.
+  const isViewModified = activeView ? !filtersEqual(filters, activeView.filters) : false;
 
   // Build the back-URL that detail pages will return to. Re-serializes
   // the current filter state so users don't lose their filters when
@@ -66,7 +89,14 @@ export default async function ExplorerPage({
 
   return (
     <div className="flex">
-      <FilterSidebar filters={filters} categories={categories} leafCategories={leafCategories} />
+      <FilterSidebar
+        filters={filters}
+        categories={categories}
+        leafCategories={leafCategories}
+        savedViews={savedViews}
+        activeView={activeView}
+        isViewModified={isViewModified}
+      />
       <div className="flex-1 p-6">
         <PerfStrip
           data={{
@@ -140,6 +170,12 @@ function formatMonthLabel(isoYyyyMmDd: string): string {
   ];
   const idx = parseInt(m, 10) - 1;
   return idx >= 0 && idx < 12 ? `${monthNames[idx]} ${y}` : isoYyyyMmDd;
+}
+
+/** Same helper used inside parseFilters; inlined since it's not exported. */
+function getOne(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boolean {
