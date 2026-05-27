@@ -1,19 +1,25 @@
 'use client';
 
-import { useEffect, useRef, useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { buildViewHref } from '@/lib/savedViews/serialize';
 import type { SavedView } from '@/lib/savedViews/types';
 import { NameViewModal } from './NameViewModal';
 
 /**
- * The "Saved Views" picker in the explorer top toolbar.
+ * The "Saved Views" picker, rendered in the explorer's layout header.
  *
  * Renders:
  *   - A dropdown button showing the currently-selected view name,
  *     or "Saved views" placeholder when none is active
  *   - On click: a list of the user's saved views, each with an
  *     inline ⋮ menu for Rename / Delete
+ *
+ * Because this lives in the layout (which can't access search params
+ * server-side), the active view is derived client-side via
+ * useSearchParams() + a lookup into the `views` array. No extra DB
+ * call needed — `views` already has all the user's saved views, so
+ * the active one is just a find-by-id.
  *
  * Clicking a view navigates to /explorer?view=<id> (the server
  * hydrates filters from the view's stored JSON). The moment the user
@@ -26,11 +32,15 @@ import { NameViewModal } from './NameViewModal';
  */
 export function SavedViewsDropdown({
   views,
-  activeView,
 }: {
   views: SavedView[];
-  activeView: SavedView | null;
 }) {
+  const searchParams = useSearchParams();
+  const viewId = searchParams?.get('view') ?? null;
+  const activeView = useMemo(
+    () => (viewId ? views.find((v) => v.id === viewId) ?? null : null),
+    [viewId, views],
+  );
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
@@ -117,9 +127,13 @@ export function SavedViewsDropdown({
       </button>
 
       {open && (
+        // No max-height / overflow on the UL: with a 5-view per-user
+        // limit there's never enough content to need scroll, and any
+        // overflow:auto here would clip the absolutely-positioned ⋮
+        // popover inside each row.
         <ul
           role="listbox"
-          className="absolute z-20 mt-1 w-full bg-white border border-gray-300 rounded shadow-lg text-sm max-h-72 overflow-y-auto"
+          className="absolute z-20 mt-1 w-full bg-white border border-gray-300 rounded shadow-lg text-sm"
         >
           {views.length === 0 ? (
             <li className="px-3 py-2 text-gray-500 italic">
@@ -215,7 +229,12 @@ function SavedViewItem({
           ⋮
         </button>
         {menuOpen && (
-          <div className="absolute right-0 mt-1 w-32 bg-white border border-gray-300 rounded shadow-lg z-30 text-sm">
+          // `top-full` anchors the popover at the bottom edge of the
+          // ⋮ button (not the top of the relative div, which would
+          // put it level with the row content). `w-36` gives Rename
+          // / Delete enough horizontal room to render without
+          // hugging the edges.
+          <div className="absolute right-0 top-full mt-1 w-36 bg-white border border-gray-300 rounded shadow-lg z-40 text-sm">
             <button
               type="button"
               onClick={() => {

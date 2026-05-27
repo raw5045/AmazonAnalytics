@@ -1,42 +1,60 @@
 'use client';
 
-import { useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
-import type { ExplorerFilters } from '@/lib/explorer/types';
+import { useMemo, useState, useTransition } from 'react';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { parseExplorerFilters, type SearchParamsLike } from '@/lib/explorer/parseFilters';
 import type { SavedView } from '@/lib/savedViews/types';
 import { NameViewModal } from './NameViewModal';
 import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
 
 /**
- * "Save view" button that lives in the explorer top toolbar.
+ * "Save view" button in the explorer layout header.
  *
- * Saves whatever filters are currently *applied* (i.e., reflected in
- * the URL) — not unapplied pending changes in the sidebar. To save a
+ * Saves whatever filters are currently *applied* (reflected in the
+ * URL) — not unapplied pending changes in the sidebar. To save a
  * tweaked state, users hit Apply in the sidebar first, then Save here.
- * This keeps Save a page-level action and avoids lifting filter-edit
- * state out of FilterSidebar.
+ *
+ * Derives filters from `useSearchParams()` + `parseExplorerFilters`
+ * (same parsing path the server uses). Because the layout doesn't
+ * have access to searchParams, doing this client-side keeps the data
+ * flow consistent without adding a second server-side parse.
+ *
+ * Hidden on /explorer/keyword/* (the detail page) where "save filters"
+ * has no meaning — the URL has no filter params there.
  *
  * Per the v1 model there is no "Update existing view" action. To
  * replace a view's filters, the user deletes the old view (via the
  * dropdown's ⋮ menu) and re-saves with the same name. The unique
- * (user_id, name) constraint produces a clear error in the modal if
- * they try to save with a name that already exists.
- *
- * Disabled when the user has hit the per-user view limit; the tooltip
- * explains why.
+ * (user_id, name) constraint surfaces a clear error if they try to
+ * save with a name that already exists.
  */
 export function SaveViewButton({
-  filters,
   savedViewsCount,
 }: {
-  filters: ExplorerFilters;
   savedViewsCount: number;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
   const [isOpen, setIsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Convert URLSearchParams → SearchParamsLike → ExplorerFilters
+  // using the same parser the server uses, so what we save exactly
+  // matches what's currently rendered.
+  const filters = useMemo(() => {
+    const sp: SearchParamsLike = {};
+    searchParams?.forEach((value, key) => {
+      sp[key] = value;
+    });
+    return parseExplorerFilters(sp);
+  }, [searchParams]);
+
+  // Only show on the main explorer page — saving from the keyword
+  // detail page would persist empty/default filters.
+  if (pathname !== '/explorer') return null;
 
   const atLimit = savedViewsCount >= MAX_VIEWS_PER_USER;
 

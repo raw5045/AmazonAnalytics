@@ -14,14 +14,11 @@ import { listCategories } from '@/lib/explorer/listCategories';
 import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
 import type { VolumeFitMeta } from '@/lib/explorer/types';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
-import { listSavedViewsForUser, loadSavedViewForUser } from '@/lib/savedViews/loadServer';
-import type { SavedView } from '@/lib/savedViews/types';
+import { loadSavedViewForUser } from '@/lib/savedViews/loadServer';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { Pagination } from './Pagination';
 import { PerfStrip } from './PerfStrip';
-import { SavedViewsDropdown } from './SavedViewsDropdown';
-import { SaveViewButton } from './SaveViewButton';
 
 export const metadata: Metadata = {
   title: 'Keyword Explorer',
@@ -34,15 +31,14 @@ export default async function ExplorerPage({
 }) {
   const sp = await searchParams;
 
-  // Load saved views + (optionally) the active view tagged in the URL.
-  // The view is fetched only if `?view=<uuid>` is present AND it
-  // belongs to the current user.
+  // The saved-views picker + Save button live in the layout header.
+  // The page still needs the *active* view's stored filters so the
+  // bookmark URL shape (`/explorer?view=<id>` with no filter params)
+  // can hydrate its sidebar from the view's saved JSON.
   const user = await getCurrentUser();
   const viewId = getOne(sp.view);
-  const [savedViews, activeView] = await Promise.all([
-    user ? listSavedViewsForUser(user.id) : Promise.resolve<SavedView[]>([]),
-    user && viewId ? loadSavedViewForUser(user.id, viewId) : Promise.resolve(null),
-  ]);
+  const activeView =
+    user && viewId ? await loadSavedViewForUser(user.id, viewId) : null;
 
   // Two URL shapes are supported:
   //   1. Bookmark form: `/explorer?view=<id>` (no other filter params)
@@ -97,71 +93,53 @@ export default async function ExplorerPage({
     : total.toLocaleString();
 
   return (
-    <div className="flex flex-col min-h-screen">
-      {/* Top toolbar: page title + saved-views picker + save button.
-          Promoted from the filter sidebar (where the dropdown was
-          cramped) to give the picker and ⋮ menu room to breathe. */}
-      <header className="sticky top-0 z-30 h-12 bg-white border-b border-gray-200 px-6 flex items-center justify-between gap-4">
-        <h1 className="text-base font-semibold text-gray-900 whitespace-nowrap">
-          Keyword Explorer
-        </h1>
-        {user && (
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-64">
-              <SavedViewsDropdown views={savedViews} activeView={activeView} />
-            </div>
-            <SaveViewButton filters={filters} savedViewsCount={savedViews.length} />
-          </div>
-        )}
-      </header>
-      <div className="flex flex-1">
-        {/* key forces a remount when the active view changes so the
-            sidebar's `pending` state re-initializes from the new
-            filters. Without this, picking a view in the dropdown
-            updates the URL + results but leaves the sidebar inputs
-            showing the old (pre-selection) values. */}
-        <FilterSidebar
-          key={activeView?.id ?? 'no-view'}
-          filters={filters}
-          categories={categories}
-          leafCategories={leafCategories}
+    <div className="flex">
+      {/* key forces a remount when the active view changes so the
+          sidebar's `pending` state re-initializes from the new
+          filters. Without this, picking a view in the dropdown
+          updates the URL + results but leaves the sidebar inputs
+          showing the old (pre-selection) values. */}
+      <FilterSidebar
+        key={activeView?.id ?? 'no-view'}
+        filters={filters}
+        categories={categories}
+        leafCategories={leafCategories}
+      />
+      <div className="flex-1 p-6">
+        <PerfStrip
+          data={{
+            handlerTotalMs,
+            metaLookupMs: rqTimings.metaLookupMs,
+            rowsMs: rqTimings.rowsMs,
+            countMs: rqTimings.countMs,
+            categoriesMs: categoriesTimed.ms,
+            usedPredicate: rqTimings.usedPredicate,
+            countSource: rqTimings.countSource,
+            // Heuristic: cached calls usually return <20ms; uncached
+            // DISTINCT scan is at least 300ms.
+            categoriesCacheHint: categoriesTimed.ms < 50 ? 'fast' : 'slow',
+          }}
         />
-        <div className="flex-1 p-6">
-          <PerfStrip
-            data={{
-              handlerTotalMs,
-              metaLookupMs: rqTimings.metaLookupMs,
-              rowsMs: rqTimings.rowsMs,
-              countMs: rqTimings.countMs,
-              categoriesMs: categoriesTimed.ms,
-              usedPredicate: rqTimings.usedPredicate,
-              countSource: rqTimings.countSource,
-              // Heuristic: cached calls usually return <20ms; uncached
-              // DISTINCT scan is at least 300ms.
-              categoriesCacheHint: categoriesTimed.ms < 50 ? 'fast' : 'slow',
-            }}
-          />
-          <div className="mb-4 flex items-center justify-between">
-            <p className="text-sm text-gray-600">
-              {total === 0
-                ? 'No results — try removing a filter.'
-                : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
-            </p>
-            {filtersAreCustomized(filters) && (
-              <a href="/explorer" className="text-sm underline text-gray-600">
-                Reset filters
-              </a>
-            )}
-          </div>
-          {totalIsCapped && (
-            <p className="mb-3 text-xs text-gray-500">
-              Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
-            </p>
+        <div className="mb-4 flex items-center justify-between">
+          <p className="text-sm text-gray-600">
+            {total === 0
+              ? 'No results — try removing a filter.'
+              : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
+          </p>
+          {filtersAreCustomized(filters) && (
+            <a href="/explorer" className="text-sm underline text-gray-600">
+              Reset filters
+            </a>
           )}
-          {volumeFit && <VolumeFitChip fit={volumeFit} />}
-          <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} currentSort={filters.sort} backUrl={backUrl} />
-          <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
         </div>
+        {totalIsCapped && (
+          <p className="mb-3 text-xs text-gray-500">
+            Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
+          </p>
+        )}
+        {volumeFit && <VolumeFitChip fit={volumeFit} />}
+        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} currentSort={filters.sort} backUrl={backUrl} />
+        <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>
   );
