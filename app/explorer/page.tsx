@@ -15,7 +15,7 @@ import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
 import type { VolumeFitMeta } from '@/lib/explorer/types';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { listSavedViewsForUser, loadSavedViewForUser } from '@/lib/savedViews/loadServer';
-import { mergeViewWithUrlParams, filtersEqual } from '@/lib/savedViews/serialize';
+import { filtersEqual } from '@/lib/savedViews/serialize';
 import type { SavedView } from '@/lib/savedViews/types';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
@@ -35,8 +35,7 @@ export default async function ExplorerPage({
 
   // Load saved views + (optionally) the active view tagged in the URL.
   // The view is fetched only if `?view=<uuid>` is present AND it
-  // belongs to the current user. Server-side merge: view's stored
-  // filters are the baseline; any URL params layered on top win.
+  // belongs to the current user.
   const user = await getCurrentUser();
   const viewId = getOne(sp.view);
   const [savedViews, activeView] = await Promise.all([
@@ -44,8 +43,22 @@ export default async function ExplorerPage({
     user && viewId ? loadSavedViewForUser(user.id, viewId) : Promise.resolve(null),
   ]);
 
-  const filters = activeView
-    ? mergeViewWithUrlParams(activeView.filters, sp)
+  // Two URL shapes are supported:
+  //   1. Bookmark form: `/explorer?view=<id>` (no other filter params)
+  //      → hydrate filters from the view's stored JSON.
+  //   2. Full form: `/explorer?view=<id>&<all filter params>`
+  //      → use the URL filters directly; the view tag is just metadata
+  //        so the dropdown can show the view as selected.
+  //
+  // The Apply button always emits the full filter set when a view is
+  // active (see FilterSidebar.pendingToParamsFull), so user-driven
+  // changes always reach the server as URL truth and can never be
+  // silently reverted by stale baseline overrides.
+  const urlHasFilters = Object.keys(sp).some(
+    (k) => k !== 'view' && k !== 'page' && k !== 'per_page',
+  );
+  const filters = activeView && !urlHasFilters
+    ? activeView.filters
     : parseExplorerFilters(sp);
 
   // "Modified" indicator: an active view is loaded, AND the effective

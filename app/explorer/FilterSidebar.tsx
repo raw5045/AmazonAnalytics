@@ -132,6 +132,55 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   return params;
 }
 
+/**
+ * "Full" variant of pendingToParams: emits EVERY filter key explicitly,
+ * including defaults and empties. Used when a saved view is active so
+ * the resulting URL fully encodes the current state — the server treats
+ * the URL as truth (see app/explorer/page.tsx).
+ *
+ * Without this, changing a filter back to its default value would omit
+ * the key from the URL, and the server would silently fall back to the
+ * view's stored value for that key. The user would see their change
+ * "applied" but the results unchanged.
+ */
+function pendingToParamsFull(p: PendingFilters): URLSearchParams {
+  const params = new URLSearchParams();
+  params.set('window', p.window);
+  params.set('sort', p.sort);
+  if (p.q.trim().length >= 3) {
+    params.set('q', p.q.trim());
+  } else {
+    params.set('q', '');
+  }
+  params.set('rank_min', p.rankBest);
+  params.set('rank_max', p.rankWorst);
+  if (p.jump) {
+    params.set('jump', p.jump);
+    if (p.jump === 'custom') {
+      params.set('jump_from', p.jumpFrom);
+      params.set('jump_to', p.jumpTo);
+    }
+  }
+  params.set('category', p.category);
+  params.set('leaf', p.leafCategories.join(','));
+  // Severities — emit only non-default sets (an empty `severity=`
+  // parses back to defaults, so always-emitting empty would not actually
+  // clear it; matching the default set keeps URLs idempotent on save).
+  const defaultSev = JSON.stringify([...EXPLORER_DEFAULTS.severities].sort());
+  const currentSev = JSON.stringify([...p.severities].sort());
+  if (currentSev !== defaultSev) {
+    params.set('severity', p.severities.join(','));
+  }
+  if (p.titleMatchMode) {
+    params.set('title_match', p.titleMatchMode);
+    if (p.titleSlots.length !== 3) {
+      params.set('titles', p.titleSlots.join(','));
+    }
+  }
+  params.set('match_mode', p.matchMode);
+  return params;
+}
+
 export function FilterSidebar({
   filters,
   categories,
@@ -155,9 +204,12 @@ export function FilterSidebar({
   const [pending, setPending] = useState<PendingFilters>(filtersToPending(filters));
 
   const apply = () => {
-    const params = pendingToParams(pending);
-    // Preserve the ?view= tag if a view is currently loaded — the
-    // user is iterating on top of the view, not abandoning it.
+    // When a view is active, emit ALL filters explicitly so the URL
+    // is the source of truth. Otherwise (no view) we keep the
+    // omit-defaults convention to keep URLs short.
+    const params = activeView
+      ? pendingToParamsFull(pending)
+      : pendingToParams(pending);
     if (activeView) params.set('view', activeView.id);
     const qs = params.toString();
     startTransition(() => {
