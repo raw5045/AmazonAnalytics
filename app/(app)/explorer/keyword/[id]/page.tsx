@@ -13,6 +13,9 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { fetchKeywordDetail, type EnrichedProduct } from '@/lib/explorer/fetchKeywordDetail';
+import { getCurrentUser } from '@/lib/auth/getCurrentUser';
+import { isKeywordWatched } from '@/lib/watchlist/loadServer';
+import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { RawDataTable } from './RawDataTable';
 import { RankChart } from './RankChart';
 import { FakeVolumeStrip } from './FakeVolumeStrip';
@@ -37,6 +40,9 @@ export default async function KeywordDetailPage({
 
   const detail = await fetchKeywordDetail(id);
   if (!detail) notFound();
+
+  const user = await getCurrentUser();
+  const isWatched = user ? await isKeywordWatched(user.id, id) : false;
 
   const sp = searchParams ? await searchParams : {};
   const fromRaw = Array.isArray(sp.from) ? sp.from[0] : sp.from;
@@ -89,7 +95,10 @@ export default async function KeywordDetailPage({
       </Link>
 
       <header className="mt-3 mb-6">
-        <h1 className="text-2xl font-semibold">&ldquo;{searchTermRaw}&rdquo;</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold">&ldquo;{searchTermRaw}&rdquo;</h1>
+          {user && <WatchToggle keywordId={id} initialIsWatched={isWatched} />}
+        </div>
         {showNormalized && (
           <p className="text-xs text-gray-500 mt-1">Normalized: {searchTermNormalized}</p>
         )}
