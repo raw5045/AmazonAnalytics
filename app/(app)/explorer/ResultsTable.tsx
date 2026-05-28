@@ -19,6 +19,7 @@ export function ResultsTable({
   backUrl,
   watchedKeywordIds,
   showWatchColumn = false,
+  addedAtByKeyword,
 }: {
   rows: ExplorerRow[];
   window: WindowKey;
@@ -31,6 +32,8 @@ export function ResultsTable({
   watchedKeywordIds?: Set<string>;
   /** When true, the ⭐ column is rendered (hidden for guests). */
   showWatchColumn?: boolean;
+  /** When present, render an "Added" column showing time since added. */
+  addedAtByKeyword?: Map<string, string>;
 }) {
   const fromParam = backUrl === '/explorer' ? '' : `?from=${encodeURIComponent(backUrl)}`;
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
@@ -107,6 +110,17 @@ export function ResultsTable({
             <th className="p-2 text-center w-12" title={`Keyword in title slot 1 (${matchMode} match)`}>In #1</th>
             <th className="p-2 text-center w-12" title={`Keyword in title slot 2 (${matchMode} match)`}>In #2</th>
             <th className="p-2 text-center w-12" title={`Keyword in title slot 3 (${matchMode} match)`}>In #3</th>
+            {addedAtByKeyword && (
+              <SortableHeader
+                label="Added"
+                ascKey="added_asc"
+                descKey="added_desc"
+                firstClickKey="added_desc"
+                currentSort={currentSort}
+                align="right"
+                title="When you added this keyword to the watchlist"
+              />
+            )}
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -152,6 +166,11 @@ export function ResultsTable({
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 1)} /></td>
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 2)} /></td>
               <td className="p-2 text-center"><TitleIcon present={inTitle(r, 3)} /></td>
+              {addedAtByKeyword && (
+                <td className="p-2 text-right text-xs text-gray-600">
+                  {formatRelativeTime(addedAtByKeyword.get(r.searchTermId))}
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -224,4 +243,27 @@ function formatAvgReviews(n: number | null): React.ReactNode {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return n.toLocaleString();
+}
+
+/**
+ * Format an ISO timestamp as a coarse relative time ("today", "3d ago",
+ * "2w ago", "5mo ago"). Returns '' for an undefined input.
+ *
+ * Note: Date.now() inside a server component render is technically
+ * impure-in-render per React purity rules, but ResultsTable runs on
+ * the server and this matches the existing precedent of Date.now()
+ * calls elsewhere in the explorer page. Fine for v1.
+ */
+function formatRelativeTime(iso: string | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const diffMs = Date.now() - d.getTime();
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  if (diffDays === 0) return 'today';
+  if (diffDays === 1) return 'yesterday';
+  if (diffDays < 7) return `${diffDays}d ago`;
+  const weeks = Math.floor(diffDays / 7);
+  if (weeks < 5) return `${weeks}w ago`;
+  const months = Math.floor(diffDays / 30);
+  return `${months}mo ago`;
 }
