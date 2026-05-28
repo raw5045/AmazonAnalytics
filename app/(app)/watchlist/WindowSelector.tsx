@@ -20,9 +20,13 @@ export function WindowSelector({ current }: { current: WindowKey }) {
   const router = useRouter();
   const sp = useSearchParams();
   const onChange = (next: WindowKey) => {
-    const params = new URLSearchParams(sp?.toString() ?? '');
-    if (next === '1w') params.delete('window');
-    else params.set('window', next);
+    const params = new URLSearchParams();
+    // Preserve only the params that the watchlist page actually reads.
+    // (page.tsx consumes `window` + `sort`; in-watchlist filtering for
+    // `match_mode` is deferred.)
+    const sort = sp?.get('sort');
+    if (sort) params.set('sort', sort);
+    if (next !== '1w') params.set('window', next);
     const qs = params.toString();
     router.push(qs ? `/watchlist?${qs}` : '/watchlist');
   };

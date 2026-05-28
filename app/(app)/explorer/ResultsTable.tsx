@@ -20,6 +20,7 @@ export function ResultsTable({
   watchedKeywordIds,
   showWatchColumn = false,
   addedAtByKeyword,
+  onWatchStarToggle,
 }: {
   rows: ExplorerRow[];
   window: WindowKey;
@@ -34,6 +35,8 @@ export function ResultsTable({
   showWatchColumn?: boolean;
   /** When present, render an "Added" column showing time since added. */
   addedAtByKeyword?: Map<string, string>;
+  /** Called when the ⭐ in any row is toggled. Used by /watchlist to animate-remove. */
+  onWatchStarToggle?: (keywordId: string, isNowWatched: boolean) => void;
 }) {
   const fromParam = backUrl === '/explorer' ? '' : `?from=${encodeURIComponent(backUrl)}`;
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
@@ -131,6 +134,11 @@ export function ResultsTable({
                   <WatchStar
                     keywordId={r.searchTermId}
                     initialIsWatched={Boolean(watchedKeywordIds?.has(r.searchTermId))}
+                    onToggleSuccess={
+                      onWatchStarToggle
+                        ? (isNowWatched) => onWatchStarToggle(r.searchTermId, isNowWatched)
+                        : undefined
+                    }
                   />
                 </td>
               )}

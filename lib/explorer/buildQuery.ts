@@ -265,6 +265,12 @@ function buildOrderBy(
       return 'ORDER BY kcs.avg_reviews ASC NULLS LAST';
     case 'avg_reviews_desc':
       return 'ORDER BY kcs.avg_reviews DESC NULLS LAST';
+    case 'added_asc':
+    case 'added_desc':
+      // Watchlist-only sort keys — meaningless on the explorer page
+      // (no per-user "added" timestamp on the explorer's row set).
+      // Fall back to default rank ordering.
+      return 'ORDER BY kcs.current_rank ASC';
   }
 }
 

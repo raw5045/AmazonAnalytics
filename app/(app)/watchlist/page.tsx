@@ -5,19 +5,19 @@
  *   1. Loads the user's watchlist items (already auth-guarded by the
  *      parent (app) layout)
  *   2. Loads explorer-row data for those IDs via fetchExplorerRowsByIds
- *   3. Renders ResultsTable + the small window selector at top
+ *   3. Renders <WatchlistTable> (a client wrapper around ResultsTable
+ *      that owns row state) + the small window selector at top
  *
- * Phase 7a renders without the "Added" column or the row-removal
- * client wrapper — those land in Phase 7b. For now, clicking ★ on a
- * row triggers WatchStar's built-in router.refresh() which reloads
- * the page (without the un-watched row).
+ * The client wrapper handles row-removal-on-unwatch locally so clicks
+ * don't require a full server round-trip to update the visible rows.
  */
 import type { Metadata } from 'next';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
 import { fetchExplorerRowsByIds } from '@/lib/explorer/fetchExplorerRowsByIds';
 import { parseExplorerFilters, type SearchParamsLike } from '@/lib/explorer/parseFilters';
-import { ResultsTable } from '@/app/(app)/explorer/ResultsTable';
+import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
+import { WatchlistTable } from './WatchlistTable';
 import { WindowSelector } from './WindowSelector';
 
 export const metadata: Metadata = { title: 'Watchlist' };
@@ -54,7 +54,18 @@ export default async function WatchlistPage({
     matchMode: filters.matchMode,
   });
 
-  const watchedKeywordIds = new Set(keywordIds);
+  const addedAtByKeyword = new Map(items.map((i) => [i.keywordId, i.addedAt]));
+
+  // fetchExplorerRowsByIds doesn't know about added_* sort keys — re-sort
+  // in JS here, since we have addedAt on hand.
+  let sortedRows = rows;
+  if (filters.sort === 'added_asc' || filters.sort === 'added_desc') {
+    sortedRows = [...rows].sort((a, b) => {
+      const ta = new Date(addedAtByKeyword.get(a.searchTermId) ?? 0).getTime();
+      const tb = new Date(addedAtByKeyword.get(b.searchTermId) ?? 0).getTime();
+      return filters.sort === 'added_asc' ? ta - tb : tb - ta;
+    });
+  }
 
   return (
     <div className="p-6">
@@ -62,19 +73,17 @@ export default async function WatchlistPage({
         <div>
           <h1 className="text-2xl font-semibold">Watchlist</h1>
           <p className="text-sm text-gray-600">
-            {items.length} of 100 keywords watched
+            {items.length} of {MAX_WATCHED_KEYWORDS} keywords watched
           </p>
         </div>
         <WindowSelector current={filters.window} />
       </header>
-      <ResultsTable
-        rows={rows}
+      <WatchlistTable
+        initialRows={sortedRows}
         window={filters.window}
         matchMode={filters.matchMode}
         currentSort={filters.sort}
-        backUrl="/watchlist"
-        watchedKeywordIds={watchedKeywordIds}
-        showWatchColumn={true}
+        initialAddedAtByKeyword={Array.from(addedAtByKeyword.entries())}
       />
     </div>
   );
