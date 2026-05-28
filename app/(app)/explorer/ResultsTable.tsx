@@ -130,7 +130,13 @@ export function ResultsTable({
           {rows.map((r) => (
             <tr key={r.searchTermId} className="hover:bg-gray-50">
               {showWatchColumn && (
-                <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                // No onClick stopPropagation here — ResultsTable is a server
+                // component, so passing an event handler to a native element
+                // would throw "Event handlers cannot be passed to Client
+                // Component props" at render time. WatchStar handles
+                // stopPropagation + preventDefault internally (see
+                // app/(app)/_components/WatchStar.tsx).
+                <td className="p-2 text-center">
                   <WatchStar
                     keywordId={r.searchTermId}
                     initialIsWatched={Boolean(watchedKeywordIds?.has(r.searchTermId))}
