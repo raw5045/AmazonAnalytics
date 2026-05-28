@@ -257,10 +257,13 @@ function formatAvgReviews(n: number | null): React.ReactNode {
  * Format an ISO timestamp as a coarse relative time ("today", "3d ago",
  * "2w ago", "5mo ago"). Returns '' for an undefined input.
  *
- * Note: Date.now() inside a server component render is technically
- * impure-in-render per React purity rules, but ResultsTable runs on
- * the server and this matches the existing precedent of Date.now()
- * calls elsewhere in the explorer page. Fine for v1.
+ * Date.now() in render: ResultsTable runs on the server when used from
+ * /explorer (server component) AND inside a client subtree when used
+ * from /watchlist (WatchlistTable is 'use client'). Drift between SSR
+ * and client hydration is bounded (~ms). The one edge case is a row
+ * whose addedAt crosses a bucket boundary (today/yesterday, 6d/1w,
+ * etc.) during that gap — React will log a hydration warning but the
+ * UI stays correct. Acceptable for v1.
  */
 function formatRelativeTime(iso: string | undefined): string {
   if (!iso) return '';

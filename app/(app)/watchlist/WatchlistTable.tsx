@@ -1,17 +1,26 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useMemo, useState } from 'react';
 import { ResultsTable } from '@/app/(app)/explorer/ResultsTable';
 import type { ExplorerRow, MatchMode, SortKey, WindowKey } from '@/lib/explorer/types';
 
 /**
- * Client wrapper for the watchlist page's ResultsTable. Owns the rows
- * array as state so a successful un-watch removes the row instantly
- * (instead of waiting for router.refresh() to refetch and re-render).
+ * Client wrapper for the watchlist page's ResultsTable. Tracks which
+ * rows the user has un-starred in this session (`removedKeywordIds`)
+ * and derives the visible rows from fresh server props minus those
+ * removals.
  *
- * On any toggle, we also router.refresh() in the background so the
- * tab-nav count badge updates server-side.
+ * Why a derived view instead of useState(initialRows)?
+ *   When the user changes the window or sort, WindowSelector/Sortable-
+ *   Header calls router.replace/push and the server component re-renders
+ *   with fresh initialRows. useState only seeds from props on mount, so
+ *   holding the rows in state would show stale data. The Set of
+ *   removed-IDs is the small piece of true client-only state.
+ *
+ * router.refresh() is handled inside WatchStar after a successful
+ * toggle (updates the tab-nav count badge). We deliberately do NOT
+ * refresh again here — that would double the RSC payload fetch +
+ * SQL projection per click.
  */
 export function WatchlistTable({
   initialRows,
@@ -30,17 +39,30 @@ export function WatchlistTable({
    */
   initialAddedAtByKeyword: Array<[string, string]>;
 }) {
-  const router = useRouter();
-  const [rows, setRows] = useState(initialRows);
-  const addedAtByKeyword = new Map(initialAddedAtByKeyword);
-  // Initially everything in rows is watched (this IS the watchlist!).
-  const [watchedKeywordIds, setWatchedKeywordIds] = useState(
-    () => new Set(initialRows.map((r) => r.searchTermId)),
+  const [removedKeywordIds, setRemovedKeywordIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  const visibleRows = useMemo(
+    () => initialRows.filter((r) => !removedKeywordIds.has(r.searchTermId)),
+    [initialRows, removedKeywordIds],
+  );
+
+  // The watched set is exactly the set of visible rows (every row on
+  // /watchlist is by definition watched until the user un-stars it).
+  const watchedKeywordIds = useMemo(
+    () => new Set(visibleRows.map((r) => r.searchTermId)),
+    [visibleRows],
+  );
+
+  const addedAtByKeyword = useMemo(
+    () => new Map(initialAddedAtByKeyword),
+    [initialAddedAtByKeyword],
   );
 
   return (
     <ResultsTable
-      rows={rows}
+      rows={visibleRows}
       window={window}
       matchMode={matchMode}
       currentSort={currentSort}
@@ -50,14 +72,14 @@ export function WatchlistTable({
       addedAtByKeyword={addedAtByKeyword}
       onWatchStarToggle={(keywordId, isNowWatched) => {
         if (!isNowWatched) {
-          setRows((prev) => prev.filter((r) => r.searchTermId !== keywordId));
-          setWatchedKeywordIds((prev) => {
+          setRemovedKeywordIds((prev) => {
             const next = new Set(prev);
-            next.delete(keywordId);
+            next.add(keywordId);
             return next;
           });
         }
-        router.refresh();
+        // Note: WatchStar already calls router.refresh() on success;
+        // no need to duplicate here.
       }}
     />
   );

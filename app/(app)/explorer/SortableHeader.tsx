@@ -1,6 +1,6 @@
 'use client';
 
-import { useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useTransition } from 'react';
 import type { SortKey } from '@/lib/explorer/types';
 
@@ -41,6 +41,7 @@ export function SortableHeader({
   className?: string;
 }) {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
@@ -53,8 +54,11 @@ export function SortableHeader({
     const params = new URLSearchParams(searchParams?.toString() ?? '');
     params.set('sort', nextSort);
     params.delete('page'); // changing sort with a deep page offset is confusing
+    // Stay on the current page (/explorer or /watchlist) — usePathname()
+    // returns string | null; fall back to /explorer if null.
+    const basePath = pathname ?? '/explorer';
     startTransition(() => {
-      router.replace(`/explorer?${params.toString()}`, { scroll: false });
+      router.replace(`${basePath}?${params.toString()}`, { scroll: false });
     });
   };
 
