@@ -15,6 +15,7 @@ import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
 import type { VolumeFitMeta } from '@/lib/explorer/types';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { loadSavedViewForUser } from '@/lib/savedViews/loadServer';
+import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { Pagination } from './Pagination';
@@ -37,8 +38,11 @@ export default async function ExplorerPage({
   // can hydrate its sidebar from the view's saved JSON.
   const user = await getCurrentUser();
   const viewId = getOne(sp.view);
-  const activeView =
-    user && viewId ? await loadSavedViewForUser(user.id, viewId) : null;
+  const [activeView, watchlistItems] = await Promise.all([
+    user && viewId ? loadSavedViewForUser(user.id, viewId) : Promise.resolve(null),
+    user ? listWatchlistForUser(user.id) : Promise.resolve([]),
+  ]);
+  const watchedKeywordIds = new Set(watchlistItems.map((w) => w.keywordId));
 
   // Two URL shapes are supported:
   //   1. Bookmark form: `/explorer?view=<id>` (no other filter params)
@@ -138,7 +142,15 @@ export default async function ExplorerPage({
           </p>
         )}
         {volumeFit && <VolumeFitChip fit={volumeFit} />}
-        <ResultsTable rows={rows} window={filters.window} matchMode={filters.matchMode} currentSort={filters.sort} backUrl={backUrl} />
+        <ResultsTable
+          rows={rows}
+          window={filters.window}
+          matchMode={filters.matchMode}
+          currentSort={filters.sort}
+          backUrl={backUrl}
+          watchedKeywordIds={watchedKeywordIds}
+          showWatchColumn={Boolean(user)}
+        />
         <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>

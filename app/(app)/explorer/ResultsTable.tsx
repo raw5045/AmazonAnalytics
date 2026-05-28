@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import type { ExplorerRow, MatchMode, SeverityKey, SortKey, WindowKey } from '@/lib/explorer/types';
 import { SortableHeader } from './SortableHeader';
+import { WatchStar } from '@/app/(app)/_components/WatchStar';
 
 const WINDOW_LABEL: Record<WindowKey, string> = {
   '1w': 'Prior week rank',
@@ -16,6 +17,8 @@ export function ResultsTable({
   matchMode,
   currentSort,
   backUrl,
+  watchedKeywordIds,
+  showWatchColumn = false,
 }: {
   rows: ExplorerRow[];
   window: WindowKey;
@@ -24,6 +27,10 @@ export function ResultsTable({
   currentSort: SortKey;
   /** The URL the detail page should return to (preserves filter state). */
   backUrl: string;
+  /** IDs the current user is watching. Used to render ★ vs ☆. */
+  watchedKeywordIds?: Set<string>;
+  /** When true, the ⭐ column is rendered (hidden for guests). */
+  showWatchColumn?: boolean;
 }) {
   const fromParam = backUrl === '/explorer' ? '' : `?from=${encodeURIComponent(backUrl)}`;
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
@@ -45,6 +52,11 @@ export function ResultsTable({
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">
           <tr>
+            {showWatchColumn && (
+              <th className="p-2 w-8 text-center" title="Click to add/remove from watchlist">
+                <span aria-label="Watched">☆</span>
+              </th>
+            )}
             <th className="p-2">Search term</th>
             <SortableHeader
               label="Current rank"
@@ -100,6 +112,14 @@ export function ResultsTable({
         <tbody className="divide-y">
           {rows.map((r) => (
             <tr key={r.searchTermId} className="hover:bg-gray-50">
+              {showWatchColumn && (
+                <td className="p-2 text-center" onClick={(e) => e.stopPropagation()}>
+                  <WatchStar
+                    keywordId={r.searchTermId}
+                    initialIsWatched={Boolean(watchedKeywordIds?.has(r.searchTermId))}
+                  />
+                </td>
+              )}
               <td className="p-2 font-medium">
                 <Link
                   href={`/explorer/keyword/${r.searchTermId}${fromParam}`}
