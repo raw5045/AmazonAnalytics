@@ -43,6 +43,8 @@ const WINDOW_TO_IMPROVEMENT_COLUMN: Record<WindowKey, string> = {
   '52w': 'improvement_52w',
 };
 
+// Mirror runQuery.ts RawRow — keep in lock-step with the projection in
+// buildExplorerQuery + its mapper.
 interface RawRow {
   search_term_id: string;
   search_term_raw: string;
@@ -126,6 +128,8 @@ export async function fetchExplorerRowsByIds(opts: {
   const rawRowsAny = await sqlClient.query(sqlText, [opts.keywordIds]);
   const rawRows = rawRowsAny as unknown as RawRow[];
 
+  // Mirror runQuery.ts row mapper — keep in lock-step with the RawRow
+  // interface above + the SELECT list emitted by buildExplorerQuery.
   return rawRows.map((r) => ({
     searchTermId: r.search_term_id,
     searchTermRaw: r.search_term_raw,

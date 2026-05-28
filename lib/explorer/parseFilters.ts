@@ -45,6 +45,7 @@ const SORT_VALUES: SortKey[] = [
   'title_gap',
   'avg_price_asc', 'avg_price_desc',
   'avg_reviews_asc', 'avg_reviews_desc',
+  'added_asc', 'added_desc',
 ];
 const SEVERITY_VALUES: SeverityKey[] = ['none', 'warning', 'critical'];
 const JUMP_VALUES: JumpKey[] = ['500k_to_100k', '100k_to_50k', '100k_to_10k', '50k_to_10k', 'custom'];

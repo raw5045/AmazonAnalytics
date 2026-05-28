@@ -12,7 +12,8 @@ export type SortKey =
   | 'imp' | 'decline'
   | 'title_gap'
   | 'avg_price_asc' | 'avg_price_desc'
-  | 'avg_reviews_asc' | 'avg_reviews_desc';
+  | 'avg_reviews_asc' | 'avg_reviews_desc'
+  | 'added_asc' | 'added_desc';
 
 export type SeverityKey = 'none' | 'warning' | 'critical';
 
