@@ -186,7 +186,7 @@ export function FilterSidebar({
   };
 
   return (
-    <aside className="w-72 border-r sticky top-12 self-start h-[calc(100vh-3rem)] flex flex-col">
+    <aside className="w-72 border-r sticky top-24 self-start h-[calc(100vh-6rem)] flex flex-col">
       {/* Scrollable filter content area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-5">
       <div className="flex items-center justify-between">
