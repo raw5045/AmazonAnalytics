@@ -21,3 +21,5 @@ export * from './poeCalibrationData';
 export * from './modelCalibrationRuns';
 export * from './savedViews';
 export * from './keywordCurrentSummaryLeafCategoryFacets';
+export { watchlistItems } from './watchlistItems';
+export type { WatchlistItemRow } from './watchlistItems';
