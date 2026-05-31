@@ -32,6 +32,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './'),
+      // pnpm's strict layout hides `server-only` (a transitive dep of next)
+      // from vitest's import-analysis. Stub it out in tests; the runtime
+      // contract is enforced by Next.js when actually serving requests.
+      'server-only': path.resolve(__dirname, './tests/stubs/server-only.ts'),
     },
   },
 });
