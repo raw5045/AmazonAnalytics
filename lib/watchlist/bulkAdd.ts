@@ -25,7 +25,7 @@ export class BulkAddInputError extends Error {
   }
 }
 
-const HARD_MAX_INPUT = 500;
+export const HARD_MAX_INPUT = 500;
 
 /**
  * Add a paste-list of keywords to the user's watchlist in one shot.
