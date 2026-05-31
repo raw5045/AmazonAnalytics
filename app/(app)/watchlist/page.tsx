@@ -19,6 +19,7 @@ import { parseExplorerFilters, type SearchParamsLike } from '@/lib/explorer/pars
 import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
 import { WatchlistTable } from './WatchlistTable';
 import { WindowSelector } from './WindowSelector';
+import { BulkAddSection } from './BulkAddSection';
 
 export const metadata: Metadata = { title: 'Watchlist' };
 
@@ -34,14 +35,22 @@ export default async function WatchlistPage({
   const items = await listWatchlistForUser(user.id);
   if (items.length === 0) {
     return (
-      <div className="p-6 max-w-3xl mx-auto text-center text-gray-600">
-        <h1 className="text-2xl font-semibold mb-4">Watchlist</h1>
-        <p>You&apos;re not watching any keywords yet.</p>
-        <p className="mt-1 text-sm">
-          Star a keyword from{' '}
-          <a className="underline" href="/explorer">the explorer</a>{' '}
-          or its detail page to start watching.
-        </p>
+      <div className="p-6">
+        <header className="mb-4">
+          <h1 className="text-2xl font-semibold">Watchlist</h1>
+          <p className="text-sm text-gray-600">
+            0 of {MAX_WATCHED_KEYWORDS} keywords watched
+          </p>
+        </header>
+        <BulkAddSection currentCount={0} />
+        <div className="mt-6 max-w-2xl text-center text-gray-600 mx-auto">
+          <p>You&apos;re not watching any keywords yet.</p>
+          <p className="mt-1 text-sm">
+            Paste a list above, or star a keyword from{' '}
+            <a className="underline" href="/explorer">the explorer</a>{' '}
+            or its detail page to start watching.
+          </p>
+        </div>
       </div>
     );
   }
@@ -78,6 +87,7 @@ export default async function WatchlistPage({
         </div>
         <WindowSelector current={filters.window} />
       </header>
+      <BulkAddSection currentCount={items.length} />
       <WatchlistTable
         initialRows={sortedRows}
         window={filters.window}
