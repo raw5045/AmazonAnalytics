@@ -14,8 +14,8 @@ import { AuthError } from '@/lib/auth/requireAdmin';
 import {
   bulkAddToWatchlist,
   BulkAddInputError,
-  HARD_MAX_INPUT,
 } from '@/lib/watchlist/bulkAdd';
+import { HARD_MAX_INPUT } from '@/lib/watchlist/validation';
 
 export const runtime = 'nodejs';
 

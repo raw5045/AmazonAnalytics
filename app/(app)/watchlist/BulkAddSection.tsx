@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
+import { MAX_WATCHED_KEYWORDS, HARD_MAX_INPUT } from '@/lib/watchlist/validation';
 
 /**
  * Inline bulk-add affordance on /watchlist. A native <details> collapsible
@@ -44,7 +44,7 @@ export function BulkAddSection({ currentCount }: { currentCount: number }) {
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as { error?: string };
         if (body.error === 'too_many_keywords') {
-          setOutcome({ kind: 'error', message: 'Too many keywords (max 500). Paste a smaller list.' });
+          setOutcome({ kind: 'error', message: `Too many keywords (max ${HARD_MAX_INPUT}). Paste a smaller list.` });
         } else {
           setOutcome({ kind: 'error', message: "Couldn't save — try again." });
         }

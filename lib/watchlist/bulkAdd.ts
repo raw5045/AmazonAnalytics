@@ -3,7 +3,7 @@ import { inArray, eq, and } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { searchTerms, watchlistItems } from '@/db/schema';
 import { normalizeForMatch } from '@/lib/analytics/derivedFields';
-import { MAX_WATCHED_KEYWORDS } from './validation';
+import { MAX_WATCHED_KEYWORDS, HARD_MAX_INPUT } from './validation';
 import { watchlistCountForUser } from './loadServer';
 
 export interface BulkAddResult {
@@ -24,8 +24,6 @@ export class BulkAddInputError extends Error {
     this.name = 'BulkAddInputError';
   }
 }
-
-export const HARD_MAX_INPUT = 500;
 
 /**
  * Add a paste-list of keywords to the user's watchlist in one shot.
