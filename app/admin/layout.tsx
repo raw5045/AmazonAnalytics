@@ -40,6 +40,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <Link href="/admin/keepa-enrichment" className="hover:underline">
             Keepa enrichment
           </Link>
+          <Link href="/admin/digests" className="hover:underline">
+            Weekly digests
+          </Link>
           <hr className="my-2 border-gray-200" />
           <Link href="/explorer" className="hover:underline">
             Keyword explorer

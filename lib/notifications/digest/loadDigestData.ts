@@ -1,9 +1,9 @@
 // lib/notifications/digest/loadDigestData.ts
 import 'server-only';
 import type { DigestKeywordRow } from './types';
-import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql, desc } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { users, watchlistItems, searchTerms, keywordCurrentSummary, weeklyDigestSends } from '@/db/schema';
+import { users, watchlistItems, searchTerms, keywordCurrentSummary, keywordCurrentSummaryMeta, reportingWeeks, weeklyDigestRuns, weeklyDigestSends } from '@/db/schema';
 import type { DigestRecipient } from './types';
 
 /** Raw shape returned by the watchlist-rows query (pre-grouping). */
@@ -124,4 +124,58 @@ export async function loadWatchlistRowsByUser(
     .where(inArray(watchlistItems.userId, userIds));
 
   return groupAndSortWatchlistRows(rows as RawWatchlistRow[]);
+}
+
+/** A row for the /admin/digests table: a completed week + its digest run (if any). */
+export interface DigestWeekRow {
+  weekEndDate: string;
+  isCurrent: boolean;
+  runStatus: string | null;        // null = "Not sent"
+  recipientsCount: number | null;
+  sentCount: number | null;
+  failedCount: number | null;
+}
+
+/**
+ * Recent completed weeks joined to their digest run, plus which week is
+ * the current snapshot (the only sendable one).
+ */
+export async function loadDigestWeeks(limit = 12): Promise<DigestWeekRow[]> {
+  const [meta] = await db
+    .select({ current: keywordCurrentSummaryMeta.currentWeekEndDate })
+    .from(keywordCurrentSummaryMeta)
+    .limit(1);
+  const currentWeek = meta?.current ?? null;
+
+  const weeks = await db
+    .select({
+      weekEndDate: reportingWeeks.weekEndDate,
+      runStatus: weeklyDigestRuns.status,
+      recipientsCount: weeklyDigestRuns.recipientsCount,
+      sentCount: weeklyDigestRuns.sentCount,
+      failedCount: weeklyDigestRuns.failedCount,
+    })
+    .from(reportingWeeks)
+    .leftJoin(weeklyDigestRuns, eq(weeklyDigestRuns.weekEndDate, reportingWeeks.weekEndDate))
+    .where(eq(reportingWeeks.isComplete, true))
+    .orderBy(desc(reportingWeeks.weekEndDate))
+    .limit(limit);
+
+  return weeks.map((w) => ({
+    weekEndDate: w.weekEndDate,
+    isCurrent: w.weekEndDate === currentWeek,
+    runStatus: w.runStatus ?? null,
+    recipientsCount: w.recipientsCount ?? null,
+    sentCount: w.sentCount ?? null,
+    failedCount: w.failedCount ?? null,
+  }));
+}
+
+/** The current snapshot week (the only sendable one), or null. */
+export async function getCurrentDigestWeek(): Promise<string | null> {
+  const [meta] = await db
+    .select({ current: keywordCurrentSummaryMeta.currentWeekEndDate })
+    .from(keywordCurrentSummaryMeta)
+    .limit(1);
+  return meta?.current ?? null;
 }
