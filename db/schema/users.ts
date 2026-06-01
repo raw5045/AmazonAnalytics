@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, pgEnum, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, pgEnum, uniqueIndex, boolean } from 'drizzle-orm/pg-core';
 
 export const userRoleEnum = pgEnum('user_role', ['admin', 'standard_user']);
 
@@ -12,6 +12,7 @@ export const users = pgTable(
     role: userRoleEnum('role').notNull().default('standard_user'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+    weeklyDigestSubscribed: boolean('weekly_digest_subscribed').notNull().default(true),
   },
   (t) => ({
     clerkUserIdIdx: uniqueIndex('users_clerk_user_id_idx').on(t.clerkUserId),
