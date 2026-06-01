@@ -19,10 +19,12 @@ export function SendDigestButton({
   weekEndDate,
   runStatus,
   recipientCount,
+  isStaleSending,
 }: {
   weekEndDate: string;
   runStatus: string | null;
   recipientCount: number;
+  isStaleSending: boolean;
 }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('idle');
@@ -31,11 +33,22 @@ export function SendDigestButton({
   if (runStatus === 'sent') {
     return <span className="text-xs text-gray-400">—</span>;
   }
+  // A fresh in-progress send is not actionable; only a *stale* 'sending'
+  // run (crashed past the 15-min mark) can be resumed.
+  if (runStatus === 'sending' && !isStaleSending) {
+    return <span className="text-xs text-blue-700">Sending…</span>;
+  }
 
-  const isRetry = runStatus === 'sent_with_failures' || runStatus === 'sending';
+  // Recoverable states (engine + UI agree): sent_with_failures, failed,
+  // or a stale 'sending'. A null run is a fresh first send.
+  const isRetry =
+    runStatus === 'sent_with_failures' ||
+    runStatus === 'failed' ||
+    runStatus === 'sending';
   const label =
-    runStatus === 'sent_with_failures' ? 'Retry failures'
-    : runStatus === 'sending' ? 'Resume send'
+    runStatus === 'sending' ? 'Resume send'
+    : runStatus === 'sent_with_failures' ? 'Retry failures'
+    : runStatus === 'failed' ? 'Retry send'
     : 'Send digest';
 
   async function fire() {

@@ -4,6 +4,24 @@ import { SendDigestButton } from './SendDigestButton';
 
 export const dynamic = 'force-dynamic';
 
+const STALE_SENDING_MS = 15 * 60 * 1000;
+
+/**
+ * Whether a 'sending' run is stale (crashed past the 15-min mark) and so
+ * resumable. Kept as a module-level helper (not inline in JSX) so the
+ * impure Date.now() read isn't flagged by react-hooks/purity during the
+ * server component's render — same pattern as ResultsTable's relative-time
+ * formatter. The page is dynamic='force-dynamic', so it's evaluated fresh
+ * each request.
+ */
+function isStaleSending(runStatus: string | null, startedAt: string | null): boolean {
+  return (
+    runStatus === 'sending' &&
+    startedAt != null &&
+    Date.now() - Date.parse(startedAt) > STALE_SENDING_MS
+  );
+}
+
 export default async function AdminDigestsPage() {
   const weeks = await loadDigestWeeks();
   const recipientCount = await countSubscribedRecipients();
@@ -50,7 +68,12 @@ export default async function AdminDigestsPage() {
                 <td className="p-2">{digestStatusLabel(w.runStatus, w.recipientsCount, w.sentCount, w.failedCount)}</td>
                 <td className="p-2">
                   {w.isCurrent ? (
-                    <SendDigestButton weekEndDate={w.weekEndDate} runStatus={w.runStatus} recipientCount={recipientCount} />
+                    <SendDigestButton
+                      weekEndDate={w.weekEndDate}
+                      runStatus={w.runStatus}
+                      recipientCount={recipientCount}
+                      isStaleSending={isStaleSending(w.runStatus, w.startedAt)}
+                    />
                   ) : (
                     <span className="text-xs text-gray-400">data not current</span>
                   )}

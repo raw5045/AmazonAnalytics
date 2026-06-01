@@ -131,6 +131,7 @@ export interface DigestWeekRow {
   weekEndDate: string;
   isCurrent: boolean;
   runStatus: string | null;        // null = "Not sent"
+  startedAt: string | null;        // ISO; null when no run row
   recipientsCount: number | null;
   sentCount: number | null;
   failedCount: number | null;
@@ -151,6 +152,7 @@ export async function loadDigestWeeks(limit = 12): Promise<DigestWeekRow[]> {
     .select({
       weekEndDate: reportingWeeks.weekEndDate,
       runStatus: weeklyDigestRuns.status,
+      startedAt: weeklyDigestRuns.startedAt,
       recipientsCount: weeklyDigestRuns.recipientsCount,
       sentCount: weeklyDigestRuns.sentCount,
       failedCount: weeklyDigestRuns.failedCount,
@@ -165,6 +167,7 @@ export async function loadDigestWeeks(limit = 12): Promise<DigestWeekRow[]> {
     weekEndDate: w.weekEndDate,
     isCurrent: w.weekEndDate === currentWeek,
     runStatus: w.runStatus ?? null,
+    startedAt: w.startedAt ? w.startedAt.toISOString() : null,
     recipientsCount: w.recipientsCount ?? null,
     sentCount: w.sentCount ?? null,
     failedCount: w.failedCount ?? null,

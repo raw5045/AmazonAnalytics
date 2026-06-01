@@ -54,7 +54,7 @@ export async function sendWeeklyDigest(opts: {
       .where(
         and(
           eq(weeklyDigestRuns.weekEndDate, weekEndDate),
-          sql`(${weeklyDigestRuns.status} = 'sent_with_failures'
+          sql`(${weeklyDigestRuns.status} IN ('sent_with_failures', 'failed')
                OR (${weeklyDigestRuns.status} = 'sending' AND ${weeklyDigestRuns.startedAt} < ${staleCutoff}))`,
         ),
       )
