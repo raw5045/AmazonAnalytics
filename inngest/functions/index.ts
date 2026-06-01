@@ -5,6 +5,7 @@ import { enrichKeepaForWeek } from './enrichKeepaForWeek';
 import { processMonthlySfr } from './processMonthlySfr';
 import { processCalibrationUpload } from './processCalibrationUpload';
 import { syncKcsKeepaAggregates } from './syncKcsKeepaAggregates';
+import { sendWeeklyDigestFn } from './sendWeeklyDigest';
 
 // Note: `importFileFn` is no longer registered. The batch path
 // (importBatchFn) now calls processFileImport directly via the worker's
@@ -19,4 +20,5 @@ export const functions = [
   processMonthlySfr,
   processCalibrationUpload,
   syncKcsKeepaAggregates,
+  sendWeeklyDigestFn,
 ];
