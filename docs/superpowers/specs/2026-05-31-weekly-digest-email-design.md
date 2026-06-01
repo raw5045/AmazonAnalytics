@@ -104,7 +104,8 @@ CREATE TABLE weekly_digest_runs (
 );
 
 -- One row per (week, user). The grain at which sends are idempotent and
--- retryable: retry re-sends only rows where status = 'failed'.
+-- retryable: a resume re-sends the not-yet-sent rows (status IN
+-- ('failed','pending')); 'sent' rows are never re-touched.
 CREATE TABLE weekly_digest_sends (
   week_end_date  date        NOT NULL
                    REFERENCES weekly_digest_runs(week_end_date) ON DELETE CASCADE,
@@ -156,7 +157,7 @@ GROUP BY u.id, u.email;
 
 Each row → `{ userId, email, watchlistCount }`. `watchlistCount > 0` selects the watchlist variant, `= 0` the broadcast variant.
 
-**Retry mode:** when retrying a `sent_with_failures` week, this set is further restricted to users with a `weekly_digest_sends` row of `status = 'failed'` for that week (using the partial index).
+**Retry mode:** when retrying/resuming a recoverable week, this set is further restricted to users with a **not-yet-sent** `weekly_digest_sends` row — `status IN ('failed','pending')` — for that week. This covers both previously-failed users and users who were seeded but never attempted (e.g. a mid-send crash left them `pending`). Delivered (`sent`) users are excluded, so they're never re-emailed.
 
 ### Query 2 — watched keywords' current-week metrics
 
@@ -206,9 +207,10 @@ interface DigestKeywordRow {
   estMonthlyVolume: number | null;
 }
 
-// All subscribed recipients (optionally restricted to a retry set).
+// All subscribed recipients (optionally restricted to a retry set —
+// the not-yet-sent users for a week: status IN ('failed','pending')).
 export async function loadEligibleRecipients(
-  opts?: { onlyFailedForWeek?: string },
+  opts?: { onlyUnsentForWeek?: string },
 ): Promise<DigestRecipient[]>;
 
 // Watched keyword rows for the given users, grouped + sorted
@@ -304,7 +306,7 @@ export function buildDigestEmail(input: BroadcastInput | WatchlistInput): BuiltE
 ### Flow
 
 1. **Idempotency gate** — `INSERT INTO weekly_digest_runs (week_end_date, status, triggered_by) VALUES ($week, 'sending', $admin) ON CONFLICT (week_end_date) DO NOTHING`. If no row was inserted (week already exists) **and** this is not an explicit retry → exit without sending. Retry mode is signalled by the triggering event payload and is allowed only when the existing row is in a **recoverable** state: either `sent_with_failures`, or a stale `sending` (started > 15 min ago with `finished_at` null — a run that crashed past Inngest's own retries). In retry mode, the gate updates the existing row back to `sending` rather than inserting.
-2. **Load recipients** (Query 1; retry mode restricts to failed rows). Seed `weekly_digest_sends` rows with `status = 'pending'` for any recipient that doesn't already have a row for this week (`ON CONFLICT DO NOTHING`).
+2. **Load recipients** (Query 1; retry mode restricts to **not-yet-sent** rows — `status IN ('failed','pending')` — so a resumed run picks up both previously-failed users and users who were never attempted before a mid-send crash). Seed `weekly_digest_sends` rows with `status = 'pending'` for any recipient that doesn't already have a row for this week (`ON CONFLICT DO NOTHING`).
 3. **Load watchlist rows** (Query 2) for watchlist-variant users; build the per-user map.
 4. **Chunk** recipients into groups of 100 (Resend batch max).
 5. **Per chunk**: build each recipient's personalized `{subject, html, text}` (with their own signed unsubscribe URL + `List-Unsubscribe` headers), call Resend's **batch** endpoint, then write each user's `weekly_digest_sends` row to `sent` (with `resend_id`) or `failed` (with truncated `error`). A `(week, user)` already at `sent` is never re-sent.
@@ -312,7 +314,12 @@ export function buildDigestEmail(input: BroadcastInput | WatchlistInput): BuiltE
 
 ### Idempotency invariant
 
-**Every send is idempotent at the `(week_end_date, user_id)` grain.** We never send to a `(week, user)` already marked `sent`. This makes Inngest's automatic re-invocation (on crash / transient error) safe: a re-run resumes pending/failed users without re-blasting delivered ones.
+**Every send is idempotent at the `(week_end_date, user_id)` grain.** No reachable path ever re-sends to a `(week, user)` already marked `sent`:
+
+- **First send** (`retry=false`): the run-level gate INSERTs the run row; if it already exists the call exits `already_sent`, so the send loop only ever runs once per week for a fresh send — no rows are `sent` yet, so re-blasting is impossible.
+- **Resume/retry** (`retry=true`): the recipient set is filtered to not-yet-sent users (`status IN ('failed','pending')`), so `sent` users are never even loaded.
+
+**Recovery model (important):** because the gate exits `already_sent` on a duplicate `retry=false` invocation, Inngest's *automatic* retries do **not** resume a crashed mid-send run — they simply no-op against the existing run row (which is safe, just not a resume). Recovery from a genuine mid-send crash is **manual**: once the run row has sat stale in `sending` for > 15 min (no `finished_at`), the admin page surfaces a **Resume send** action (retry=true) that re-runs against the not-yet-sent set. Automatic retries still usefully cover *pre-gate* transient errors (e.g. the initial INSERT failing on a Neon blip), since those leave no run row and a retry can cleanly re-enter.
 
 ### Failure handling
 
@@ -320,9 +327,9 @@ export function buildDigestEmail(input: BroadcastInput | WatchlistInput): BuiltE
 |---|---|
 | Double-click / re-send same week | Idempotency gate exits; UI also disables Send once status ≠ "Not sent" |
 | Resend fails for some recipients in a chunk | Those users → `failed`; run → `sent_with_failures`; delivered users untouched |
-| Admin retries failures | Re-run restricted to `status = 'failed'` rows for the current week; delivered users never re-touched |
-| Whole run crashes mid-send | Inngest retry re-invokes; idempotency at `(week, user)` resumes safely. If Inngest exhausts its retries and the row is left stale in `sending` (> 15 min, no `finished_at`), the admin page treats it as recoverable and shows a "Resume send" action on the current-week row |
-| `RESEND_API_KEY` missing (local dev) | Fail-soft: log a warning, mark sends `skipped`/no-op, don't crash — same as existing emails |
+| Admin retries failures | Re-run restricted to not-yet-sent rows (`status IN ('failed','pending')`) for the current week; delivered (`sent`) users never re-touched |
+| Whole run crashes mid-send | Automatic Inngest retries do **not** resume (they no-op against the existing run row — safe, not a resume). Recovery is manual: once the run is stale in `sending` (> 15 min, no `finished_at`) the admin page shows a **Resume send** action, which re-runs against the not-yet-sent set (so both `failed` and never-attempted `pending` users get picked up) |
+| `RESEND_API_KEY` missing (local dev) | Fail-soft: log a warning, leave send rows `pending` (the schema has no `skipped` status), mark the run `sent`, don't crash — same fail-soft spirit as existing emails |
 
 ### Chunk size
 
