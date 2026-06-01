@@ -19,7 +19,8 @@
     "admin:promote": "tsx scripts/promoteAdmin.ts",
     "inngest:dev": "pnpm dlx inngest-cli@latest dev -u http://localhost:3000/api/inngest",
     "worker:dev": "node --env-file=.env.local --import tsx --watch worker/index.ts",
-    "worker:start": "tsx worker/index.ts"
+    "worker:start": "tsx worker/index.ts",
+    "worker:check": "node --env-file=.env.local --import tsx scripts/checkWorkerBoot.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1030.0",
