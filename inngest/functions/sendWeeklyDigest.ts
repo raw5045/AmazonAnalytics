@@ -17,6 +17,13 @@ export const sendWeeklyDigestFn = inngest.createFunction(
     id: 'send-weekly-digest',
     name: 'Send weekly digest',
     concurrency: { limit: 1, key: 'event.data.weekEndDate' },
+    // `concurrency:{limit:1, key:weekEndDate}` serializes same-week
+    // invocations, and the orchestrator's run-level gate makes a duplicate
+    // invocation safe (it exits 'already_sent' against the existing run
+    // row). Automatic retries therefore can't double-send; they usefully
+    // cover only *pre-gate* transient errors (e.g. the initial run-row
+    // INSERT failing on a Neon blip). A genuine mid-send crash is recovered
+    // manually via the admin "Resume send" action, not by these retries.
     retries: 2,
     triggers: [{ event: 'digest.send-weekly' }],
   },

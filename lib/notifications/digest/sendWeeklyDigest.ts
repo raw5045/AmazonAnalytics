@@ -64,9 +64,11 @@ export async function sendWeeklyDigest(opts: {
     }
   }
 
-  // 2. Load recipients (retry restricts to previously-failed users).
+  // 2. Load recipients. On retry/resume, restrict to not-yet-sent users
+  //    (failed OR never-attempted 'pending'), so a resumed crash picks
+  //    up everyone who still needs the email without re-blasting 'sent'.
   const recipients = await loadEligibleRecipients(
-    retry ? { onlyFailedForWeek: weekEndDate } : undefined,
+    retry ? { onlyUnsentForWeek: weekEndDate } : undefined,
   );
 
   // 3. Seed pending send rows (idempotent — skips users already sent).

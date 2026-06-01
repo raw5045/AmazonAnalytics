@@ -56,13 +56,15 @@ function rankAsc(a: DigestKeywordRow, b: DigestKeywordRow): number {
 
 /**
  * All subscribed users with an email, plus their watchlist count (which
- * selects the variant). When `onlyFailedForWeek` is set, restrict to
- * users with a failed send row for that week (retry mode).
+ * selects the variant). When `onlyUnsentForWeek` is set, restrict to users
+ * with a not-yet-sent send row (`status IN ('failed','pending')`) for that
+ * week — used by resume/retry so both previously-failed and never-attempted
+ * users are picked up.
  */
 export async function loadEligibleRecipients(
-  opts?: { onlyFailedForWeek?: string },
+  opts?: { onlyUnsentForWeek?: string },
 ): Promise<DigestRecipient[]> {
-  const failedSubquery = opts?.onlyFailedForWeek
+  const unsentSubquery = opts?.onlyUnsentForWeek
     ? inArray(
         users.id,
         db
@@ -70,8 +72,8 @@ export async function loadEligibleRecipients(
           .from(weeklyDigestSends)
           .where(
             and(
-              eq(weeklyDigestSends.weekEndDate, opts.onlyFailedForWeek),
-              eq(weeklyDigestSends.status, 'failed'),
+              eq(weeklyDigestSends.weekEndDate, opts.onlyUnsentForWeek),
+              inArray(weeklyDigestSends.status, ['failed', 'pending']),
             ),
           ),
       )
@@ -85,7 +87,7 @@ export async function loadEligibleRecipients(
     })
     .from(users)
     .leftJoin(watchlistItems, eq(watchlistItems.userId, users.id))
-    .where(and(isNotNull(users.email), eq(users.weeklyDigestSubscribed, true), failedSubquery))
+    .where(and(isNotNull(users.email), eq(users.weeklyDigestSubscribed, true), unsentSubquery))
     .groupBy(users.id, users.email);
 
   return rows.map((r) => ({
