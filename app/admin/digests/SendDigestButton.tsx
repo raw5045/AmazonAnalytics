@@ -8,12 +8,16 @@ type Phase = 'idle' | 'firing' | 'sent' | 'failed';
 
 /**
  * Send / Retry / Resume button for the current week's digest. Mirrors
- * KeepaEnrichmentButton's idle/firing/sent/failed pattern. The label +
- * confirm copy depend on the current run status:
- *   - null / undefined        → "Send digest"
- *   - 'sent_with_failures'     → "Retry failures"
- *   - 'sending' (stale)        → "Resume send" (retry mode)
- * 'sent' shows nothing (already done).
+ * KeepaEnrichmentButton's idle/firing/sent/failed pattern. The rendering
+ * depends on the current run status:
+ *   - null / undefined        → "Send digest" (fresh send, retry=false)
+ *   - 'sent_with_failures'     → "Retry failures" (retry=true)
+ *   - 'failed'                 → "Retry send" (retry=true)
+ *   - 'sending' + stale        → "Resume send" (retry=true)
+ *   - 'sending' + fresh        → non-actionable "Sending…" indicator
+ *   - 'sent'                   → nothing (already done)
+ * Staleness (a 'sending' run that crashed past the 15-min mark) is
+ * computed server-side in page.tsx and passed via `isStaleSending`.
  */
 export function SendDigestButton({
   weekEndDate,
