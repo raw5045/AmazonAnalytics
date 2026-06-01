@@ -1,5 +1,11 @@
 // lib/notifications/digest/sendWeeklyDigest.ts
-import 'server-only';
+//
+// IMPORTANT: do NOT add `import 'server-only'` here. This module runs on
+// the Railway worker (plain Node via tsx — see worker/index.ts, which
+// registers every Inngest function including sendWeeklyDigestFn). The
+// 'server-only' package throws at import time outside a Next.js Server
+// Component, which crash-loops the entire worker on boot (taking down ALL
+// Inngest jobs, not just the digest). Same applies to ./loadDigestData.
 import { Resend } from 'resend';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';

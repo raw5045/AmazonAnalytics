@@ -1,5 +1,10 @@
 // lib/notifications/digest/loadDigestData.ts
-import 'server-only';
+//
+// IMPORTANT: do NOT add `import 'server-only'` here. This module is pulled
+// into the Railway worker's import graph via sendWeeklyDigest.ts (the
+// worker runs plain Node via tsx). The 'server-only' package throws at
+// import outside a Next.js Server Component and would crash-loop the
+// worker on boot. See the matching note in ./sendWeeklyDigest.ts.
 import type { DigestKeywordRow } from './types';
 import { and, eq, inArray, isNotNull, sql, desc } from 'drizzle-orm';
 import { db } from '@/db/client';
