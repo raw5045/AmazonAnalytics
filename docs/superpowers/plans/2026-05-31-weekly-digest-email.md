@@ -2031,9 +2031,12 @@ EOF
 
 ### Task 7.1 — Environment variable
 
-**Files:**
-- Modify: `.env.local` (local, not committed)
-- Vercel project env (manual)
+`DIGEST_UNSUB_SECRET` must be set in **three** places with the **same value** in the deployed ones. Critical: the digest send runs on the **Railway worker** (Inngest functions are served only from `worker/index.ts` — there is no Vercel `/api/inngest` route), so the worker is where unsubscribe tokens are *signed*. But the unsubscribe link is *verified* by the Vercel route (`app/api/notifications/unsubscribe/route.ts`). Sign and verify must use the identical secret, so **Railway and Vercel must hold the same value** — otherwise every unsubscribe link fails verification.
+
+**Files / places:**
+- `.env.local` (local dev — for the browser preview's own token)
+- Vercel project env (the unsubscribe route runs here)
+- Railway worker env (the send/sign runs here) ← easy to miss
 
 - [ ] **Step 1: Add the secret locally**
 
@@ -2044,7 +2047,11 @@ DIGEST_UNSUB_SECRET=<a long random string, e.g. output of: openssl rand -base64 
 
 - [ ] **Step 2: Add it to Vercel**
 
-In the Vercel project settings → Environment Variables, add `DIGEST_UNSUB_SECRET` (Production + Preview) with a strong random value. (Without it, prod falls back to the insecure dev constant and logs a warning — tokens would still work but be forgeable.)
+Vercel project → Settings → Environment Variables → add `DIGEST_UNSUB_SECRET` (Production + Preview) with the random value. (Without it, prod falls back to the insecure dev constant — tokens would be forgeable.)
+
+- [ ] **Step 3: Add it to Railway (same value as Vercel)**
+
+Railway → the worker service → Variables → add `DIGEST_UNSUB_SECRET` with the **exact same value** used in Vercel. Without it the worker signs unsubscribe links with the dev fallback while Vercel verifies with the real secret → every unsubscribe link shows "Invalid link". While there, confirm the send-path vars the worker also needs are present: `RESEND_API_KEY`, `RESEND_FROM`, `APP_PUBLIC_URL` (these are typically already set because the Keepa-enrichment completion emails send from this same worker).
 
 ### Task 7.2 — Full test suite + typecheck + lint
 
