@@ -18,9 +18,11 @@ type Phase = 'idle' | 'firing' | 'sent' | 'failed';
 export function SendDigestButton({
   weekEndDate,
   runStatus,
+  recipientCount,
 }: {
   weekEndDate: string;
   runStatus: string | null;
+  recipientCount: number;
 }) {
   const router = useRouter();
   const [phase, setPhase] = useState<Phase>('idle');
@@ -39,7 +41,7 @@ export function SendDigestButton({
   async function fire() {
     const confirmMsg =
       `Send the weekly digest for ${weekEndDate} to all subscribed users? ` +
-      `This emails everyone subscribed and can't be unsent.`;
+      `This emails ${recipientCount} recipient${recipientCount === 1 ? '' : 's'} and can't be unsent.`;
     if (!confirm(confirmMsg)) return;
     setError(null);
     setPhase('firing');
@@ -51,7 +53,9 @@ export function SendDigestButton({
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setPhase('sent');
-      // Give the run row a moment to flip to 'sending', then refresh.
+      // The Inngest event is fire-and-forget; refresh to pick up the
+      // run row's status (the inline hint below covers the brief gap
+      // before it flips to 'sending').
       router.refresh();
     } catch (e) {
       setPhase('failed');

@@ -25,6 +25,8 @@ export default async function DigestPreviewPage({
   searchParams: Promise<{ variant?: string }>;
 }) {
   const { variant } = await searchParams;
+  // Admin-gating is enforced by app/admin/layout.tsx (requireAdmin); here
+  // we only need the current user to sign their own preview unsub token.
   const user = await requireAuthenticatedUser();
   const appUrl = process.env.APP_PUBLIC_URL ?? 'https://amazon-analytics-beta.vercel.app';
   const weekEndDate = (await getCurrentDigestWeek()) ?? '2026-01-01';

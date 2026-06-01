@@ -1,11 +1,12 @@
 // app/admin/digests/page.tsx
-import { loadDigestWeeks } from '@/lib/notifications/digest/loadDigestData';
+import { loadDigestWeeks, countSubscribedRecipients } from '@/lib/notifications/digest/loadDigestData';
 import { SendDigestButton } from './SendDigestButton';
 
 export const dynamic = 'force-dynamic';
 
 export default async function AdminDigestsPage() {
   const weeks = await loadDigestWeeks();
+  const recipientCount = await countSubscribedRecipients();
   const currentWeek = weeks.find((w) => w.isCurrent)?.weekEndDate ?? null;
 
   return (
@@ -49,7 +50,7 @@ export default async function AdminDigestsPage() {
                 <td className="p-2">{digestStatusLabel(w.runStatus, w.recipientsCount, w.sentCount, w.failedCount)}</td>
                 <td className="p-2">
                   {w.isCurrent ? (
-                    <SendDigestButton weekEndDate={w.weekEndDate} runStatus={w.runStatus} />
+                    <SendDigestButton weekEndDate={w.weekEndDate} runStatus={w.runStatus} recipientCount={recipientCount} />
                   ) : (
                     <span className="text-xs text-gray-400">data not current</span>
                   )}

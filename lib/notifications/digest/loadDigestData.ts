@@ -179,3 +179,16 @@ export async function getCurrentDigestWeek(): Promise<string | null> {
     .limit(1);
   return meta?.current ?? null;
 }
+
+/**
+ * Count of users who would receive a fresh digest send (subscribed +
+ * have an email). Used by the admin page to show the blast radius in the
+ * Send confirm dialog. (A retry targets a subset; this is the upper bound.)
+ */
+export async function countSubscribedRecipients(): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`COUNT(*)::int` })
+    .from(users)
+    .where(and(isNotNull(users.email), eq(users.weeklyDigestSubscribed, true)));
+  return row?.n ?? 0;
+}
