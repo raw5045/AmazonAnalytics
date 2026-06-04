@@ -35,7 +35,7 @@
  * out on long INSERTs).
  */
 import { Pool, type PoolClient } from 'pg';
-import { pickFitForWeek, buildVolumeExpressions, type FitParams, type PiecewiseFit } from '@/lib/analytics/volumeModel';
+import { pickFitForWeek, buildVolumeExpressions, type FitParams } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 
 export interface RefreshSummaryResult {
