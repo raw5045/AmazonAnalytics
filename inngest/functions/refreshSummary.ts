@@ -35,7 +35,7 @@
  * out on long INSERTs).
  */
 import { Pool, type PoolClient } from 'pg';
-import { pickFitForWeek, type FitParams, type PiecewiseFit } from '@/lib/analytics/volumeModel';
+import { pickFitForWeek, buildPiecewiseSql, weeksBeforeIso, type FitParams, type PiecewiseFit } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 
 export interface RefreshSummaryResult {
@@ -569,72 +569,3 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
 // Recomputing here would (a) duplicate logic, (b) risk drift, and
 // (c) waste ~half the refresh wall time.
 
-/**
- * Build a SQL CASE WHEN expression that computes estimated monthly
- * volume from a piecewise (or single-segment) fit, given:
- *   - the fit (segments + breakpoints)
- *   - the SQL column reference for rank (e.g., "l.actual_rank")
- *   - the starting param index ($N) for the bound params
- *
- * Returns the SQL string + the ordered param values to append to
- * the existing pg query args array.
- *
- * For a 4-segment fit with breakpoints [1000, 10000, 100000], the
- * output looks like:
- *
- *   CASE
- *     WHEN l.actual_rank <= $2::int  THEN ($4::numeric  * power(l.actual_rank::numeric, -$3::numeric))::bigint
- *     WHEN l.actual_rank <= $5::int  THEN ($7::numeric  * power(l.actual_rank::numeric, -$6::numeric))::bigint
- *     WHEN l.actual_rank <= $8::int  THEN ($10::numeric * power(l.actual_rank::numeric, -$9::numeric))::bigint
- *     ELSE                                 ($12::numeric * power(l.actual_rank::numeric, -$11::numeric))::bigint
- *   END
- *
- * For a single-segment fit (no breakpoints), it collapses to:
- *   ($3::numeric * power(l.actual_rank::numeric, -$2::numeric))::bigint
- *
- * Params order: for each non-last segment, (breakpoint, β, A). For
- * the last segment, just (β, A) since there's no breakpoint.
- */
-function buildPiecewiseSql(
-  fit: PiecewiseFit,
-  rankCol: string,
-  startParamIdx: number,
-): { sql: string; params: unknown[] } {
-  const params: unknown[] = [];
-  let nextIdx = startParamIdx;
-  if (fit.segments.length === 0) {
-    return { sql: 'NULL::bigint', params: [] };
-  }
-  if (fit.segments.length === 1) {
-    const s = fit.segments[0];
-    params.push(s.beta.toFixed(6), s.scaleFactor.toFixed(6));
-    const bIdx = nextIdx++;
-    const aIdx = nextIdx++;
-    return {
-      sql: `($${aIdx}::numeric * power(${rankCol}::numeric, -$${bIdx}::numeric))::bigint`,
-      params,
-    };
-  }
-  // Piecewise: WHEN clauses for all but the last segment, ELSE for last.
-  const whenClauses: string[] = [];
-  for (let i = 0; i < fit.segments.length - 1; i++) {
-    const seg = fit.segments[i];
-    const bp = fit.breakpoints[i];
-    params.push(bp, seg.beta.toFixed(6), seg.scaleFactor.toFixed(6));
-    const bpIdx = nextIdx++;
-    const bIdx = nextIdx++;
-    const aIdx = nextIdx++;
-    whenClauses.push(
-      `WHEN ${rankCol} <= $${bpIdx}::int THEN ($${aIdx}::numeric * power(${rankCol}::numeric, -$${bIdx}::numeric))::bigint`,
-    );
-  }
-  const last = fit.segments[fit.segments.length - 1];
-  params.push(last.beta.toFixed(6), last.scaleFactor.toFixed(6));
-  const lastBIdx = nextIdx++;
-  const lastAIdx = nextIdx++;
-  const elseClause = `ELSE ($${lastAIdx}::numeric * power(${rankCol}::numeric, -$${lastBIdx}::numeric))::bigint`;
-  return {
-    sql: `CASE ${whenClauses.join(' ')} ${elseClause} END`,
-    params,
-  };
-}

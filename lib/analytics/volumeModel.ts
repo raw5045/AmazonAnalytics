@@ -488,6 +488,92 @@ function chooseBetas(
   return { sse: bestSse, betas: bestBetas, As: bestAs };
 }
 
+/** Subtract whole weeks from a YYYY-MM-DD date (UTC). */
+export function weeksBeforeIso(yyyyMmDd: string, weeks: number): string {
+  const m = yyyyMmDd.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) throw new Error(`Invalid date format: ${yyyyMmDd}`);
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  d.setUTCDate(d.getUTCDate() - weeks * 7);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Build a SQL expression (+ bound params) mapping a rank column to
+ * estimated volume for the given fit. Params are positional starting
+ * at `startParamIdx`. Returns `NULL::bigint` with no params for an
+ * empty fit.
+ */
+export function buildPiecewiseSql(
+  fit: PiecewiseFit,
+  rankCol: string,
+  startParamIdx: number,
+): { sql: string; params: unknown[] } {
+  const params: unknown[] = [];
+  let nextIdx = startParamIdx;
+  if (fit.segments.length === 0) {
+    return { sql: 'NULL::bigint', params: [] };
+  }
+  if (fit.segments.length === 1) {
+    const s = fit.segments[0];
+    params.push(s.beta.toFixed(6), s.scaleFactor.toFixed(6));
+    const bIdx = nextIdx++;
+    const aIdx = nextIdx++;
+    return {
+      sql: `($${aIdx}::numeric * power(${rankCol}::numeric, -$${bIdx}::numeric))::bigint`,
+      params,
+    };
+  }
+  const whenClauses: string[] = [];
+  for (let i = 0; i < fit.segments.length - 1; i++) {
+    const seg = fit.segments[i];
+    const bp = fit.breakpoints[i];
+    params.push(bp, seg.beta.toFixed(6), seg.scaleFactor.toFixed(6));
+    const bpIdx = nextIdx++;
+    const bIdx = nextIdx++;
+    const aIdx = nextIdx++;
+    whenClauses.push(
+      `WHEN ${rankCol} <= $${bpIdx}::int THEN ($${aIdx}::numeric * power(${rankCol}::numeric, -$${bIdx}::numeric))::bigint`,
+    );
+  }
+  const last = fit.segments[fit.segments.length - 1];
+  params.push(last.beta.toFixed(6), last.scaleFactor.toFixed(6));
+  const lastBIdx = nextIdx++;
+  const lastAIdx = nextIdx++;
+  const elseClause = `ELSE ($${lastAIdx}::numeric * power(${rankCol}::numeric, -$${lastBIdx}::numeric))::bigint`;
+  return { sql: `CASE ${whenClauses.join(' ')} ${elseClause} END`, params };
+}
+
+/**
+ * Build the current-week + lookback volume SQL expressions for the kcs
+ * refresh. For each horizon, pick the fit for that horizon's week
+ * (weeks=0 means the current week) and emit the piecewise SQL applied
+ * to that horizon's rank column. Positional params chain across all
+ * horizons starting at `startParamIdx`. Pure — unit tested.
+ */
+export function buildVolumeExpressions(
+  currentWeekEndDate: string,
+  fits: ReadonlyArray<FitParams>,
+  horizons: ReadonlyArray<{ weeks: number; rankCol: string }>,
+  startParamIdx: number,
+): { exprs: string[]; params: unknown[] } {
+  const exprs: string[] = [];
+  const params: unknown[] = [];
+  let idx = startParamIdx;
+  for (const h of horizons) {
+    const week = h.weeks === 0 ? currentWeekEndDate : weeksBeforeIso(currentWeekEndDate, h.weeks);
+    const sel = pickFitForWeek(week, fits);
+    if (!sel) {
+      exprs.push('NULL::bigint');
+      continue;
+    }
+    const pw = buildPiecewiseSql(sel.fit, h.rankCol, idx);
+    exprs.push(pw.sql);
+    params.push(...pw.params);
+    idx += pw.params.length;
+  }
+  return { exprs, params };
+}
+
 /**
  * Stratified MAPE: partition pairs by rank band, compute MAPE for each.
  * Lets us see whether the model is uniformly good or only good in some

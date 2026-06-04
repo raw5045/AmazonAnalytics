@@ -10,6 +10,9 @@ import {
   pickFitForWeek,
   endOfMonthIso,
   anchoredPiecewiseGridSearch,
+  weeksBeforeIso,
+  buildPiecewiseSql,
+  buildVolumeExpressions,
   type FitParams,
   type PiecewiseFit,
 } from './volumeModel';
@@ -407,5 +410,63 @@ describe('anchoredPiecewiseGridSearch', () => {
     const result = anchoredPiecewiseGridSearch([...goodPairs, ...outliers], { anchor, trimDropRatio: 10 });
     expect(result.nDropped).toBe(3); // all 3 outliers found and dropped
     expect(result.iterations).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('weeksBeforeIso', () => {
+  it('subtracts whole weeks (UTC, no tz drift)', () => {
+    expect(weeksBeforeIso('2026-05-30', 4)).toBe('2026-05-02');
+    expect(weeksBeforeIso('2026-05-30', 13)).toBe('2026-02-28');
+    expect(weeksBeforeIso('2026-05-30', 52)).toBe('2025-05-31');
+  });
+  it('throws on bad format', () => {
+    expect(() => weeksBeforeIso('2026/05/30', 4)).toThrow();
+  });
+});
+
+describe('buildPiecewiseSql', () => {
+  const single: FitParams = {
+    calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-21',
+    beta: 0.5, scaleFactor: 1000, breakpoints: [], segments: [{ beta: 0.5, scaleFactor: 1000 }],
+  };
+  it('single segment uses two sequential params from startParamIdx', () => {
+    const { sql, params } = buildPiecewiseSql(single, 'l.actual_rank', 2);
+    expect(sql).toBe('($3::numeric * power(l.actual_rank::numeric, -$2::numeric))::bigint');
+    expect(params).toEqual(['0.500000', '1000.000000']);
+  });
+  it('piecewise chains breakpoint+beta+scale params', () => {
+    const pw: FitParams = {
+      calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-21',
+      beta: 0.4, scaleFactor: 2000, breakpoints: [1000],
+      segments: [{ beta: 0.4, scaleFactor: 2000 }, { beta: 0.6, scaleFactor: 3000 }],
+    };
+    const { sql, params } = buildPiecewiseSql(pw, 'r4.actual_rank', 5);
+    expect(sql).toContain('WHEN r4.actual_rank <= $5::int');
+    expect(sql).toContain('$7::numeric * power(r4.actual_rank::numeric, -$6::numeric)');
+    expect(sql).toContain('ELSE ($9::numeric * power(r4.actual_rank::numeric, -$8::numeric))');
+    expect(params).toEqual([1000, '0.400000', '2000.000000', '0.600000', '3000.000000']);
+  });
+});
+
+describe('buildVolumeExpressions', () => {
+  const fit: FitParams = {
+    calibrationMonthEndDate: '2026-04-30', fittedAt: '2026-05-21',
+    beta: 0.5, scaleFactor: 1000, breakpoints: [], segments: [{ beta: 0.5, scaleFactor: 1000 }],
+  };
+  const horizons = [
+    { weeks: 0, rankCol: 'l.actual_rank' },
+    { weeks: 4, rankCol: 'r4.actual_rank' },
+  ];
+  it('produces one expr per horizon with chained param indices', () => {
+    const { exprs, params } = buildVolumeExpressions('2026-05-30', [fit], horizons, 2);
+    expect(exprs).toHaveLength(2);
+    expect(exprs[0]).toBe('($3::numeric * power(l.actual_rank::numeric, -$2::numeric))::bigint');
+    expect(exprs[1]).toBe('($5::numeric * power(r4.actual_rank::numeric, -$4::numeric))::bigint');
+    expect(params).toEqual(['0.500000', '1000.000000', '0.500000', '1000.000000']);
+  });
+  it('emits NULL::bigint (no params) when no fits exist', () => {
+    const { exprs, params } = buildVolumeExpressions('2026-05-30', [], horizons, 2);
+    expect(exprs).toEqual(['NULL::bigint', 'NULL::bigint']);
+    expect(params).toEqual([]);
   });
 });
