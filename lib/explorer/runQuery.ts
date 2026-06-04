@@ -83,6 +83,10 @@ interface RawRow {
   // bigint comes back as string from pg/neon-http to avoid 53-bit
   // precision loss. Mapper parses to number.
   estimated_monthly_volume_current: string | number | null;
+  estimated_monthly_volume_4w_ago: string | number | null;
+  estimated_monthly_volume_13w_ago: string | number | null;
+  estimated_monthly_volume_26w_ago: string | number | null;
+  estimated_monthly_volume_52w_ago: string | number | null;
   avg_price_cents: string | number | null;
   avg_reviews: number | null;
   top_clicked_leaf_category: string | null;
@@ -122,6 +126,10 @@ function canUseDefaultTotal(f: ExplorerFilters): boolean {
     f.q === null
     && f.rankMin === null
     && f.rankMax === null
+    && f.volume4wAgoMin === null && f.volume4wAgoMax === null
+    && f.volume13wAgoMin === null && f.volume13wAgoMax === null
+    && f.volume26wAgoMin === null && f.volume26wAgoMax === null
+    && f.volume52wAgoMin === null && f.volume52wAgoMax === null
     && f.jump === null
     && f.category === null
     && f.titleMatchMode === null
@@ -140,6 +148,10 @@ function canUseCategoryFacet(f: ExplorerFilters): boolean {
     f.q === null
     && f.rankMin === null
     && f.rankMax === null
+    && f.volume4wAgoMin === null && f.volume4wAgoMax === null
+    && f.volume13wAgoMin === null && f.volume13wAgoMax === null
+    && f.volume26wAgoMin === null && f.volume26wAgoMax === null
+    && f.volume52wAgoMin === null && f.volume52wAgoMax === null
     && f.jump === null
     && f.category !== null
     && f.titleMatchMode === null
@@ -159,6 +171,10 @@ function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
     f.q === null
     && f.rankMin === null
     && f.rankMax === null
+    && f.volume4wAgoMin === null && f.volume4wAgoMax === null
+    && f.volume13wAgoMin === null && f.volume13wAgoMax === null
+    && f.volume26wAgoMin === null && f.volume26wAgoMax === null
+    && f.volume52wAgoMin === null && f.volume52wAgoMax === null
     && f.jump === null
     && f.category === null
     && f.leafCategories.length === 1
@@ -289,6 +305,10 @@ export async function runExplorerQuery(
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
     estimatedMonthlyVolumeCurrent: parseBigint(r.estimated_monthly_volume_current),
+    estimatedMonthlyVolume4wAgo: parseBigint(r.estimated_monthly_volume_4w_ago),
+    estimatedMonthlyVolume13wAgo: parseBigint(r.estimated_monthly_volume_13w_ago),
+    estimatedMonthlyVolume26wAgo: parseBigint(r.estimated_monthly_volume_26w_ago),
+    estimatedMonthlyVolume52wAgo: parseBigint(r.estimated_monthly_volume_52w_ago),
     avgPriceCents: parseBigint(r.avg_price_cents),
     avgReviews: r.avg_reviews ?? null,
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,

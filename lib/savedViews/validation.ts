@@ -57,6 +57,14 @@ function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
   if (typeof f.q === 'string' && f.q.length > 0) p.q = f.q;
   if (typeof f.rankMin === 'number') p.rank_min = String(f.rankMin);
   if (typeof f.rankMax === 'number') p.rank_max = String(f.rankMax);
+  if (typeof f.volume4wAgoMin === 'number') p.vol_4w_min = String(f.volume4wAgoMin);
+  if (typeof f.volume4wAgoMax === 'number') p.vol_4w_max = String(f.volume4wAgoMax);
+  if (typeof f.volume13wAgoMin === 'number') p.vol_13w_min = String(f.volume13wAgoMin);
+  if (typeof f.volume13wAgoMax === 'number') p.vol_13w_max = String(f.volume13wAgoMax);
+  if (typeof f.volume26wAgoMin === 'number') p.vol_26w_min = String(f.volume26wAgoMin);
+  if (typeof f.volume26wAgoMax === 'number') p.vol_26w_max = String(f.volume26wAgoMax);
+  if (typeof f.volume52wAgoMin === 'number') p.vol_52w_min = String(f.volume52wAgoMin);
+  if (typeof f.volume52wAgoMax === 'number') p.vol_52w_max = String(f.volume52wAgoMax);
   if (typeof f.jump === 'string') p.jump = f.jump;
   if (typeof f.jumpFrom === 'number') p.jump_from = String(f.jumpFrom);
   if (typeof f.jumpTo === 'number') p.jump_to = String(f.jumpTo);

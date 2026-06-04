@@ -27,6 +27,14 @@ describe('parseExplorerFilters', () => {
       q: 'wireless',
       rankMin: 1,
       rankMax: 1000,
+      volume4wAgoMin: null,
+      volume4wAgoMax: null,
+      volume13wAgoMin: null,
+      volume13wAgoMax: null,
+      volume26wAgoMin: null,
+      volume26wAgoMax: null,
+      volume52wAgoMin: null,
+      volume52wAgoMax: null,
       jump: '500k_to_100k',
       jumpFrom: null,
       jumpTo: null,
@@ -147,5 +155,17 @@ describe('parseExplorerFilters', () => {
   it('handles array-form params (Next.js can pass string[])', () => {
     const f = parseExplorerFilters({ window: ['52w', '1w'] });
     expect(f.window).toBe('52w');
+  });
+});
+
+describe('parseExplorerFilters — volume lookback', () => {
+  it('parses vol_Nw_min / vol_Nw_max', () => {
+    const f = parseExplorerFilters({ vol_4w_min: '500', vol_13w_max: '20000' });
+    expect(f.volume4wAgoMin).toBe(500);
+    expect(f.volume4wAgoMax).toBeNull();
+    expect(f.volume13wAgoMax).toBe(20000);
+  });
+  it('accepts the new sort keys', () => {
+    expect(parseExplorerFilters({ sort: 'vol_26w_desc' }).sort).toBe('vol_26w_desc');
   });
 });
