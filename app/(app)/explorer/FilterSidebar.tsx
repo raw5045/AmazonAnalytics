@@ -46,6 +46,10 @@ const SORTS: Array<{ value: SortKey; label: string }> = [
   { value: 'avg_price_desc', label: 'Most expensive avg price (top-3)' },
   { value: 'avg_reviews_asc', label: 'Fewest avg reviews (top-3)' },
   { value: 'avg_reviews_desc', label: 'Most avg reviews (top-3)' },
+  { value: 'vol_4w_desc', label: 'Highest volume 4w ago' },
+  { value: 'vol_13w_desc', label: 'Highest volume 13w ago' },
+  { value: 'vol_26w_desc', label: 'Highest volume 26w ago' },
+  { value: 'vol_52w_desc', label: 'Highest volume 52w ago' },
 ];
 
 const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
@@ -59,6 +63,10 @@ interface PendingFilters {
   q: string;
   rankBest: string;
   rankWorst: string;
+  volume4wAgoMin: string; volume4wAgoMax: string;
+  volume13wAgoMin: string; volume13wAgoMax: string;
+  volume26wAgoMin: string; volume26wAgoMax: string;
+  volume52wAgoMin: string; volume52wAgoMax: string;
   jump: JumpKey | '';
   /** Numeric string; only used when jump === 'custom'. */
   jumpFrom: string;
@@ -79,6 +87,14 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     q: f.q ?? '',
     rankBest: f.rankMin?.toString() ?? '',
     rankWorst: f.rankMax?.toString() ?? '',
+    volume4wAgoMin: f.volume4wAgoMin?.toString() ?? '',
+    volume4wAgoMax: f.volume4wAgoMax?.toString() ?? '',
+    volume13wAgoMin: f.volume13wAgoMin?.toString() ?? '',
+    volume13wAgoMax: f.volume13wAgoMax?.toString() ?? '',
+    volume26wAgoMin: f.volume26wAgoMin?.toString() ?? '',
+    volume26wAgoMax: f.volume26wAgoMax?.toString() ?? '',
+    volume52wAgoMin: f.volume52wAgoMin?.toString() ?? '',
+    volume52wAgoMax: f.volume52wAgoMax?.toString() ?? '',
     jump: f.jump ?? '',
     jumpFrom: f.jumpFrom?.toString() ?? '',
     jumpTo: f.jumpTo?.toString() ?? '',
@@ -99,6 +115,14 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.q.trim().length >= 3) params.set('q', p.q.trim());
   if (p.rankBest) params.set('rank_min', p.rankBest);
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
+  if (p.volume4wAgoMin) params.set('vol_4w_min', p.volume4wAgoMin);
+  if (p.volume4wAgoMax) params.set('vol_4w_max', p.volume4wAgoMax);
+  if (p.volume13wAgoMin) params.set('vol_13w_min', p.volume13wAgoMin);
+  if (p.volume13wAgoMax) params.set('vol_13w_max', p.volume13wAgoMax);
+  if (p.volume26wAgoMin) params.set('vol_26w_min', p.volume26wAgoMin);
+  if (p.volume26wAgoMax) params.set('vol_26w_max', p.volume26wAgoMax);
+  if (p.volume52wAgoMin) params.set('vol_52w_min', p.volume52wAgoMin);
+  if (p.volume52wAgoMax) params.set('vol_52w_max', p.volume52wAgoMax);
   if (p.jump) {
     params.set('jump', p.jump);
     if (p.jump === 'custom') {
@@ -263,6 +287,37 @@ export function FilterSidebar({
         </div>
         <p className="text-xs text-gray-500 mt-1">Lower number = more searches. e.g. Best 1, Worst 10000 = top-10k.</p>
       </FieldGroup>
+
+      {([
+        ['4w', 'volume4wAgoMin', 'volume4wAgoMax'],
+        ['13w', 'volume13wAgoMin', 'volume13wAgoMax'],
+        ['26w', 'volume26wAgoMin', 'volume26wAgoMax'],
+        ['52w', 'volume52wAgoMin', 'volume52wAgoMax'],
+      ] as const).map(([label, minKey, maxKey]) => (
+        <FieldGroup key={minKey} label={`Est. volume ${label} ago`}>
+          <div className="flex gap-2">
+            <input
+              type="number" min={1}
+              value={pending[minKey]}
+              onChange={(e) => set(minKey, e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && apply()}
+              placeholder="Min"
+              className="filter-input flex-1"
+              aria-label={`Min est. volume ${label} ago`}
+            />
+            <input
+              type="number" min={1}
+              value={pending[maxKey]}
+              onChange={(e) => set(maxKey, e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && apply()}
+              placeholder="Max"
+              className="filter-input flex-1"
+              aria-label={`Max est. volume ${label} ago`}
+            />
+          </div>
+          <p className="text-xs text-gray-500 mt-1">Estimated monthly searches {label} ago (directional, ±~30%).</p>
+        </FieldGroup>
+      ))}
 
       <FieldGroup label="Threshold jump">
         <select
