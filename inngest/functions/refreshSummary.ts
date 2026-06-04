@@ -35,7 +35,7 @@
  * out on long INSERTs).
  */
 import { Pool, type PoolClient } from 'pg';
-import { pickFitForWeek, buildPiecewiseSql, weeksBeforeIso, type FitParams, type PiecewiseFit } from '@/lib/analytics/volumeModel';
+import { pickFitForWeek, buildVolumeExpressions, type FitParams, type PiecewiseFit } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 
 export interface RefreshSummaryResult {
@@ -123,12 +123,19 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       : null;
     const chosenIsExtrapolated = volumeSelection?.isExtrapolated ?? false;
 
-    // Build the SQL CASE WHEN expression + param list for the picked
-    // fit. Params start at $2 because $1 is currentWeekEndDate (used
-    // later in the INSERT for the `weeks_since_seen` calculation).
-    const piecewiseSql = volumeSelection
-      ? buildPiecewiseSql(volumeSelection.fit, 'l.actual_rank', 2)
-      : null;
+    // Build the current-week + 4 lookback volume expressions in one pass.
+    // Param indices start at $2 ($1 is currentWeekEndDate). rankCol aliases
+    // mirror the LEFT JOINs in the INSERT below (l = latest_per_term,
+    // rN = rank_at_Nw).
+    const VOLUME_HORIZONS = [
+      { weeks: 0, rankCol: 'l.actual_rank' },
+      { weeks: 4, rankCol: 'r4.actual_rank' },
+      { weeks: 13, rankCol: 'r13.actual_rank' },
+      { weeks: 26, rankCol: 'r26.actual_rank' },
+      { weeks: 52, rankCol: 'r52.actual_rank' },
+    ] as const;
+    const volume = buildVolumeExpressions(currentWeekEndDate, fits, VOLUME_HORIZONS, 2);
+    // volume.exprs[0]=current, [1]=4w, [2]=13w, [3]=26w, [4]=52w
 
     // Stage-and-swap pattern (Plan 3.2 perf fix #4):
     //   - Build the new snapshot inside `keyword_current_summary_stage`,
@@ -184,13 +191,9 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // or maintain it incrementally on each import.
 
     // 4. INSERT into the stage table (the live table is untouched).
-    //    estimated_monthly_volume_current is computed inline via a
-    //    piecewise SQL CASE expression built from the chosen fit
-    //    (or NULL when no fit exists). Param indices for the
-    //    piecewise expression start at $2; the existing
-    //    weeks_since_seen calc uses $1.
-    const volumeExpression = piecewiseSql ? piecewiseSql.sql : 'NULL::bigint';
-    const volumeParams = piecewiseSql ? piecewiseSql.params : [];
+    //    Estimated-volume expressions for current + 4 lookbacks are
+    //    built by buildVolumeExpressions. Param indices start at $2;
+    //    $1 is currentWeekEndDate (weeks_since_seen calc).
     const insertResult = await client.query(
       `
       INSERT INTO keyword_current_summary_stage (
@@ -211,6 +214,8 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         keyword_in_title_1_loose_current, keyword_in_title_2_loose_current, keyword_in_title_3_loose_current,
         keyword_title_match_count_loose_current,
         estimated_monthly_volume_current,
+        estimated_monthly_volume_4w_ago, estimated_monthly_volume_13w_ago,
+        estimated_monthly_volume_26w_ago, estimated_monthly_volume_52w_ago,
         lowest_price_cents, highest_price_cents,
         least_reviews, most_reviews,
         avg_price_cents, avg_reviews,
@@ -263,9 +268,13 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         l.keyword_in_title_2_loose AS in_title_2_loose,
         l.keyword_in_title_3_loose AS in_title_3_loose,
         l.keyword_title_match_count_loose AS title_match_count_loose,
-        -- Estimated volume — see buildPiecewiseSql (single or
-        -- multi-segment CASE WHEN). NULL when no fit was selected.
-        ${volumeExpression} AS estimated_monthly_volume_current,
+        -- Estimated volume — built by buildVolumeExpressions (single or
+        -- multi-segment CASE WHEN per horizon). NULL when no fit was selected.
+        ${volume.exprs[0]} AS estimated_monthly_volume_current,
+        ${volume.exprs[1]} AS estimated_monthly_volume_4w_ago,
+        ${volume.exprs[2]} AS estimated_monthly_volume_13w_ago,
+        ${volume.exprs[3]} AS estimated_monthly_volume_26w_ago,
+        ${volume.exprs[4]} AS estimated_monthly_volume_52w_ago,
         -- Keepa price/review aggregates over the top-3 ASINs at the
         -- current week. LEAST/GREATEST ignore NULLs, so a row whose
         -- top-3 are only partially enriched still gets sensible
@@ -297,7 +306,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       LEFT JOIN asin_enriched_current p2 ON p2.asin = l.top_clicked_product_2_asin
       LEFT JOIN asin_enriched_current p3 ON p3.asin = l.top_clicked_product_3_asin
       `,
-      [currentWeekEndDate, ...volumeParams],
+      [currentWeekEndDate, ...volume.params],
     );
     rowsWritten = insertResult.rowCount ?? 0;
 
