@@ -87,6 +87,14 @@ export const keywordCurrentSummary = pgTable(
      */
     estimatedMonthlyVolumeCurrent: bigint('estimated_monthly_volume_current', { mode: 'number' }),
 
+    // Lookback estimated monthly volume at the same horizons kcs stores
+    // ranks (computed in refreshSummary from rank_Nw_ago + the fit for
+    // that horizon's week). NULL when no fit exists or rank is NULL.
+    estimatedMonthlyVolume4wAgo: bigint('estimated_monthly_volume_4w_ago', { mode: 'number' }),
+    estimatedMonthlyVolume13wAgo: bigint('estimated_monthly_volume_13w_ago', { mode: 'number' }),
+    estimatedMonthlyVolume26wAgo: bigint('estimated_monthly_volume_26w_ago', { mode: 'number' }),
+    estimatedMonthlyVolume52wAgo: bigint('estimated_monthly_volume_52w_ago', { mode: 'number' }),
+
     /**
      * Keepa-derived aggregates over the top-3 clicked ASINs at the
      * current week. NULL when all 3 ASINs are unenriched. See
@@ -123,6 +131,10 @@ export const keywordCurrentSummary = pgTable(
     jump26wIdx: index('kcs_jump_26w_idx').on(t.rank26wAgo, t.currentRank),
     jump52wIdx: index('kcs_jump_52w_idx').on(t.rank52wAgo, t.currentRank),
     estVolIdx: index('kcs_est_vol_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolumeCurrent),
+    estVol4wIdx: index('kcs_est_vol_4w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume4wAgo),
+    estVol13wIdx: index('kcs_est_vol_13w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume13wAgo),
+    estVol26wIdx: index('kcs_est_vol_26w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume26wAgo),
+    estVol52wIdx: index('kcs_est_vol_52w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume52wAgo),
     leafCategoryIdx: index('kcs_leaf_category_idx').on(t.currentWeekEndDate, t.topClickedLeafCategory),
     lowestPriceIdx: index('kcs_lowest_price_idx').on(t.currentWeekEndDate, t.lowestPriceCents),
     mostReviewsIdx: index('kcs_most_reviews_idx').on(t.currentWeekEndDate, t.mostReviews),
