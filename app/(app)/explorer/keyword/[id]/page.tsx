@@ -18,6 +18,7 @@ import { isKeywordWatched } from '@/lib/watchlist/loadServer';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { RawDataTable } from './RawDataTable';
 import { RankChart } from './RankChart';
+import { VolumeChart } from './VolumeChart';
 import { FakeVolumeStrip } from './FakeVolumeStrip';
 import { TitleMatchHistory } from './TitleMatchHistory';
 import { KeywordVariantsBox } from './KeywordVariantsBox';
@@ -147,6 +148,13 @@ export default async function KeywordDetailPage({
 
       <section className="mt-6">
         <RankChart
+          history={history}
+          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
+        />
+      </section>
+
+      <section className="mt-6">
+        <VolumeChart
           history={history}
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
