@@ -7,9 +7,7 @@ import 'server-only';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
-import { parseExplorerFilters } from '@/lib/explorer/parseFilters';
-import type { ExplorerFilters } from '@/lib/explorer/types';
-import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
+import { MAX_VIEWS_PER_USER, normalizeFiltersBlob } from '@/lib/savedViews/validation';
 import type { SavedView } from './types';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -59,32 +57,3 @@ export async function loadSavedViewForUser(userId: string, viewId: string): Prom
   };
 }
 
-/**
- * Take a `filters` blob from the DB (jsonb) and return a fully-typed
- * ExplorerFilters with all defaults filled in. Routes the blob
- * through parseExplorerFilters indirectly via a shape transform so
- * any missing fields default cleanly.
- */
-function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
-  if (!blob || typeof blob !== 'object') return parseExplorerFilters({});
-  const f = blob as Record<string, unknown>;
-  return {
-    window: (f.window as ExplorerFilters['window']) ?? '1w',
-    q: typeof f.q === 'string' ? f.q : null,
-    rankMin: typeof f.rankMin === 'number' ? f.rankMin : null,
-    rankMax: typeof f.rankMax === 'number' ? f.rankMax : null,
-    jump: (f.jump as ExplorerFilters['jump']) ?? null,
-    jumpMetric: 'rank',
-    jumpFrom: typeof f.jumpFrom === 'number' ? f.jumpFrom : null,
-    jumpTo: typeof f.jumpTo === 'number' ? f.jumpTo : null,
-    category: typeof f.category === 'string' ? f.category : null,
-    leafCategories: Array.isArray(f.leafCategories) ? (f.leafCategories as string[]) : [],
-    severities: Array.isArray(f.severities) ? (f.severities as ExplorerFilters['severities']) : ['none', 'warning'],
-    titleSlots: Array.isArray(f.titleSlots) ? (f.titleSlots as number[]) : [1, 2, 3],
-    titleMatchMode: (f.titleMatchMode as ExplorerFilters['titleMatchMode']) ?? null,
-    matchMode: (f.matchMode as ExplorerFilters['matchMode']) ?? 'loose',
-    sort: (f.sort as ExplorerFilters['sort']) ?? 'rank',
-    page: 1,
-    perPage: 100,
-  };
-}
