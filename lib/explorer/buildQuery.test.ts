@@ -321,6 +321,43 @@ describe('buildExplorerQuery', () => {
     });
   });
 
+  describe('Movement jump — metric-aware', () => {
+    it('rank preset emits the rank-column jump clause (unchanged behavior)', () => {
+      const { sql, countArgs } = buildExplorerQuery({ ...baseFilters, jump: '500k_to_100k', jumpMetric: 'rank' });
+      expect(norm(sql)).toContain('kcs.prior_week_rank >');
+      expect(norm(sql)).toContain('kcs.current_rank <');
+      expect(countArgs).toContain(500_000);
+      expect(countArgs).toContain(100_000);
+    });
+
+    it('volume preset emits the volume-column jump clause', () => {
+      const { sql, countArgs } = buildExplorerQuery({
+        ...baseFilters, window: '13w', jump: 'v15k_to_30k', jumpMetric: 'volume',
+      });
+      expect(norm(sql)).toContain('kcs.estimated_monthly_volume_13w_ago <');
+      expect(norm(sql)).toContain('kcs.estimated_monthly_volume_current >');
+      expect(countArgs).toContain(15_000);
+      expect(countArgs).toContain(30_000);
+    });
+
+    it('volume jump at 1w uses the 1w volume column', () => {
+      const { sql } = buildExplorerQuery({
+        ...baseFilters, window: '1w', jump: 'v5k_to_15k', jumpMetric: 'volume',
+      });
+      expect(norm(sql)).toContain('kcs.estimated_monthly_volume_1w_ago <');
+    });
+
+    it('volume custom uses jumpFrom/jumpTo', () => {
+      const { sql, countArgs } = buildExplorerQuery({
+        ...baseFilters, window: '4w', jump: 'custom', jumpMetric: 'volume', jumpFrom: 5000, jumpTo: 15000,
+      });
+      expect(norm(sql)).toContain('kcs.estimated_monthly_volume_4w_ago <');
+      expect(norm(sql)).toContain('kcs.estimated_monthly_volume_current >');
+      expect(countArgs).toContain(5000);
+      expect(countArgs).toContain(15000);
+    });
+  });
+
   describe('buildExplorerQuery — volume lookback', () => {
     it('emits a WHERE for a volume min filter', () => {
       const { sql } = buildExplorerQuery({ ...EXPLORER_DEFAULTS, volume4wAgoMin: 1000 });

@@ -15,30 +15,10 @@
 import type {
   BuiltExplorerQuery,
   ExplorerFilters,
-  JumpKey,
   MatchMode,
   WindowKey,
 } from './types';
-
-/**
- * Map preset JumpKeys to (rank_Nw_ago > X, current_rank < Y) thresholds.
- * The 'custom' variant reads from filters.jumpFrom / filters.jumpTo
- * instead — see the dispatch in buildExplorerQuery.
- *
- * The SQL applied is `rank_${window}w_ago > X AND current_rank < Y`.
- */
-type PresetJumpKey = Exclude<JumpKey, 'custom'>;
-const JUMP_THRESHOLDS: Record<PresetJumpKey, { from: number; to: number }> = {
-  '500k_to_100k': { from: 500_000, to: 100_000 },
-  '100k_to_50k': { from: 100_000, to: 50_000 },
-  '100k_to_10k': { from: 100_000, to: 10_000 },
-  '50k_to_10k': { from: 50_000, to: 10_000 },
-  // Volume presets — thresholds used by Task 5 when jumpMetric === 'volume'.
-  'v5k_to_15k':   { from: 5_000,  to: 15_000 },
-  'v15k_to_30k':  { from: 15_000, to: 30_000 },
-  'v30k_to_100k': { from: 30_000, to: 100_000 },
-  'v15k_to_100k': { from: 15_000, to: 100_000 },
-};
+import { findJumpPreset } from './jumpPresets';
 
 const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
   '1w': 'prior_week_rank',
@@ -46,6 +26,14 @@ const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
   '13w': 'rank_13w_ago',
   '26w': 'rank_26w_ago',
   '52w': 'rank_52w_ago',
+};
+
+const WINDOW_TO_VOLUME_COLUMN: Record<WindowKey, string> = {
+  '1w': 'estimated_monthly_volume_1w_ago',
+  '4w': 'estimated_monthly_volume_4w_ago',
+  '13w': 'estimated_monthly_volume_13w_ago',
+  '26w': 'estimated_monthly_volume_26w_ago',
+  '52w': 'estimated_monthly_volume_52w_ago',
 };
 
 const WINDOW_TO_IMPROVEMENT_COLUMN: Record<WindowKey, string> = {
@@ -120,22 +108,27 @@ export function buildExplorerQuery(
     if (max !== null) where.push(`kcs.${col} <= ${next(max)}`);
   }
 
-  // 1.4 — threshold jump (uses the window-specific rank_Nw_ago column)
+  // 1.4 — Movement jump. Resolve (from, to) from a preset or custom inputs,
+  // then emit the clause for the selected metric. Both directions mean
+  // "got better": rank improves as the number falls, volume as it rises.
   if (filters.jump) {
-    let from: number;
-    let to: number;
+    let from: number | null = null;
+    let to: number | null = null;
     if (filters.jump === 'custom') {
-      // parseFilters has already validated that both values are present
-      // and from > to when jump === 'custom'; non-null asserts are safe.
-      from = filters.jumpFrom!;
-      to = filters.jumpTo!;
+      from = filters.jumpFrom;
+      to = filters.jumpTo;
     } else {
-      ({ from, to } = JUMP_THRESHOLDS[filters.jump]);
+      const found = findJumpPreset(filters.jump);
+      if (found) { from = found.preset.from; to = found.preset.to; }
     }
-    const fromParam = next(from);
-    const toParam = next(to);
-    // For the 1w window we use prior_week_rank; for other windows we use rank_Nw_ago.
-    where.push(`kcs.${priorRankCol} > ${fromParam} AND kcs.current_rank < ${toParam}`);
+    if (from !== null && to !== null) {
+      if (filters.jumpMetric === 'volume') {
+        const volCol = WINDOW_TO_VOLUME_COLUMN[filters.window];
+        where.push(`kcs.${volCol} < ${next(from)} AND kcs.estimated_monthly_volume_current > ${next(to)}`);
+      } else {
+        where.push(`kcs.${priorRankCol} > ${next(from)} AND kcs.current_rank < ${next(to)}`);
+      }
+    }
   }
 
   // 1.5 — top clicked category #1 (broad)
