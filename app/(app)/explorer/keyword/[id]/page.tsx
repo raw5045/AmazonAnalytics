@@ -10,12 +10,12 @@
  * Subsequent commits add RankChart, FakeVolumeStrip, etc.
  */
 import type { Metadata } from 'next';
-import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { fetchKeywordDetail, type EnrichedProduct } from '@/lib/explorer/fetchKeywordDetail';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isKeywordWatched } from '@/lib/watchlist/loadServer';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
+import { BackToExplorer } from './BackToExplorer';
 import { RawDataTable } from './RawDataTable';
 import { RankChart } from './RankChart';
 import { VolumeChart } from './VolumeChart';
@@ -49,6 +49,10 @@ export default async function KeywordDetailPage({
   const fromRaw = Array.isArray(sp.from) ? sp.from[0] : sp.from;
   // Only allow same-origin /explorer URLs (defense against open-redirect via from=).
   const backHref = fromRaw && fromRaw.startsWith('/explorer') ? fromRaw : '/explorer';
+  // True when we arrived from the explorer, so the back control can restore it
+  // instantly via router.back() instead of a cold re-render. (Watchlist and
+  // direct entries fall back to a normal link to backHref.)
+  const cameFromExplorer = Boolean(fromRaw && fromRaw.startsWith('/explorer'));
 
   const { searchTermRaw, searchTermNormalized, current, history, enrichedProductsByAsin } = detail;
   const showNormalized =
@@ -91,9 +95,7 @@ export default async function KeywordDetailPage({
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <Link href={backHref} className="text-sm underline text-gray-600 hover:text-gray-900">
-        ← Back to explorer
-      </Link>
+      <BackToExplorer href={backHref} cameFromExplorer={cameFromExplorer} />
 
       <header className="mt-3 mb-6">
         <div className="flex flex-wrap items-center gap-3">

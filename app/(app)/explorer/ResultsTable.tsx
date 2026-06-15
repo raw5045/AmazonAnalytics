@@ -38,7 +38,10 @@ export function ResultsTable({
   /** Called when the ⭐ in any row is toggled. Used by /watchlist to animate-remove. */
   onWatchStarToggle?: (keywordId: string, isNowWatched: boolean) => void;
 }) {
-  const fromParam = backUrl === '/explorer' ? '' : `?from=${encodeURIComponent(backUrl)}`;
+  // Always carry `from` so the detail page can tell it was reached from the
+  // explorer (even the default, unfiltered view) and restore it instantly via
+  // router.back() instead of a cold re-render. See BackToExplorer.
+  const fromParam = `?from=${encodeURIComponent(backUrl)}`;
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
     if (matchMode === 'loose') {
       return slot === 1 ? r.keywordInTitle1Loose : slot === 2 ? r.keywordInTitle2Loose : r.keywordInTitle3Loose;
