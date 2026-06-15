@@ -16,6 +16,7 @@ import type {
   TitleMatchMode,
   WindowKey,
 } from './types';
+import { findJumpPreset, type JumpMetric } from './jumpPresets';
 
 export const EXPLORER_DEFAULTS: ExplorerFilters = {
   window: '1w',
@@ -61,7 +62,11 @@ const SORT_VALUES: SortKey[] = [
   'added_asc', 'added_desc',
 ];
 const SEVERITY_VALUES: SeverityKey[] = ['none', 'warning', 'critical'];
-const JUMP_VALUES: JumpKey[] = ['500k_to_100k', '100k_to_50k', '100k_to_10k', '50k_to_10k', 'custom'];
+const JUMP_VALUES: JumpKey[] = [
+  '500k_to_100k', '100k_to_50k', '100k_to_10k', '50k_to_10k',
+  'v5k_to_15k', 'v15k_to_30k', 'v30k_to_100k', 'v15k_to_100k',
+  'custom',
+];
 const TITLE_MODE_VALUES: TitleMatchMode[] = ['any', 'all'];
 const MATCH_MODE_VALUES: MatchMode[] = ['strict', 'loose'];
 
@@ -125,13 +130,22 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const window = parseEnum(getOne(searchParams.window), WINDOW_VALUES, EXPLORER_DEFAULTS.window);
   const sort = parseEnum(getOne(searchParams.sort), SORT_VALUES, EXPLORER_DEFAULTS.sort);
   let jump = parseEnumNullable(getOne(searchParams.jump), JUMP_VALUES);
+  let jumpMetric: JumpMetric = parseEnum(getOne(searchParams.jump_metric), ['rank', 'volume'] as const, 'rank');
   const jumpFrom = parsePositiveInt(getOne(searchParams.jump_from));
   const jumpTo = parsePositiveInt(getOne(searchParams.jump_to));
-  // If 'custom' is requested but both thresholds aren't valid + ordered
-  // (worse rank > better rank), drop the jump filter rather than apply
-  // a nonsensical one.
-  if (jump === 'custom' && (jumpFrom === null || jumpTo === null || jumpFrom <= jumpTo)) {
-    jump = null;
+  // A preset is self-describing: infer the metric from it (so old/shared URLs
+  // with just ?jump=v15k_to_30k work). jump_metric only governs 'custom'.
+  if (jump && jump !== 'custom') {
+    const found = findJumpPreset(jump);
+    if (found) jumpMetric = found.metric;
+  }
+  // Drop a custom jump whose thresholds aren't valid for its metric:
+  //   rank  improves as the number falls  -> from > to
+  //   volume improves as the number rises -> from < to
+  if (jump === 'custom') {
+    const ordered = jumpFrom !== null && jumpTo !== null
+      && (jumpMetric === 'rank' ? jumpFrom > jumpTo : jumpFrom < jumpTo);
+    if (!ordered) jump = null;
   }
   const titleMatchMode = parseEnumNullable(getOne(searchParams.title_match), TITLE_MODE_VALUES);
   const matchMode = parseEnum(getOne(searchParams.match_mode), MATCH_MODE_VALUES, EXPLORER_DEFAULTS.matchMode);
@@ -168,7 +182,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     volume26wAgoMin, volume26wAgoMax,
     volume52wAgoMin, volume52wAgoMax,
     jump,
-    jumpMetric: 'rank',
+    jumpMetric,
     jumpFrom: jump === 'custom' ? jumpFrom : null,
     jumpTo: jump === 'custom' ? jumpTo : null,
     category: getOne(searchParams.category) ?? null,

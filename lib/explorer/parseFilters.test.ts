@@ -170,3 +170,33 @@ describe('parseExplorerFilters — volume lookback', () => {
     expect(parseExplorerFilters({ sort: 'vol_26w_desc' }).sort).toBe('vol_26w_desc');
   });
 });
+
+describe('parseExplorerFilters — Movement jump', () => {
+  it('defaults jumpMetric to rank', () => {
+    expect(parseExplorerFilters({}).jumpMetric).toBe('rank');
+  });
+  it('parses jump_metric=volume', () => {
+    expect(parseExplorerFilters({ jump_metric: 'volume' }).jumpMetric).toBe('volume');
+  });
+  it('infers volume metric from a volume preset id', () => {
+    const f = parseExplorerFilters({ jump: 'v15k_to_30k' });
+    expect(f.jump).toBe('v15k_to_30k');
+    expect(f.jumpMetric).toBe('volume');
+  });
+  it('infers rank metric from a rank preset id even if jump_metric says otherwise', () => {
+    const f = parseExplorerFilters({ jump: '100k_to_50k', jump_metric: 'volume' });
+    expect(f.jumpMetric).toBe('rank');
+  });
+  it('rank custom requires from > to', () => {
+    const ok = parseExplorerFilters({ jump: 'custom', jump_metric: 'rank', jump_from: '100000', jump_to: '50000' });
+    expect(ok.jump).toBe('custom');
+    const bad = parseExplorerFilters({ jump: 'custom', jump_metric: 'rank', jump_from: '50000', jump_to: '100000' });
+    expect(bad.jump).toBeNull();
+  });
+  it('volume custom requires from < to', () => {
+    const ok = parseExplorerFilters({ jump: 'custom', jump_metric: 'volume', jump_from: '5000', jump_to: '15000' });
+    expect(ok.jump).toBe('custom');
+    const bad = parseExplorerFilters({ jump: 'custom', jump_metric: 'volume', jump_from: '15000', jump_to: '5000' });
+    expect(bad.jump).toBeNull();
+  });
+});
