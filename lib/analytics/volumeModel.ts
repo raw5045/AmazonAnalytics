@@ -276,14 +276,18 @@ export function pickFitForWeek(
     return { fit: sorted[0], isExtrapolated: false };
   }
 
-  // Fall-back: week is before any of our fits. Use the earliest available
-  // and flag for UI tooltip.
+  // Fall-back: week is before any of our fits. Use the earliest calibration
+  // MONTH (closest to this pre-calibration week) — but WITHIN that month pick
+  // the LATEST fittedAt (the production re-fit), consistent with the qualifying
+  // path above. Picking the earliest fittedAt here would select a stale/legacy
+  // fit, so weeks before the calibration month would be drawn with a different
+  // model than later weeks — a visible discontinuity (a worse rank showing more
+  // volume across the boundary). Flag for the UI "extrapolated" tooltip.
   const sortedAsc = [...fits].sort((a, b) => {
-    // Earliest calibrationMonthEndDate first; tiebreak by earliest fittedAt.
     if (a.calibrationMonthEndDate !== b.calibrationMonthEndDate) {
       return a.calibrationMonthEndDate < b.calibrationMonthEndDate ? -1 : 1;
     }
-    return a.fittedAt < b.fittedAt ? -1 : 1;
+    return a.fittedAt > b.fittedAt ? -1 : 1; // latest fittedAt wins (production fit)
   });
   return { fit: sortedAsc[0], isExtrapolated: true };
 }

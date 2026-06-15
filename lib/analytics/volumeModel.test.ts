@@ -248,6 +248,24 @@ describe('pickFitForWeek', () => {
     expect(result?.fit.scaleFactor).toBe(2_000_000);
   });
 
+  it('extrapolation also tiebreaks the earliest month by LATEST fittedAt (production, not stale)', () => {
+    // Regression: prod had a stale legacy fit + a better re-fit for the SAME
+    // earliest month. The qualifying path picks the latest-fitted (production)
+    // fit, but the extrapolation fallback used to pick the EARLIEST-fitted
+    // (stale) one — so weeks before the calibration month were drawn with a
+    // different model than later weeks, producing a visible discontinuity
+    // (a worse rank showing MORE volume across the boundary). Both paths must
+    // resolve to the same production fit.
+    const sameMonthDupes: FitParams[] = [
+      singleFit('2026-04-30', '2026-05-01T00:00:00Z', 0.70, 1_000_000), // stale, fitted first
+      singleFit('2026-04-30', '2026-05-15T00:00:00Z', 0.75, 2_000_000), // production, fitted later
+    ];
+    const result = pickFitForWeek('2026-03-15', sameMonthDupes); // before April → extrapolated
+    expect(result?.isExtrapolated).toBe(true);
+    expect(result?.fit.beta).toBe(0.75); // production fit, NOT the stale 0.70
+    expect(result?.fit.scaleFactor).toBe(2_000_000);
+  });
+
   it('handles a single-fit edge case (only one fit available)', () => {
     const oneFit: FitParams[] = [singleFit('2026-04-30', '2026-05-01T00:00:00Z', 0.7, 1e6)];
     // Same month: not extrapolated
