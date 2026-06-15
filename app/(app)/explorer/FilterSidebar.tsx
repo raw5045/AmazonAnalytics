@@ -12,6 +12,7 @@ import type {
   WindowKey,
 } from '@/lib/explorer/types';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
+import { jumpPresetsFor, type JumpMetric } from '@/lib/explorer/jumpPresets';
 import { LeafCategoryTypeahead } from './LeafCategoryTypeahead';
 
 const WINDOWS: Array<{ value: WindowKey; label: string }> = [
@@ -20,14 +21,6 @@ const WINDOWS: Array<{ value: WindowKey; label: string }> = [
   { value: '13w', label: '3 Months' },
   { value: '26w', label: '6 Months' },
   { value: '52w', label: 'Year' },
-];
-
-const JUMPS: Array<{ value: JumpKey; label: string }> = [
-  { value: '500k_to_100k', label: 'Outside top 500k → inside top 100k' },
-  { value: '100k_to_50k', label: 'Outside top 100k → inside top 50k' },
-  { value: '100k_to_10k', label: 'Outside top 100k → inside top 10k' },
-  { value: '50k_to_10k', label: 'Outside top 50k → inside top 10k' },
-  { value: 'custom', label: 'Custom thresholds…' },
 ];
 
 const SEVERITIES: Array<{ value: SeverityKey; label: string }> = [
@@ -46,10 +39,6 @@ const SORTS: Array<{ value: SortKey; label: string }> = [
   { value: 'avg_price_desc', label: 'Most expensive avg price (top-3)' },
   { value: 'avg_reviews_asc', label: 'Fewest avg reviews (top-3)' },
   { value: 'avg_reviews_desc', label: 'Most avg reviews (top-3)' },
-  { value: 'vol_4w_desc', label: 'Highest volume 4w ago' },
-  { value: 'vol_13w_desc', label: 'Highest volume 13w ago' },
-  { value: 'vol_26w_desc', label: 'Highest volume 26w ago' },
-  { value: 'vol_52w_desc', label: 'Highest volume 52w ago' },
 ];
 
 const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
@@ -68,6 +57,7 @@ interface PendingFilters {
   volume26wAgoMin: string; volume26wAgoMax: string;
   volume52wAgoMin: string; volume52wAgoMax: string;
   jump: JumpKey | '';
+  jumpMetric: JumpMetric;
   /** Numeric string; only used when jump === 'custom'. */
   jumpFrom: string;
   /** Numeric string; only used when jump === 'custom'. */
@@ -96,6 +86,7 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     volume52wAgoMin: f.volume52wAgoMin?.toString() ?? '',
     volume52wAgoMax: f.volume52wAgoMax?.toString() ?? '',
     jump: f.jump ?? '',
+    jumpMetric: f.jumpMetric,
     jumpFrom: f.jumpFrom?.toString() ?? '',
     jumpTo: f.jumpTo?.toString() ?? '',
     category: f.category ?? '',
@@ -123,6 +114,7 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.volume26wAgoMax) params.set('vol_26w_max', p.volume26wAgoMax);
   if (p.volume52wAgoMin) params.set('vol_52w_min', p.volume52wAgoMin);
   if (p.volume52wAgoMax) params.set('vol_52w_max', p.volume52wAgoMax);
+  if (p.jumpMetric === 'volume') params.set('jump_metric', 'volume');
   if (p.jump) {
     params.set('jump', p.jump);
     if (p.jump === 'custom') {
@@ -218,20 +210,6 @@ export function FilterSidebar({
         {isPending && <span className="text-xs text-gray-400">Updating…</span>}
       </div>
 
-      <FieldGroup label="Window">
-        <select
-          value={pending.window}
-          onChange={(e) => set('window', e.target.value as WindowKey)}
-          className="filter-input"
-        >
-          {WINDOWS.map((w) => (
-            <option key={w.value} value={w.value}>
-              {w.label}
-            </option>
-          ))}
-        </select>
-      </FieldGroup>
-
       <FieldGroup label="Sort">
         <select
           value={pending.sort}
@@ -288,81 +266,116 @@ export function FilterSidebar({
         <p className="text-xs text-gray-500 mt-1">Lower number = more searches. e.g. Best 1, Worst 10000 = top-10k.</p>
       </FieldGroup>
 
-      {([
-        ['4w', 'volume4wAgoMin', 'volume4wAgoMax'],
-        ['13w', 'volume13wAgoMin', 'volume13wAgoMax'],
-        ['26w', 'volume26wAgoMin', 'volume26wAgoMax'],
-        ['52w', 'volume52wAgoMin', 'volume52wAgoMax'],
-      ] as const).map(([label, minKey, maxKey]) => (
-        <FieldGroup key={minKey} label={`Est. volume ${label} ago`}>
-          <div className="flex gap-2">
-            <input
-              type="number" min={1}
-              value={pending[minKey]}
-              onChange={(e) => set(minKey, e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && apply()}
-              placeholder="Min"
-              className="filter-input flex-1"
-              aria-label={`Min est. volume ${label} ago`}
-            />
-            <input
-              type="number" min={1}
-              value={pending[maxKey]}
-              onChange={(e) => set(maxKey, e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && apply()}
-              placeholder="Max"
-              className="filter-input flex-1"
-              aria-label={`Max est. volume ${label} ago`}
-            />
-          </div>
-          <p className="text-xs text-gray-500 mt-1">Estimated monthly searches {label} ago (directional, ±~30%).</p>
-        </FieldGroup>
-      ))}
+      {/* Movement card — metric toggle + window + preset + optional custom inputs */}
+      <div className="border border-gray-200 rounded p-3 space-y-3">
+        <p className="text-xs font-medium text-gray-700">Movement</p>
 
-      <FieldGroup label="Threshold jump">
-        <select
-          value={pending.jump}
-          onChange={(e) => set('jump', e.target.value as JumpKey | '')}
-          className="filter-input"
-        >
-          <option value="">(none)</option>
-          {JUMPS.map((j) => (
-            <option key={j.value} value={j.value}>
-              {j.label}
-            </option>
-          ))}
-        </select>
+        {/* Metric toggle */}
+        <div className="flex rounded border border-gray-300 overflow-hidden text-xs font-medium">
+          <button
+            type="button"
+            onClick={() => setPending((p) => ({ ...p, jumpMetric: 'rank', jump: '', jumpFrom: '', jumpTo: '' }))}
+            className={`flex-1 py-1 px-2 ${
+              pending.jumpMetric === 'rank'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            Rank
+          </button>
+          <button
+            type="button"
+            onClick={() => setPending((p) => ({ ...p, jumpMetric: 'volume', jump: '', jumpFrom: '', jumpTo: '' }))}
+            className={`flex-1 py-1 px-2 border-l border-gray-300 ${
+              pending.jumpMetric === 'volume'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            Volume
+          </button>
+        </div>
+
+        {/* Window */}
+        <FieldGroup label="Window">
+          <select
+            value={pending.window}
+            onChange={(e) => set('window', e.target.value as WindowKey)}
+            className="filter-input"
+          >
+            {WINDOWS.map((w) => (
+              <option key={w.value} value={w.value}>
+                {w.label}
+              </option>
+            ))}
+          </select>
+        </FieldGroup>
+
+        {/* Preset */}
+        <FieldGroup label="Threshold jump">
+          <select
+            value={pending.jump}
+            onChange={(e) => set('jump', e.target.value as JumpKey | '')}
+            className="filter-input"
+          >
+            <option value="">Any movement</option>
+            {jumpPresetsFor(pending.jumpMetric).map((preset) => (
+              <option key={preset.id} value={preset.id}>
+                {preset.label}
+              </option>
+            ))}
+            <option value="custom">Custom…</option>
+          </select>
+        </FieldGroup>
+
+        {/* Custom inputs — shown only when jump === 'custom' */}
         {pending.jump === 'custom' && (
-          <div className="mt-2">
-            <div className="flex gap-2">
+          <div className="space-y-2">
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">
+                {pending.jumpMetric === 'volume'
+                  ? 'Had fewer than (searches/mo)'
+                  : 'Was ranked worse than'}
+              </label>
               <input
                 type="number"
                 min={1}
                 value={pending.jumpFrom}
                 onChange={(e) => set('jumpFrom', e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && apply()}
-                placeholder="Was worse than (e.g. 201000)"
-                className="filter-input flex-1"
-                aria-label="Custom jump: was ranked worse than"
+                placeholder={pending.jumpMetric === 'volume' ? 'e.g. 5000' : 'e.g. 201000'}
+                className="filter-input"
+                aria-label={
+                  pending.jumpMetric === 'volume'
+                    ? 'Had fewer than (searches/mo)'
+                    : 'Custom jump: was ranked worse than'
+                }
               />
-              <span className="self-center text-gray-400 text-xs">→</span>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-600 mb-1">
+                {pending.jumpMetric === 'volume'
+                  ? 'Now has more than (searches/mo)'
+                  : 'Now ranked better than'}
+              </label>
               <input
                 type="number"
                 min={1}
                 value={pending.jumpTo}
                 onChange={(e) => set('jumpTo', e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && apply()}
-                placeholder="Now better than (e.g. 75000)"
-                className="filter-input flex-1"
-                aria-label="Custom jump: now ranked better than"
+                placeholder={pending.jumpMetric === 'volume' ? 'e.g. 15000' : 'e.g. 75000'}
+                className="filter-input"
+                aria-label={
+                  pending.jumpMetric === 'volume'
+                    ? 'Now has more than (searches/mo)'
+                    : 'Custom jump: now ranked better than'
+                }
               />
             </div>
-            <p className="text-xs text-gray-500 mt-1">
-              Show keywords whose rank in the selected window was worse than the first value and is now better than the second.
-            </p>
           </div>
         )}
-      </FieldGroup>
+      </div>
 
       <FieldGroup label="Top clicked category #1 (broad)">
         <select
