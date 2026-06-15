@@ -89,10 +89,6 @@ export function ResultsTable({
             >
               Est. monthly vol.
             </th>
-            <SortableHeader label="Vol 4w ago" ascKey="vol_4w_asc" descKey="vol_4w_desc" firstClickKey="vol_4w_desc" currentSort={currentSort} align="right" title="Estimated monthly searches 4 weeks ago (directional, ±~30%). Click to sort — first click shows highest first." />
-            <SortableHeader label="Vol 13w ago" ascKey="vol_13w_asc" descKey="vol_13w_desc" firstClickKey="vol_13w_desc" currentSort={currentSort} align="right" title="Estimated monthly searches 13 weeks ago." />
-            <SortableHeader label="Vol 26w ago" ascKey="vol_26w_asc" descKey="vol_26w_desc" firstClickKey="vol_26w_desc" currentSort={currentSort} align="right" title="Estimated monthly searches 26 weeks ago." />
-            <SortableHeader label="Vol 52w ago" ascKey="vol_52w_asc" descKey="vol_52w_desc" firstClickKey="vol_52w_desc" currentSort={currentSort} align="right" title="Estimated monthly searches 52 weeks ago." />
             <SortableHeader
               label="Avg price"
               ascKey="avg_price_asc"
@@ -170,10 +166,6 @@ export function ResultsTable({
               <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolumeCurrent !== null ? `${r.estimatedMonthlyVolumeCurrent.toLocaleString()} searches / month (est.)` : undefined}>
                 {formatVolume(r.estimatedMonthlyVolumeCurrent)}
               </td>
-              <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolume4wAgo !== null ? `${r.estimatedMonthlyVolume4wAgo.toLocaleString()} searches / month (est., 4w ago)` : undefined}>{formatVolume(r.estimatedMonthlyVolume4wAgo)}</td>
-              <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolume13wAgo !== null ? `${r.estimatedMonthlyVolume13wAgo.toLocaleString()} searches / month (est., 13w ago)` : undefined}>{formatVolume(r.estimatedMonthlyVolume13wAgo)}</td>
-              <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolume26wAgo !== null ? `${r.estimatedMonthlyVolume26wAgo.toLocaleString()} searches / month (est., 26w ago)` : undefined}>{formatVolume(r.estimatedMonthlyVolume26wAgo)}</td>
-              <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolume52wAgo !== null ? `${r.estimatedMonthlyVolume52wAgo.toLocaleString()} searches / month (est., 52w ago)` : undefined}>{formatVolume(r.estimatedMonthlyVolume52wAgo)}</td>
               <td className="p-2 text-right tabular-nums whitespace-nowrap">
                 {formatAvgPrice(r.avgPriceCents)}
               </td>
