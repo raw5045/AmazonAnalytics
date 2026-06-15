@@ -129,13 +129,14 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // rN = rank_at_Nw).
     const VOLUME_HORIZONS = [
       { weeks: 0, rankCol: 'l.actual_rank' },
+      { weeks: 1, rankCol: 'r1.actual_rank' },
       { weeks: 4, rankCol: 'r4.actual_rank' },
       { weeks: 13, rankCol: 'r13.actual_rank' },
       { weeks: 26, rankCol: 'r26.actual_rank' },
       { weeks: 52, rankCol: 'r52.actual_rank' },
     ] as const;
     const volume = buildVolumeExpressions(currentWeekEndDate, fits, VOLUME_HORIZONS, 2);
-    // volume.exprs[0]=current, [1]=4w, [2]=13w, [3]=26w, [4]=52w
+    // volume.exprs[0]=current, [1]=1w, [2]=4w, [3]=13w, [4]=26w, [5]=52w
 
     // Stage-and-swap pattern (Plan 3.2 perf fix #4):
     //   - Build the new snapshot inside `keyword_current_summary_stage`,
@@ -213,7 +214,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         keyword_title_match_count_current,
         keyword_in_title_1_loose_current, keyword_in_title_2_loose_current, keyword_in_title_3_loose_current,
         keyword_title_match_count_loose_current,
-        estimated_monthly_volume_current,
+        estimated_monthly_volume_current, estimated_monthly_volume_1w_ago,
         estimated_monthly_volume_4w_ago, estimated_monthly_volume_13w_ago,
         estimated_monthly_volume_26w_ago, estimated_monthly_volume_52w_ago,
         lowest_price_cents, highest_price_cents,
@@ -271,10 +272,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         -- Estimated volume — built by buildVolumeExpressions (single or
         -- multi-segment CASE WHEN per horizon). NULL when no fit was selected.
         ${volume.exprs[0]} AS estimated_monthly_volume_current,
-        ${volume.exprs[1]} AS estimated_monthly_volume_4w_ago,
-        ${volume.exprs[2]} AS estimated_monthly_volume_13w_ago,
-        ${volume.exprs[3]} AS estimated_monthly_volume_26w_ago,
-        ${volume.exprs[4]} AS estimated_monthly_volume_52w_ago,
+        ${volume.exprs[1]} AS estimated_monthly_volume_1w_ago,
+        ${volume.exprs[2]} AS estimated_monthly_volume_4w_ago,
+        ${volume.exprs[3]} AS estimated_monthly_volume_13w_ago,
+        ${volume.exprs[4]} AS estimated_monthly_volume_26w_ago,
+        ${volume.exprs[5]} AS estimated_monthly_volume_52w_ago,
         -- Keepa price/review aggregates over the top-3 ASINs at the
         -- current week. LEAST/GREATEST ignore NULLs, so a row whose
         -- top-3 are only partially enriched still gets sensible
