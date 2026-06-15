@@ -302,6 +302,23 @@ describe('buildExplorerQuery', () => {
       expect(args.slice(0, countArgs.length)).toEqual(countArgs);
       expect(args.length).toBe(countArgs.length + 2);
     });
+
+    it('drops the search_terms join from countSql when no filter references st', () => {
+      const { countSql } = buildExplorerQuery({ ...baseFilters, rankMax: 50_000 });
+      expect(norm(countSql)).toContain('FROM keyword_current_summary kcs');
+      expect(norm(countSql)).not.toContain('JOIN search_terms');
+    });
+
+    it('keeps the search_terms join in countSql when q is set (the LIKE needs st)', () => {
+      const { countSql } = buildExplorerQuery({ ...baseFilters, q: 'wireless' });
+      expect(norm(countSql)).toContain('JOIN search_terms st ON st.id = kcs.search_term_id');
+      expect(norm(countSql)).toContain('search_term_normalized LIKE');
+    });
+
+    it('main SELECT still joins search_terms even without q (needs search_term_raw)', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, rankMax: 50_000 });
+      expect(norm(sql)).toContain('JOIN search_terms st ON st.id = kcs.search_term_id');
+    });
   });
 
   describe('buildExplorerQuery — volume lookback', () => {
