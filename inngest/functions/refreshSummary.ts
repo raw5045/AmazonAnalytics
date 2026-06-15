@@ -312,6 +312,28 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
 
     await client.query('COMMIT');
 
+    // 4b. ANALYZE the freshly-built stage table BEFORE the swap. The bulk
+    //     INSERT above leaves it with no column statistics and a reltuples
+    //     estimate of 0 (TRUNCATE reset pg_class/pg_statistic). Statistics
+    //     are keyed by table OID, which survives the RENAME below — so
+    //     analyzing _stage now means the table carries correct stats the
+    //     instant it becomes live. Without this the planner sequential-scans
+    //     every explorer query (cold open ~minutes, a simple filter ~20s)
+    //     until autovacuum's autoanalyze happens to run — which on Neon can
+    //     lag HOURS behind a refresh because the compute auto-suspends as
+    //     soon as the import finishes. ANALYZE samples (~seconds, not a full
+    //     scan) and takes only SHARE UPDATE EXCLUSIVE, so it never blocks
+    //     explorer readers. Fail-soft: if it errors we still swap and fall
+    //     back to autoanalyze.
+    try {
+      await client.query('ANALYZE keyword_current_summary_stage');
+    } catch (e) {
+      console.warn(
+        '[refreshSummary] ANALYZE of stage table failed; relying on autoanalyze:',
+        (e as Error).message,
+      );
+    }
+
     // 5. Swap stage <-> live in a separate, very short transaction.
     //    Three RENAMEs are pure metadata operations on the system catalog;
     //    each takes ACCESS EXCLUSIVE briefly but completes in
