@@ -33,6 +33,11 @@ const JUMP_THRESHOLDS: Record<PresetJumpKey, { from: number; to: number }> = {
   '100k_to_50k': { from: 100_000, to: 50_000 },
   '100k_to_10k': { from: 100_000, to: 10_000 },
   '50k_to_10k': { from: 50_000, to: 10_000 },
+  // Volume presets — thresholds used by Task 5 when jumpMetric === 'volume'.
+  'v5k_to_15k':   { from: 5_000,  to: 15_000 },
+  'v15k_to_30k':  { from: 15_000, to: 30_000 },
+  'v30k_to_100k': { from: 30_000, to: 100_000 },
+  'v15k_to_100k': { from: 15_000, to: 100_000 },
 };
 
 const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {

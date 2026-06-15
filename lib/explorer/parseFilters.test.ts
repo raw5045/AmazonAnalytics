@@ -36,6 +36,7 @@ describe('parseExplorerFilters', () => {
       volume52wAgoMin: null,
       volume52wAgoMax: null,
       jump: '500k_to_100k',
+      jumpMetric: 'rank',
       jumpFrom: null,
       jumpTo: null,
       category: 'Electronics',

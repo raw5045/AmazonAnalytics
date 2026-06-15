@@ -22,11 +22,8 @@ export type SortKey =
 export type SeverityKey = 'none' | 'warning' | 'critical';
 
 export type JumpKey =
-  | '500k_to_100k'
-  | '100k_to_50k'
-  | '100k_to_10k'
-  | '50k_to_10k'
-  /** Custom threshold pair — user-entered `jumpFrom` and `jumpTo`. */
+  | '500k_to_100k' | '100k_to_50k' | '100k_to_10k' | '50k_to_10k'
+  | 'v5k_to_15k' | 'v15k_to_30k' | 'v30k_to_100k' | 'v15k_to_100k'
   | 'custom';
 
 export type TitleMatchMode = 'any' | 'all';
@@ -63,6 +60,8 @@ export interface ExplorerFilters {
   volume52wAgoMin: number | null;
   volume52wAgoMax: number | null;
   jump: JumpKey | null;
+  /** Which metric the Movement jump compares: rank columns or volume columns. */
+  jumpMetric: 'rank' | 'volume';
   /** Only consulted when jump === 'custom'. The "was ranked worse than" threshold. */
   jumpFrom: number | null;
   /** Only consulted when jump === 'custom'. The "now ranked better than" threshold. */

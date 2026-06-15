@@ -82,6 +82,7 @@ function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     volume52wAgoMin: typeof f.volume52wAgoMin === 'number' ? f.volume52wAgoMin : null,
     volume52wAgoMax: typeof f.volume52wAgoMax === 'number' ? f.volume52wAgoMax : null,
     jump: (f.jump as ExplorerFilters['jump']) ?? null,
+    jumpMetric: 'rank',
     jumpFrom: typeof f.jumpFrom === 'number' ? f.jumpFrom : null,
     jumpTo: typeof f.jumpTo === 'number' ? f.jumpTo : null,
     category: typeof f.category === 'string' ? f.category : null,
