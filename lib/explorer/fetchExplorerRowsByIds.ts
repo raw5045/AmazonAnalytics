@@ -68,10 +68,6 @@ interface RawRow {
   // bigint comes back as string from pg/neon-http to avoid 53-bit
   // precision loss. Mapper parses to number.
   estimated_monthly_volume_current: string | number | null;
-  estimated_monthly_volume_4w_ago: string | number | null;
-  estimated_monthly_volume_13w_ago: string | number | null;
-  estimated_monthly_volume_26w_ago: string | number | null;
-  estimated_monthly_volume_52w_ago: string | number | null;
   avg_price_cents: string | number | null;
   avg_reviews: number | null;
   top_clicked_leaf_category: string | null;
@@ -115,10 +111,6 @@ export async function fetchExplorerRowsByIds(opts: {
       kcs.top_clicked_product_1_click_share_current,
       kcs.top_clicked_product_1_conversion_share_current,
       kcs.estimated_monthly_volume_current,
-      kcs.estimated_monthly_volume_4w_ago,
-      kcs.estimated_monthly_volume_13w_ago,
-      kcs.estimated_monthly_volume_26w_ago,
-      kcs.estimated_monthly_volume_52w_ago,
       kcs.avg_price_cents,
       kcs.avg_reviews,
       kcs.top_clicked_leaf_category
@@ -159,10 +151,6 @@ export async function fetchExplorerRowsByIds(opts: {
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
     estimatedMonthlyVolumeCurrent: parseBigint(r.estimated_monthly_volume_current),
-    estimatedMonthlyVolume4wAgo: parseBigint(r.estimated_monthly_volume_4w_ago),
-    estimatedMonthlyVolume13wAgo: parseBigint(r.estimated_monthly_volume_13w_ago),
-    estimatedMonthlyVolume26wAgo: parseBigint(r.estimated_monthly_volume_26w_ago),
-    estimatedMonthlyVolume52wAgo: parseBigint(r.estimated_monthly_volume_52w_ago),
     avgPriceCents: parseBigint(r.avg_price_cents),
     avgReviews: r.avg_reviews ?? null,
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,

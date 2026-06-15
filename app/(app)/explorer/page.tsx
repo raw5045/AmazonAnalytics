@@ -204,10 +204,6 @@ function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boole
     f.q !== null ||
     f.rankMin !== null ||
     f.rankMax !== null ||
-    f.volume4wAgoMin !== null || f.volume4wAgoMax !== null ||
-    f.volume13wAgoMin !== null || f.volume13wAgoMax !== null ||
-    f.volume26wAgoMin !== null || f.volume26wAgoMax !== null ||
-    f.volume52wAgoMin !== null || f.volume52wAgoMax !== null ||
     f.jump !== null ||
     f.category !== null ||
     f.leafCategories.length > 0 ||

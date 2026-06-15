@@ -52,10 +52,6 @@ interface PendingFilters {
   q: string;
   rankBest: string;
   rankWorst: string;
-  volume4wAgoMin: string; volume4wAgoMax: string;
-  volume13wAgoMin: string; volume13wAgoMax: string;
-  volume26wAgoMin: string; volume26wAgoMax: string;
-  volume52wAgoMin: string; volume52wAgoMax: string;
   jump: JumpKey | '';
   jumpMetric: JumpMetric;
   /** Numeric string; only used when jump === 'custom'. */
@@ -77,14 +73,6 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     q: f.q ?? '',
     rankBest: f.rankMin?.toString() ?? '',
     rankWorst: f.rankMax?.toString() ?? '',
-    volume4wAgoMin: f.volume4wAgoMin?.toString() ?? '',
-    volume4wAgoMax: f.volume4wAgoMax?.toString() ?? '',
-    volume13wAgoMin: f.volume13wAgoMin?.toString() ?? '',
-    volume13wAgoMax: f.volume13wAgoMax?.toString() ?? '',
-    volume26wAgoMin: f.volume26wAgoMin?.toString() ?? '',
-    volume26wAgoMax: f.volume26wAgoMax?.toString() ?? '',
-    volume52wAgoMin: f.volume52wAgoMin?.toString() ?? '',
-    volume52wAgoMax: f.volume52wAgoMax?.toString() ?? '',
     jump: f.jump ?? '',
     jumpMetric: f.jumpMetric,
     jumpFrom: f.jumpFrom?.toString() ?? '',
@@ -106,14 +94,6 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.q.trim().length >= 3) params.set('q', p.q.trim());
   if (p.rankBest) params.set('rank_min', p.rankBest);
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
-  if (p.volume4wAgoMin) params.set('vol_4w_min', p.volume4wAgoMin);
-  if (p.volume4wAgoMax) params.set('vol_4w_max', p.volume4wAgoMax);
-  if (p.volume13wAgoMin) params.set('vol_13w_min', p.volume13wAgoMin);
-  if (p.volume13wAgoMax) params.set('vol_13w_max', p.volume13wAgoMax);
-  if (p.volume26wAgoMin) params.set('vol_26w_min', p.volume26wAgoMin);
-  if (p.volume26wAgoMax) params.set('vol_26w_max', p.volume26wAgoMax);
-  if (p.volume52wAgoMin) params.set('vol_52w_min', p.volume52wAgoMin);
-  if (p.volume52wAgoMax) params.set('vol_52w_max', p.volume52wAgoMax);
   if (p.jumpMetric === 'volume') params.set('jump_metric', 'volume');
   if (p.jump) {
     params.set('jump', p.jump);

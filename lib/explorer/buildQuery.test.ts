@@ -358,21 +358,6 @@ describe('buildExplorerQuery', () => {
     });
   });
 
-  describe('buildExplorerQuery — volume lookback', () => {
-    it('emits a WHERE for a volume min filter', () => {
-      const { sql } = buildExplorerQuery({ ...EXPLORER_DEFAULTS, volume4wAgoMin: 1000 });
-      expect(norm(sql)).toContain('kcs.estimated_monthly_volume_4w_ago >=');
-    });
-    it('selects the lookback volume columns', () => {
-      const { sql } = buildExplorerQuery({ ...EXPLORER_DEFAULTS });
-      expect(norm(sql)).toContain('kcs.estimated_monthly_volume_52w_ago');
-    });
-    it('orders by a volume sort key', () => {
-      const { sql } = buildExplorerQuery({ ...EXPLORER_DEFAULTS, sort: 'vol_13w_desc' });
-      expect(norm(sql)).toContain('ORDER BY kcs.estimated_monthly_volume_13w_ago DESC NULLS LAST');
-    });
-  });
-
   describe('combined filters', () => {
     it('handles all filters together', () => {
       const { sql, args, countSql, countArgs } = buildExplorerQuery({

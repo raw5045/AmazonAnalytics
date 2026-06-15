@@ -13,10 +13,6 @@ export type SortKey =
   | 'title_gap'
   | 'avg_price_asc' | 'avg_price_desc'
   | 'avg_reviews_asc' | 'avg_reviews_desc'
-  | 'vol_4w_asc' | 'vol_4w_desc'
-  | 'vol_13w_asc' | 'vol_13w_desc'
-  | 'vol_26w_asc' | 'vol_26w_desc'
-  | 'vol_52w_asc' | 'vol_52w_desc'
   | 'added_asc' | 'added_desc';
 
 export type SeverityKey = 'none' | 'warning' | 'critical';
@@ -51,14 +47,6 @@ export interface ExplorerFilters {
   q: string | null;
   rankMin: number | null;
   rankMax: number | null;
-  volume4wAgoMin: number | null;
-  volume4wAgoMax: number | null;
-  volume13wAgoMin: number | null;
-  volume13wAgoMax: number | null;
-  volume26wAgoMin: number | null;
-  volume26wAgoMax: number | null;
-  volume52wAgoMin: number | null;
-  volume52wAgoMax: number | null;
   jump: JumpKey | null;
   /** Which metric the Movement jump compares: rank columns or volume columns. */
   jumpMetric: 'rank' | 'volume';
@@ -118,10 +106,6 @@ export interface ExplorerRow {
    * was built. See migration 0027.
    */
   estimatedMonthlyVolumeCurrent: number | null;
-  estimatedMonthlyVolume4wAgo: number | null;
-  estimatedMonthlyVolume13wAgo: number | null;
-  estimatedMonthlyVolume26wAgo: number | null;
-  estimatedMonthlyVolume52wAgo: number | null;
   /**
    * Keepa-derived aggregates over the top-3 clicked ASINs at the
    * current week. NULL when all 3 ASINs are unenriched. See

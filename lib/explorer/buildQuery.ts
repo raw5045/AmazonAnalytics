@@ -96,18 +96,6 @@ export function buildExplorerQuery(
     where.push(`kcs.current_rank <= ${p}`);
   }
 
-  // 1.3b — lookback volume min/max (one pair per horizon)
-  const volCols: Array<[number | null, number | null, string]> = [
-    [filters.volume4wAgoMin, filters.volume4wAgoMax, 'estimated_monthly_volume_4w_ago'],
-    [filters.volume13wAgoMin, filters.volume13wAgoMax, 'estimated_monthly_volume_13w_ago'],
-    [filters.volume26wAgoMin, filters.volume26wAgoMax, 'estimated_monthly_volume_26w_ago'],
-    [filters.volume52wAgoMin, filters.volume52wAgoMax, 'estimated_monthly_volume_52w_ago'],
-  ];
-  for (const [min, max, col] of volCols) {
-    if (min !== null) where.push(`kcs.${col} >= ${next(min)}`);
-    if (max !== null) where.push(`kcs.${col} <= ${next(max)}`);
-  }
-
   // 1.4 — Movement jump. Resolve (from, to) from a preset or custom inputs,
   // then emit the clause for the selected metric. Both directions mean
   // "got better": rank improves as the number falls, volume as it rises.
@@ -198,10 +186,6 @@ export function buildExplorerQuery(
       kcs.top_clicked_product_1_click_share_current,
       kcs.top_clicked_product_1_conversion_share_current,
       kcs.estimated_monthly_volume_current,
-      kcs.estimated_monthly_volume_4w_ago,
-      kcs.estimated_monthly_volume_13w_ago,
-      kcs.estimated_monthly_volume_26w_ago,
-      kcs.estimated_monthly_volume_52w_ago,
       kcs.avg_price_cents,
       kcs.avg_reviews,
       kcs.top_clicked_leaf_category
@@ -292,14 +276,6 @@ function buildOrderBy(
       return 'ORDER BY kcs.avg_reviews ASC NULLS LAST';
     case 'avg_reviews_desc':
       return 'ORDER BY kcs.avg_reviews DESC NULLS LAST';
-    case 'vol_4w_asc':  return 'ORDER BY kcs.estimated_monthly_volume_4w_ago ASC NULLS LAST';
-    case 'vol_4w_desc': return 'ORDER BY kcs.estimated_monthly_volume_4w_ago DESC NULLS LAST';
-    case 'vol_13w_asc':  return 'ORDER BY kcs.estimated_monthly_volume_13w_ago ASC NULLS LAST';
-    case 'vol_13w_desc': return 'ORDER BY kcs.estimated_monthly_volume_13w_ago DESC NULLS LAST';
-    case 'vol_26w_asc':  return 'ORDER BY kcs.estimated_monthly_volume_26w_ago ASC NULLS LAST';
-    case 'vol_26w_desc': return 'ORDER BY kcs.estimated_monthly_volume_26w_ago DESC NULLS LAST';
-    case 'vol_52w_asc':  return 'ORDER BY kcs.estimated_monthly_volume_52w_ago ASC NULLS LAST';
-    case 'vol_52w_desc': return 'ORDER BY kcs.estimated_monthly_volume_52w_ago DESC NULLS LAST';
     case 'added_asc':
     case 'added_desc':
       // Watchlist-only sort keys — meaningless on the explorer page

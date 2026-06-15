@@ -23,14 +23,6 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   q: null,
   rankMin: null,
   rankMax: null,
-  volume4wAgoMin: null,
-  volume4wAgoMax: null,
-  volume13wAgoMin: null,
-  volume13wAgoMax: null,
-  volume26wAgoMin: null,
-  volume26wAgoMax: null,
-  volume52wAgoMin: null,
-  volume52wAgoMax: null,
   jump: null,
   jumpMetric: 'rank',
   jumpFrom: null,
@@ -55,10 +47,6 @@ const SORT_VALUES: SortKey[] = [
   'title_gap',
   'avg_price_asc', 'avg_price_desc',
   'avg_reviews_asc', 'avg_reviews_desc',
-  'vol_4w_asc', 'vol_4w_desc',
-  'vol_13w_asc', 'vol_13w_desc',
-  'vol_26w_asc', 'vol_26w_desc',
-  'vol_52w_asc', 'vol_52w_desc',
   'added_asc', 'added_desc',
 ];
 const SEVERITY_VALUES: SeverityKey[] = ['none', 'warning', 'critical'];
@@ -163,24 +151,11 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   // Hard cap — protect the DB from a hostile per_page value.
   const perPage = Math.min(perPageRaw, 500);
 
-  const volume4wAgoMin = parsePositiveInt(getOne(searchParams.vol_4w_min));
-  const volume4wAgoMax = parsePositiveInt(getOne(searchParams.vol_4w_max));
-  const volume13wAgoMin = parsePositiveInt(getOne(searchParams.vol_13w_min));
-  const volume13wAgoMax = parsePositiveInt(getOne(searchParams.vol_13w_max));
-  const volume26wAgoMin = parsePositiveInt(getOne(searchParams.vol_26w_min));
-  const volume26wAgoMax = parsePositiveInt(getOne(searchParams.vol_26w_max));
-  const volume52wAgoMin = parsePositiveInt(getOne(searchParams.vol_52w_min));
-  const volume52wAgoMax = parsePositiveInt(getOne(searchParams.vol_52w_max));
-
   return {
     window,
     q: q.length >= 3 ? q : null,
     rankMin,
     rankMax,
-    volume4wAgoMin, volume4wAgoMax,
-    volume13wAgoMin, volume13wAgoMax,
-    volume26wAgoMin, volume26wAgoMax,
-    volume52wAgoMin, volume52wAgoMax,
     jump,
     jumpMetric,
     jumpFrom: jump === 'custom' ? jumpFrom : null,
