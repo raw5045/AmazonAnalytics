@@ -642,7 +642,19 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
  * must NEVER fail the import/refresh; the detail page falls back to a
  * live kwm read when a series row is missing or stale.
  */
-export async function maintainChartSeries(client: PoolClient, currentWeekEndDate: string): Promise<void> {
+export async function maintainChartSeries(
+  client: PoolClient,
+  currentWeekEndDate: string,
+  /**
+   * Test-only scope: when provided (non-empty), restrict BOTH the append and
+   * the rebuild to these term ids. Lets the integration test run against a
+   * shared DB touching only its own seeded terms (maintainChartSeries is
+   * otherwise a GLOBAL set-based op). Production passes nothing → global.
+   */
+  restrictToTermIds?: readonly string[],
+): Promise<void> {
+  const scope =
+    restrictToTermIds && restrictToTermIds.length > 0 ? [...restrictToTermIds] : null;
   // (A) APPEND / REPLACE for terms whose series is contiguous (last_week =
   //     prev week) OR already at the current week (re-import / ReplaceWeek →
   //     replace the last entry). Build the new entry from the current kcs row.
@@ -677,7 +689,9 @@ export async function maintainChartSeries(client: PoolClient, currentWeekEndDate
     FROM keyword_current_summary k
     WHERE s.search_term_id = k.search_term_id
       AND s.last_week IN ((k.current_week_end_date - INTERVAL '7 days')::date, k.current_week_end_date)
+      ${scope ? 'AND s.search_term_id = ANY($1::uuid[])' : ''}
     `,
+    scope ? [scope] : [],
   );
 
   // (B) TARGETED REBUILD for active terms still not at the current week
@@ -687,9 +701,11 @@ export async function maintainChartSeries(client: PoolClient, currentWeekEndDate
     SELECT k.search_term_id
     FROM keyword_current_summary k
     LEFT JOIN keyword_chart_series s ON s.search_term_id = k.search_term_id
-    WHERE s.search_term_id IS NULL OR s.last_week <> k.current_week_end_date
+    WHERE (s.search_term_id IS NULL OR s.last_week <> k.current_week_end_date)
+      ${scope ? 'AND k.search_term_id = ANY($1::uuid[])' : ''}
     LIMIT ${CHART_SERIES_REBUILD_CAP}
     `,
+    scope ? [scope] : [],
   );
   if (rebuildRows.length === 0) return;
   const ids = rebuildRows.map((r) => r.search_term_id);

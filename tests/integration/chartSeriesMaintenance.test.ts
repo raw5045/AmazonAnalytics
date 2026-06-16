@@ -66,11 +66,10 @@ function makeKcsRow(
 // ---------------------------------------------------------------------------
 
 describe('maintainChartSeries (integration)', () => {
-  // currentWeek is resolved dynamically from the production DB in beforeAll.
-  // Using the actual production current week means production rows in
-  // keyword_current_summary are already "at current week" — so the rebuild
-  // phase in maintainChartSeries only touches our 4 test seeds, not the
-  // millions of production rows.
+  // SAFETY: maintainChartSeries is a GLOBAL set-based operation. To run this
+  // against a shared DB without mutating any other rows, every call below
+  // passes `termIds` (our 4 seeded terms) as the restrict-scope. currentWeek
+  // is resolved from the DB only so the seeds use realistic dates.
   let CURRENT_WEEK: string;
   let PREV_WEEK: string;
 
@@ -89,20 +88,11 @@ describe('maintainChartSeries (integration)', () => {
     const client = await pool.connect();
 
     try {
-      // Ensure keyword_chart_series exists (migration 0036 may not be applied
-      // in the test DB yet — create it idempotently so the test can run).
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS keyword_chart_series (
-          search_term_id uuid        PRIMARY KEY REFERENCES search_terms(id) ON DELETE CASCADE,
-          series         jsonb       NOT NULL,
-          last_week      date        NOT NULL,
-          updated_at     timestamptz NOT NULL DEFAULT now()
-        )
-      `);
+      // This test REQUIRES migration 0036 (keyword_chart_series) to be applied
+      // to the target DB. It does NOT create schema itself — DDL is the
+      // migration's job, never a test's.
 
-      // Resolve the actual production current week so our test terms are
-      // inserted at the same week — this prevents the rebuild SELECT from
-      // picking up millions of production kcs rows as "behind".
+      // Resolve the current week so our test terms use realistic dates.
       const { rows: weekRows } = await client.query<{ w: string }>(
         `SELECT MAX(current_week_end_date)::text AS w FROM keyword_current_summary`,
       );
@@ -243,7 +233,8 @@ describe('maintainChartSeries (integration)', () => {
     // re-running it in each test would compound the latency.
     const maintainClient = await pool.connect();
     try {
-      await maintainChartSeries(maintainClient, CURRENT_WEEK);
+      // Scope to our seeded terms ONLY — maintainChartSeries is global.
+      await maintainChartSeries(maintainClient, CURRENT_WEEK, termIds);
     } finally {
       maintainClient.release();
     }
@@ -290,7 +281,7 @@ describe('maintainChartSeries (integration)', () => {
   async function runMaintain(): Promise<void> {
     const client = await pool.connect();
     try {
-      await maintainChartSeries(client, CURRENT_WEEK);
+      await maintainChartSeries(client, CURRENT_WEEK, termIds);
     } finally {
       client.release();
     }
