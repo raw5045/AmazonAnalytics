@@ -25,3 +25,4 @@ export { watchlistItems } from './watchlistItems';
 export type { WatchlistItemRow } from './watchlistItems';
 export { weeklyDigestRuns, weeklyDigestSends } from './weeklyDigest';
 export type { WeeklyDigestRunRow, WeeklyDigestSendRow } from './weeklyDigest';
+export * from './keywordChartSeries';
