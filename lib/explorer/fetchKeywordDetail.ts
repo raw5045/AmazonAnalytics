@@ -1,18 +1,25 @@
 /**
  * Server-side data fetcher for the /explorer/keyword/<id> page.
  *
- * Two queries run in parallel:
- *   1. The kcs row + search_terms row (1-row "current snapshot")
- *   2. The full kwm history for this term (up to 52 rows)
+ * Exports three loaders:
+ *   - fetchKeywordChartData(id)  — FAST: reads keyword_chart_series (compact)
+ *       plus search_terms, kcs current, fits, current-week kwm (for product
+ *       ASINs/titles + variants). Falls back to a full kwm 52-week read when
+ *       the series row is absent or the table doesn't exist yet.
+ *   - fetchKeywordRawHistory(id) — SLOW: full 52-week kwm scan for the
+ *       "Weekly history" raw table, streamed behind <Suspense>.
+ *   - fetchKeywordDetail(id)     — legacy single loader; kept for any other
+ *       callers; composes the two functions above.
  *
- * Both hit existing indexes (kcs PK on search_term_id, kwm_term_week_idx)
- * and complete in <100 ms on warm cache.
+ * Both hit existing indexes (kcs PK on search_term_id, kwm_term_week_idx).
  */
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import type { SeverityKey } from './types';
 import { pickFitForWeek, predictVolumeFromFit, type FitParams } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
+import type { ChartSeriesEntry } from '@/db/schema/keywordChartSeries';
+import { seriesToHistoryRows } from './chartSeries';
 
 export interface KeywordDetailHistoryRow {
   weekEndDate: string;
@@ -138,6 +145,50 @@ export interface KeywordDetail {
    * the excluded-category scope).
    */
   enrichedProductsByAsin: Record<string, EnrichedProduct>;
+}
+
+/**
+ * One top-clicked product slot from the current week's kwm row.
+ * Used by the fast loader to supply product ASINs/titles for the
+ * TopProductsTable without needing the full history.
+ */
+export interface CurrentWeekProductSlot {
+  slot: 1 | 2 | 3;
+  asin: string | null;
+  title: string | null;
+}
+
+/**
+ * Return type of fetchKeywordChartData — everything the detail page
+ * needs to render its header, charts, top-products box, and variants
+ * box. The raw "Weekly history" table is NOT included; it streams in
+ * separately via fetchKeywordRawHistory.
+ */
+export interface KeywordChartData {
+  searchTermId: string;
+  searchTermRaw: string;
+  searchTermNormalized: string;
+  firstSeenWeek: string;
+  lastSeenWeek: string;
+  current: KeywordDetailCurrent | null;
+  /**
+   * History rows derived from keyword_chart_series (fast path) or from
+   * a kwm 52-week read (fallback). Used by all 4 charts.
+   */
+  chartHistory: KeywordDetailHistoryRow[];
+  enrichedProductsByAsin: Record<string, EnrichedProduct>;
+  /**
+   * The top-3 ASINs + titles from kwm for the current week.
+   * Used to populate TopProductsTable (slots 2 & 3 aren't in kcs).
+   * Empty array for dormant keywords.
+   */
+  currentWeekProductSlots: CurrentWeekProductSlot[];
+  /**
+   * Variant info for the current week, sourced from
+   * import_duplicate_search_terms. Null when no duplicates for that week
+   * or keyword is dormant.
+   */
+  currentWeekVariants: KeywordVariantInfo | null;
 }
 
 /**
@@ -332,10 +383,27 @@ export async function fetchKeywordDetail(
   }
 
   // Map enriched products by ASIN for O(1) lookup at render time.
-  const enrichedProductsByAsin: Record<string, EnrichedProduct> = {};
-  for (const r of enrichedRows) {
+  const enrichedProductsByAsin = mapEnrichedProducts(enrichedRows);
+
+  return {
+    searchTermId: term.id,
+    searchTermRaw: term.search_term_raw,
+    searchTermNormalized: term.search_term_normalized,
+    firstSeenWeek: toIsoDate(term.first_seen_week),
+    lastSeenWeek: toIsoDate(term.last_seen_week),
+    current,
+    history: historyRows.map((r) => mapHistory(r, variantsByWeek, fits)),
+    enrichedProductsByAsin,
+  };
+}
+
+function mapEnrichedProducts(
+  rows: Array<Record<string, unknown>>,
+): Record<string, EnrichedProduct> {
+  const result: Record<string, EnrichedProduct> = {};
+  for (const r of rows) {
     const asin = r.asin as string;
-    enrichedProductsByAsin[asin] = {
+    result[asin] = {
       asin,
       title: (r.title as string | null) ?? null,
       brand: (r.brand as string | null) ?? null,
@@ -354,17 +422,7 @@ export async function fetchKeywordDetail(
       enrichmentStatus: r.enrichment_status as EnrichedProduct['enrichmentStatus'],
     };
   }
-
-  return {
-    searchTermId: term.id,
-    searchTermRaw: term.search_term_raw,
-    searchTermNormalized: term.search_term_normalized,
-    firstSeenWeek: toIsoDate(term.first_seen_week),
-    lastSeenWeek: toIsoDate(term.last_seen_week),
-    current,
-    history: historyRows.map((r) => mapHistory(r, variantsByWeek, fits)),
-    enrichedProductsByAsin,
-  };
+  return result;
 }
 
 function mapCurrent(r: Record<string, unknown>, fits: ReadonlyArray<FitParams>): KeywordDetailCurrent {
@@ -440,4 +498,328 @@ function toIsoDate(value: string | Date): string {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   // Trim a possible trailing time portion if any driver returns ISO with time.
   return String(value).slice(0, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Shared raw-SQL helpers
+// ---------------------------------------------------------------------------
+
+/** Fetch all calibration fits from model_calibration_runs. */
+async function fetchFits(dbUrl: string): Promise<FitParams[]> {
+  const sql = neon(dbUrl);
+  const fitRowsAny = await sql`
+    SELECT
+      id,
+      calibration_month_end_date::text AS calibration_month_end_date,
+      fitted_at::text                  AS fitted_at,
+      beta::text                       AS beta,
+      scale_factor::text               AS scale_factor,
+      fit_params                       AS fit_params
+    FROM model_calibration_runs
+  `;
+  const fitRows = fitRowsAny as unknown as Array<{
+    id: string;
+    calibration_month_end_date: string;
+    fitted_at: string;
+    beta: string;
+    scale_factor: string;
+    fit_params: FitParamsJson | null;
+  }>;
+  return fitRows.map((r) => {
+    const fp = r.fit_params;
+    const segments = fp?.segments ?? [{ beta: parseFloat(r.beta), scaleFactor: parseFloat(r.scale_factor) }];
+    const breakpoints = fp?.breakpoints ?? [];
+    return {
+      calibrationMonthEndDate: r.calibration_month_end_date,
+      fittedAt: r.fitted_at,
+      beta: segments[0].beta,
+      scaleFactor: segments[0].scaleFactor,
+      breakpoints,
+      segments,
+    };
+  });
+}
+
+/**
+ * Full 52-week kwm scan — the slow query (~60 s cold). Shared between
+ * fetchKeywordRawHistory and the fallback path inside fetchKeywordChartData.
+ */
+async function fetchKwmHistory(
+  dbUrl: string,
+  searchTermId: string,
+): Promise<Array<Record<string, unknown>>> {
+  const sql = neon(dbUrl);
+  const rows = await sql`
+    SELECT
+      week_end_date,
+      actual_rank,
+      top_clicked_product_1_asin,
+      top_clicked_product_1_title,
+      top_clicked_product_1_click_share,
+      top_clicked_product_1_conversion_share,
+      top_clicked_product_2_asin,
+      top_clicked_product_2_title,
+      top_clicked_product_3_asin,
+      top_clicked_product_3_title,
+      top_clicked_category_1,
+      keyword_in_title_1,
+      keyword_in_title_2,
+      keyword_in_title_3,
+      keyword_title_match_count,
+      keyword_in_title_1_loose,
+      keyword_in_title_2_loose,
+      keyword_in_title_3_loose,
+      keyword_title_match_count_loose,
+      CASE
+        WHEN actual_rank > 100000 THEN 'none'::fake_volume_severity
+        ELSE fake_volume_severity
+      END AS fake_volume_severity,
+      CASE
+        WHEN actual_rank > 100000 THEN 'rank_below_threshold'::fake_volume_eval_status
+        ELSE fake_volume_eval_status
+      END AS fake_volume_eval_status
+    FROM (
+      SELECT *
+      FROM keyword_weekly_metrics
+      WHERE search_term_id = ${searchTermId}
+      ORDER BY week_end_date DESC
+      LIMIT 52
+    ) kwm_recent
+    ORDER BY week_end_date ASC
+  `;
+  return rows as unknown as Array<Record<string, unknown>>;
+}
+
+// ---------------------------------------------------------------------------
+// fetchKeywordChartData — FAST loader for the detail-page header + charts
+// ---------------------------------------------------------------------------
+
+/**
+ * Fast loader: reads keyword_chart_series for chart history (single row),
+ * plus a targeted current-week kwm read for product ASINs/titles and
+ * variant info. Falls back to a full kwm scan when the series row is absent
+ * or the table doesn't yet exist.
+ *
+ * Returns null when the search_term doesn't exist (→ 404).
+ */
+export async function fetchKeywordChartData(
+  searchTermId: string,
+): Promise<KeywordChartData | null> {
+  const dbUrl = env.DATABASE_URL;
+  const sql = neon(dbUrl);
+
+  // Run term, current, fits, and enriched products in parallel.
+  // We also attempt to read the series row; if the table is absent we catch
+  // and fall back. The current-week kwm slice (for product slots + variants)
+  // needs kcs.current_week_end_date, so it runs after the current query.
+  const [termRowsAny, currentRowsAny, fitsResult, seriesResult] = await Promise.all([
+    sql`
+      SELECT id, search_term_raw, search_term_normalized,
+             first_seen_week, last_seen_week
+      FROM search_terms
+      WHERE id = ${searchTermId}
+    `,
+    sql`
+      SELECT
+        current_week_end_date,
+        current_rank,
+        prior_week_rank,
+        improvement_1w,
+        CASE
+          WHEN current_rank > 100000 THEN 'none'::fake_volume_severity
+          ELSE fake_volume_severity_current
+        END AS fake_volume_severity_current,
+        top_clicked_product_1_asin_current,
+        top_clicked_product_1_title_current,
+        top_clicked_product_1_click_share_current,
+        top_clicked_product_1_conversion_share_current,
+        keyword_in_title_1_loose_current,
+        keyword_in_title_2_loose_current,
+        keyword_in_title_3_loose_current,
+        keyword_title_match_count_loose_current
+      FROM keyword_current_summary
+      WHERE search_term_id = ${searchTermId}
+    `,
+    fetchFits(dbUrl),
+    // Series read: catch "relation does not exist" (table not yet migrated)
+    // and treat as no series → fallback.
+    sql`
+      SELECT series
+      FROM keyword_chart_series
+      WHERE search_term_id = ${searchTermId}
+    `.catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('relation') && msg.includes('does not exist')) return [];
+      throw err;
+    }),
+  ]);
+
+  const termRows = termRowsAny as unknown as Array<{
+    id: string;
+    search_term_raw: string;
+    search_term_normalized: string;
+    first_seen_week: string;
+    last_seen_week: string;
+  }>;
+
+  if (termRows.length === 0) return null;
+  const term = termRows[0];
+
+  const currentRowsRaw = currentRowsAny as unknown as Array<Record<string, unknown>>;
+  const fits = fitsResult;
+  const seriesRows = seriesResult as unknown as Array<{ series: ChartSeriesEntry[] }>;
+
+  const current: KeywordDetailCurrent | null =
+    currentRowsRaw.length > 0 ? mapCurrent(currentRowsRaw[0], fits) : null;
+
+  // Current week: run current-week kwm slice and variants in parallel.
+  // Only needed when the keyword is active (has a current kcs row).
+  let currentWeekProductSlots: CurrentWeekProductSlot[] = [];
+  let currentWeekVariants: KeywordVariantInfo | null = null;
+
+  if (current) {
+    const [currentWeekKwmAny, variantRowsAny] = await Promise.all([
+      // Targeted single-row kwm read for the current week — gives us the
+      // top-3 ASINs + titles that the series doesn't store.
+      sql`
+        SELECT
+          top_clicked_product_1_asin,
+          top_clicked_product_1_title,
+          top_clicked_product_2_asin,
+          top_clicked_product_2_title,
+          top_clicked_product_3_asin,
+          top_clicked_product_3_title
+        FROM keyword_weekly_metrics
+        WHERE search_term_id = ${searchTermId}
+          AND week_end_date = ${current.currentWeekEndDate}
+        LIMIT 1
+      `,
+      // Variant info for the current week only (the box only shows current).
+      sql`
+        SELECT duplicate_count, losing_ranks, raw_examples
+        FROM import_duplicate_search_terms
+        WHERE search_term_id = ${searchTermId}
+          AND week_end_date = ${current.currentWeekEndDate}
+        LIMIT 1
+      `,
+    ]);
+
+    const kwmRow = (currentWeekKwmAny as unknown as Array<Record<string, unknown>>)[0];
+    if (kwmRow) {
+      currentWeekProductSlots = [
+        { slot: 1, asin: (kwmRow.top_clicked_product_1_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_1_title as string | null) ?? null },
+        { slot: 2, asin: (kwmRow.top_clicked_product_2_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_2_title as string | null) ?? null },
+        { slot: 3, asin: (kwmRow.top_clicked_product_3_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_3_title as string | null) ?? null },
+      ];
+    }
+
+    const variantRow = (variantRowsAny as unknown as Array<{
+      duplicate_count: number;
+      losing_ranks: number[];
+      raw_examples: string[];
+    }>)[0];
+    if (variantRow) {
+      currentWeekVariants = {
+        duplicateCount: variantRow.duplicate_count,
+        losingRanks: variantRow.losing_ranks ?? [],
+        rawExamples: variantRow.raw_examples ?? [],
+      };
+    }
+  }
+
+  // Run the enriched-products query in parallel with the current-week queries
+  // (it also needs current_week_end_date, which requires the current row).
+  let enrichedProductsByAsin: Record<string, EnrichedProduct> = {};
+  if (current) {
+    const enrichedRowsAny = await sql`
+      SELECT
+        a.asin, a.title, a.brand, a.image_url,
+        a.category_path, a.category_root, a.category_leaf,
+        a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
+        a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
+        a.enrichment_status::text AS enrichment_status
+      FROM asin_weekly_data a
+      JOIN keyword_current_summary kcs
+        ON kcs.search_term_id = ${searchTermId}
+      JOIN keyword_weekly_metrics kwm
+        ON kwm.search_term_id = kcs.search_term_id
+        AND kwm.week_end_date = kcs.current_week_end_date
+      WHERE a.week_end_date = kcs.current_week_end_date
+        AND a.asin = ANY(ARRAY[
+          kwm.top_clicked_product_1_asin,
+          kwm.top_clicked_product_2_asin,
+          kwm.top_clicked_product_3_asin
+        ]::text[])
+    `;
+    enrichedProductsByAsin = mapEnrichedProducts(
+      enrichedRowsAny as unknown as Array<Record<string, unknown>>,
+    );
+  }
+
+  // Determine chartHistory: series fast path or kwm fallback.
+  let chartHistory: KeywordDetailHistoryRow[];
+  if (seriesRows.length > 0 && seriesRows[0].series?.length > 0) {
+    chartHistory = seriesToHistoryRows(seriesRows[0].series, fits);
+  } else {
+    // Fallback: full kwm scan (same as before; correct but slow on cold cache).
+    const kwmRows = await fetchKwmHistory(dbUrl, searchTermId);
+    // No variant data needed for charts (series doesn't store them).
+    chartHistory = kwmRows.map((r) => mapHistory(r, new Map(), fits));
+  }
+
+  return {
+    searchTermId: term.id,
+    searchTermRaw: term.search_term_raw,
+    searchTermNormalized: term.search_term_normalized,
+    firstSeenWeek: toIsoDate(term.first_seen_week),
+    lastSeenWeek: toIsoDate(term.last_seen_week),
+    current,
+    chartHistory,
+    enrichedProductsByAsin,
+    currentWeekProductSlots,
+    currentWeekVariants,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// fetchKeywordRawHistory — SLOW loader for the streamed Weekly History table
+// ---------------------------------------------------------------------------
+
+/**
+ * Slow loader: full 52-week kwm scan with ALL columns (including product
+ * ASINs/titles, categories, variants) for the RawDataTable.
+ * Intended to be called from an async server component inside <Suspense>.
+ */
+export async function fetchKeywordRawHistory(
+  searchTermId: string,
+): Promise<KeywordDetailHistoryRow[]> {
+  const dbUrl = env.DATABASE_URL;
+  const sql = neon(dbUrl);
+
+  const [kwmRows, variantRowsAny, fitsResult] = await Promise.all([
+    fetchKwmHistory(dbUrl, searchTermId),
+    sql`
+      SELECT week_end_date, duplicate_count, losing_ranks, raw_examples
+      FROM import_duplicate_search_terms
+      WHERE search_term_id = ${searchTermId}
+    `,
+    fetchFits(dbUrl),
+  ]);
+
+  const variantRows = variantRowsAny as unknown as Array<{
+    week_end_date: string;
+    duplicate_count: number;
+    losing_ranks: number[];
+    raw_examples: string[];
+  }>;
+  const variantsByWeek = new Map<string, KeywordVariantInfo>();
+  for (const v of variantRows) {
+    variantsByWeek.set(toIsoDate(v.week_end_date), {
+      duplicateCount: v.duplicate_count,
+      losingRanks: v.losing_ranks ?? [],
+      rawExamples: v.raw_examples ?? [],
+    });
+  }
+
+  return kwmRows.map((r) => mapHistory(r, variantsByWeek, fitsResult));
 }

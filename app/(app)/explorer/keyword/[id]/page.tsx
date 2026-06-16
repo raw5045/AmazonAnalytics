@@ -1,27 +1,32 @@
 /**
- * /explorer/keyword/<id> — keyword detail page (Plan 3.3).
+ * /explorer/keyword/<id> — keyword detail page (Plan 3.3 / T5 fast-first-view).
  *
  * Server component:
- *   1. Validate the [id] param looks like a UUID (cheap 404 path)
- *   2. Fetch search_term + kcs current + kwm history in parallel
- *   3. Render header, charts, timelines, and the raw data table
- *
- * For Commit 2 (this commit) only the header + raw data table render.
- * Subsequent commits add RankChart, FakeVolumeStrip, etc.
+ *   1. Validate the [id] param (cheap 404 path)
+ *   2. Call fetchKeywordChartData (FAST): reads keyword_chart_series + a
+ *      targeted current-week kwm slice. Returns everything for the header,
+ *      4 charts, top-products box, and variants box immediately.
+ *   3. Stream the "Weekly history" raw table behind a <Suspense> boundary
+ *      via WeeklyHistoryTable (calls fetchKeywordRawHistory — the slow query).
  */
+import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { fetchKeywordDetail, type EnrichedProduct } from '@/lib/explorer/fetchKeywordDetail';
+import {
+  fetchKeywordChartData,
+  type EnrichedProduct,
+  type CurrentWeekProductSlot,
+} from '@/lib/explorer/fetchKeywordDetail';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isKeywordWatched } from '@/lib/watchlist/loadServer';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { BackToExplorer } from './BackToExplorer';
-import { RawDataTable } from './RawDataTable';
 import { RankChart } from './RankChart';
 import { VolumeChart } from './VolumeChart';
 import { FakeVolumeStrip } from './FakeVolumeStrip';
 import { TitleMatchHistory } from './TitleMatchHistory';
 import { KeywordVariantsBox } from './KeywordVariantsBox';
+import { WeeklyHistoryTable, HistoryTableSkeleton } from './WeeklyHistoryTable';
 
 export const metadata: Metadata = {
   title: 'Keyword detail',
@@ -39,7 +44,7 @@ export default async function KeywordDetailPage({
   const { id } = await params;
   if (!UUID_RE.test(id)) notFound();
 
-  const detail = await fetchKeywordDetail(id);
+  const detail = await fetchKeywordChartData(id);
   if (!detail) notFound();
 
   const user = await getCurrentUser();
@@ -54,43 +59,40 @@ export default async function KeywordDetailPage({
   // direct entries fall back to a normal link to backHref.)
   const cameFromExplorer = Boolean(fromRaw && fromRaw.startsWith('/explorer'));
 
-  const { searchTermRaw, searchTermNormalized, current, history, enrichedProductsByAsin } = detail;
+  const {
+    searchTermRaw,
+    searchTermNormalized,
+    current,
+    chartHistory,
+    enrichedProductsByAsin,
+    currentWeekProductSlots,
+    currentWeekVariants,
+  } = detail;
+
   const showNormalized =
     searchTermNormalized && searchTermNormalized.toLowerCase() !== searchTermRaw.toLowerCase();
 
-  // Top-clicked products: source the 3 ASINs from the latest history row
-  // matching kcs's current_week_end_date. (kcs itself only stores slot 1
-  // explicitly; slots 2 + 3 live in kwm.) Only renders for active keywords.
-  const currentWeekRow = current
-    ? history.find((r) => r.weekEndDate === current.currentWeekEndDate) ?? null
-    : null;
+  // Top-clicked products: sourced from fetchKeywordChartData's targeted
+  // current-week kwm read (currentWeekProductSlots). Slots 2 + 3 aren't
+  // in kcs; the fast loader fetches them from kwm for the current week only.
   const topClickedSlots: Array<{
     slot: 1 | 2 | 3;
     asin: string | null;
     fallbackTitle: string | null;
     clickShare?: string | null;
     conversionShare?: string | null;
-  }> = currentWeekRow
-    ? [
-        {
-          slot: 1,
-          asin: currentWeekRow.topClickedProduct1Asin,
-          fallbackTitle: currentWeekRow.topClickedProduct1Title,
+  }> = currentWeekProductSlots.map((s: CurrentWeekProductSlot) => ({
+    slot: s.slot,
+    asin: s.asin,
+    fallbackTitle: s.title,
+    // Click/conversion shares for slot 1 come from kcs (already in `current`).
+    ...(s.slot === 1
+      ? {
           clickShare: current?.topClickedProduct1ClickShareCurrent ?? null,
           conversionShare: current?.topClickedProduct1ConversionShareCurrent ?? null,
-        },
-        {
-          slot: 2,
-          asin: currentWeekRow.topClickedProduct2Asin,
-          fallbackTitle: currentWeekRow.topClickedProduct2Title,
-        },
-        {
-          slot: 3,
-          asin: currentWeekRow.topClickedProduct3Asin,
-          fallbackTitle: currentWeekRow.topClickedProduct3Title,
-        },
-      ]
-    : [];
+        }
+      : {}),
+  }));
   const hasAnyProduct = topClickedSlots.some((s) => s.asin);
 
   return (
@@ -150,14 +152,14 @@ export default async function KeywordDetailPage({
 
       <section className="mt-6">
         <RankChart
-          history={history}
+          history={chartHistory}
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
       </section>
 
       <section className="mt-6">
         <VolumeChart
-          history={history}
+          history={chartHistory}
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
       </section>
@@ -171,32 +173,33 @@ export default async function KeywordDetailPage({
 
       <section className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
         <FakeVolumeStrip
-          history={history}
+          history={chartHistory}
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
         <TitleMatchHistory
-          history={history}
+          history={chartHistory}
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
       </section>
 
       <section className="mt-8">
         <h2 className="text-sm font-semibold text-gray-700 mb-2">Weekly history</h2>
-        <RawDataTable rows={history} />
+        <Suspense fallback={<HistoryTableSkeleton />}>
+          <WeeklyHistoryTable id={id} />
+        </Suspense>
       </section>
 
-      {(() => {
-        // Variants box: only show for active keywords whose most recent week
-        // had >1 raw CSV phrasing for this normalized term.
-        if (!current) return null;
-        const latestRow = history.find((r) => r.weekEndDate === current.currentWeekEndDate);
-        if (!latestRow?.variants) return null;
-        return (
-          <section className="mt-6">
-            <KeywordVariantsBox weekEndDate={current.currentWeekEndDate} variants={latestRow.variants} />
-          </section>
-        );
-      })()}
+      {/* Variants box: only for active keywords whose current week had >1
+          raw CSV phrasing. Sourced from the fast loader's current-week
+          import_duplicate_search_terms read. */}
+      {current && currentWeekVariants && (
+        <section className="mt-6">
+          <KeywordVariantsBox
+            weekEndDate={current.currentWeekEndDate}
+            variants={currentWeekVariants}
+          />
+        </section>
+      )}
     </div>
   );
 }
