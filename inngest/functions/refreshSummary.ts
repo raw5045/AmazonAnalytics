@@ -37,6 +37,12 @@
 import { Pool, type PoolClient } from 'pg';
 import { pickFitForWeek, buildVolumeExpressions, type FitParams } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
+import { kwmRowToEntry, appendWeek, type ChartSeriesKwmRow } from '@/lib/explorer/chartSeries';
+
+/** Rebuild at most this many gapped/new terms per refresh; the detail page
+ *  falls back to a live kwm read for any beyond the cap, and they're retried
+ *  next refresh. Generous default so a normal week never hits it. */
+const CHART_SERIES_REBUILD_CAP = 100_000;
 
 export interface RefreshSummaryResult {
   rowsWritten: number;
@@ -462,6 +468,15 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
       'DELETE FROM keyword_current_summary_leaf_category_facets WHERE snapshot_version <> $1::uuid',
       [newSnapshotVersion],
     );
+
+    // Maintain the compact chart series for the fast detail-page first view.
+    // Fail-soft: a series error must NEVER fail the import/refresh — the detail
+    // page falls back to a live kwm read when a series row is missing/stale.
+    try {
+      await maintainChartSeries(client, currentWeekEndDate);
+    } catch (e) {
+      console.warn('[refreshSummary] chart-series maintenance failed (non-fatal):', (e as Error).message);
+    }
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
@@ -601,4 +616,158 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
 // 0016+ matcher (padded-string + bidirectional plural candidates).
 // Recomputing here would (a) duplicate logic, (b) risk drift, and
 // (c) waste ~half the refresh wall time.
+
+// ---------------------------------------------------------------------------
+// Chart-series maintenance
+// ---------------------------------------------------------------------------
+
+/**
+ * Keep keyword_chart_series current after each weekly refresh.
+ *
+ * Two-phase strategy:
+ *
+ * (A) APPEND / REPLACE — SQL UPDATE for terms whose series row is
+ *     contiguous (last_week = prev week) or already at the current week
+ *     (re-import / ReplaceWeek → replace the last entry). Runs as a
+ *     single set-returning UPDATE; no per-row round-trips.
+ *
+ * (B) TARGETED REBUILD — for active terms still not at the current week
+ *     after phase A (newcomers, gapped terms, or missing rows). Reads
+ *     each term's 52-week kwm window, builds the series in TypeScript
+ *     using the shared helpers, and batch-upserts. Bounded by
+ *     CHART_SERIES_REBUILD_CAP so a pathological import can't stall
+ *     the process indefinitely.
+ *
+ * Called fail-soft from refreshKeywordCurrentSummary — a series error
+ * must NEVER fail the import/refresh; the detail page falls back to a
+ * live kwm read when a series row is missing or stale.
+ */
+export async function maintainChartSeries(client: PoolClient, currentWeekEndDate: string): Promise<void> {
+  // (A) APPEND / REPLACE for terms whose series is contiguous (last_week =
+  //     prev week) OR already at the current week (re-import / ReplaceWeek →
+  //     replace the last entry). Build the new entry from the current kcs row.
+  //     NOTE: kcs has no fake_volume_eval_status → 'es' is null on appended
+  //     weeks (acceptable: the strip only shows es when severity is NULL, and
+  //     rank>100k weeks are masked to 'none' not null).
+  await client.query(
+    `
+    UPDATE keyword_chart_series s
+    SET series = (
+          CASE
+            WHEN s.last_week = k.current_week_end_date
+              THEN (CASE WHEN jsonb_array_length(s.series) > 0
+                         THEN s.series - (jsonb_array_length(s.series) - 1)
+                         ELSE s.series END)
+            WHEN jsonb_array_length(s.series) >= 52
+              THEN s.series - 0
+            ELSE s.series
+          END
+        ) || jsonb_build_array(jsonb_build_object(
+          'w',  to_char(k.current_week_end_date, 'YYYY-MM-DD'),
+          'r',  k.current_rank,
+          'sev', k.fake_volume_severity_current::text,
+          'es', NULL::text,
+          'cs', k.top_clicked_product_1_click_share_current::text,
+          'vs', k.top_clicked_product_1_conversion_share_current::text,
+          't',  jsonb_build_array(k.keyword_in_title_1_current, k.keyword_in_title_2_current, k.keyword_in_title_3_current),
+          'tl', jsonb_build_array(k.keyword_in_title_1_loose_current, k.keyword_in_title_2_loose_current, k.keyword_in_title_3_loose_current)
+        )),
+        last_week = k.current_week_end_date,
+        updated_at = now()
+    FROM keyword_current_summary k
+    WHERE s.search_term_id = k.search_term_id
+      AND s.last_week IN ((k.current_week_end_date - INTERVAL '7 days')::date, k.current_week_end_date)
+    `,
+  );
+
+  // (B) TARGETED REBUILD for active terms still not at the current week
+  //     (newcomers / gapped / missing). Bounded by the cap.
+  const { rows: rebuildRows } = await client.query<{ search_term_id: string }>(
+    `
+    SELECT k.search_term_id
+    FROM keyword_current_summary k
+    LEFT JOIN keyword_chart_series s ON s.search_term_id = k.search_term_id
+    WHERE s.search_term_id IS NULL OR s.last_week <> k.current_week_end_date
+    LIMIT ${CHART_SERIES_REBUILD_CAP}
+    `,
+  );
+  if (rebuildRows.length === 0) return;
+  const ids = rebuildRows.map((r) => r.search_term_id);
+
+  // Read each rebuild term's 52-week window (matches the chart window /
+  // backfill: week >= current_week - 357 days), grouped by term.
+  const { rows: kwmRows } = await client.query<
+    ChartSeriesKwmRow & { search_term_id: string }
+  >(
+    `
+    SELECT search_term_id, week_end_date, actual_rank,
+           fake_volume_severity, fake_volume_eval_status,
+           top_clicked_product_1_click_share, top_clicked_product_1_conversion_share,
+           keyword_in_title_1, keyword_in_title_2, keyword_in_title_3,
+           keyword_in_title_1_loose, keyword_in_title_2_loose, keyword_in_title_3_loose
+    FROM keyword_weekly_metrics
+    WHERE search_term_id = ANY($1::uuid[])
+      AND week_end_date >= ($2::date - INTERVAL '357 days')
+    ORDER BY search_term_id, week_end_date ASC
+    `,
+    [ids, currentWeekEndDate],
+  );
+
+  // Group rows by term, build series via the shared helpers.
+  type SeriesBatch = { searchTermId: string; series: string; lastWeek: string };
+  const batches: SeriesBatch[] = [];
+
+  let currentId: string | null = null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let currentSeries: ReturnType<typeof appendWeek> = [];
+
+  for (const row of kwmRows) {
+    if (row.search_term_id !== currentId) {
+      // Flush the previous term (if any)
+      if (currentId !== null && currentSeries.length > 0) {
+        const lastEntry = currentSeries[currentSeries.length - 1];
+        batches.push({
+          searchTermId: currentId,
+          series: JSON.stringify(currentSeries),
+          lastWeek: lastEntry.w,
+        });
+      }
+      currentId = row.search_term_id;
+      currentSeries = [];
+    }
+    const entry = kwmRowToEntry(row as ChartSeriesKwmRow);
+    currentSeries = appendWeek(currentSeries, entry, 52);
+  }
+  // Flush the final term
+  if (currentId !== null && currentSeries.length > 0) {
+    const lastEntry = currentSeries[currentSeries.length - 1];
+    batches.push({
+      searchTermId: currentId,
+      series: JSON.stringify(currentSeries),
+      lastWeek: lastEntry.w,
+    });
+  }
+
+  if (batches.length === 0) return;
+
+  // Batch-upsert. Using unnest for efficient multi-row upsert.
+  const searchTermIds = batches.map((b) => b.searchTermId);
+  const seriesJsons = batches.map((b) => b.series);
+  const lastWeeks = batches.map((b) => b.lastWeek);
+
+  await client.query(
+    `
+    INSERT INTO keyword_chart_series (search_term_id, series, last_week, updated_at)
+    SELECT unnest($1::uuid[]),
+           unnest($2::text[])::jsonb,
+           unnest($3::date[]),
+           now()
+    ON CONFLICT (search_term_id) DO UPDATE
+      SET series     = EXCLUDED.series,
+          last_week  = EXCLUDED.last_week,
+          updated_at = EXCLUDED.updated_at
+    `,
+    [searchTermIds, seriesJsons, lastWeeks],
+  );
+}
 
