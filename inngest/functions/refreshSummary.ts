@@ -655,12 +655,19 @@ export async function maintainChartSeries(
 ): Promise<void> {
   const scope =
     restrictToTermIds && restrictToTermIds.length > 0 ? [...restrictToTermIds] : null;
-  // (A) APPEND / REPLACE for terms whose series is contiguous (last_week =
-  //     prev week) OR already at the current week (re-import / ReplaceWeek →
-  //     replace the last entry). Build the new entry from the current kcs row.
-  //     NOTE: kcs has no fake_volume_eval_status → 'es' is null on appended
-  //     weeks (acceptable: the strip only shows es when severity is NULL, and
-  //     rank>100k weeks are masked to 'none' not null).
+  // (A) APPEND / REPLACE the current week for EVERY active term that already
+  //     has a series row. The CASE picks the operation from last_week:
+  //       - last_week = current week → replace the last entry (re-import /
+  //         ReplaceWeek), so re-running is idempotent;
+  //       - last_week < current week → append, dropping the oldest entry once
+  //         at 52. Gapped terms (not observed last week) append WITH a gap; the
+  //         chart's gapFillHistory renders gaps, so this is correct AND keeps
+  //         gapped terms on the cheap set-based path instead of the per-term
+  //         rebuild (B) below.
+  //     Build the new entry from the current kcs row. NOTE: kcs has no
+  //     fake_volume_eval_status → 'es' is null on appended weeks (acceptable:
+  //     the strip only shows es when severity is NULL, and rank>100k weeks are
+  //     masked to 'none' not null).
   await client.query(
     `
     UPDATE keyword_chart_series s
@@ -688,7 +695,6 @@ export async function maintainChartSeries(
         updated_at = now()
     FROM keyword_current_summary k
     WHERE s.search_term_id = k.search_term_id
-      AND s.last_week IN ((k.current_week_end_date - INTERVAL '7 days')::date, k.current_week_end_date)
       ${scope ? 'AND s.search_term_id = ANY($1::uuid[])' : ''}
     `,
     scope ? [scope] : [],
@@ -708,6 +714,13 @@ export async function maintainChartSeries(
     scope ? [scope] : [],
   );
   if (rebuildRows.length === 0) return;
+  if (rebuildRows.length >= CHART_SERIES_REBUILD_CAP) {
+    console.warn(
+      `[refreshSummary] chart-series rebuild hit the cap of ${CHART_SERIES_REBUILD_CAP}; ` +
+        'remaining behind/new terms stay stale this cycle (covered by the ' +
+        'detail-page kwm fallback) and are retried next refresh.',
+    );
+  }
   const ids = rebuildRows.map((r) => r.search_term_id);
 
   // Read each rebuild term's 52-week window (matches the chart window /
