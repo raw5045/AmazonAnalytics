@@ -5,26 +5,36 @@
  * ACTIVE = present in keyword_current_summary (kcs), which holds only active terms.
  *
  * Window: each term's kwm rows within the 52-calendar-week window ending at
- * current_week (i.e. week_end_date >= current_week::date - INTERVAL '357 days').
+ * current_week (week_end_date >= current_week::date - INTERVAL '357 days').
  * This matches exactly what buildWeekCalendar(current_week, 52) plots, so the
  * stored series produces identical charts to the live kwm read.
  *
- * Streaming: no pg-cursor or pg-query-stream in this project, so we use keyset
- * pagination: fetch BATCH_SIZE terms at a time ordered by search_term_id, then
- * for each batch pull all of their windowed kwm rows in one query ordered by
- * (search_term_id, week_end_date). No server-side cursor, but keeps memory
- * bounded and never loads more than BATCH_SIZE terms' data at once.
+ * STRATEGY — single sequential pass via a server-side cursor.
+ *   A SELECT … ORDER BY (search_term_id, week_end_date) over the window lets
+ *   Postgres do ONE sequential scan + sort instead of millions of per-term
+ *   random index reads (the per-term approach was warm-fast on a small sample
+ *   but the full ~100GB window doesn't fit cache → cold random reads at scale).
+ *   We DECLARE a cursor and FETCH in chunks, grouping rows into one series per
+ *   term as the id changes — reusing the shared kwmRowToEntry/appendWeek so the
+ *   backfilled entries are byte-identical to what the refresh maintenance builds.
  *
- * Upsert: INSERT … ON CONFLICT DO UPDATE in batches of UPSERT_BATCH terms.
- * A short sleep between write batches avoids starving live readers.
+ *   - Reads run in a long read-only transaction on `cursorClient`.
+ *   - Writes go through a SEPARATE autocommit connection (`writeClient`) so
+ *     partial progress persists even if the process dies, and the read cursor
+ *     stays read-only.
+ *   - statement_timeout is disabled on the cursor connection: the first FETCH
+ *     materializes the full sort, which can take several minutes.
+ *
+ * Upsert: INSERT … ON CONFLICT DO UPDATE in batches, with a short sleep between
+ * write batches to avoid starving live readers (idempotent — safe to re-run).
  *
  * Flags:
- *   --dry-run        Skip all DB writes; log a sample built series.
- *   --limit-terms N  Stop after N completed terms.
+ *   --dry-run        Read + build + sort, but perform NO writes (gauge/verify).
+ *   --limit-terms N  Stop after N completed terms (early-closes the cursor).
  *
  * Usage:
- *   pnpm tsx scripts/backfillChartSeries.ts --dry-run --limit-terms 50
- *   pnpm tsx scripts/backfillChartSeries.ts                   # real run (table must exist)
+ *   pnpm tsx scripts/backfillChartSeries.ts --dry-run --limit-terms 200
+ *   pnpm tsx scripts/backfillChartSeries.ts                 # full run (table must exist)
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
@@ -36,14 +46,14 @@ import type { ChartSeriesEntry } from '@/db/schema/keywordChartSeries';
 // Config
 // ---------------------------------------------------------------------------
 
-/** How many distinct search_term_ids to fetch from kcs per keyset page. */
-const TERM_BATCH_SIZE = 500;
+/** Rows pulled per FETCH from the server-side cursor. */
+const FETCH_CHUNK = 20_000;
 
-/** How many completed terms to accumulate before a single upsert batch. */
-const UPSERT_BATCH_SIZE = 500;
+/** Completed terms accumulated before a single upsert batch. */
+const UPSERT_BATCH_SIZE = 1_000;
 
 /** Milliseconds to sleep between write batches (throttle). */
-const SLEEP_MS = 75;
+const SLEEP_MS = 40;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -61,6 +71,9 @@ function parseArgs(): { dryRun: boolean; limitTerms: number | null } {
   return { dryRun, limitTerms };
 }
 
+// Row shape the cursor returns (search_term_id cast to text for stable JS compares).
+type CursorRow = ChartSeriesKwmRow & { search_term_id: string };
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -68,7 +81,7 @@ function parseArgs(): { dryRun: boolean; limitTerms: number | null } {
 async function main() {
   const { dryRun, limitTerms } = parseArgs();
 
-  console.log('=== backfillChartSeries ===');
+  console.log('=== backfillChartSeries (sequential cursor) ===');
   console.log(`  dry-run     : ${dryRun}`);
   console.log(`  limit-terms : ${limitTerms ?? '(none)'}`);
 
@@ -77,17 +90,19 @@ async function main() {
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
     connectionTimeoutMillis: 20_000,
-    // Long timeout for large kwm page reads; write batches are small.
-    statement_timeout: 120_000,
   });
 
-  const client = await pool.connect();
+  const cursorClient = await pool.connect();
+  const writeClient = await pool.connect();
 
+  let cursorOpen = false;
   try {
-    // -----------------------------------------------------------------------
-    // 1. Current week
-    // -----------------------------------------------------------------------
-    const metaRes = await client.query<{ current_week_end_date: string }>(
+    // The first FETCH materializes a large sort — disable the per-statement
+    // timeout on the cursor connection.
+    await cursorClient.query('SET statement_timeout = 0');
+
+    // 1. Current week + window lower bound.
+    const metaRes = await cursorClient.query<{ current_week_end_date: string }>(
       `SELECT current_week_end_date::text AS current_week_end_date
        FROM keyword_current_summary_meta WHERE singleton = true`,
     );
@@ -98,150 +113,111 @@ async function main() {
     const currentWeek = metaRes.rows[0].current_week_end_date.slice(0, 10);
     console.log(`  current_week: ${currentWeek}`);
 
-    // Window lower bound: 52 calendar weeks = 357 days before current_week.
-    // We pass this as a string to avoid any timezone confusion.
-    const windowStart = `(DATE '${currentWeek}' - INTERVAL '357 days')`;
-
-    // -----------------------------------------------------------------------
-    // 2. Total active-term count (for progress display)
-    // -----------------------------------------------------------------------
-    const cntRes = await client.query<{ n: string }>(
-      `SELECT COUNT(DISTINCT search_term_id)::text AS n FROM keyword_current_summary`,
+    const cntRes = await cursorClient.query<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM keyword_current_summary`,
     );
     const totalActive = parseInt(cntRes.rows[0].n, 10);
     console.log(`  active terms: ${totalActive.toLocaleString()}`);
     console.log('');
 
-    // -----------------------------------------------------------------------
-    // 3. Keyset-paginate through all active search_term_ids
-    // -----------------------------------------------------------------------
-    let lastId: string | null = null;   // keyset cursor (UUID string)
+    // 2. Open the cursor over the ordered window.
+    //    windowStart is a SQL literal built from the trusted meta value.
+    const windowStart = `(DATE '${currentWeek}' - INTERVAL '357 days')`;
+    await cursorClient.query('BEGIN');
+    await cursorClient.query(`
+      DECLARE chart_cur NO SCROLL CURSOR FOR
+      SELECT
+        k.search_term_id::text AS search_term_id,
+        k.week_end_date,
+        k.actual_rank,
+        k.fake_volume_severity,
+        k.fake_volume_eval_status,
+        k.top_clicked_product_1_click_share,
+        k.top_clicked_product_1_conversion_share,
+        k.keyword_in_title_1,
+        k.keyword_in_title_2,
+        k.keyword_in_title_3,
+        k.keyword_in_title_1_loose,
+        k.keyword_in_title_2_loose,
+        k.keyword_in_title_3_loose
+      FROM keyword_weekly_metrics k
+      JOIN keyword_current_summary kcs ON kcs.search_term_id = k.search_term_id
+      WHERE k.week_end_date >= ${windowStart}
+      ORDER BY k.search_term_id, k.week_end_date ASC
+    `);
+    cursorOpen = true;
+    console.log('  sorting window — the first FETCH may take several minutes...');
+
+    // 3. Stream-group rows into one series per term.
+    let currentTermId: string | null = null;
+    let currentSeries: ChartSeriesEntry[] = [];
     let termsProcessed = 0;
     let upsertPending: Array<{ id: string; series: ChartSeriesEntry[]; lastWeek: string }> = [];
-
-    // For dry-run reporting
     let sampleLogged = false;
+    let limitReached = false;
     const startedAt = Date.now();
 
-    outer: while (true) {
-      // --- Fetch next page of active term IDs ---
-      let termPageRows: Array<{ search_term_id: string }>;
-      if (lastId !== null) {
-        const res = await client.query<{ search_term_id: string }>(
-          `SELECT DISTINCT search_term_id
-           FROM keyword_current_summary
-           WHERE search_term_id > $1
-           ORDER BY search_term_id
-           LIMIT ${TERM_BATCH_SIZE}`,
-          [lastId],
-        );
-        termPageRows = res.rows;
-      } else {
-        const res = await client.query<{ search_term_id: string }>(
-          `SELECT DISTINCT search_term_id
-           FROM keyword_current_summary
-           ORDER BY search_term_id
-           LIMIT ${TERM_BATCH_SIZE}`,
-        );
-        termPageRows = res.rows;
+    const completeTerm = () => {
+      if (currentTermId === null || currentSeries.length === 0) return;
+      if (dryRun && !sampleLogged) {
+        console.log('--- DRY-RUN SAMPLE (first completed term) ---');
+        console.log(`  search_term_id : ${currentTermId}`);
+        console.log(`  entries        : ${currentSeries.length}`);
+        console.log(`  first entry    : ${JSON.stringify(currentSeries[0])}`);
+        console.log(`  last entry     : ${JSON.stringify(currentSeries[currentSeries.length - 1])}`);
+        console.log('');
+        sampleLogged = true;
       }
+      if (!dryRun) {
+        upsertPending.push({
+          id: currentTermId,
+          series: currentSeries,
+          lastWeek: currentSeries[currentSeries.length - 1].w,
+        });
+      }
+      termsProcessed++;
+      if (limitTerms !== null && termsProcessed >= limitTerms) limitReached = true;
+    };
 
-      if (termPageRows.length === 0) break; // all pages done
+    while (!limitReached) {
+      const res = await cursorClient.query<CursorRow>(`FETCH ${FETCH_CHUNK} FROM chart_cur`);
+      if (res.rows.length === 0) break; // cursor exhausted
 
-      const pageIds: string[] = termPageRows.map((r) => r.search_term_id);
-      lastId = pageIds[pageIds.length - 1];
-
-      // --- Fetch kwm rows for this page of terms ---
-      // Rows come back ordered by (search_term_id, week_end_date ASC) which
-      // lets us process one term at a time without sorting in JS.
-      const kwmRes2 = await client.query<ChartSeriesKwmRow & { search_term_id: string }>(
-        `SELECT
-           kwm.search_term_id,
-           kwm.week_end_date,
-           kwm.actual_rank,
-           kwm.fake_volume_severity,
-           kwm.fake_volume_eval_status,
-           kwm.top_clicked_product_1_click_share,
-           kwm.top_clicked_product_1_conversion_share,
-           kwm.keyword_in_title_1,
-           kwm.keyword_in_title_2,
-           kwm.keyword_in_title_3,
-           kwm.keyword_in_title_1_loose,
-           kwm.keyword_in_title_2_loose,
-           kwm.keyword_in_title_3_loose
-         FROM keyword_weekly_metrics kwm
-         WHERE kwm.search_term_id = ANY($1::uuid[])
-           AND kwm.week_end_date >= ${windowStart}
-         ORDER BY kwm.search_term_id, kwm.week_end_date ASC`,
-        [pageIds],
-      );
-
-      // --- Build series per term ---
-      let currentTermId: string | null = null;
-      let currentSeries: ChartSeriesEntry[] = [];
-
-      const flushTerm = (termId: string, series: ChartSeriesEntry[]) => {
-        if (series.length === 0) return; // no kwm data for this term in window → skip
-        const lastWeek = series[series.length - 1].w;
-
-        // Dry-run sample: log first completed term
-        if (dryRun && !sampleLogged) {
-          console.log('--- DRY-RUN SAMPLE (first completed term) ---');
-          console.log(`  search_term_id : ${termId}`);
-          console.log(`  entries        : ${series.length}`);
-          console.log(`  first entry    : ${JSON.stringify(series[0])}`);
-          console.log(`  last entry     : ${JSON.stringify(series[series.length - 1])}`);
-          console.log('');
-          sampleLogged = true;
-        }
-
-        upsertPending.push({ id: termId, series, lastWeek });
-        termsProcessed++;
-      };
-
-      for (const row of kwmRes2.rows) {
+      for (const row of res.rows) {
         if (row.search_term_id !== currentTermId) {
-          // New term: flush previous
-          if (currentTermId !== null) {
-            flushTerm(currentTermId, currentSeries);
-            if (limitTerms !== null && termsProcessed >= limitTerms) break;
-          }
+          completeTerm(); // previous term is fully read
+          if (limitReached) break;
           currentTermId = row.search_term_id;
           currentSeries = [];
         }
-        const entry = kwmRowToEntry(row);
-        currentSeries = appendWeek(currentSeries, entry, 52);
+        currentSeries = appendWeek(currentSeries, kwmRowToEntry(row), 52);
       }
-      // Flush last term in this page
-      if (currentTermId !== null) {
-        flushTerm(currentTermId, currentSeries);
-      }
+      if (limitReached) break;
 
-      // Check limit
-      if (limitTerms !== null && termsProcessed >= limitTerms) {
-        console.log(`  --limit-terms ${limitTerms} reached — stopping.`);
-        break outer;
-      }
-
-      // --- Upsert when we've accumulated enough ---
       if (!dryRun && upsertPending.length >= UPSERT_BATCH_SIZE) {
-        await flushUpsert(client, upsertPending);
+        await flushUpsert(writeClient, upsertPending);
         upsertPending = [];
         await sleep(SLEEP_MS);
       }
 
-      // Progress
       const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
       process.stdout.write(
-        `\r  processed ${termsProcessed.toLocaleString().padStart(7)} / ${totalActive.toLocaleString()} terms  (${elapsed}s)`,
+        `\r  processed ${termsProcessed.toLocaleString().padStart(9)} / ${totalActive.toLocaleString()} terms  (${elapsed}s)`,
       );
     }
 
-    // Final upsert of remaining
+    // Flush the final in-progress term only when the cursor ended naturally
+    // (on an early --limit-terms stop the in-progress term is intentionally dropped).
+    if (!limitReached) completeTerm();
+    else console.log(`\n  --limit-terms ${limitTerms} reached — stopping.`);
+
     if (!dryRun && upsertPending.length > 0) {
-      await flushUpsert(client, upsertPending);
-      await sleep(SLEEP_MS);
+      await flushUpsert(writeClient, upsertPending);
     }
+
+    await cursorClient.query('CLOSE chart_cur');
+    cursorOpen = false;
+    await cursorClient.query('COMMIT');
 
     console.log('');
     console.log('');
@@ -249,12 +225,13 @@ async function main() {
     console.log(`  Terms processed  : ${termsProcessed.toLocaleString()}`);
     console.log(`  Writes performed : ${dryRun ? '0 (dry-run)' : termsProcessed.toLocaleString()}`);
     console.log(`  Elapsed          : ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-    if (dryRun) {
-      console.log('');
-      console.log('DRY-RUN complete — no rows written to keyword_chart_series.');
-    }
+    if (dryRun) console.log('\nDRY-RUN complete — no rows written to keyword_chart_series.');
+  } catch (e) {
+    if (cursorOpen) await cursorClient.query('ROLLBACK').catch(() => {});
+    throw e;
   } finally {
-    client.release();
+    cursorClient.release();
+    writeClient.release();
     await pool.end();
   }
 }
@@ -269,20 +246,17 @@ async function flushUpsert(
 ): Promise<void> {
   if (batch.length === 0) return;
 
-  // Build multi-row VALUES for a single INSERT … ON CONFLICT DO UPDATE.
-  // Each term contributes 3 params: (search_term_id, series_json, last_week).
+  // Multi-row VALUES for a single INSERT … ON CONFLICT DO UPDATE. Each term
+  // contributes 3 params (id, series_json, last_week); updated_at is omitted
+  // so it DEFAULTs to now() on insert and is set explicitly on update.
   const values: unknown[] = [];
   const rowFragments: string[] = [];
-
   for (let i = 0; i < batch.length; i++) {
     const base = i * 3;
     values.push(batch[i].id, JSON.stringify(batch[i].series), batch[i].lastWeek);
     rowFragments.push(`($${base + 1}::uuid, $${base + 2}::jsonb, $${base + 3}::date)`);
   }
 
-  // updated_at is omitted from the column list → DEFAULT now() on insert.
-  // (The ON CONFLICT branch sets it explicitly for updates.) Each VALUES
-  // tuple has exactly the 3 listed columns.
   const sql = `
     INSERT INTO keyword_chart_series (search_term_id, series, last_week)
     VALUES ${rowFragments.join(', ')}
@@ -291,7 +265,6 @@ async function flushUpsert(
           last_week  = EXCLUDED.last_week,
           updated_at = now()
   `;
-
   await client.query(sql, values);
 }
 
