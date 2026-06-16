@@ -280,8 +280,11 @@ async function flushUpsert(
     rowFragments.push(`($${base + 1}::uuid, $${base + 2}::jsonb, $${base + 3}::date)`);
   }
 
+  // updated_at is omitted from the column list → DEFAULT now() on insert.
+  // (The ON CONFLICT branch sets it explicitly for updates.) Each VALUES
+  // tuple has exactly the 3 listed columns.
   const sql = `
-    INSERT INTO keyword_chart_series (search_term_id, series, last_week, updated_at)
+    INSERT INTO keyword_chart_series (search_term_id, series, last_week)
     VALUES ${rowFragments.join(', ')}
     ON CONFLICT (search_term_id) DO UPDATE
       SET series     = EXCLUDED.series,
