@@ -63,12 +63,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function parseArgs(): { dryRun: boolean; limitTerms: number | null } {
+function parseArgs(): { dryRun: boolean; limitTerms: number | null; windowDays: number } {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
   const limitIdx = args.indexOf('--limit-terms');
   const limitTerms = limitIdx !== -1 ? parseInt(args[limitIdx + 1], 10) : null;
-  return { dryRun, limitTerms };
+  // Window size in days (default 357 = 52 weeks). A SMALLER window is only for
+  // fast end-to-end verification (small sort); the real backfill uses 357.
+  const wdIdx = args.indexOf('--window-days');
+  const windowDays = wdIdx !== -1 ? parseInt(args[wdIdx + 1], 10) : 357;
+  return { dryRun, limitTerms, windowDays };
 }
 
 // Row shape the cursor returns (search_term_id cast to text for stable JS compares).
@@ -79,11 +83,12 @@ type CursorRow = ChartSeriesKwmRow & { search_term_id: string };
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const { dryRun, limitTerms } = parseArgs();
+  const { dryRun, limitTerms, windowDays } = parseArgs();
 
   console.log('=== backfillChartSeries (sequential cursor) ===');
   console.log(`  dry-run     : ${dryRun}`);
   console.log(`  limit-terms : ${limitTerms ?? '(none)'}`);
+  console.log(`  window-days : ${windowDays}${windowDays !== 357 ? '  (VERIFY ONLY — not a real backfill)' : ''}`);
 
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL!,
@@ -122,7 +127,7 @@ async function main() {
 
     // 2. Open the cursor over the ordered window.
     //    windowStart is a SQL literal built from the trusted meta value.
-    const windowStart = `(DATE '${currentWeek}' - INTERVAL '357 days')`;
+    const windowStart = `(DATE '${currentWeek}' - INTERVAL '${windowDays} days')`;
     await cursorClient.query('BEGIN');
     await cursorClient.query(`
       DECLARE chart_cur NO SCROLL CURSOR FOR
