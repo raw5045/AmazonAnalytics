@@ -10,6 +10,7 @@ import { and, eq, inArray, isNotNull, sql, desc } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { users, watchlistItems, searchTerms, keywordCurrentSummary, keywordCurrentSummaryMeta, reportingWeeks, weeklyDigestRuns, weeklyDigestSends } from '@/db/schema';
 import type { DigestRecipient } from './types';
+import { isUndeliverableEmail } from './recipients';
 
 /** Raw shape returned by the watchlist-rows query (pre-grouping). */
 export interface RawWatchlistRow extends DigestKeywordRow {
@@ -95,11 +96,16 @@ export async function loadEligibleRecipients(
     .where(and(isNotNull(users.email), eq(users.weeklyDigestSubscribed, true), unsentSubquery))
     .groupBy(users.id, users.email);
 
-  return rows.map((r) => ({
-    userId: r.userId,
-    email: r.email,
-    watchlistCount: r.watchlistCount,
-  }));
+  // Exclude undeliverable addresses (reserved test domains etc.) — Resend's
+  // batch send is atomic, so one bad address fails the whole run. See
+  // isUndeliverableEmail.
+  return rows
+    .filter((r) => r.email != null && !isUndeliverableEmail(r.email))
+    .map((r) => ({
+      userId: r.userId,
+      email: r.email as string,
+      watchlistCount: r.watchlistCount,
+    }));
 }
 
 /**
@@ -194,9 +200,11 @@ export async function getCurrentDigestWeek(): Promise<string | null> {
  * Send confirm dialog. (A retry targets a subset; this is the upper bound.)
  */
 export async function countSubscribedRecipients(): Promise<number> {
-  const [row] = await db
-    .select({ n: sql<number>`COUNT(*)::int` })
+  // Mirror loadEligibleRecipients' deliverability filter so the admin
+  // confirm-dialog blast radius matches who will actually be emailed.
+  const rows = await db
+    .select({ email: users.email })
     .from(users)
     .where(and(isNotNull(users.email), eq(users.weeklyDigestSubscribed, true)));
-  return row?.n ?? 0;
+  return rows.filter((r) => r.email != null && !isUndeliverableEmail(r.email)).length;
 }

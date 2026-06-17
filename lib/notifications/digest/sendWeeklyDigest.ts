@@ -114,8 +114,12 @@ export async function sendWeeklyDigest(opts: {
       try {
         const { data, error } = await resend.batch.send(payloads);
         if (error) {
-          await markChunk(group, weekEndDate, 'failed', null, error.message ?? 'batch error');
-          failed += group.length;
+          // Batch send is atomic: one bad address rejects the WHOLE batch and
+          // the error doesn't say which. Retry the chunk one-at-a-time so a
+          // single bad address fails only itself, not its chunk-mates.
+          const r = await sendIndividually(resend, group, payloads, weekEndDate);
+          sent += r.sent;
+          failed += r.failed;
         } else {
           const ids = data?.data ?? [];
           for (let idx = 0; idx < group.length; idx++) {
@@ -123,9 +127,11 @@ export async function sendWeeklyDigest(opts: {
           }
           sent += group.length;
         }
-      } catch (e) {
-        await markChunk(group, weekEndDate, 'failed', null, e instanceof Error ? e.message : 'send threw');
-        failed += group.length;
+      } catch {
+        // The batch call itself threw (network etc.) — same per-recipient fallback.
+        const r = await sendIndividually(resend, group, payloads, weekEndDate);
+        sent += r.sent;
+        failed += r.failed;
       }
     }
   }
@@ -192,14 +198,34 @@ async function markOne(
     .where(and(eq(weeklyDigestSends.weekEndDate, weekEndDate), eq(weeklyDigestSends.userId, r.userId)));
 }
 
-async function markChunk(
+/**
+ * Per-recipient fallback when a Resend batch send fails (atomic — one bad
+ * address rejects the whole batch, with no indication of which). Sends each
+ * email individually so valid recipients are still delivered and only the
+ * offending address is marked failed, with its specific error.
+ */
+async function sendIndividually(
+  resend: Resend,
   group: DigestRecipient[],
+  payloads: ReturnType<typeof buildEmailPayload>[],
   weekEndDate: string,
-  status: 'sent' | 'failed',
-  resendId: string | null,
-  error: string | null,
-) {
-  for (const r of group) {
-    await markOne(r, weekEndDate, status, resendId, error);
+): Promise<{ sent: number; failed: number }> {
+  let sent = 0;
+  let failed = 0;
+  for (let idx = 0; idx < group.length; idx++) {
+    try {
+      const { data, error } = await resend.emails.send(payloads[idx]);
+      if (error) {
+        await markOne(group[idx], weekEndDate, 'failed', null, error.message ?? 'send error');
+        failed += 1;
+      } else {
+        await markOne(group[idx], weekEndDate, 'sent', data?.id ?? null, null);
+        sent += 1;
+      }
+    } catch (e) {
+      await markOne(group[idx], weekEndDate, 'failed', null, e instanceof Error ? e.message : 'send threw');
+      failed += 1;
+    }
   }
+  return { sent, failed };
 }
