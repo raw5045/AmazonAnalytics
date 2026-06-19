@@ -28,7 +28,8 @@
  */
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
-import { buildExplorerQuery, COUNT_CAP } from './buildQuery';
+import { buildExplorerQuery } from './buildQuery';
+import { applyCountCap, extractCount, extractWindowTotal } from './queryTotals';
 import type { ExplorerFilters, ExplorerRow, SeverityKey, VolumeFitMeta } from './types';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 
@@ -86,6 +87,7 @@ interface RawRow {
   avg_price_cents: string | number | null;
   avg_reviews: number | null;
   top_clicked_leaf_category: string | null;
+  total?: number | string; // q-path window count: (count(*) OVER ())::int
 }
 
 interface MetaRow {
@@ -209,7 +211,8 @@ export async function runExplorerQuery(
   }
   const metaLookupMs = Date.now() - tMetaStart;
 
-  const { sql, args, countSql, countArgs } = buildExplorerQuery(filters, currentWeekEndDate);
+  const built = buildExplorerQuery(filters, currentWeekEndDate);
+  const { sql, args, countSql, countArgs } = built;
 
   // Decide whether to short-circuit the count.
   let countSource: 'live' | 'meta' | 'facet' = 'live';
@@ -250,23 +253,20 @@ export async function runExplorerQuery(
     }
   }
 
-  // Run rows query (always live) and count query (only if not short-circuited)
-  // in parallel. Both timings captured.
+  // Rows always run. The live count runs in parallel ONLY for the legacy
+  // path (no q, no precomputed short-circuit). The q path carries its total
+  // on the rows via count(*) OVER (); a precomputed total skips counting.
   const tRowsStart = Date.now();
-  const rowsPromise = sqlClient.query(sql, args).then((r) => {
-    return { result: r, ms: Date.now() - tRowsStart };
-  });
+  const rowsPromise = sqlClient.query(sql, args).then((r) => ({ result: r, ms: Date.now() - tRowsStart }));
 
+  const needsLiveCount = precomputedTotal === null && !built.countFromRows;
   const tCountStart = Date.now();
-  const countPromise = precomputedTotal !== null
-    ? Promise.resolve({ result: null as unknown, ms: 0 })
-    : sqlClient.query(countSql, countArgs).then((r) => {
-        return { result: r, ms: Date.now() - tCountStart };
-      });
+  const countPromise = needsLiveCount
+    ? sqlClient.query(countSql, countArgs).then((r) => ({ result: r, ms: Date.now() - tCountStart }))
+    : Promise.resolve({ result: null as unknown, ms: 0 });
 
   const [rowsTimed, countTimed] = await Promise.all([rowsPromise, countPromise]);
-  const rawRowsAny = rowsTimed.result;
-  const rawRows = rawRowsAny as unknown as RawRow[];
+  const rawRows = rowsTimed.result as unknown as RawRow[];
 
   const rows: ExplorerRow[] = rawRows.map((r) => ({
     searchTermId: r.search_term_id,
@@ -294,23 +294,25 @@ export async function runExplorerQuery(
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,
   }));
 
-  // Final total: precomputed wins; otherwise extract from live count
-  // (capped via the COUNT_CAP+1 bail-out).
+  // Resolve the total + capping.
   let total: number;
   let totalIsCapped: boolean;
+  let countMs = countTimed.ms;
   if (precomputedTotal !== null) {
-    totalIsCapped = precomputedTotal > COUNT_CAP;
-    total = totalIsCapped ? COUNT_CAP : precomputedTotal;
+    ({ total, totalIsCapped } = applyCountCap(precomputedTotal));
+  } else if (built.countFromRows) {
+    const windowTotal = extractWindowTotal(rawRows as Array<{ total?: number | string }>);
+    if (windowTotal !== null) {
+      ({ total, totalIsCapped } = applyCountCap(windowTotal));
+    } else {
+      // Empty page (OFFSET past the end): one fallback count.
+      const tFallback = Date.now();
+      const cr = await sqlClient.query(countSql, countArgs);
+      countMs = Date.now() - tFallback;
+      ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
+    }
   } else {
-    const countRowsAny = countTimed.result;
-    const countRows = countRowsAny as unknown as Array<{ total: number | string }>;
-    const rawTotal = countRows && countRows.length > 0
-      ? typeof countRows[0].total === 'string'
-        ? parseInt(countRows[0].total, 10)
-        : countRows[0].total
-      : 0;
-    totalIsCapped = rawTotal > COUNT_CAP;
-    total = totalIsCapped ? COUNT_CAP : rawTotal;
+    ({ total, totalIsCapped } = applyCountCap(extractCount(countTimed.result as unknown as Array<{ total: number | string }>)));
   }
 
   return {
@@ -321,7 +323,7 @@ export async function runExplorerQuery(
     timings: {
       metaLookupMs,
       rowsMs: rowsTimed.ms,
-      countMs: countTimed.ms,
+      countMs,
       usedPredicate: currentWeekEndDate !== undefined,
       countSource,
     },
