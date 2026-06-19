@@ -75,6 +75,8 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
   return {
     window: (f.window as ExplorerFilters['window']) ?? '1w',
     q: typeof f.q === 'string' ? f.q : null,
+    // Default to whole-word for views saved before qMode existed.
+    qMode: f.qMode === 'broad' ? 'broad' : 'word',
     rankMin: typeof f.rankMin === 'number' ? f.rankMin : null,
     rankMax: typeof f.rankMax === 'number' ? f.rankMax : null,
     jump,
@@ -102,6 +104,7 @@ function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
   const p: SearchParamsLike = {};
   if (typeof f.window === 'string') p.window = f.window;
   if (typeof f.q === 'string' && f.q.length > 0) p.q = f.q;
+  if (f.qMode === 'broad') p.qmode = 'broad';
   if (typeof f.rankMin === 'number') p.rank_min = String(f.rankMin);
   if (typeof f.rankMax === 'number') p.rank_max = String(f.rankMax);
   if (typeof f.jump === 'string') p.jump = f.jump;

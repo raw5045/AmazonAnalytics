@@ -45,6 +45,8 @@ export type MatchMode = 'strict' | 'loose';
 export interface ExplorerFilters {
   window: WindowKey;
   q: string | null;
+  /** Match mode for `q`: 'word' = whole-word (default), 'broad' = substring. Only meaningful when q is set. */
+  qMode: 'word' | 'broad';
   rankMin: number | null;
   rankMax: number | null;
   jump: JumpKey | null;

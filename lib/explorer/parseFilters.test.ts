@@ -25,6 +25,7 @@ describe('parseExplorerFilters', () => {
     expect(filters).toEqual({
       window: '4w',
       q: 'wireless',
+      qMode: 'word',
       rankMin: 1,
       rankMax: 1000,
       jump: '500k_to_100k',
@@ -178,5 +179,17 @@ describe('parseExplorerFilters — Movement jump', () => {
     expect(ok.jump).toBe('custom');
     const bad = parseExplorerFilters({ jump: 'custom', jump_metric: 'volume', jump_from: '15000', jump_to: '5000' });
     expect(bad.jump).toBeNull();
+  });
+});
+
+describe('parseExplorerFilters — qMode', () => {
+  it('defaults qMode to word', () => {
+    expect(parseExplorerFilters({}).qMode).toBe('word');
+  });
+  it('parses qmode=broad', () => {
+    expect(parseExplorerFilters({ q: 'hair', qmode: 'broad' }).qMode).toBe('broad');
+  });
+  it('falls back to word for an invalid qmode', () => {
+    expect(parseExplorerFilters({ qmode: 'fuzzy' }).qMode).toBe('word');
   });
 });

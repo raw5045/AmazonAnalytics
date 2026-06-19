@@ -21,6 +21,7 @@ import { findJumpPreset, type JumpMetric } from './jumpPresets';
 export const EXPLORER_DEFAULTS: ExplorerFilters = {
   window: '1w',
   q: null,
+  qMode: 'word',
   rankMin: null,
   rankMax: null,
   jump: null,
@@ -139,6 +140,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const matchMode = parseEnum(getOne(searchParams.match_mode), MATCH_MODE_VALUES, EXPLORER_DEFAULTS.matchMode);
 
   const q = (getOne(searchParams.q) ?? '').trim();
+  const qMode = parseEnum(getOne(searchParams.qmode), ['word', 'broad'] as const, 'word');
 
   const rankMin = parsePositiveInt(getOne(searchParams.rank_min));
   const rankMax = parsePositiveInt(getOne(searchParams.rank_max));
@@ -154,6 +156,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   return {
     window,
     q: q.length >= 3 ? q : null,
+    qMode,
     rankMin,
     rankMax,
     jump,
