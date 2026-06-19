@@ -62,8 +62,6 @@ export function buildExplorerQuery(
   currentWeekEndDate?: string,
 ): BuiltExplorerQuery {
   const args: unknown[] = [];
-  const where: string[] = [];
-
   const next = (val: unknown): string => {
     args.push(val);
     return `$${args.length}`;
@@ -71,103 +69,13 @@ export function buildExplorerQuery(
 
   const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[filters.window];
-
-  // 1.1 — current_week_end_date predicate (the planner hint). Goes
-  // first in the WHERE so it's the leading column-equality the
-  // composite indexes need.
-  if (currentWeekEndDate) {
-    const p = next(currentWeekEndDate);
-    where.push(`kcs.current_week_end_date = ${p}::date`);
-  }
-
-  // 1.2 — search term substring (q): ILIKE on the trigram-indexed normalized column
-  if (filters.q && filters.q.length >= 3) {
-    const param = next(`%${filters.q.toLowerCase()}%`);
-    where.push(`st.search_term_normalized LIKE ${param}`);
-  }
-
-  // 1.3 — current rank min/max
-  if (filters.rankMin !== null) {
-    const p = next(filters.rankMin);
-    where.push(`kcs.current_rank >= ${p}`);
-  }
-  if (filters.rankMax !== null) {
-    const p = next(filters.rankMax);
-    where.push(`kcs.current_rank <= ${p}`);
-  }
-
-  // 1.4 — Movement jump. Resolve (from, to) from a preset or custom inputs,
-  // then emit the clause for the selected metric. Both directions mean
-  // "got better": rank improves as the number falls, volume as it rises.
-  if (filters.jump) {
-    let from: number | null = null;
-    let to: number | null = null;
-    if (filters.jump === 'custom') {
-      from = filters.jumpFrom;
-      to = filters.jumpTo;
-    } else {
-      const found = findJumpPreset(filters.jump);
-      if (found) { from = found.preset.from; to = found.preset.to; }
-    }
-    if (from !== null && to !== null) {
-      if (filters.jumpMetric === 'volume') {
-        const volCol = WINDOW_TO_VOLUME_COLUMN[filters.window];
-        where.push(`kcs.${volCol} < ${next(from)} AND kcs.estimated_monthly_volume_current > ${next(to)}`);
-      } else {
-        where.push(`kcs.${priorRankCol} > ${next(from)} AND kcs.current_rank < ${next(to)}`);
-      }
-    }
-  }
-
-  // 1.5 — top clicked category #1 (broad)
-  if (filters.category) {
-    const p = next(filters.category);
-    where.push(`kcs.top_clicked_category_1_current = ${p}`);
-  }
-
-  // 1.5b — leaf category (Keepa, from slot-1 ASIN). Multi-select OR.
-  if (filters.leafCategories.length > 0) {
-    const ps = filters.leafCategories.map((c) => next(c)).join(', ');
-    where.push(`kcs.top_clicked_leaf_category IN (${ps})`);
-  }
-
-  // 1.6 — fake volume severity (default = none, warning)
-  // NULL severity means "couldn't evaluate"; treat NULL as belonging to 'none'
-  // since the visual default hides nothing more than the chosen levels.
-  if (filters.severities.length > 0 && filters.severities.length < 3) {
-    const params = filters.severities.map((s) => next(s)).join(', ');
-    if (filters.severities.includes('none')) {
-      where.push(`(kcs.fake_volume_severity_current IS NULL OR kcs.fake_volume_severity_current IN (${params}))`);
-    } else {
-      where.push(`kcs.fake_volume_severity_current IN (${params})`);
-    }
-  }
-
-  // 1.7 — title-gap filter (operates on the matchMode-selected slot columns)
-  if (filters.titleMatchMode && filters.titleSlots.length > 0) {
-    const slotCols = filters.titleSlots.map((slot) => slotColumn(slot, filters.matchMode));
-    if (filters.titleMatchMode === 'all') {
-      // "Missing from all selected" — every selected slot is false
-      const conditions = slotCols.map((c) => `NOT ${c}`);
-      where.push(`(${conditions.join(' AND ')})`);
-    } else {
-      // "Missing from any selected" — at least one selected slot is false
-      const conditions = slotCols.map((c) => `NOT ${c}`);
-      where.push(`(${conditions.join(' OR ')})`);
-    }
-  }
-
-  // ORDER BY (title_gap sort uses the matchMode-specific count column)
   const orderBy = buildOrderBy(filters.sort, improvementCol, filters.matchMode);
 
-  // SELECT list — priorRankCol and improvementCol are dynamically chosen
-  // based on the window, but exposed under the stable aliases
-  // prior_rank / improvement so the row mapper does not need to know
-  // which window was selected. We always SELECT both the strict and
-  // loose match flag/count columns; the UI picks which to display.
-  const selectList = `
+  // kcs SELECT columns shared by both paths. The search_term_raw source
+  // differs (st in the legacy join, m in the CTE), so it's templated.
+  const kcsSelect = (rawSrc: string): string => `
       kcs.search_term_id,
-      st.search_term_raw,
+      ${rawSrc}.search_term_raw,
       kcs.current_rank,
       kcs.${priorRankCol} AS prior_rank,
       kcs.${improvementCol} AS improvement,
@@ -191,6 +99,57 @@ export function buildExplorerQuery(
       kcs.top_clicked_leaf_category
   `.trim();
 
+  // ---- q (substring) path: trigram-first MATERIALIZED CTE ----
+  if (filters.q && filters.q.length >= 3) {
+    const qParam = next(`%${filters.q.toLowerCase()}%`);
+    const capParam = next(Q_MATCH_MATERIALIZE_CAP);
+    const where = pushKcsPredicates(filters, currentWeekEndDate, next);
+    const whereClause = where.length > 0 ? `WHERE ${where.join('\n      AND ')}` : '';
+    const countArgs = [...args];
+    const limitParam = next(filters.perPage);
+    const offsetParam = next((filters.page - 1) * filters.perPage);
+
+    const sql = `
+    WITH matches AS MATERIALIZED (
+      SELECT id, search_term_raw
+      FROM search_terms
+      WHERE search_term_normalized LIKE ${qParam}
+      LIMIT ${capParam}
+    )
+    SELECT
+      ${kcsSelect('m')},
+      (count(*) OVER ())::int AS total
+    FROM keyword_current_summary kcs
+    JOIN matches m ON m.id = kcs.search_term_id
+    ${whereClause}
+    ${orderBy}
+    LIMIT ${limitParam} OFFSET ${offsetParam}
+  `.trim();
+
+    // Empty-page fallback only (OFFSET past the end → no row to carry the
+    // window total). The runner calls this just when the rows result is
+    // empty; normal pages get the total for free from the rows pass.
+    const countSql = `
+    SELECT count(*)::int AS total
+    FROM (
+      WITH matches AS MATERIALIZED (
+        SELECT id
+        FROM search_terms
+        WHERE search_term_normalized LIKE ${qParam}
+        LIMIT ${capParam}
+      )
+      SELECT 1
+      FROM keyword_current_summary kcs
+      JOIN matches m ON m.id = kcs.search_term_id
+      ${whereClause}
+    ) sub
+  `.trim();
+
+    return { sql, args, countSql, countArgs, countFromRows: true };
+  }
+
+  // ---- legacy path (q is null): identical output to before ----
+  const where = pushKcsPredicates(filters, currentWeekEndDate, next);
   const whereClause = where.length > 0 ? `WHERE ${where.join('\n      AND ')}` : '';
 
   // Snapshot args length BEFORE appending limit/offset so countArgs is the
@@ -201,7 +160,7 @@ export function buildExplorerQuery(
 
   const sql = `
     SELECT
-      ${selectList}
+      ${kcsSelect('st')}
     FROM keyword_current_summary kcs
     JOIN search_terms st ON st.id = kcs.search_term_id
     ${whereClause}
@@ -215,16 +174,13 @@ export function buildExplorerQuery(
   // and pagination caps at the same number — the user almost certainly
   // wants to refine filters before page 100 anyway.
   //
-  // The count subquery only needs the search_terms join when a filter
-  // actually references st — today that's solely the `q` substring filter
-  // (every other clause is on kcs). When the WHERE has no st reference we
-  // drop the join, turning the bail-out from a 10k-row nested loop into a
-  // single index range scan on kcs (~6s -> ~0.4s on a cold cache). Safe
-  // because kcs.search_term_id is a NOT NULL FK to search_terms.id, so the
-  // inner join can never change the row count. The main SELECT always joins
-  // (it needs st.search_term_raw), so only the count is affected. Keying off
-  // the rendered WHERE (not the q flag) keeps this correct if a future
-  // filter adds another st-referencing clause.
+  // This (legacy, q=null) path's predicates are all on kcs, so the count
+  // needs no search_terms join. The conditional below is a safety net:
+  // should a future kcs-path filter ever emit an `st.` clause, the join is
+  // added automatically (safe — kcs.search_term_id is a NOT NULL FK to
+  // search_terms.id, so the inner join can't change the row count). The
+  // `q` substring filter — the one st-referencing clause today — takes the
+  // CTE path above, never this one.
   const countJoin = whereClause.includes('st.')
     ? '\n      JOIN search_terms st ON st.id = kcs.search_term_id'
     : '';
@@ -247,6 +203,83 @@ export function buildExplorerQuery(
  * hits it, low enough that the count completes quickly even on cold cache.
  */
 export const COUNT_CAP = 10_000;
+
+/**
+ * Max number of trigram matches the `q` path materializes + sorts (a
+ * work cap, distinct from COUNT_CAP's display cap). Below this, results
+ * are exact and fully rank-correct (covers all realistic searches — e.g.
+ * "hair" ≈ 35k matches). Above it (pathologically broad 3-char
+ * substrings), we read only the first 50k trigram matches — a documented
+ * degradation that bounds worst-case latency. Either way the runner still
+ * caps the *displayed* total at COUNT_CAP (10k → "10,000+"), so this cap
+ * rarely changes what the user sees. See the explorer-filter-perf spec §3.3.
+ */
+export const Q_MATCH_MATERIALIZE_CAP = 50_000;
+
+/**
+ * Push every kcs WHERE predicate (current_week_end_date, rank, jump,
+ * category, leaf, severity, title-gap) onto a fresh clause list, binding
+ * args via `next` in clause order. The `q` substring filter is NOT here —
+ * it is path-specific (CTE for the q path; absent on the legacy path).
+ */
+function pushKcsPredicates(
+  filters: ExplorerFilters,
+  currentWeekEndDate: string | undefined,
+  next: (val: unknown) => string,
+): string[] {
+  const where: string[] = [];
+  const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
+
+  if (currentWeekEndDate) {
+    where.push(`kcs.current_week_end_date = ${next(currentWeekEndDate)}::date`);
+  }
+  if (filters.rankMin !== null) {
+    where.push(`kcs.current_rank >= ${next(filters.rankMin)}`);
+  }
+  if (filters.rankMax !== null) {
+    where.push(`kcs.current_rank <= ${next(filters.rankMax)}`);
+  }
+  if (filters.jump) {
+    let from: number | null = null;
+    let to: number | null = null;
+    if (filters.jump === 'custom') {
+      from = filters.jumpFrom;
+      to = filters.jumpTo;
+    } else {
+      const found = findJumpPreset(filters.jump);
+      if (found) { from = found.preset.from; to = found.preset.to; }
+    }
+    if (from !== null && to !== null) {
+      if (filters.jumpMetric === 'volume') {
+        const volCol = WINDOW_TO_VOLUME_COLUMN[filters.window];
+        where.push(`kcs.${volCol} < ${next(from)} AND kcs.estimated_monthly_volume_current > ${next(to)}`);
+      } else {
+        where.push(`kcs.${priorRankCol} > ${next(from)} AND kcs.current_rank < ${next(to)}`);
+      }
+    }
+  }
+  if (filters.category) {
+    where.push(`kcs.top_clicked_category_1_current = ${next(filters.category)}`);
+  }
+  if (filters.leafCategories.length > 0) {
+    const ps = filters.leafCategories.map((c) => next(c)).join(', ');
+    where.push(`kcs.top_clicked_leaf_category IN (${ps})`);
+  }
+  if (filters.severities.length > 0 && filters.severities.length < 3) {
+    const params = filters.severities.map((s) => next(s)).join(', ');
+    if (filters.severities.includes('none')) {
+      where.push(`(kcs.fake_volume_severity_current IS NULL OR kcs.fake_volume_severity_current IN (${params}))`);
+    } else {
+      where.push(`kcs.fake_volume_severity_current IN (${params})`);
+    }
+  }
+  if (filters.titleMatchMode && filters.titleSlots.length > 0) {
+    const conditions = filters.titleSlots.map((slot) => `NOT ${slotColumn(slot, filters.matchMode)}`);
+    const joiner = filters.titleMatchMode === 'all' ? ' AND ' : ' OR ';
+    where.push(`(${conditions.join(joiner)})`);
+  }
+  return where;
+}
 
 function buildOrderBy(
   sort: ExplorerFilters['sort'],

@@ -145,4 +145,11 @@ export interface BuiltExplorerQuery {
   args: unknown[];
   countSql: string;
   countArgs: unknown[];
+  /**
+   * True for the `q` (substring) path: the paged SELECT carries the total
+   * via `count(*) OVER () AS total`, so the runner reads the total from the
+   * rows result instead of running countSql. countSql is then only the
+   * empty-page fallback (OFFSET past the end → no row to carry the total).
+   */
+  countFromRows?: boolean;
 }
