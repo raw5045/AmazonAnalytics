@@ -84,7 +84,7 @@ ORDER BY <sort>;                                      -- re-assert order across 
 - **Broad:** `pattern = '%' + escapeLike(q) + '%'`; uses the same kcs GIN via `LIKE`.
 - **Correctness:** kcs is current-week-only, so the match set *is* the true current match set — **no cap, no arbitrary subset.** `count(*) OVER ()` gives the exact total in the same pass (still display-capped at `COUNT_CAP` for the footer/pagination).
 - **`escapeRegex` / `escapeLike`** sanitize user input so a term like `c++` or `50%` can't break or wildcard the query. Both are pure, unit-tested helpers.
-- **Broad-mode timeout guard:** the runner sets `SET LOCAL statement_timeout = 30000` for broad queries; on timeout, return a typed "too broad" result the page renders as a friendly message (narrow it / use whole-word). Whole-word has no special timeout (it's bounded by the smaller match set).
+- **Broad-mode timeout + driver:** the explorer page sets `export const maxDuration = 120` (Vercel Pro). Broad queries run through a **node-postgres (TCP) connection** — the worker's pattern — with `statement_timeout = 115000` (5 s under the function limit), because Neon's HTTP driver is tuned for short queries and won't reliably hold a ~2-minute one. On timeout the DB cancels the query and the runner maps the error to a typed "too broad" result the page renders as a friendly message (narrow it / use whole-word). Whole-word + non-`q` stay on neon-http (bounded by their smaller match sets, well within HTTP limits).
 
 The **no-`q` path is simplified, not rewritten**: it keeps its current shape (kcs + `search_terms` join for raw, rank index, existing count short-circuits). Only the q-path changes.
 
@@ -96,7 +96,7 @@ The **no-`q` path is simplified, not rewritten**: it keeps its current shape (kc
 
 ### 3.4 runQuery
 
-- q-path: run the single query; total from the window count (reuse the v1 `queryTotals` helpers — `applyCountCap`, `extractWindowTotal`, empty-page fallback). For broad mode, wrap in the `statement_timeout` guard and map a timeout error to the typed "too broad" result.
+- q-path: run the single query; total from the window count (reuse the v1 `queryTotals` helpers — `applyCountCap`, `extractWindowTotal`, empty-page fallback). **Whole-word** runs on neon-http. **Broad** runs on a node-postgres (TCP) connection with `statement_timeout = 115000`; a timeout/cancel error maps to the typed "too broad" result.
 - non-q path: unchanged (meta/facet short-circuits intact).
 
 ---
@@ -118,7 +118,7 @@ The **no-`q` path is simplified, not rewritten**: it keeps its current shape (kc
 - `lib/explorer/parseFilters.ts` — parse `qmode` (default `word`).
 - `lib/explorer/matchPattern.ts` *(new)* — `escapeRegex`, `escapeLike`, `wordPattern(q)`, `broadPattern(q)` (pure, unit-tested).
 - `lib/explorer/buildQuery.ts` — rewrite the q-path to the single-table kcs subquery form (word vs broad predicate); keep the no-q path.
-- `lib/explorer/runQuery.ts` — q-path single query + window total; broad-mode `statement_timeout` guard → typed timeout result.
+- `lib/explorer/runQuery.ts` — q-path single query + window total; whole-word on neon-http, broad on a node-postgres (TCP) connection with `statement_timeout = 115000` → typed timeout result.
 - `lib/explorer/queryTotals.ts` — reused as-is.
 
 **Refresh + backfill**
@@ -126,6 +126,7 @@ The **no-`q` path is simplified, not rewritten**: it keeps its current shape (kc
 - `scripts/backfillKcsNormalized.ts` *(new)* — one-time set-based populate + index build on the live table.
 
 **UI**
+- `app/(app)/explorer/page.tsx` — `export const maxDuration = 120` (Vercel Pro; ceiling for the broad path).
 - `app/(app)/explorer/FilterSidebar.tsx` — Whole-word/Broad toggle + note (already renders the overlay).
 - `app/(app)/explorer/PerfStrip.tsx` — minor copy.
 
@@ -150,7 +151,7 @@ The **no-`q` path is simplified, not rewritten**: it keeps its current shape (kc
 | specific search (`collagen`, phrase) | ~fast | sub-second, correct |
 | `hair` whole-word, page 1 | (substring) 24.7 s cold | ~5–10 s cold, sub-second warm, **flat** |
 | `hair` whole-word, page 21 | 151 s cold | ≈ page 1 (flat) |
-| `men` broad | n/a | graceful timeout message (~30 s cap) |
+| `men` broad | n/a | runs up to ~115 s, else graceful "too broad" message |
 | `chair`/`mohair` under `hair` | matched (wrong) | **excluded** (whole word) |
 | weekly refresh | N min | N + ~½ min (background, swap instant) |
 
