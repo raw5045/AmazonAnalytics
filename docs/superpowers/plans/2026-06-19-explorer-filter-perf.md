@@ -98,12 +98,22 @@ Tests: word path emits `kcs.search_term_normalized ~ $n` + the subquery + `(coun
 
 **Files:** `inngest/functions/refreshSummary.ts`, `scripts/backfillKcsNormalized.ts` (new).
 
-- [ ] **refreshSummary:** in the stage INSERT (~line 204), add `LEFT JOIN search_terms st_n ON st_n.id = l.search_term_id` and select `st_n.search_term_normalized` into the new column. After the INSERT + `ANALYZE`, before the swap, build the GIN one-shot on the stage table:
-  ```sql
-  DROP INDEX IF EXISTS kcs_stage_norm_trgm_idx;
-  CREATE INDEX kcs_stage_norm_trgm_idx ON keyword_current_summary_stage USING gin (search_term_normalized gin_trgm_ops);
-  ```
-  (Keep it OUT of the permanent stage indexes so the bulk INSERT isn't slowed by incremental GIN maintenance; DROP-then-CREATE makes it idempotent across the name-rotation. ~24 s, measured.) Note: after the RENAME swap, the live table carries this index; confirm the explorer query planner uses it (the index name travels with the table).
+- [ ] **refreshSummary:** in the stage INSERT (~line 204), add `LEFT JOIN search_terms st_n ON st_n.id = l.search_term_id` and select `st_n.search_term_normalized` into the new column.
+  - **GIN index — mind the swap rotation (VERIFIED, the naive version collides).** The live + stage tables carry *distinct, non-overlapping* index name sets (measured: 26 on stage vs 20 on live, zero shared names) that rotate through the 3-way RENAME. A **fixed** GIN name therefore collides — the name you'd `CREATE` on stage already lives on the rotated-in live table. Correct approach:
+    1. **After TRUNCATE, before the INSERT** — drop any GIN on the stage column (its name rotated in), so the bulk INSERT runs GIN-free (fast):
+       ```sql
+       DO $$ DECLARE r record; BEGIN
+         FOR r IN SELECT indexname FROM pg_indexes WHERE tablename='keyword_current_summary_stage' AND indexdef ILIKE '%using gin%search_term_normalized%'
+         LOOP EXECUTE format('DROP INDEX IF EXISTS %I', r.indexname); END LOOP;
+       END $$;
+       ```
+    2. **After the INSERT + `ANALYZE`, before the swap** — one-shot build (~24 s, measured) under whichever of two alternating names is NOT currently on the **live** table (so the swap never collides):
+       ```ts
+       const liveGin = (await client.query(`SELECT indexname FROM pg_indexes WHERE tablename='keyword_current_summary' AND indexdef ILIKE '%using gin%search_term_normalized%' LIMIT 1`)).rows[0]?.indexname;
+       const buildName = liveGin === 'kcs_norm_trgm_a_idx' ? 'kcs_norm_trgm_b_idx' : 'kcs_norm_trgm_a_idx';
+       await client.query(`CREATE INDEX ${buildName} ON keyword_current_summary_stage USING gin (search_term_normalized gin_trgm_ops)`);
+       ```
+    The backfill seeds the live table with `kcs_norm_trgm_a_idx`; the first refresh builds `_b_` on stage; they alternate thereafter. Add an integration test (mirror `tests/integration/chartSeriesMaintenance.test.ts`) that runs a refresh and asserts the swapped-in live table ends with exactly one GIN on the column.
 - [ ] **backfill script** (one-time, run later with user OK): set `statement_timeout = 0`; `UPDATE keyword_current_summary kcs SET search_term_normalized = st.search_term_normalized FROM search_terms st WHERE st.id = kcs.search_term_id AND kcs.search_term_normalized IS NULL` (set-based, ~minutes); then `CREATE INDEX IF NOT EXISTS … USING gin (… gin_trgm_ops)` on the live table (~24 s). Idempotent, read-mostly on `search_terms`. `--dry-run` prints counts.
 - [ ] `pnpm typecheck`. Commit. **Do not run the backfill.**
 
