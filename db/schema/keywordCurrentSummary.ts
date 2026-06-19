@@ -24,6 +24,18 @@ export const keywordCurrentSummary = pgTable(
     currentWeekEndDate: date('current_week_end_date').notNull(),
     currentRank: integer('current_rank').notNull(),
 
+    /**
+     * Denormalized normalized keyword text (copied from search_terms during
+     * refresh) so the explorer "search term contains" filter — whole-word
+     * (regex) and broad (LIKE) — runs single-table on the active set via a
+     * GIN trigram index, instead of joining/probing all-time search_terms.
+     * Nullable so the column can be added + backfilled before the refresh
+     * populates it. The GIN index is NOT declared here (drizzle-kit doesn't
+     * emit GIN trgm) — it's built one-shot post-populate by the backfill +
+     * weekly refresh. See migration 0037 + explorer-filter-perf spec v2.
+     */
+    searchTermNormalized: varchar('search_term_normalized', { length: 512 }),
+
     // Historical comparison ranks (NULL = unranked or no data that far back)
     priorWeekRank: integer('prior_week_rank'),
     rank4wAgo: integer('rank_4w_ago'),
