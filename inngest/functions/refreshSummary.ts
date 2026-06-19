@@ -44,6 +44,76 @@ import { kwmRowToEntry, appendWeek, type ChartSeriesKwmRow } from '@/lib/explore
  *  next refresh. Generous default so a normal week never hits it. */
 const CHART_SERIES_REBUILD_CAP = 100_000;
 
+/**
+ * The trigram GIN on keyword_current_summary.search_term_normalized powers the
+ * explorer "search term contains" filter (whole-word `~` + broad `LIKE`). Its
+ * name MUST alternate between these two across each weekly stage/live RENAME
+ * swap: a Postgres index object travels with its heap through the swap (the
+ * RENAME touches table names, never index names), so a fixed name built on
+ * _stage would collide with the same-named index that just rotated onto the
+ * live table. Each refresh builds whichever of the two is NOT on live.
+ */
+export const KCS_NORM_GIN_A = 'kcs_norm_trgm_a_idx';
+export const KCS_NORM_GIN_B = 'kcs_norm_trgm_b_idx';
+
+/**
+ * Choose the GIN name to build on the stage table: whichever of the two
+ * alternating names is NOT currently on the live table. Pure (unit-tested);
+ * the DB lookup of the live name happens at the call site.
+ */
+export function pickStageGinName(liveGinName: string | null | undefined): string {
+  return liveGinName === KCS_NORM_GIN_A ? KCS_NORM_GIN_B : KCS_NORM_GIN_A;
+}
+
+/** Plain unqualified identifier guard for the interpolated table name below
+ *  (callers only ever pass internal constants, but this keeps it injection-proof). */
+const SAFE_IDENT = /^[a-z_][a-z0-9_]*$/;
+
+/**
+ * Drop every trigram GIN currently on `<table>.search_term_normalized`. A
+ * name-agnostic sweep (matched via pg_indexes.indexdef) so it removes whichever
+ * rotated name is present — plus any stale extra a crashed prior refresh may
+ * have left. Run on the stage table after TRUNCATE so the bulk INSERT loads
+ * GIN-free (incremental GIN maintenance across a multi-million-row INSERT is far
+ * slower than one post-load build). Exported for the integration test.
+ */
+export async function dropNormalizedGin(client: PoolClient, table: string): Promise<void> {
+  if (!SAFE_IDENT.test(table)) throw new Error(`dropNormalizedGin: unsafe table name "${table}"`);
+  await client.query(`
+    DO $$
+    DECLARE r record;
+    BEGIN
+      FOR r IN
+        SELECT indexname FROM pg_indexes
+        WHERE schemaname = 'public' AND tablename = '${table}'
+          AND indexdef ILIKE '%using gin%search_term_normalized%'
+      LOOP
+        EXECUTE format('DROP INDEX IF EXISTS public.%I', r.indexname);
+      END LOOP;
+    END $$;
+  `);
+}
+
+/**
+ * Build the trigram GIN on keyword_current_summary_stage.search_term_normalized
+ * under the rotated name (see pickStageGinName). Returns the built name. Assumes
+ * dropNormalizedGin already cleared any prior GIN on the stage column. Run AFTER
+ * the stage INSERT + ANALYZE, BEFORE the swap.
+ */
+export async function buildStageNormalizedGin(client: PoolClient): Promise<string> {
+  const { rows } = await client.query<{ indexname: string }>(
+    `SELECT indexname FROM pg_indexes
+     WHERE schemaname = 'public' AND tablename = 'keyword_current_summary'
+       AND indexdef ILIKE '%using gin%search_term_normalized%'
+     LIMIT 1`,
+  );
+  const buildName = pickStageGinName(rows[0]?.indexname);
+  await client.query(
+    `CREATE INDEX ${buildName} ON keyword_current_summary_stage USING gin (search_term_normalized gin_trgm_ops)`,
+  );
+  return buildName;
+}
+
 export interface RefreshSummaryResult {
   rowsWritten: number;
   durationMs: number;
@@ -165,6 +235,12 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // one reads _stage, so this doesn't block any explorer queries.
     await client.query('TRUNCATE keyword_current_summary_stage');
 
+    // Drop the rotated-in trigram GIN on the stage column so the bulk INSERT
+    // below loads GIN-free; it's rebuilt one-shot after ANALYZE, before the
+    // swap (see buildStageNormalizedGin call). No reader touches _stage, so the
+    // drop blocks nothing.
+    await dropNormalizedGin(client, 'keyword_current_summary_stage');
+
     // 1. latest_per_term — most recent kwm row per active term.
     //    Active = seen within the last 28 days of current_week_end_date.
     //    Materialized as a temp table so subsequent steps reuse the result
@@ -227,6 +303,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         least_reviews, most_reviews,
         avg_price_cents, avg_reviews,
         top_clicked_leaf_category,
+        search_term_normalized,
         updated_at
       )
       SELECT
@@ -303,6 +380,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         -- the leaf cat of the SECOND product isn't really "this
         -- keyword's category").
         p1.category_leaf AS top_clicked_leaf_category,
+        -- Denormalized normalized keyword text for the explorer q-filter. Copied
+        -- verbatim from search_terms.search_term_normalized (the canonical
+        -- normalizeForMatch form the GIN trigram index and the regex/LIKE match
+        -- run against), already carried into latest_per_term by stageLatestPerTerm.
+        l.search_term_normalized,
         NOW()
       FROM latest_per_term l
       LEFT JOIN rank_at_1w r1 ON r1.search_term_id = l.search_term_id
@@ -338,6 +420,24 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     } catch (e) {
       console.warn(
         '[refreshSummary] ANALYZE of stage table failed; relying on autoanalyze:',
+        (e as Error).message,
+      );
+    }
+
+    // 4c. Build the trigram GIN on the freshly-populated stage column, one-shot
+    //     (~24s on ~3.85M rows) under the rotated name. Done here — after the
+    //     COMMIT + ANALYZE, before the swap — rather than during the INSERT
+    //     because incremental GIN maintenance across a multi-million-row bulk
+    //     INSERT is far slower. Fail-soft: a GIN failure must NEVER abort the
+    //     refresh — the explorer q-search degrades to a (correct but slow) seq
+    //     scan until the next refresh rebuilds it. Self-heals: with no GIN on
+    //     the swapped-in live table, the next refresh's pick falls back to _a.
+    try {
+      const builtGin = await buildStageNormalizedGin(client);
+      console.log(`[refreshSummary] built ${builtGin} on stage.search_term_normalized`);
+    } catch (e) {
+      console.warn(
+        '[refreshSummary] normalized GIN build failed; q-search degrades until next refresh:',
         (e as Error).message,
       );
     }
@@ -507,6 +607,7 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
     SELECT DISTINCT ON (k.search_term_id)
       k.search_term_id,
       st.search_term_raw,
+      st.search_term_normalized,
       k.week_end_date,
       k.actual_rank,
       k.fake_volume_severity,
