@@ -1,12 +1,17 @@
 /**
  * buildExplorerQuery — pure function that turns ExplorerFilters into the
  * SQL strings + arg arrays needed to fetch a paged, sorted, filtered set
- * of keywords from `keyword_current_summary` (joined to `search_terms`).
+ * of keywords from `keyword_current_summary` (kcs).
  *
- * Reads only from kcs + search_terms — no kwm scans on the hot path.
- * The output of this function is what the page.tsx server component
- * runs against pg.Pool / Drizzle; tests assert on the SQL/args shape
- * across the matrix of filter combinations.
+ * Two shapes:
+ *  - no `q`: kcs joined to search_terms for the raw display text, ordered
+ *    by the chosen sort, with a bail-out COUNT(*) for the footer.
+ *  - `q` set: a single-table whole-word (`~ '\m…\M'`) or broad (`LIKE`)
+ *    match on the denormalized `kcs.search_term_normalized` column. The
+ *    inner subquery matches + sorts + limits + window-counts entirely on
+ *    kcs (current-week-only, so no cap); the outer joins search_terms for
+ *    raw text on just the page rows. The pagination total comes from
+ *    `count(*) OVER ()` in the same pass (no separate count query).
  *
  * Param-binding strategy: a single `args` array shared between the main
  * SELECT and the COUNT(*). The COUNT consumes the WHERE-clause args only;
@@ -19,6 +24,7 @@ import type {
   WindowKey,
 } from './types';
 import { findJumpPreset } from './jumpPresets';
+import { wordPattern, broadPattern } from './matchPattern';
 
 const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
   '1w': 'prior_week_rank',
@@ -44,20 +50,39 @@ const WINDOW_TO_IMPROVEMENT_COLUMN: Record<WindowKey, string> = {
   '52w': 'improvement_52w',
 };
 
+/**
+ * The kcs display columns common to every path, in row-mapper order, AFTER
+ * search_term_id / search_term_raw / current_rank / prior_rank / improvement.
+ * Shared so the legacy join-select and the q-path inner/outer selects can't
+ * drift. The runQuery row mapper reads each of these by name.
+ */
+const KCS_DISPLAY_COLS = [
+  'top_clicked_category_1_current',
+  'fake_volume_severity_current',
+  'keyword_title_match_count_current',
+  'keyword_in_title_1_current',
+  'keyword_in_title_2_current',
+  'keyword_in_title_3_current',
+  'keyword_title_match_count_loose_current',
+  'keyword_in_title_1_loose_current',
+  'keyword_in_title_2_loose_current',
+  'keyword_in_title_3_loose_current',
+  'top_clicked_product_1_asin_current',
+  'top_clicked_product_1_title_current',
+  'top_clicked_product_1_click_share_current',
+  'top_clicked_product_1_conversion_share_current',
+  'estimated_monthly_volume_current',
+  'avg_price_cents',
+  'avg_reviews',
+  'top_clicked_leaf_category',
+] as const;
+
 export function buildExplorerQuery(
   filters: ExplorerFilters,
   /**
-   * Optional. When provided, injects `kcs.current_week_end_date = ?`
-   * as the FIRST WHERE clause so the existing composite indexes
-   * (kcs_rank_idx, kcs_category_idx, etc., all leading with
-   * current_week_end_date) become usable for sorted output. kcs only
-   * holds one current_week_end_date value at a time, so this is a
-   * no-op semantically — purely a planner hint.
-   *
-   * Source is the single-row keyword_current_summary_meta table,
-   * updated atomically with the kcs stage-and-swap. When omitted
-   * (e.g. meta row missing or fetch failed), the query falls back to
-   * today's behavior: seq scan + sort. See the explorer-perf RFC.
+   * Optional. When provided, injects `kcs.current_week_end_date = ?` as a
+   * leading WHERE clause (a planner hint — kcs only holds one snapshot
+   * week). Sourced from keyword_current_summary_meta.
    */
   currentWeekEndDate?: string,
 ): BuiltExplorerQuery {
@@ -71,84 +96,75 @@ export function buildExplorerQuery(
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[filters.window];
   const orderBy = buildOrderBy(filters.sort, improvementCol, filters.matchMode);
 
-  // kcs SELECT columns shared by both paths. The search_term_raw source
-  // differs (st in the legacy join, m in the CTE), so it's templated.
-  const kcsSelect = (rawSrc: string): string => `
-      kcs.search_term_id,
-      ${rawSrc}.search_term_raw,
-      kcs.current_rank,
-      kcs.${priorRankCol} AS prior_rank,
-      kcs.${improvementCol} AS improvement,
-      kcs.top_clicked_category_1_current,
-      kcs.fake_volume_severity_current,
-      kcs.keyword_title_match_count_current,
-      kcs.keyword_in_title_1_current,
-      kcs.keyword_in_title_2_current,
-      kcs.keyword_in_title_3_current,
-      kcs.keyword_title_match_count_loose_current,
-      kcs.keyword_in_title_1_loose_current,
-      kcs.keyword_in_title_2_loose_current,
-      kcs.keyword_in_title_3_loose_current,
-      kcs.top_clicked_product_1_asin_current,
-      kcs.top_clicked_product_1_title_current,
-      kcs.top_clicked_product_1_click_share_current,
-      kcs.top_clicked_product_1_conversion_share_current,
-      kcs.estimated_monthly_volume_current,
-      kcs.avg_price_cents,
-      kcs.avg_reviews,
-      kcs.top_clicked_leaf_category
-  `.trim();
-
-  // ---- q (substring) path: trigram-first MATERIALIZED CTE ----
+  // ---- q path: single-table whole-word / broad match on the denormalized
+  //      kcs.search_term_normalized (current-week-only, no cap). The inner
+  //      subquery matches + sorts + limits + window-counts entirely on kcs;
+  //      the outer join pulls search_term_raw from search_terms for ONLY the
+  //      page rows (so raw is read for ~100 rows, not the whole match set).
   if (filters.q && filters.q.length >= 3) {
-    const qParam = next(`%${filters.q.toLowerCase()}%`);
-    const capParam = next(Q_MATCH_MATERIALIZE_CAP);
     const where = pushKcsPredicates(filters, currentWeekEndDate, next);
-    const whereClause = where.length > 0 ? `WHERE ${where.join('\n      AND ')}` : '';
+    const op = filters.qMode === 'broad' ? 'LIKE' : '~';
+    const pattern = filters.qMode === 'broad' ? broadPattern(filters.q) : wordPattern(filters.q);
+    where.push(`kcs.search_term_normalized ${op} ${next(pattern)}`);
+    const whereClause = `WHERE ${where.join('\n        AND ')}`;
     const countArgs = [...args];
     const limitParam = next(filters.perPage);
     const offsetParam = next((filters.page - 1) * filters.perPage);
 
+    const innerCols = [
+      'kcs.search_term_id',
+      'kcs.current_rank',
+      `kcs.${priorRankCol} AS prior_rank`,
+      `kcs.${improvementCol} AS improvement`,
+      ...KCS_DISPLAY_COLS.map((c) => `kcs.${c}`),
+    ].join(',\n        ');
+    const outerCols = [
+      'k.search_term_id',
+      'st.search_term_raw',
+      'k.current_rank',
+      'k.prior_rank',
+      'k.improvement',
+      ...KCS_DISPLAY_COLS.map((c) => `k.${c}`),
+      'k.total',
+    ].join(',\n      ');
+
     const sql = `
-    WITH matches AS MATERIALIZED (
-      SELECT id, search_term_raw
-      FROM search_terms
-      WHERE search_term_normalized LIKE ${qParam}
-      LIMIT ${capParam}
-    )
     SELECT
-      ${kcsSelect('m')},
-      (count(*) OVER ())::int AS total
-    FROM keyword_current_summary kcs
-    JOIN matches m ON m.id = kcs.search_term_id
-    ${whereClause}
-    ${orderBy}
-    LIMIT ${limitParam} OFFSET ${offsetParam}
+      ${outerCols}
+    FROM (
+      SELECT
+        ${innerCols},
+        (count(*) OVER ())::int AS total
+      FROM keyword_current_summary kcs
+      ${whereClause}
+      ${orderBy}
+      LIMIT ${limitParam} OFFSET ${offsetParam}
+    ) k
+    JOIN search_terms st ON st.id = k.search_term_id
+    ${buildOuterOrderBy(filters.sort, filters.matchMode)}
   `.trim();
 
-    // Empty-page fallback only (OFFSET past the end → no row to carry the
-    // window total). The runner calls this just when the rows result is
-    // empty; normal pages get the total for free from the rows pass.
+    // Empty-page fallback only (OFFSET past the end → no row carries the
+    // window total). Single-table count over the same matched set.
     const countSql = `
     SELECT count(*)::int AS total
-    FROM (
-      WITH matches AS MATERIALIZED (
-        SELECT id
-        FROM search_terms
-        WHERE search_term_normalized LIKE ${qParam}
-        LIMIT ${capParam}
-      )
-      SELECT 1
-      FROM keyword_current_summary kcs
-      JOIN matches m ON m.id = kcs.search_term_id
-      ${whereClause}
-    ) sub
+    FROM keyword_current_summary kcs
+    ${whereClause}
   `.trim();
 
     return { sql, args, countSql, countArgs, countFromRows: true };
   }
 
-  // ---- legacy path (q is null): identical output to before ----
+  // ---- legacy path (q is null): kcs joined to search_terms for raw text ----
+  const kcsSelect = `
+      kcs.search_term_id,
+      st.search_term_raw,
+      kcs.current_rank,
+      kcs.${priorRankCol} AS prior_rank,
+      kcs.${improvementCol} AS improvement,
+      ${KCS_DISPLAY_COLS.map((c) => `kcs.${c}`).join(',\n      ')}
+  `.trim();
+
   const where = pushKcsPredicates(filters, currentWeekEndDate, next);
   const whereClause = where.length > 0 ? `WHERE ${where.join('\n      AND ')}` : '';
 
@@ -160,7 +176,7 @@ export function buildExplorerQuery(
 
   const sql = `
     SELECT
-      ${kcsSelect('st')}
+      ${kcsSelect}
     FROM keyword_current_summary kcs
     JOIN search_terms st ON st.id = kcs.search_term_id
     ${whereClause}
@@ -170,25 +186,14 @@ export function buildExplorerQuery(
 
   // Bail-out count: an exact COUNT(*) over millions of rows is a 1-3s
   // sequential aggregate. We only need to render a pagination footer, so
-  // count up to COUNT_CAP+1 rows. If we hit the cap, the UI shows "10,000+"
-  // and pagination caps at the same number — the user almost certainly
-  // wants to refine filters before page 100 anyway.
-  //
-  // This (legacy, q=null) path's predicates are all on kcs, so the count
-  // needs no search_terms join. The conditional below is a safety net:
-  // should a future kcs-path filter ever emit an `st.` clause, the join is
-  // added automatically (safe — kcs.search_term_id is a NOT NULL FK to
-  // search_terms.id, so the inner join can't change the row count). The
-  // `q` substring filter — the one st-referencing clause today — takes the
-  // CTE path above, never this one.
-  const countJoin = whereClause.includes('st.')
-    ? '\n      JOIN search_terms st ON st.id = kcs.search_term_id'
-    : '';
+  // count up to COUNT_CAP+1 rows. If we hit the cap the UI shows "10,000+"
+  // and pagination caps there. This (legacy, q=null) path's predicates are
+  // all on kcs, so the count needs no search_terms join.
   const countSql = `
     SELECT COUNT(*)::int AS total
     FROM (
       SELECT 1
-      FROM keyword_current_summary kcs${countJoin}
+      FROM keyword_current_summary kcs
       ${whereClause}
       LIMIT ${COUNT_CAP + 1}
     ) sub
@@ -199,28 +204,16 @@ export function buildExplorerQuery(
 
 /**
  * Maximum rows we count exactly. Beyond this, the UI shows "{cap}+" and
- * pagination caps at this count. Set high enough that real usage rarely
- * hits it, low enough that the count completes quickly even on cold cache.
+ * pagination caps at this count.
  */
 export const COUNT_CAP = 10_000;
 
 /**
- * Max number of trigram matches the `q` path materializes + sorts (a
- * work cap, distinct from COUNT_CAP's display cap). Below this, results
- * are exact and fully rank-correct (covers all realistic searches — e.g.
- * "hair" ≈ 35k matches). Above it (pathologically broad 3-char
- * substrings), we read only the first 50k trigram matches — a documented
- * degradation that bounds worst-case latency. Either way the runner still
- * caps the *displayed* total at COUNT_CAP (10k → "10,000+"), so this cap
- * rarely changes what the user sees. See the explorer-filter-perf spec §3.3.
- */
-export const Q_MATCH_MATERIALIZE_CAP = 50_000;
-
-/**
  * Push every kcs WHERE predicate (current_week_end_date, rank, jump,
  * category, leaf, severity, title-gap) onto a fresh clause list, binding
- * args via `next` in clause order. The `q` substring filter is NOT here —
- * it is path-specific (CTE for the q path; absent on the legacy path).
+ * args via `next` in clause order. The `q` filter is NOT here — the q-path
+ * appends its own match on kcs.search_term_normalized; the legacy path has
+ * no q clause.
  */
 function pushKcsPredicates(
   filters: ExplorerFilters,
@@ -281,6 +274,7 @@ function pushKcsPredicates(
   return where;
 }
 
+/** ORDER BY for the inner (kcs) query, by the window-specific source columns. */
 function buildOrderBy(
   sort: ExplorerFilters['sort'],
   improvementCol: string,
@@ -315,6 +309,42 @@ function buildOrderBy(
       // (no per-user "added" timestamp on the explorer's row set).
       // Fall back to default rank ordering.
       return 'ORDER BY kcs.current_rank ASC';
+  }
+}
+
+/**
+ * ORDER BY for the OUTER select of the q-path subquery — references the `k`
+ * alias and the inner's stable aliases (`prior_rank` / `improvement`, not
+ * the window-specific source columns). Mirrors buildOrderBy so the joined
+ * page rows come out in the same order the inner LIMIT picked.
+ */
+function buildOuterOrderBy(sort: ExplorerFilters['sort'], matchMode: MatchMode): string {
+  switch (sort) {
+    case 'rank':
+      return 'ORDER BY k.current_rank ASC';
+    case 'rank_desc':
+      return 'ORDER BY k.current_rank DESC';
+    case 'imp':
+      return 'ORDER BY k.improvement DESC NULLS LAST';
+    case 'decline':
+      return 'ORDER BY k.improvement ASC NULLS LAST';
+    case 'title_gap': {
+      const col = matchMode === 'loose'
+        ? 'keyword_title_match_count_loose_current'
+        : 'keyword_title_match_count_current';
+      return `ORDER BY k.${col} ASC NULLS FIRST`;
+    }
+    case 'avg_price_asc':
+      return 'ORDER BY k.avg_price_cents ASC NULLS LAST';
+    case 'avg_price_desc':
+      return 'ORDER BY k.avg_price_cents DESC NULLS LAST';
+    case 'avg_reviews_asc':
+      return 'ORDER BY k.avg_reviews ASC NULLS LAST';
+    case 'avg_reviews_desc':
+      return 'ORDER BY k.avg_reviews DESC NULLS LAST';
+    case 'added_asc':
+    case 'added_desc':
+      return 'ORDER BY k.current_rank ASC';
   }
 }
 

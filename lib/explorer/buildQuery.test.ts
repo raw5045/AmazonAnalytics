@@ -56,23 +56,35 @@ describe('buildExplorerQuery', () => {
     });
   });
 
-  describe('search term substring (q) — trigram-first CTE path', () => {
-    it('builds a MATERIALIZED CTE with the trigram LIKE + cap, not a kcs WHERE LIKE', () => {
-      const { sql, args, countArgs } = buildExplorerQuery({ ...baseFilters, q: 'wireless' });
-      expect(norm(sql)).toContain('WITH matches AS MATERIALIZED');
-      expect(norm(sql)).toContain('FROM search_terms WHERE search_term_normalized LIKE $1');
-      expect(norm(sql)).toContain('LIMIT $2'); // the materialize cap
-      expect(norm(sql)).toContain('JOIN matches m ON m.id = kcs.search_term_id');
+  describe('search term substring (q) — single-table match on kcs', () => {
+    it('whole-word: matches kcs.search_term_normalized with ~ and a word-boundary pattern', () => {
+      const { sql, args } = buildExplorerQuery({ ...baseFilters, q: 'wireless' });
+      expect(norm(sql)).toMatch(/kcs\.search_term_normalized ~ \$\d/);
+      expect(norm(sql)).not.toContain('WITH matches');
+      expect(norm(sql)).not.toContain('search_term_normalized LIKE');
       expect(norm(sql)).toContain('(count(*) OVER ())::int AS total');
-      // q + cap are the first two args; '%wireless%' is the LIKE pattern
-      expect(args[0]).toBe('%wireless%');
-      expect(args[1]).toBe(50_000);
-      expect(countArgs[0]).toBe('%wireless%');
+      expect(args).toContain('\\mwireless\\M');
     });
 
-    it('lowercases the search pattern', () => {
-      const { args } = buildExplorerQuery({ ...baseFilters, q: 'WiReLeSS' });
-      expect(args[0]).toBe('%wireless%');
+    it('broad: matches with LIKE and a %substring% pattern', () => {
+      const { sql, args } = buildExplorerQuery({ ...baseFilters, q: 'wireless', qMode: 'broad' });
+      expect(norm(sql)).toMatch(/kcs\.search_term_normalized LIKE \$\d/);
+      expect(norm(sql)).not.toContain('search_term_normalized ~');
+      expect(args).toContain('%wireless%');
+    });
+
+    it('lowercases + escapes regex/LIKE metacharacters in the term', () => {
+      expect(buildExplorerQuery({ ...baseFilters, q: 'WiReLeSS' }).args).toContain('\\mwireless\\M');
+      expect(buildExplorerQuery({ ...baseFilters, q: 'c++' }).args).toContain('\\mc\\+\\+\\M');
+      expect(buildExplorerQuery({ ...baseFilters, q: '50%', qMode: 'broad' }).args).toContain('%50\\%%');
+    });
+
+    it('reads via an inner subquery joined to search_terms for raw on the page rows', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, q: 'wireless' });
+      expect(norm(sql)).toContain('FROM keyword_current_summary kcs');
+      expect(norm(sql)).toContain(') k JOIN search_terms st ON st.id = k.search_term_id');
+      expect(norm(sql)).toContain('k.search_term_id');
+      expect(norm(sql)).toContain('st.search_term_raw');
     });
 
     it('flags countFromRows so the runner reads the total from the rows pass', () => {
@@ -80,25 +92,27 @@ describe('buildExplorerQuery', () => {
       expect(countFromRows).toBe(true);
     });
 
-    it('sorts the matched set by ANY sort column (e.g. avg_reviews_desc)', () => {
-      const { sql } = buildExplorerQuery({ ...baseFilters, q: 'hair', sort: 'avg_reviews_desc' });
-      expect(norm(sql)).toContain('WITH matches AS MATERIALIZED');
-      expect(norm(sql)).toContain('ORDER BY kcs.avg_reviews DESC NULLS LAST');
+    it('sorts by ANY column: inner ORDER BY kcs.<col>, outer ORDER BY k.<alias>', () => {
+      const reviews = buildExplorerQuery({ ...baseFilters, q: 'hair', sort: 'avg_reviews_desc' });
+      expect(norm(reviews.sql)).toContain('ORDER BY kcs.avg_reviews DESC NULLS LAST');
+      expect(norm(reviews.sql)).toContain('ORDER BY k.avg_reviews DESC NULLS LAST');
+      const imp = buildExplorerQuery({ ...baseFilters, q: 'hair', window: '4w', sort: 'imp' });
+      expect(norm(imp.sql)).toContain('ORDER BY kcs.improvement_4w DESC NULLS LAST');
+      expect(norm(imp.sql)).toContain('ORDER BY k.improvement DESC NULLS LAST');
     });
 
-    it('composes other filters in the OUTER where, not the CTE', () => {
+    it('composes other filters into the inner WHERE (alongside the match)', () => {
       const { sql } = buildExplorerQuery({ ...baseFilters, q: 'hair', rankMax: 1000, category: 'Electronics' });
-      const cteEnd = norm(sql).indexOf(') SELECT');
-      const cte = norm(sql).slice(0, cteEnd);
-      const outer = norm(sql).slice(cteEnd);
-      expect(cte).not.toContain('current_rank <=');
-      expect(outer).toContain('kcs.current_rank <=');
-      expect(outer).toContain('kcs.top_clicked_category_1_current =');
+      const innerEnd = norm(sql).indexOf(') k JOIN');
+      const inner = norm(sql).slice(0, innerEnd);
+      expect(inner).toContain('kcs.current_rank <=');
+      expect(inner).toContain('kcs.top_clicked_category_1_current =');
+      expect(inner).toContain('kcs.search_term_normalized ~');
     });
 
-    it('skips the CTE when q is null (legacy path)', () => {
+    it('skips the q match when q is null (legacy path)', () => {
       const { sql, countFromRows } = buildExplorerQuery({ ...baseFilters, q: null });
-      expect(norm(sql)).not.toContain('WITH matches');
+      expect(norm(sql)).not.toContain('search_term_normalized');
       expect(norm(sql)).toContain('JOIN search_terms st ON st.id = kcs.search_term_id');
       expect(countFromRows).toBeFalsy();
     });
@@ -333,11 +347,12 @@ describe('buildExplorerQuery', () => {
       expect(norm(countSql)).not.toContain('JOIN search_terms');
     });
 
-    it('q countSql is the empty-page fallback: CTE matched count, no bail-out LIMIT', () => {
+    it('q countSql is the single-table empty-page fallback (no CTE, no bail-out LIMIT)', () => {
       const { countSql } = buildExplorerQuery({ ...baseFilters, q: 'wireless', rankMax: 50000 });
-      expect(norm(countSql)).toContain('WITH matches AS MATERIALIZED');
-      expect(norm(countSql)).toContain('JOIN matches m ON m.id = kcs.search_term_id');
-      expect(norm(countSql)).toContain('SELECT count(*)::int AS total');
+      expect(norm(countSql)).toContain('SELECT count(*)::int AS total FROM keyword_current_summary kcs');
+      expect(norm(countSql)).toContain('current_rank <=');
+      expect(norm(countSql)).toMatch(/search_term_normalized ~ \$\d/);
+      expect(norm(countSql)).not.toContain('WITH matches');
       expect(norm(countSql)).not.toContain('LIMIT 10001');
       expect(norm(countSql)).not.toContain('ORDER BY');
     });
@@ -407,7 +422,7 @@ describe('buildExplorerQuery', () => {
       });
 
       // Spot-check that every filter contributed a clause
-      expect(norm(sql)).toContain('search_term_normalized LIKE');
+      expect(norm(sql)).toMatch(/search_term_normalized ~ \$\d/);
       expect(norm(sql)).toContain('current_rank >=');
       expect(norm(sql)).toContain('current_rank <=');
       expect(norm(sql)).toContain('kcs.rank_4w_ago >');
@@ -417,8 +432,8 @@ describe('buildExplorerQuery', () => {
       expect(norm(sql)).toContain('ORDER BY kcs.improvement_4w DESC NULLS LAST');
       expect(args.slice(-2)).toEqual([50, 50]);
       expect(args.length).toBe(countArgs.length + 2);
-      // q is set → CTE path: total from the rows window count, fallback countSql has no bail-out LIMIT.
-      expect(norm(sql)).toContain('WITH matches AS MATERIALIZED');
+      // q set → single-table kcs path: window count, single-table fallback.
+      expect(norm(sql)).toContain('kcs.search_term_normalized ~');
       expect(norm(sql)).toContain('(count(*) OVER ())::int AS total');
       expect(norm(countSql)).not.toContain('LIMIT 10001');
     });

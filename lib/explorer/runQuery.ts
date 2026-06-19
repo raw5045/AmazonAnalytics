@@ -27,6 +27,7 @@
  * so it remains pure and easy to unit-test.
  */
 import { neon } from '@neondatabase/serverless';
+import { Pool } from 'pg';
 import { env } from '@/lib/env';
 import { buildExplorerQuery } from './buildQuery';
 import { applyCountCap, extractCount, extractWindowTotal } from './queryTotals';
@@ -38,6 +39,8 @@ interface ExplorerQueryResult {
   total: number;
   /** True when total === COUNT_CAP and the real total may be larger. */
   totalIsCapped: boolean;
+  /** True when a broad search hit the 115s statement timeout; rows is []. */
+  broadTimedOut?: boolean;
   /**
    * Volume-fit metadata for the current snapshot, sourced from the
    * same meta lookup that supplies current_week_end_date. `null` when
@@ -253,20 +256,38 @@ export async function runExplorerQuery(
     }
   }
 
-  // Rows always run. The live count runs in parallel ONLY for the legacy
-  // path (no q, no precomputed short-circuit). The q path carries its total
-  // on the rows via count(*) OVER (); a precomputed total skips counting.
+  const isBroad = filters.q !== null && filters.qMode === 'broad';
+
+  // Rows query. Broad mode runs on a node-postgres TCP connection with a
+  // 115s statement_timeout — Neon's HTTP driver is tuned for short queries
+  // and won't reliably hold a ~2-minute one. Everything else runs on
+  // neon-http, with the legacy live count in parallel.
   const tRowsStart = Date.now();
-  const rowsPromise = sqlClient.query(sql, args).then((r) => ({ result: r, ms: Date.now() - tRowsStart }));
+  let rawRows: RawRow[];
+  let rowsMs: number;
+  let countMs = 0;
+  let countResult: unknown = null;
 
-  const needsLiveCount = precomputedTotal === null && !built.countFromRows;
-  const tCountStart = Date.now();
-  const countPromise = needsLiveCount
-    ? sqlClient.query(countSql, countArgs).then((r) => ({ result: r, ms: Date.now() - tCountStart }))
-    : Promise.resolve({ result: null as unknown, ms: 0 });
-
-  const [rowsTimed, countTimed] = await Promise.all([rowsPromise, countPromise]);
-  const rawRows = rowsTimed.result as unknown as RawRow[];
+  if (isBroad) {
+    const broad = await runBroad(sql, args);
+    rowsMs = Date.now() - tRowsStart;
+    if (broad === 'timeout') {
+      return broadTimeoutResult(volumeFit, metaLookupMs, rowsMs, currentWeekEndDate !== undefined);
+    }
+    rawRows = broad as unknown as RawRow[];
+  } else {
+    const needsLiveCount = precomputedTotal === null && !built.countFromRows;
+    const tCountStart = Date.now();
+    const rowsPromise = sqlClient.query(sql, args).then((r) => ({ result: r, ms: Date.now() - tRowsStart }));
+    const countPromise = needsLiveCount
+      ? sqlClient.query(countSql, countArgs).then((r) => ({ result: r, ms: Date.now() - tCountStart }))
+      : Promise.resolve({ result: null as unknown, ms: 0 });
+    const [rowsTimed, countTimed] = await Promise.all([rowsPromise, countPromise]);
+    rawRows = rowsTimed.result as unknown as RawRow[];
+    rowsMs = rowsTimed.ms;
+    countMs = countTimed.ms;
+    countResult = countTimed.result;
+  }
 
   const rows: ExplorerRow[] = rawRows.map((r) => ({
     searchTermId: r.search_term_id,
@@ -297,7 +318,6 @@ export async function runExplorerQuery(
   // Resolve the total + capping.
   let total: number;
   let totalIsCapped: boolean;
-  let countMs = countTimed.ms;
   if (precomputedTotal !== null) {
     ({ total, totalIsCapped } = applyCountCap(precomputedTotal));
   } else if (built.countFromRows) {
@@ -305,14 +325,24 @@ export async function runExplorerQuery(
     if (windowTotal !== null) {
       ({ total, totalIsCapped } = applyCountCap(windowTotal));
     } else {
-      // Empty page (OFFSET past the end): one fallback count.
+      // Empty page (OFFSET past the end): one fallback count, on the same
+      // driver as the rows query.
       const tFallback = Date.now();
-      const cr = await sqlClient.query(countSql, countArgs);
-      countMs = Date.now() - tFallback;
-      ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
+      if (isBroad) {
+        const cr = await runBroad(countSql, countArgs);
+        countMs = Date.now() - tFallback;
+        if (cr === 'timeout') {
+          return broadTimeoutResult(volumeFit, metaLookupMs, rowsMs, currentWeekEndDate !== undefined);
+        }
+        ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
+      } else {
+        const cr = await sqlClient.query(countSql, countArgs);
+        countMs = Date.now() - tFallback;
+        ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
+      }
     }
   } else {
-    ({ total, totalIsCapped } = applyCountCap(extractCount(countTimed.result as unknown as Array<{ total: number | string }>)));
+    ({ total, totalIsCapped } = applyCountCap(extractCount(countResult as unknown as Array<{ total: number | string }>)));
   }
 
   return {
@@ -322,11 +352,69 @@ export async function runExplorerQuery(
     volumeFit,
     timings: {
       metaLookupMs,
-      rowsMs: rowsTimed.ms,
+      rowsMs,
       countMs,
       usedPredicate: currentWeekEndDate !== undefined,
       countSource,
     },
+  };
+}
+
+/**
+ * Lazy node-postgres pool for the broad-search path only, reused across warm
+ * serverless invocations. Broad queries can run up to the 115s statement
+ * timeout — neon-http won't reliably hold a query that long.
+ */
+let broadPool: Pool | null = null;
+function getBroadPool(): Pool {
+  if (!broadPool) {
+    broadPool = new Pool({
+      connectionString: env.DATABASE_URL,
+      max: 3,
+      keepAlive: true,
+      connectionTimeoutMillis: 20_000,
+    });
+    broadPool.on('error', (e: Error) => console.warn('[explorer broad pool] idle client error:', e.message));
+  }
+  return broadPool;
+}
+
+/**
+ * Run a broad-search query (rows or fallback count) on a TCP connection in a
+ * transaction with SET LOCAL statement_timeout = 115000. Returns the rows, or
+ * 'timeout' when the DB cancels the query (Postgres error code 57014).
+ */
+async function runBroad(sql: string, args: unknown[]): Promise<Array<Record<string, unknown>> | 'timeout'> {
+  const client = await getBroadPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL statement_timeout = 115000');
+    const r = await client.query(sql, args);
+    await client.query('COMMIT');
+    return r.rows;
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
+    if ((e as { code?: string }).code === '57014') return 'timeout';
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Empty result flagged broadTimedOut, for the page to render a friendly message. */
+function broadTimeoutResult(
+  volumeFit: VolumeFitMeta | null,
+  metaLookupMs: number,
+  rowsMs: number,
+  usedPredicate: boolean,
+): ExplorerQueryResult {
+  return {
+    rows: [],
+    total: 0,
+    totalIsCapped: false,
+    volumeFit,
+    broadTimedOut: true,
+    timings: { metaLookupMs, rowsMs, countMs: 0, usedPredicate, countSource: 'live' },
   };
 }
 
