@@ -2,6 +2,7 @@
 
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useState, useTransition, type FormEvent } from 'react';
+import { LoadingOverlay } from './LoadingOverlay';
 
 /**
  * Client component — Prev / Next links plus a jump-to-page input.
@@ -49,7 +50,9 @@ export function Pagination({
   };
 
   return (
-    <nav className="mt-4 flex items-center gap-3 text-sm">
+    <>
+      <LoadingOverlay show={isPending} />
+      <nav className="mt-4 flex items-center gap-3 text-sm">
       <button
         type="button"
         onClick={() => prevPage !== null && goTo(prevPage)}
@@ -85,5 +88,6 @@ export function Pagination({
       </form>
       {isPending && <span className="text-xs text-gray-400">Loading…</span>}
     </nav>
+    </>
   );
 }

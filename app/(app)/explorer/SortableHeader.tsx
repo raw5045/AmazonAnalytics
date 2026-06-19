@@ -3,6 +3,7 @@
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useTransition } from 'react';
 import type { SortKey } from '@/lib/explorer/types';
+import { LoadingOverlay } from './LoadingOverlay';
 
 /**
  * Clickable column header that toggles between two sort values.
@@ -80,6 +81,7 @@ export function SortableHeader({
         <span>{label}</span>
         {align !== 'right' && <ArrowIcon isAsc={isAsc} isDesc={isDesc} />}
       </button>
+      <LoadingOverlay show={isPending} />
     </th>
   );
 }
