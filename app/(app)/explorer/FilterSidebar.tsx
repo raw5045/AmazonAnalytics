@@ -51,6 +51,8 @@ const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
 interface PendingFilters {
   window: WindowKey;
   q: string;
+  /** Whole-word (default, fast) vs broad substring (opt-in, slower). */
+  qMode: 'word' | 'broad';
   rankBest: string;
   rankWorst: string;
   jump: JumpKey | '';
@@ -72,6 +74,7 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
   return {
     window: f.window,
     q: f.q ?? '',
+    qMode: f.qMode,
     rankBest: f.rankMin?.toString() ?? '',
     rankWorst: f.rankMax?.toString() ?? '',
     jump: f.jump ?? '',
@@ -93,6 +96,8 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.window !== EXPLORER_DEFAULTS.window) params.set('window', p.window);
   if (p.sort !== EXPLORER_DEFAULTS.sort) params.set('sort', p.sort);
   if (p.q.trim().length >= 3) params.set('q', p.q.trim());
+  // qmode only affects results alongside an active q; emit it only then to keep URLs clean.
+  if (p.q.trim().length >= 3 && p.qMode === 'broad') params.set('qmode', 'broad');
   if (p.rankBest) params.set('rank_min', p.rankBest);
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
   if (p.jumpMetric === 'volume') params.set('jump_metric', 'volume');
@@ -220,6 +225,42 @@ export function FilterSidebar({
         />
         {pending.q.length > 0 && pending.q.length < 3 && (
           <p className="text-xs text-gray-500 mt-1">Type at least 3 characters to filter by text.</p>
+        )}
+
+        {/* Whole-word (default, fast) vs broad substring (opt-in, slower). */}
+        <div className="flex rounded border border-gray-300 overflow-hidden text-xs font-medium mt-2">
+          <button
+            type="button"
+            onClick={() => set('qMode', 'word')}
+            className={`flex-1 py-1 px-2 ${
+              pending.qMode === 'word'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            Whole word
+          </button>
+          <button
+            type="button"
+            onClick={() => set('qMode', 'broad')}
+            className={`flex-1 py-1 px-2 border-l border-gray-300 ${
+              pending.qMode === 'broad'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            Broad (slower)
+          </button>
+        </div>
+        {pending.qMode === 'broad' ? (
+          <p className="text-xs text-amber-700 mt-1">
+            Broad matches the letters anywhere (e.g. “air” inside “chair”). It scans every
+            keyword, so this filter can take up to ~2 minutes.
+          </p>
+        ) : (
+          <p className="text-xs text-gray-500 mt-1">
+            Whole word matches the term as a full word (e.g. “air”, not “chair”). Fast.
+          </p>
         )}
       </FieldGroup>
 

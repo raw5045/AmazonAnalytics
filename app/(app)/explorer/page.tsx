@@ -25,6 +25,14 @@ export const metadata: Metadata = {
   title: 'Keyword Explorer',
 };
 
+// Broad ("search term contains" → Broad) matches run a substring LIKE over the
+// whole active set and can take ~1–2 min. The runQuery broad path caps the DB
+// statement at 115s; give the Vercel function headroom above that. Vercel Pro
+// allows up to 300s; 120s is comfortably past the 115s DB cap. (Whole-word and
+// all non-q filters return in well under a second — this ceiling only matters
+// for the opt-in Broad path.)
+export const maxDuration = 120;
+
 export default async function ExplorerPage({
   searchParams,
 }: {
@@ -87,7 +95,7 @@ export default async function ExplorerPage({
     categoriesPromise,
     leafCategoriesPromise,
   ]);
-  const { rows, total, totalIsCapped, volumeFit, timings: rqTimings } = queryResult;
+  const { rows, total, totalIsCapped, volumeFit, broadTimedOut, timings: rqTimings } = queryResult;
   const categories = categoriesTimed.result;
   const handlerTotalMs = Date.now() - handlerStartedAt;
 
@@ -124,34 +132,55 @@ export default async function ExplorerPage({
             categoriesCacheHint: categoriesTimed.ms < 50 ? 'fast' : 'slow',
           }}
         />
-        <div className="mb-4 flex items-center justify-between">
-          <p className="text-sm text-gray-600">
-            {total === 0
-              ? 'No results — try removing a filter.'
-              : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
-          </p>
-          {filtersAreCustomized(filters) && (
-            <a href="/explorer" className="text-sm underline text-gray-600">
-              Reset filters
-            </a>
-          )}
-        </div>
-        {totalIsCapped && (
-          <p className="mb-3 text-xs text-gray-500">
-            Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
-          </p>
+        {broadTimedOut ? (
+          // Broad match exceeded the time budget. rows/total are empty here, so
+          // the normal "No results" copy would be misleading — show a distinct,
+          // actionable notice instead of an empty table.
+          <div className="mb-4 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <p className="font-medium">This broad search matched too many keywords to rank in time.</p>
+            <p className="mt-1">
+              Narrow it with another filter (rank range, category, or severity), or switch{' '}
+              <strong>Search term contains</strong> back to <strong>Whole word</strong> for a fast,
+              exact-word match.
+            </p>
+            {filtersAreCustomized(filters) && (
+              <a href="/explorer" className="mt-2 inline-block underline">
+                Reset filters
+              </a>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="mb-4 flex items-center justify-between">
+              <p className="text-sm text-gray-600">
+                {total === 0
+                  ? 'No results — try removing a filter.'
+                  : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
+              </p>
+              {filtersAreCustomized(filters) && (
+                <a href="/explorer" className="text-sm underline text-gray-600">
+                  Reset filters
+                </a>
+              )}
+            </div>
+            {totalIsCapped && (
+              <p className="mb-3 text-xs text-gray-500">
+                Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
+              </p>
+            )}
+            {volumeFit && <VolumeFitChip fit={volumeFit} />}
+            <ResultsTable
+              rows={rows}
+              window={filters.window}
+              matchMode={filters.matchMode}
+              currentSort={filters.sort}
+              backUrl={backUrl}
+              watchedKeywordIds={watchedKeywordIds}
+              showWatchColumn={Boolean(user)}
+            />
+            <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
+          </>
         )}
-        {volumeFit && <VolumeFitChip fit={volumeFit} />}
-        <ResultsTable
-          rows={rows}
-          window={filters.window}
-          matchMode={filters.matchMode}
-          currentSort={filters.sort}
-          backUrl={backUrl}
-          watchedKeywordIds={watchedKeywordIds}
-          showWatchColumn={Boolean(user)}
-        />
-        <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
       </div>
     </div>
   );
