@@ -1,0 +1,56 @@
+/**
+ * PATCH  /api/category-builder/custom/[id] → rename / replace leafNames
+ * DELETE /api/category-builder/custom/[id] → delete
+ */
+import { NextResponse } from 'next/server';
+import { and, eq } from 'drizzle-orm';
+import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
+import { AuthError } from '@/lib/auth/requireAdmin';
+import { db } from '@/db/client';
+import { customCategories } from '@/db/schema';
+import { validateName, normalizeLeafNames } from '@/lib/customCategories/validation';
+
+export const runtime = 'nodejs';
+
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  let user;
+  try { user = await requireAuthenticatedUser(); } catch (e) { return handleAuthError(e); }
+  const { id } = await params;
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown; leafNames?: unknown };
+  const nameResult = validateName(body.name);
+  if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
+  const leafNames = normalizeLeafNames(body.leafNames);
+  if (leafNames.length === 0) return NextResponse.json({ error: 'A category needs at least one leaf.' }, { status: 400 });
+
+  try {
+    const [updated] = await db
+      .update(customCategories)
+      .set({ name: nameResult.name, leafNames, updatedAt: new Date() })
+      .where(and(eq(customCategories.id, id), eq(customCategories.userId, user.id)))
+      .returning();
+    if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    return NextResponse.json({ category: { id: updated.id, name: updated.name, leafNames: updated.leafNames, createdAt: updated.createdAt.toISOString(), updatedAt: updated.updatedAt.toISOString() } });
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23505') {
+      return NextResponse.json({ error: `You already have a category named "${nameResult.name}".` }, { status: 409 });
+    }
+    throw e;
+  }
+}
+
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  let user;
+  try { user = await requireAuthenticatedUser(); } catch (e) { return handleAuthError(e); }
+  const { id } = await params;
+  const deleted = await db
+    .delete(customCategories)
+    .where(and(eq(customCategories.id, id), eq(customCategories.userId, user.id)))
+    .returning({ id: customCategories.id });
+  if (deleted.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  return NextResponse.json({ ok: true });
+}
+
+function handleAuthError(e: unknown): NextResponse {
+  if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.code === 'UNAUTHENTICATED' ? 401 : 403 });
+  throw e;
+}
