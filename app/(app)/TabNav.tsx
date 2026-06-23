@@ -26,6 +26,7 @@ export function TabNav({ watchlistCount }: { watchlistCount: number }) {
   const searchParams = useSearchParams();
   const isExplorer = pathname === '/explorer' || pathname.startsWith('/explorer/');
   const isWatchlist = pathname === '/watchlist' || pathname.startsWith('/watchlist/');
+  const isCategoryBuilder = pathname === '/category-builder' || pathname.startsWith('/category-builder/');
 
   // Tracks the URL the Explorer tab should navigate to. Starts as the
   // bare /explorer (so SSR + first paint match), then useEffect updates
@@ -74,6 +75,14 @@ export function TabNav({ watchlistCount }: { watchlistCount: number }) {
             ({watchlistCount})
           </span>
         )}
+      </Link>
+      <Link
+        href="/category-builder"
+        className={`text-base font-semibold whitespace-nowrap ${
+          isCategoryBuilder ? 'text-gray-900' : 'text-gray-500 hover:text-gray-900'
+        }`}
+      >
+        Category Builder
       </Link>
     </nav>
   );
