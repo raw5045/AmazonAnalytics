@@ -8,7 +8,13 @@ import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
 import { db } from '@/db/client';
 import { customCategories } from '@/db/schema';
-import { validateName, normalizeLeafNames } from '@/lib/customCategories/validation';
+import { rowToDTO } from '@/lib/customCategories/loadServer';
+import {
+  validateName,
+  normalizeLeafNames,
+  isValidUuid,
+  isUniqueViolation,
+} from '@/lib/customCategories/validation';
 
 export const runtime = 'nodejs';
 
@@ -16,6 +22,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   let user;
   try { user = await requireAuthenticatedUser(); } catch (e) { return handleAuthError(e); }
   const { id } = await params;
+  if (!isValidUuid(id)) return NextResponse.json({ error: 'invalid category id' }, { status: 400 });
   const body = (await req.json().catch(() => ({}))) as { name?: unknown; leafNames?: unknown };
   const nameResult = validateName(body.name);
   if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
@@ -29,9 +36,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       .where(and(eq(customCategories.id, id), eq(customCategories.userId, user.id)))
       .returning();
     if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    return NextResponse.json({ category: { id: updated.id, name: updated.name, leafNames: updated.leafNames, createdAt: updated.createdAt.toISOString(), updatedAt: updated.updatedAt.toISOString() } });
+    return NextResponse.json({ category: rowToDTO(updated) });
   } catch (e) {
-    if (e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23505') {
+    if (isUniqueViolation(e)) {
       return NextResponse.json({ error: `You already have a category named "${nameResult.name}".` }, { status: 409 });
     }
     throw e;
@@ -42,6 +49,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   let user;
   try { user = await requireAuthenticatedUser(); } catch (e) { return handleAuthError(e); }
   const { id } = await params;
+  if (!isValidUuid(id)) return NextResponse.json({ error: 'invalid category id' }, { status: 400 });
   const deleted = await db
     .delete(customCategories)
     .where(and(eq(customCategories.id, id), eq(customCategories.userId, user.id)))

@@ -8,8 +8,13 @@ import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
 import { db } from '@/db/client';
 import { customCategories } from '@/db/schema';
-import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
-import { validateName, normalizeLeafNames, MAX_CUSTOM_CATEGORIES } from '@/lib/customCategories/validation';
+import { listCustomCategoriesForUser, rowToDTO } from '@/lib/customCategories/loadServer';
+import {
+  validateName,
+  normalizeLeafNames,
+  isUniqueViolation,
+  MAX_CUSTOM_CATEGORIES,
+} from '@/lib/customCategories/validation';
 
 export const runtime = 'nodejs';
 
@@ -42,7 +47,7 @@ export async function POST(req: Request) {
       .insert(customCategories)
       .values({ userId: user.id, name: nameResult.name, leafNames })
       .returning();
-    return NextResponse.json({ category: toDTO(created) });
+    return NextResponse.json({ category: rowToDTO(created) });
   } catch (e) {
     if (isUniqueViolation(e)) {
       return NextResponse.json({ error: `You already have a category named "${nameResult.name}".` }, { status: 409 });
@@ -51,13 +56,7 @@ export async function POST(req: Request) {
   }
 }
 
-function toDTO(r: typeof customCategories.$inferSelect) {
-  return { id: r.id, name: r.name, leafNames: (r.leafNames as string[]) ?? [], createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
-}
 function handleAuthError(e: unknown): NextResponse {
   if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.code === 'UNAUTHENTICATED' ? 401 : 403 });
   throw e;
-}
-function isUniqueViolation(e: unknown): boolean {
-  return Boolean(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23505');
 }

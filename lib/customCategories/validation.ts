@@ -23,3 +23,15 @@ export function normalizeLeafNames(raw: unknown): string[] {
   }
   return out;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** True for a well-formed UUID — guards [id] route params before hitting the DB. */
+export function isValidUuid(id: string): boolean {
+  return UUID_RE.test(id);
+}
+
+/** True when a DB error is a Postgres unique-constraint violation (code 23505). */
+export function isUniqueViolation(e: unknown): boolean {
+  return Boolean(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23505');
+}
