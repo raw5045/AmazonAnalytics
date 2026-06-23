@@ -17,6 +17,7 @@ import type { VolumeFitMeta } from '@/lib/explorer/types';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { loadSavedViewForUser } from '@/lib/savedViews/loadServer';
 import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
+import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { Pagination } from './Pagination';
@@ -47,9 +48,10 @@ export default async function ExplorerPage({
   // can hydrate its sidebar from the view's saved JSON.
   const user = await getCurrentUser();
   const viewId = getOne(sp.view);
-  const [activeView, watchlistItems] = await Promise.all([
+  const [activeView, watchlistItems, customCategories] = await Promise.all([
     user && viewId ? loadSavedViewForUser(user.id, viewId) : Promise.resolve(null),
     user ? listWatchlistForUser(user.id) : Promise.resolve([]),
+    user ? listCustomCategoriesForUser(user.id) : Promise.resolve([]),
   ]);
   const watchedKeywordIds = new Set(watchlistItems.map((w) => w.keywordId));
 
@@ -127,6 +129,7 @@ export default async function ExplorerPage({
         filters={filters}
         categories={categories}
         leafCategories={leafCategories}
+        customCategories={customCategories}
       />
       <div className="flex-1 p-6">
         <PerfStrip

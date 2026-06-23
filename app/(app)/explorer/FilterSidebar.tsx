@@ -63,6 +63,9 @@ interface PendingFilters {
   jumpTo: string;
   category: string;
   leafCategories: string[];
+  /** Whether the leaf-categories filter is in individual-leaf or custom-category mode. */
+  leafMode: 'leaf' | 'custom';
+  customCategoryIds: string[];
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | '';
@@ -83,6 +86,8 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     jumpTo: f.jumpTo?.toString() ?? '',
     category: f.category ?? '',
     leafCategories: f.leafCategories,
+    leafMode: f.customCategoryIds.length > 0 ? 'custom' : 'leaf',
+    customCategoryIds: f.customCategoryIds,
     severities: f.severities,
     titleSlots: f.titleSlots,
     titleMatchMode: f.titleMatchMode ?? '',
@@ -109,7 +114,11 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
     }
   }
   if (p.category) params.set('category', p.category);
-  if (p.leafCategories.length > 0) params.set('leaf', p.leafCategories.join(','));
+  if (p.leafMode === 'custom') {
+    if (p.customCategoryIds.length > 0) params.set('custom', p.customCategoryIds.join(','));
+  } else if (p.leafCategories.length > 0) {
+    params.set('leaf', p.leafCategories.join(','));
+  }
   // Default severities = ['none', 'warning']. Only emit when different.
   const defaultSev = JSON.stringify([...EXPLORER_DEFAULTS.severities].sort());
   const currentSev = JSON.stringify([...p.severities].sort());
@@ -133,10 +142,12 @@ export function FilterSidebar({
   filters,
   categories,
   leafCategories,
+  customCategories = [],
 }: {
   filters: ExplorerFilters;
   categories: string[];
   leafCategories: string[];
+  customCategories?: { id: string; name: string; leafNames: string[] }[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -417,15 +428,90 @@ export function FilterSidebar({
       </FieldGroup>
 
       <FieldGroup label="Leaf categories (Keepa, slot-1)">
-        <LeafCategoryTypeahead
-          options={leafCategories}
-          selected={pending.leafCategories}
-          onChange={(next) => set('leafCategories', next)}
-        />
-        <p className="text-xs text-gray-500 mt-1">
-          Long-tail category for the most-clicked product. {leafCategories.length.toLocaleString()} options —
-          type to search, click or Enter to add. Multiple categories match with OR.
-        </p>
+        {/* Leaf | Custom segmented toggle */}
+        <div className="flex rounded border border-gray-300 overflow-hidden text-xs font-medium mb-2">
+          <button
+            type="button"
+            onClick={() => set('leafMode', 'leaf')}
+            className={`flex-1 py-1 px-2 ${
+              pending.leafMode === 'leaf'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            Leaf
+          </button>
+          <button
+            type="button"
+            onClick={() => set('leafMode', 'custom')}
+            className={`flex-1 py-1 px-2 border-l border-gray-300 ${
+              pending.leafMode === 'custom'
+                ? 'bg-blue-600 text-white'
+                : 'bg-white text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            Custom
+          </button>
+        </div>
+
+        {pending.leafMode === 'leaf' ? (
+          <>
+            <LeafCategoryTypeahead
+              options={leafCategories}
+              selected={pending.leafCategories}
+              onChange={(next) => set('leafCategories', next)}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Long-tail category for the most-clicked product. {leafCategories.length.toLocaleString()} options —
+              type to search, click or Enter to add. Multiple categories match with OR.
+            </p>
+          </>
+        ) : (
+          <>
+            {customCategories.length === 0 ? (
+              <p className="text-xs text-gray-400 mt-1">
+                No custom categories yet — build one in the Category Builder tab.
+              </p>
+            ) : (
+              <>
+                <div className="space-y-1">
+                  {customCategories.map((c) => (
+                    <label key={c.id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={pending.customCategoryIds.includes(c.id)}
+                        onChange={() => {
+                          set(
+                            'customCategoryIds',
+                            pending.customCategoryIds.includes(c.id)
+                              ? pending.customCategoryIds.filter((id) => id !== c.id)
+                              : [...pending.customCategoryIds, c.id],
+                          );
+                        }}
+                      />
+                      <span>
+                        {c.name}{' '}
+                        <span className="text-gray-400">({c.leafNames.length})</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {(() => {
+                  const selectedCats = customCategories.filter((c) =>
+                    pending.customCategoryIds.includes(c.id),
+                  );
+                  const selectedCount = selectedCats.length;
+                  const uniqueLeaves = new Set(selectedCats.flatMap((c) => c.leafNames)).size;
+                  return selectedCount > 0 ? (
+                    <p className="text-xs text-gray-500 mt-1">
+                      {selectedCount} selected → {uniqueLeaves} leaves
+                    </p>
+                  ) : null;
+                })()}
+              </>
+            )}
+          </>
+        )}
       </FieldGroup>
 
       <FieldGroup label="Fake volume severity">
