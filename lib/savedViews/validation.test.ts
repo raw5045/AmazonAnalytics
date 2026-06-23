@@ -71,4 +71,11 @@ describe('normalizeFilters + normalizeFiltersBlob', () => {
     });
     expect(outRank.jumpMetric).toBe('rank');
   });
+
+  it('round-trips customCategoryIds through the blob (normalizeFiltersBlob)', () => {
+    expect(normalizeFiltersBlob({ customCategoryIds: ['id-1', 'id-2'] }).customCategoryIds).toEqual(['id-1', 'id-2']);
+  });
+  it('round-trips customCategoryIds through normalizeFilters (custom param serialize→parse)', () => {
+    expect(normalizeFilters({ customCategoryIds: ['id-1', 'id-2'] }).customCategoryIds).toEqual(['id-1', 'id-2']);
+  });
 });

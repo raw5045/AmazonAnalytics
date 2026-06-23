@@ -34,6 +34,7 @@ describe('parseExplorerFilters', () => {
       jumpTo: null,
       category: 'Electronics',
       leafCategories: [],
+      customCategoryIds: [],
       severities: ['warning', 'critical'],
       titleSlots: [1, 2],
       titleMatchMode: 'all',
@@ -191,5 +192,15 @@ describe('parseExplorerFilters — qMode', () => {
   });
   it('falls back to word for an invalid qmode', () => {
     expect(parseExplorerFilters({ qmode: 'fuzzy' }).qMode).toBe('word');
+  });
+});
+
+describe('parseExplorerFilters — customCategoryIds', () => {
+  it('parses the custom param into customCategoryIds', () => {
+    const f = parseExplorerFilters({ custom: 'id-1,id-2' });
+    expect(f.customCategoryIds).toEqual(['id-1', 'id-2']);
+  });
+  it('defaults customCategoryIds to []', () => {
+    expect(parseExplorerFilters({}).customCategoryIds).toEqual([]);
   });
 });

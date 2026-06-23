@@ -66,6 +66,9 @@ export interface ExplorerFilters {
    * Precursor for saved-searches with custom leaf-set filters.
    */
   leafCategories: string[];
+  /** IDs of the user's custom categories selected in the filter (by reference).
+   *  The page loader expands these to leaf names and unions into the leaf filter. */
+  customCategoryIds: string[];
   severities: SeverityKey[];
   titleSlots: number[];
   titleMatchMode: TitleMatchMode | null;

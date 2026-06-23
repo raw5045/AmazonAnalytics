@@ -85,6 +85,7 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     jumpTo: typeof f.jumpTo === 'number' ? f.jumpTo : null,
     category: typeof f.category === 'string' ? f.category : null,
     leafCategories: Array.isArray(f.leafCategories) ? (f.leafCategories as string[]) : [],
+    customCategoryIds: Array.isArray(f.customCategoryIds) ? (f.customCategoryIds as string[]) : [],
     severities: Array.isArray(f.severities) ? (f.severities as ExplorerFilters['severities']) : ['none', 'warning'],
     titleSlots: Array.isArray(f.titleSlots) ? (f.titleSlots as number[]) : [1, 2, 3],
     titleMatchMode: (f.titleMatchMode as ExplorerFilters['titleMatchMode']) ?? null,
@@ -114,6 +115,9 @@ function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
   if (typeof f.category === 'string') p.category = f.category;
   if (Array.isArray(f.leafCategories) && f.leafCategories.length > 0) {
     p.leaf = (f.leafCategories as string[]).join(',');
+  }
+  if (Array.isArray(f.customCategoryIds) && f.customCategoryIds.length > 0) {
+    p.custom = (f.customCategoryIds as string[]).join(',');
   }
   if (Array.isArray(f.severities) && f.severities.length > 0) {
     p.severity = (f.severities as string[]).join(',');

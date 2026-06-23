@@ -10,6 +10,7 @@
 import type { Metadata } from 'next';
 import { parseExplorerFilters, EXPLORER_DEFAULTS, type SearchParamsLike } from '@/lib/explorer/parseFilters';
 import { runExplorerQuery } from '@/lib/explorer/runQuery';
+import { expandCustomCategories } from '@/lib/customCategories/expand';
 import { listCategories } from '@/lib/explorer/listCategories';
 import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
 import type { VolumeFitMeta } from '@/lib/explorer/types';
@@ -81,6 +82,16 @@ export default async function ExplorerPage({
   }
   const backUrl = backQuery.toString() ? `/explorer?${backQuery.toString()}` : '/explorer';
 
+  // Expand any by-reference custom categories into the leaf-name filter — but
+  // only for the QUERY. Keep the original `filters` (with customCategoryIds, not
+  // the expanded leaves) for the sidebar/backUrl so the UI shows the user's
+  // selection, not the expanded leaf set.
+  let queryFilters = filters;
+  if (user && filters.customCategoryIds.length > 0) {
+    const merged = await expandCustomCategories(user.id, filters.customCategoryIds, filters.leafCategories);
+    queryFilters = { ...filters, leafCategories: merged };
+  }
+
   const handlerStartedAt = Date.now();
   // Time listCategories at the call site so we can heuristically tell
   // cache hit vs miss (cached call returns <20ms; uncached DISTINCT scan
@@ -91,7 +102,7 @@ export default async function ExplorerPage({
   });
   const leafCategoriesPromise = listLeafCategories();
   const [queryResult, categoriesTimed, leafCategories] = await Promise.all([
-    runExplorerQuery(filters),
+    runExplorerQuery(queryFilters),
     categoriesPromise,
     leafCategoriesPromise,
   ]);
