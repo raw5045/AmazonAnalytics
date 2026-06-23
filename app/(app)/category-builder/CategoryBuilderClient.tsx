@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useState, useTransition, useRef } from 'react';
 import { collectDescendantLeaves, type CategoryNode } from '@/lib/categoryBuilder/buildTree';
 import type { CustomCategoryDTO } from '@/lib/customCategories/loadServer';
 
@@ -34,6 +34,7 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
 
   // Transient notice ("Added N") shown after addLeaves().
   const [addedNotice, setAddedNotice] = useState<string | null>(null);
+  const addedNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Error shown near Save button.
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -58,8 +59,21 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
       const incoming = names.filter((n) => !existing.has(n));
       const next = [...prev, ...incoming];
       // Transient notice: how many were newly added.
-      setAddedNotice(incoming.length > 0 ? `Added ${incoming.length}` : 'Already in cart');
-      setTimeout(() => setAddedNotice(null), 2000);
+      let notice: string;
+      if (incoming.length > 0) {
+        notice = `Added ${incoming.length}`;
+      } else if (names.length === 0) {
+        notice = 'Nothing to add';
+      } else {
+        notice = 'Already in cart';
+      }
+      setAddedNotice(notice);
+      // Clear any previous timer before starting a new one.
+      if (addedNoticeTimer.current !== null) clearTimeout(addedNoticeTimer.current);
+      addedNoticeTimer.current = setTimeout(() => {
+        setAddedNotice(null);
+        addedNoticeTimer.current = null;
+      }, 2000);
       return next;
     });
   }
@@ -238,7 +252,7 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
                 <button
                   onClick={() => addLeaves(collectDescendantLeaves(node))}
                   disabled={isPending}
-                  className="ml-3 text-xs font-semibold text-blue-600 hover:text-blue-800 disabled:opacity-50 opacity-0 group-hover:opacity-100 transition-opacity"
+                  className="ml-3 text-xs font-semibold text-blue-600 hover:text-blue-800 disabled:opacity-50"
                 >
                   Add
                 </button>
@@ -283,9 +297,10 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
               {/* Name input */}
               <input
                 type="text"
+                aria-label="Category name"
                 placeholder="Category name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => { setName(e.target.value); if (saveError) setSaveError(null); }}
                 className="w-full rounded border border-gray-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
               />
 
