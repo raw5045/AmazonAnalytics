@@ -22,7 +22,7 @@ import { Suspense } from 'react';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
 import { PaginationControls } from './Pagination';
-import { ResultCountDisplay, DeferredResultCount, ResultCountSkeleton } from './ResultCount';
+import { ResultCountDisplay, DeferredResultCount, ResultCountSkeleton, PageOf, DeferredPageOf } from './ResultCount';
 import { PerfStrip } from './PerfStrip';
 
 export const metadata: Metadata = {
@@ -201,7 +201,15 @@ export default async function ExplorerPage({
               watchedKeywordIds={watchedKeywordIds}
               showWatchColumn={Boolean(user)}
             />
-            <PaginationControls page={filters.page} hasNext={hasNext} />
+            <PaginationControls page={filters.page} hasNext={hasNext}>
+              {total !== null ? (
+                <PageOf total={total} totalIsCapped={totalIsCapped} perPage={filters.perPage} />
+              ) : (
+                <Suspense fallback={null}>
+                  <DeferredPageOf filters={queryFilters} perPage={filters.perPage} />
+                </Suspense>
+              )}
+            </PaginationControls>
           </>
         )}
       </div>
