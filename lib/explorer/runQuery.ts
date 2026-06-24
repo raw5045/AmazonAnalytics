@@ -37,31 +37,25 @@ import { EXPLORER_DEFAULTS } from './parseFilters';
 
 interface ExplorerQueryResult {
   rows: ExplorerRow[];
-  total: number;
-  /** True when total === COUNT_CAP and the real total may be larger. */
-  totalIsCapped: boolean;
-  /** True when a broad search hit the 115s statement timeout; rows is []. */
-  broadTimedOut?: boolean;
+  /** True when there is at least one more page after this one (from the N+1 probe). */
+  hasNext: boolean;
   /**
-   * Volume-fit metadata for the current snapshot, sourced from the
-   * same meta lookup that supplies current_week_end_date. `null` when
-   * no fit was selected at refresh time (cold start) — the column
-   * just stays empty rather than showing a chip. UI renders a
-   * "{Month YYYY} fit" chip and an "extrapolated" warning when set.
+   * Exact match total when cheaply known (precomputed meta/facet, or the
+   * q-path window count). `null` when the total is DEFERRED — the heavy
+   * legacy live-count case — and must be fetched separately via
+   * countExplorerMatches() inside a streamed boundary.
    */
+  total: number | null;
+  /** Only meaningful when total !== null. */
+  totalIsCapped: boolean;
+  broadTimedOut?: boolean;
   volumeFit: VolumeFitMeta | null;
-  /** Per-layer wall-clock timings for the perf instrumentation strip. */
   timings: {
-    /** Meta-row lookup that supplies the current_week_end_date predicate. */
     metaLookupMs: number;
-    /** Main paged SELECT (LIMIT 100 OFFSET …). */
     rowsMs: number;
-    /** Bail-out COUNT(*) with LIMIT 10001, or 0 if skipped via short-circuit. */
     countMs: number;
-    /** True if buildExplorerQuery was given a currentWeekEndDate (fast path). */
     usedPredicate: boolean;
-    /** Which COUNT path served the total: 'live' (slow), 'meta' (default landing), 'facet' (category-only). */
-    countSource: 'live' | 'meta' | 'facet';
+    countSource: 'live' | 'meta' | 'facet' | 'deferred';
   };
 }
 
@@ -186,11 +180,6 @@ export async function runExplorerQuery(
   const reqId = randomUUID().slice(0, 8);
   const tAll = Date.now();
   const driver = filters.q !== null && filters.qMode === 'broad' ? 'tcp' : 'http';
-  // STEP 2 PROBE (flag-gated): skip the live COUNT(*) on page >= 2 to test whether
-  // the per-page count is what makes Next hang. Flip with EXPLORER_SKIP_COUNT_PAGE2=1
-  // (env var -> no redeploy needed to turn it off). When active the page>=2 total is
-  // derived from page fill, so Next/Prev still work but the footer count is approximate.
-  const skipCountProbe = process.env.EXPLORER_SKIP_COUNT_PAGE2 === '1' && filters.page >= 2;
   const logBase = {
     reqId,
     driver,
@@ -199,16 +188,17 @@ export async function runExplorerQuery(
     sort: filters.sort,
     rankMax: filters.rankMax,
     qMode: filters.q ? filters.qMode : null,
-    skipCountProbe,
   };
   try {
-    const result = await runExplorerQueryInner(filters, skipCountProbe);
+    const result = await runExplorerQueryInner(filters);
     console.log('[explorer]', JSON.stringify({
       ...logBase,
       outcome: result.broadTimedOut ? 'broad_timeout' : 'ok',
       countSource: result.timings.countSource,
       total: result.total,
       totalIsCapped: result.totalIsCapped,
+      hasNext: result.hasNext,
+      deferred: result.total === null,
       rowCount: result.rows.length,
       metaLookupMs: result.timings.metaLookupMs,
       rowsMs: result.timings.rowsMs,
@@ -231,7 +221,6 @@ export async function runExplorerQuery(
 
 async function runExplorerQueryInner(
   filters: ExplorerFilters,
-  skipCountProbe: boolean,
 ): Promise<ExplorerQueryResult> {
   const sqlClient = neon(env.DATABASE_URL);
 
@@ -276,7 +265,7 @@ async function runExplorerQueryInner(
   const { sql, args, countSql, countArgs } = built;
 
   // Decide whether to short-circuit the count.
-  let countSource: 'live' | 'meta' | 'facet' = 'live';
+  let countSource: 'live' | 'meta' | 'facet' | 'deferred' = 'live';
   let precomputedTotal: number | null = null;
 
   if (canUseDefaultTotal(filters) && defaultSeverityTotal !== undefined) {
@@ -319,12 +308,11 @@ async function runExplorerQueryInner(
   // Rows query. Broad mode runs on a node-postgres TCP connection with a
   // 115s statement_timeout — Neon's HTTP driver is tuned for short queries
   // and won't reliably hold a ~2-minute one. Everything else runs on
-  // neon-http, with the legacy live count in parallel.
+  // neon-http; the legacy live count is DEFERRED (see below).
   const tRowsStart = Date.now();
   let rawRows: RawRow[];
   let rowsMs: number;
   let countMs = 0;
-  let countResult: unknown = null;
 
   if (isBroad) {
     const broad = await runBroad(sql, args);
@@ -334,17 +322,23 @@ async function runExplorerQueryInner(
     }
     rawRows = broad as unknown as RawRow[];
   } else {
-    const needsLiveCount = precomputedTotal === null && !built.countFromRows && !skipCountProbe;
-    const tCountStart = Date.now();
-    const rowsPromise = sqlClient.query(sql, args).then((r) => ({ result: r, ms: Date.now() - tRowsStart }));
-    const countPromise = needsLiveCount
-      ? sqlClient.query(countSql, countArgs).then((r) => ({ result: r, ms: Date.now() - tCountStart }))
-      : Promise.resolve({ result: null as unknown, ms: 0 });
-    const [rowsTimed, countTimed] = await Promise.all([rowsPromise, countPromise]);
+    // Legacy path: fetch rows only (N+1). The live count is DEFERRED to a
+    // separate streamed query (countExplorerMatches); we never block on it here.
+    const rowsTimed = await sqlClient
+      .query(sql, args)
+      .then((r) => ({ result: r, ms: Date.now() - tRowsStart }));
     rawRows = rowsTimed.result as unknown as RawRow[];
     rowsMs = rowsTimed.ms;
-    countMs = countTimed.ms;
-    countResult = countTimed.result;
+  }
+
+  // hasNext: q-path/broad know the exact window total (resolved below); legacy
+  // path uses the N+1 probe — a full extra row means there's another page.
+  let hasNext: boolean;
+  if (built.countFromRows || isBroad) {
+    hasNext = false; // set after total is resolved (q-path/broad), see below
+  } else {
+    hasNext = rawRows.length > filters.perPage;
+    if (hasNext) rawRows = rawRows.slice(0, filters.perPage);
   }
 
   const rows: ExplorerRow[] = rawRows.map((r) => ({
@@ -373,8 +367,7 @@ async function runExplorerQueryInner(
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,
   }));
 
-  // Resolve the total + capping.
-  let total: number;
+  let total: number | null;
   let totalIsCapped: boolean;
   if (precomputedTotal !== null) {
     ({ total, totalIsCapped } = applyCountCap(precomputedTotal));
@@ -383,8 +376,8 @@ async function runExplorerQueryInner(
     if (windowTotal !== null) {
       ({ total, totalIsCapped } = applyCountCap(windowTotal));
     } else {
-      // Empty page (OFFSET past the end): one fallback count, on the same
-      // driver as the rows query.
+      // Empty page (OFFSET past the end) on the q-path: one fallback count.
+      // Broad mode runs it on the TCP pool (115s timeout) so it stays bounded.
       const tFallback = Date.now();
       if (isBroad) {
         const cr = await runBroad(countSql, countArgs);
@@ -399,21 +392,18 @@ async function runExplorerQueryInner(
         ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
       }
     }
-  } else if (skipCountProbe) {
-    // STEP 2 PROBE: no live count ran. Derive hasNext from page fill — a full
-    // page means "there is at least one more page" (the cap flag keeps Next
-    // enabled and the footer shows "N+"); a short page means this is the last.
-    const full = rawRows.length === filters.perPage;
-    total = full
-      ? filters.page * filters.perPage + 1
-      : (filters.page - 1) * filters.perPage + rawRows.length;
-    totalIsCapped = full;
+    hasNext = total !== null && filters.page * filters.perPage < total;
+    countSource = 'live';
   } else {
-    ({ total, totalIsCapped } = applyCountCap(extractCount(countResult as unknown as Array<{ total: number | string }>)));
+    // Legacy live-count case → DEFER. The streamed ResultCount fetches it.
+    total = null;
+    totalIsCapped = false;
+    countSource = 'deferred';
   }
 
   return {
     rows,
+    hasNext,
     total,
     totalIsCapped,
     volumeFit,
@@ -477,6 +467,7 @@ function broadTimeoutResult(
 ): ExplorerQueryResult {
   return {
     rows: [],
+    hasNext: false,
     total: 0,
     totalIsCapped: false,
     volumeFit,
@@ -493,4 +484,48 @@ function broadTimeoutResult(
 function parseBigint(v: string | number | null | undefined): number | null {
   if (v === null || v === undefined) return null;
   return typeof v === 'string' ? parseInt(v, 10) : v;
+}
+
+/**
+ * Deferred, time-bounded match count for the heavy legacy path. Runs the
+ * count on the TCP pool with SET LOCAL statement_timeout = 45s so it is
+ * CANCELLABLE — it can never hang the page or the navigation. Returns null on
+ * timeout (57014) or any error; the caller renders a graceful "many matches"
+ * footer and pagination still works from hasNext.
+ *
+ * Rendered from a <Suspense> boundary, so its latency streams in independently
+ * of the rows. Reuses the broad-search TCP pool (getBroadPool).
+ */
+export async function countExplorerMatches(
+  filters: ExplorerFilters,
+): Promise<{ total: number; totalIsCapped: boolean } | null> {
+  const sqlClient = neon(env.DATABASE_URL);
+  let currentWeekEndDate: string | undefined;
+  try {
+    const rows = (await sqlClient`
+      SELECT current_week_end_date::text AS d
+      FROM keyword_current_summary_meta WHERE singleton = true
+    `) as Array<{ d: string | null }>;
+    currentWeekEndDate = rows[0]?.d ?? undefined;
+  } catch {
+    // No predicate → the count still works, just without the planner hint.
+  }
+  const { countSql, countArgs } = buildExplorerQuery(filters, currentWeekEndDate);
+  const client = await getBroadPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SET LOCAL statement_timeout = 45000');
+    const r = await client.query(countSql, countArgs);
+    await client.query('COMMIT');
+    return applyCountCap(extractCount(r.rows as unknown as Array<{ total: number | string }>));
+  } catch (e) {
+    try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
+    // 57014 = statement_timeout. Any error → best-effort: no exact count.
+    if ((e as { code?: string }).code !== '57014') {
+      console.warn('[explorer count] failed:', (e as Error).message);
+    }
+    return null;
+  } finally {
+    client.release();
+  }
 }
