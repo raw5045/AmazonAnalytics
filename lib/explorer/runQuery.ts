@@ -521,6 +521,13 @@ function parseBigint(v: string | number | null | undefined): number | null {
 export async function countExplorerMatches(
   filters: ExplorerFilters,
 ): Promise<{ total: number; totalIsCapped: boolean } | null> {
+  // DIAGNOSTIC (temporary): a 'start' line always logs on entry; exactly one
+  // terminal line (ok/timeout/failed/connect-fail) logs the outcome + elapsed.
+  // 'start' with no terminal after minutes ⇒ a genuine server-side hang; 'ok'
+  // with no UI update ⇒ the streamed result isn't reaching the client.
+  const tStart = Date.now();
+  const leafCount = filters.leafCategories.length;
+  console.log('[explorer count] start', JSON.stringify({ leafCount }));
   const sqlClient = neon(env.DATABASE_URL);
   let currentWeekEndDate: string | undefined;
   try {
@@ -544,12 +551,17 @@ export async function countExplorerMatches(
       await client.query('SET LOCAL statement_timeout = 45000');
       const r = await client.query(countSql, countArgs);
       await client.query('COMMIT');
-      return applyCountCap(extractCount(r.rows as unknown as Array<{ total: number | string }>));
+      const capped = applyCountCap(extractCount(r.rows as unknown as Array<{ total: number | string }>));
+      console.log('[explorer count] ok', JSON.stringify({ leafCount, ms: Date.now() - tStart, total: capped.total, capped: capped.totalIsCapped }));
+      return capped;
     } catch (e) {
       try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
+      const ms = Date.now() - tStart;
       // 57014 = statement_timeout. Any error → best-effort: no exact count.
-      if ((e as { code?: string }).code !== '57014') {
-        console.warn('[explorer count] failed:', (e as Error).message);
+      if ((e as { code?: string }).code === '57014') {
+        console.warn('[explorer count] timeout', JSON.stringify({ leafCount, ms }));
+      } else {
+        console.warn('[explorer count] failed', JSON.stringify({ leafCount, ms, msg: (e as Error).message }));
       }
       return null;
     } finally {
@@ -557,7 +569,7 @@ export async function countExplorerMatches(
     }
   } catch (e) {
     // getBroadPool().connect() rejected (pool exhausted / connection timeout).
-    console.warn('[explorer count] pool connect failed:', (e as Error).message);
+    console.warn('[explorer count] connect-fail', JSON.stringify({ leafCount, ms: Date.now() - tStart, msg: (e as Error).message }));
     return null;
   }
 }
