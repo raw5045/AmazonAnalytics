@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useTransition, useRef } from 'react';
-import { collectDescendantLeaves, type CategoryNode } from '@/lib/categoryBuilder/buildTree';
+import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
+import type { LightNode } from '@/lib/categoryBuilder/treeNav';
 import type { CustomCategoryDTO } from '@/lib/customCategories/loadServer';
 
 // ---------------------------------------------------------------------------
@@ -9,7 +10,7 @@ import type { CustomCategoryDTO } from '@/lib/customCategories/loadServer';
 // ---------------------------------------------------------------------------
 
 interface Props {
-  tree: CategoryNode[];
+  rootLevel: LightNode[];
   initialCategories: CustomCategoryDTO[];
   signedIn: boolean;
 }
@@ -18,9 +19,15 @@ interface Props {
 // Component
 // ---------------------------------------------------------------------------
 
-export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Props) {
-  // Drill-down path through the tree; [] = root / department list.
-  const [path, setPath] = useState<CategoryNode[]>([]);
+export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }: Props) {
+  // Drill-down path through the tree (segment names); [] = root / department list.
+  const [path, setPath] = useState<string[]>([]);
+
+  // Per-level cache: pathKey (names joined by PATH_SEP) → that level's LightNodes.
+  // Seeded with the root level so the first render needs no fetch.
+  const [levels, setLevels] = useState<Map<string, LightNode[]>>(() => new Map([['', rootLevel]]));
+  const [levelLoading, setLevelLoading] = useState(false);
+  const [addLoading, setAddLoading] = useState(false);
 
   // The "cart" of leaf names to build the custom category from.
   const [cart, setCart] = useState<string[]>([]);
@@ -46,8 +53,8 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
   // Derived
   // ---------------------------------------------------------------------------
 
-  const lastNode = path.length > 0 ? path[path.length - 1] : null;
-  const currentLevel: CategoryNode[] = lastNode ? lastNode.children : tree;
+  const pathKey = path.join(PATH_SEP);
+  const currentLevel: LightNode[] = levels.get(pathKey) ?? [];
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -76,6 +83,39 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
       }, 2000);
       return next;
     });
+  }
+
+  // Drill into a child by name: push the segment, then fetch + cache that level
+  // (unless we already have it cached, e.g. from a previous drill).
+  async function drillInto(name: string) {
+    const nextPath = [...path, name];
+    const key = nextPath.join(PATH_SEP);
+    setPath(nextPath);
+    if (levels.has(key)) return;
+    setLevelLoading(true);
+    try {
+      const res = await fetch(`/api/category-builder/tree?path=${encodeURIComponent(key)}`);
+      const json = (await res.json()) as { children: LightNode[] };
+      setLevels((prev) => new Map(prev).set(key, json.children));
+    } catch {
+      setLevels((prev) => new Map(prev).set(key, []));
+    } finally {
+      setLevelLoading(false);
+    }
+  }
+
+  // Add every terminal leaf under `segments` to the cart, fetched on demand.
+  async function addUnderPath(segments: string[]) {
+    setAddLoading(true);
+    try {
+      const res = await fetch(`/api/category-builder/leaves?path=${encodeURIComponent(segments.join(PATH_SEP))}`);
+      const json = (await res.json()) as { leaves: string[] };
+      addLeaves(json.leaves);
+    } catch {
+      addLeaves([]);
+    } finally {
+      setAddLoading(false);
+    }
   }
 
   function removeFromCart(leafName: string) {
@@ -190,8 +230,8 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
           >
             Departments
           </button>
-          {path.map((node, i) => (
-            <span key={node.name} className="flex items-center gap-1">
+          {path.map((segment, i) => (
+            <span key={segment} className="flex items-center gap-1">
               <span className="text-gray-400">›</span>
               <button
                 onClick={() => setPath(path.slice(0, i + 1))}
@@ -201,33 +241,36 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
                     : 'text-blue-600 hover:underline'
                 }
               >
-                {node.name}
+                {segment}
               </button>
             </span>
           ))}
         </div>
 
         {/* "Add all of <current>" when drilled in */}
-        {lastNode !== null && (
+        {path.length > 0 && (
           <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 flex items-center justify-between">
-            <span className="text-sm text-blue-800 font-medium">{lastNode.name}</span>
+            <span className="text-sm text-blue-800 font-medium">{path[path.length - 1]}</span>
             <button
-              onClick={() => addLeaves(collectDescendantLeaves(lastNode))}
-              disabled={isPending}
+              onClick={() => addUnderPath(path)}
+              disabled={isPending || addLoading}
               className="text-sm font-semibold text-blue-700 hover:text-blue-900 disabled:opacity-50"
             >
-              ＋ Add all of {lastNode.name}
+              ＋ Add all of {path[path.length - 1]}
             </button>
           </div>
         )}
 
         {/* Category rows */}
         <ul>
-          {currentLevel.length === 0 && (
+          {levelLoading && currentLevel.length === 0 && (
+            <li className="px-4 py-6 text-sm text-gray-400 text-center">Loading…</li>
+          )}
+          {!levelLoading && currentLevel.length === 0 && (
             <li className="px-4 py-6 text-sm text-gray-400 text-center">No sub-categories.</li>
           )}
           {currentLevel.map((node) => {
-            const hasChildren = node.children.length > 0;
+            const hasChildren = node.hasChildren;
             return (
               <li
                 key={node.name}
@@ -241,7 +284,7 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
                       : 'text-gray-700 cursor-default'
                   }`}
                   onClick={() => {
-                    if (hasChildren) setPath([...path, node]);
+                    if (hasChildren) drillInto(node.name);
                   }}
                   disabled={!hasChildren}
                 >
@@ -250,8 +293,8 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
 
                 {/* Add button */}
                 <button
-                  onClick={() => addLeaves(collectDescendantLeaves(node))}
-                  disabled={isPending}
+                  onClick={() => addUnderPath([...path, node.name])}
+                  disabled={isPending || addLoading}
                   className="ml-3 text-xs font-semibold text-blue-600 hover:text-blue-800 disabled:opacity-50"
                 >
                   Add
@@ -260,7 +303,7 @@ export function CategoryBuilderClient({ tree, initialCategories, signedIn }: Pro
                 {/* Drill chevron */}
                 {hasChildren && (
                   <button
-                    onClick={() => setPath([...path, node])}
+                    onClick={() => drillInto(node.name)}
                     className="ml-2 text-gray-400 hover:text-gray-700"
                     aria-label={`Drill into ${node.name}`}
                   >
