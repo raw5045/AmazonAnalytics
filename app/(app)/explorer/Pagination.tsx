@@ -1,15 +1,16 @@
 'use client';
 
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useTransition } from 'react';
+import { useTransition, type ReactNode } from 'react';
 import { LoadingOverlay } from './LoadingOverlay';
 
 /**
  * Prev / "Page N" / Next controls. Driven entirely by `hasNext` (from the
- * N+1 probe) so they render immediately — no total/count needed. The exact
- * "of M pages" label + jump-to render separately in the streamed ResultCount.
+ * N+1 probe) so they render immediately — no total/count needed. The `children`
+ * slot renders right after "Page N" (the streamed-in " of M" suffix); the
+ * "N matches" total + jump-to live in the top summary's ResultCount.
  */
-export function PaginationControls({ page, hasNext }: { page: number; hasNext: boolean }) {
+export function PaginationControls({ page, hasNext, children }: { page: number; hasNext: boolean; children?: ReactNode }) {
   const router = useRouter();
   const sp = useSearchParams();
   const [isPending, startTransition] = useTransition();
@@ -36,7 +37,7 @@ export function PaginationControls({ page, hasNext }: { page: number; hasNext: b
         >
           ‹ Prev
         </button>
-        <span className="text-gray-600">Page {page.toLocaleString()}</span>
+        <span className="text-gray-600">Page {page.toLocaleString()}{children}</span>
         <button
           type="button"
           onClick={() => hasNext && goTo(page + 1)}
