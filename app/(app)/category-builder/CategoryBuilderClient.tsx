@@ -95,10 +95,12 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
     setLevelLoading(true);
     try {
       const res = await fetch(`/api/category-builder/tree?path=${encodeURIComponent(key)}`);
+      if (!res.ok) throw new Error(`tree ${res.status}`);
       const json = (await res.json()) as { children: LightNode[] };
       setLevels((prev) => new Map(prev).set(key, json.children));
     } catch {
-      setLevels((prev) => new Map(prev).set(key, []));
+      // Don't cache the failure — leave the key absent so a re-click re-fetches,
+      // rather than permanently showing "No sub-categories." after a transient blip.
     } finally {
       setLevelLoading(false);
     }
@@ -109,6 +111,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
     setAddLoading(true);
     try {
       const res = await fetch(`/api/category-builder/leaves?path=${encodeURIComponent(segments.join(PATH_SEP))}`);
+      if (!res.ok) throw new Error(`leaves ${res.status}`);
       const json = (await res.json()) as { leaves: string[] };
       addLeaves(json.leaves);
     } catch {
