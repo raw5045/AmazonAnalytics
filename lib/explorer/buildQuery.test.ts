@@ -14,8 +14,8 @@ describe('buildExplorerQuery', () => {
 
       // Default severities are ['none', 'warning'] → those are the only WHERE args
       expect(countArgs).toEqual(['none', 'warning']);
-      // Main SQL adds LIMIT (100) and OFFSET (0) at the end
-      expect(args).toEqual(['none', 'warning', 100, 0]);
+      // Main SQL adds LIMIT (101, N+1) and OFFSET (0) at the end
+      expect(args).toEqual(['none', 'warning', 101, 0]);
 
       expect(norm(sql)).toContain('FROM keyword_current_summary kcs');
       expect(norm(sql)).toContain('JOIN search_terms st ON st.id = kcs.search_term_id');
@@ -301,18 +301,20 @@ describe('buildExplorerQuery', () => {
   });
 
   describe('pagination', () => {
-    it('page 1 with default per_page → LIMIT 100 OFFSET 0', () => {
+    it('legacy page 1 with default per_page → LIMIT 101 (N+1) OFFSET 0', () => {
       const { args } = buildExplorerQuery(baseFilters);
-      expect(args.slice(-2)).toEqual([100, 0]);
+      expect(args.slice(-2)).toEqual([101, 0]);
     });
-
-    it('page 3 per_page 100 → OFFSET 200', () => {
+    it('legacy page 3 per_page 100 → LIMIT 101 OFFSET 200', () => {
       const { args } = buildExplorerQuery({ ...baseFilters, page: 3 });
-      expect(args.slice(-2)).toEqual([100, 200]);
+      expect(args.slice(-2)).toEqual([101, 200]);
     });
-
-    it('custom per_page', () => {
+    it('legacy custom per_page → LIMIT perPage+1', () => {
       const { args } = buildExplorerQuery({ ...baseFilters, page: 1, perPage: 50 });
+      expect(args.slice(-2)).toEqual([51, 0]);
+    });
+    it('q-path LIMIT is unchanged (exact perPage — window count handles totals)', () => {
+      const { args } = buildExplorerQuery({ ...baseFilters, q: 'wireless', perPage: 50 });
       expect(args.slice(-2)).toEqual([50, 0]);
     });
   });
