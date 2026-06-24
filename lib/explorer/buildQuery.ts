@@ -171,7 +171,9 @@ export function buildExplorerQuery(
   // Snapshot args length BEFORE appending limit/offset so countArgs is the
   // exact prefix consumed by countSql.
   const countArgs = [...args];
-  const limitParam = next(filters.perPage);
+  // N+1: fetch one extra row so the runner can derive hasNext without a COUNT.
+  // The runner slices back to perPage before returning. OFFSET stays perPage-based.
+  const limitParam = next(filters.perPage + 1);
   const offsetParam = next((filters.page - 1) * filters.perPage);
 
   const sql = `
