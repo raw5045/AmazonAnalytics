@@ -46,15 +46,31 @@ interface ExplorerQueryResult {
    * countExplorerMatches() inside a streamed boundary.
    */
   total: number | null;
-  /** Only meaningful when total !== null. */
+  /** True when total === COUNT_CAP and the real total may be larger. Only meaningful when total !== null. */
   totalIsCapped: boolean;
+  /** True when a broad search hit the 115s statement timeout; rows is []. */
   broadTimedOut?: boolean;
+  /**
+   * Volume-fit metadata for the current snapshot, sourced from the same meta
+   * lookup that supplies current_week_end_date. `null` when no fit was selected
+   * at refresh time (cold start).
+   */
   volumeFit: VolumeFitMeta | null;
+  /** Per-layer wall-clock timings for the perf instrumentation strip. */
   timings: {
+    /** Meta-row lookup that supplies the current_week_end_date predicate. */
     metaLookupMs: number;
+    /** Main paged SELECT (LIMIT perPage+1 OFFSET …). */
     rowsMs: number;
+    /** q-path empty-page fallback COUNT, or 0 (the legacy count is deferred). */
     countMs: number;
+    /** True if buildExplorerQuery was given a currentWeekEndDate (fast path). */
     usedPredicate: boolean;
+    /**
+     * Which path served the total: 'live' (q-path/broad window count),
+     * 'meta' (default landing), 'facet' (single category/leaf),
+     * 'deferred' (heavy legacy → countExplorerMatches streams it in).
+     */
     countSource: 'live' | 'meta' | 'facet' | 'deferred';
   };
 }
@@ -333,9 +349,12 @@ async function runExplorerQueryInner(
 
   // hasNext: q-path/broad know the exact window total (resolved below); legacy
   // path uses the N+1 probe — a full extra row means there's another page.
+  // Invariant: precomputed-total results are always the legacy path (q === null),
+  // never countFromRows — so the placeholder below is only ever transient for
+  // q-path/broad, which reassign it once total is resolved.
   let hasNext: boolean;
   if (built.countFromRows || isBroad) {
-    hasNext = false; // set after total is resolved (q-path/broad), see below
+    hasNext = false; // reassigned after total is resolved (q-path/broad)
   } else {
     hasNext = rawRows.length > filters.perPage;
     if (hasNext) rawRows = rawRows.slice(0, filters.perPage);
@@ -392,6 +411,9 @@ async function runExplorerQueryInner(
         ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
       }
     }
+    // Derive hasNext from the window total. When totalIsCapped (>COUNT_CAP
+    // matches) this caps navigation at COUNT_CAP/perPage pages — intentional and
+    // consistent with prior behavior. (The legacy path pages unbounded via N+1.)
     hasNext = total !== null && filters.page * filters.perPage < total;
     countSource = 'live';
   } else {
@@ -511,21 +533,31 @@ export async function countExplorerMatches(
     // No predicate → the count still works, just without the planner hint.
   }
   const { countSql, countArgs } = buildExplorerQuery(filters, currentWeekEndDate);
-  const client = await getBroadPool().connect();
+  // Shares the broad-search pool (max: 3) with broad rows + broad fallback counts.
+  // Under heavy concurrent load a 4th caller queues up to connectionTimeoutMillis
+  // then rejects — caught by the OUTER try below and degraded to null, so the
+  // footer never throws into the Suspense boundary (the route has no error.tsx).
   try {
-    await client.query('BEGIN');
-    await client.query('SET LOCAL statement_timeout = 45000');
-    const r = await client.query(countSql, countArgs);
-    await client.query('COMMIT');
-    return applyCountCap(extractCount(r.rows as unknown as Array<{ total: number | string }>));
-  } catch (e) {
-    try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
-    // 57014 = statement_timeout. Any error → best-effort: no exact count.
-    if ((e as { code?: string }).code !== '57014') {
-      console.warn('[explorer count] failed:', (e as Error).message);
+    const client = await getBroadPool().connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL statement_timeout = 45000');
+      const r = await client.query(countSql, countArgs);
+      await client.query('COMMIT');
+      return applyCountCap(extractCount(r.rows as unknown as Array<{ total: number | string }>));
+    } catch (e) {
+      try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
+      // 57014 = statement_timeout. Any error → best-effort: no exact count.
+      if ((e as { code?: string }).code !== '57014') {
+        console.warn('[explorer count] failed:', (e as Error).message);
+      }
+      return null;
+    } finally {
+      client.release();
     }
+  } catch (e) {
+    // getBroadPool().connect() rejected (pool exhausted / connection timeout).
+    console.warn('[explorer count] pool connect failed:', (e as Error).message);
     return null;
-  } finally {
-    client.release();
   }
 }
