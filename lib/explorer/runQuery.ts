@@ -28,6 +28,7 @@
  */
 import { neon } from '@neondatabase/serverless';
 import { Pool } from 'pg';
+import { randomUUID } from 'node:crypto';
 import { env } from '@/lib/env';
 import { buildExplorerQuery } from './buildQuery';
 import { applyCountCap, extractCount, extractWindowTotal } from './queryTotals';
@@ -175,6 +176,63 @@ function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
 export async function runExplorerQuery(
   filters: ExplorerFilters,
 ): Promise<ExplorerQueryResult> {
+  // --- DIAGNOSTIC INSTRUMENTATION (temporary; explorer pagination investigation) ---
+  // Correlate a browser request with its Vercel function log line and record the
+  // driver path + per-layer timings + outcome, so we can tell apart:
+  //   * a fast neon-http failure  -> '[explorer] FAILED' with a small totalMs + code
+  //   * a 120s function-cap kill   -> NO line from us at all (only Vercel's timeout)
+  //   * a slow-but-OK page-2 query -> '[explorer]' ok with a large totalMs
+  // Remove once the root cause is fixed.
+  const reqId = randomUUID().slice(0, 8);
+  const tAll = Date.now();
+  const driver = filters.q !== null && filters.qMode === 'broad' ? 'tcp' : 'http';
+  // STEP 2 PROBE (flag-gated): skip the live COUNT(*) on page >= 2 to test whether
+  // the per-page count is what makes Next hang. Flip with EXPLORER_SKIP_COUNT_PAGE2=1
+  // (env var -> no redeploy needed to turn it off). When active the page>=2 total is
+  // derived from page fill, so Next/Prev still work but the footer count is approximate.
+  const skipCountProbe = process.env.EXPLORER_SKIP_COUNT_PAGE2 === '1' && filters.page >= 2;
+  const logBase = {
+    reqId,
+    driver,
+    page: filters.page,
+    leafCount: filters.leafCategories.length,
+    sort: filters.sort,
+    rankMax: filters.rankMax,
+    qMode: filters.q ? filters.qMode : null,
+    skipCountProbe,
+  };
+  try {
+    const result = await runExplorerQueryInner(filters, skipCountProbe);
+    console.log('[explorer]', JSON.stringify({
+      ...logBase,
+      outcome: result.broadTimedOut ? 'broad_timeout' : 'ok',
+      countSource: result.timings.countSource,
+      total: result.total,
+      totalIsCapped: result.totalIsCapped,
+      rowCount: result.rows.length,
+      metaLookupMs: result.timings.metaLookupMs,
+      rowsMs: result.timings.rowsMs,
+      countMs: result.timings.countMs,
+      totalMs: Date.now() - tAll,
+    }));
+    return result;
+  } catch (e) {
+    const err = e as { code?: string; message?: string };
+    console.error('[explorer] FAILED', JSON.stringify({
+      ...logBase,
+      outcome: 'error',
+      code: err.code ?? null,
+      message: err.message ?? String(e),
+      totalMs: Date.now() - tAll,
+    }));
+    throw e;
+  }
+}
+
+async function runExplorerQueryInner(
+  filters: ExplorerFilters,
+  skipCountProbe: boolean,
+): Promise<ExplorerQueryResult> {
   const sqlClient = neon(env.DATABASE_URL);
 
   // Fast path setup: one meta lookup gives us everything we need —
@@ -276,7 +334,7 @@ export async function runExplorerQuery(
     }
     rawRows = broad as unknown as RawRow[];
   } else {
-    const needsLiveCount = precomputedTotal === null && !built.countFromRows;
+    const needsLiveCount = precomputedTotal === null && !built.countFromRows && !skipCountProbe;
     const tCountStart = Date.now();
     const rowsPromise = sqlClient.query(sql, args).then((r) => ({ result: r, ms: Date.now() - tRowsStart }));
     const countPromise = needsLiveCount
@@ -341,6 +399,15 @@ export async function runExplorerQuery(
         ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
       }
     }
+  } else if (skipCountProbe) {
+    // STEP 2 PROBE: no live count ran. Derive hasNext from page fill — a full
+    // page means "there is at least one more page" (the cap flag keeps Next
+    // enabled and the footer shows "N+"); a short page means this is the last.
+    const full = rawRows.length === filters.perPage;
+    total = full
+      ? filters.page * filters.perPage + 1
+      : (filters.page - 1) * filters.perPage + rawRows.length;
+    totalIsCapped = full;
   } else {
     ({ total, totalIsCapped } = applyCountCap(extractCount(countResult as unknown as Array<{ total: number | string }>)));
   }
