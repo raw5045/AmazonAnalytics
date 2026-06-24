@@ -18,9 +18,11 @@ import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { loadSavedViewForUser } from '@/lib/savedViews/loadServer';
 import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
+import { Suspense } from 'react';
 import { FilterSidebar } from './FilterSidebar';
 import { ResultsTable } from './ResultsTable';
-import { Pagination } from './Pagination';
+import { PaginationControls } from './Pagination';
+import { ResultCountDisplay, DeferredResultCount, ResultCountSkeleton } from './ResultCount';
 import { PerfStrip } from './PerfStrip';
 
 export const metadata: Metadata = {
@@ -108,14 +110,14 @@ export default async function ExplorerPage({
     categoriesPromise,
     leafCategoriesPromise,
   ]);
-  const { rows, total, totalIsCapped, volumeFit, broadTimedOut, timings: rqTimings } = queryResult;
+  const { rows, hasNext, total, totalIsCapped, volumeFit, broadTimedOut, timings: rqTimings } = queryResult;
   const categories = categoriesTimed.result;
   const handlerTotalMs = Date.now() - handlerStartedAt;
 
-  const totalPages = Math.max(1, Math.ceil(total / filters.perPage));
-  const totalLabel = totalIsCapped
-    ? `${total.toLocaleString()}+`
-    : total.toLocaleString();
+  // Lower bound shown immediately ("Showing 101–200"); the exact total + page
+  // count stream in via <ResultCount> below.
+  const firstRow = rows.length === 0 ? 0 : (filters.page - 1) * filters.perPage + 1;
+  const lastRow = (filters.page - 1) * filters.perPage + rows.length;
 
   return (
     <div className="flex">
@@ -166,22 +168,29 @@ export default async function ExplorerPage({
         ) : (
           <>
             <div className="mb-4 flex items-center justify-between">
-              <p className="text-sm text-gray-600">
-                {total === 0
-                  ? 'No results — try removing a filter.'
-                  : `Showing ${(filters.page - 1) * filters.perPage + 1}–${Math.min(filters.page * filters.perPage, total)} of ${totalLabel} — page ${filters.page} of ${totalPages.toLocaleString()}${totalIsCapped ? '+' : ''}`}
-              </p>
+              <div className="text-sm text-gray-600">
+                {rows.length === 0 ? (
+                  'No results — try removing a filter.'
+                ) : total !== null ? (
+                  // Cheaply-known total (default landing / single leaf / q-path): inline, no flash.
+                  <span className="flex items-center gap-1">
+                    <span>Showing {firstRow.toLocaleString()}–{lastRow.toLocaleString()} of</span>
+                    <ResultCountDisplay total={total} totalIsCapped={totalIsCapped} page={filters.page} perPage={filters.perPage} />
+                  </span>
+                ) : (
+                  // Heavy live-count case: rows now, exact total streams in.
+                  <span className="flex items-center gap-1">
+                    <span>Showing {firstRow.toLocaleString()}–{lastRow.toLocaleString()} ·</span>
+                    <Suspense fallback={<ResultCountSkeleton />}>
+                      <DeferredResultCount filters={queryFilters} page={filters.page} perPage={filters.perPage} />
+                    </Suspense>
+                  </span>
+                )}
+              </div>
               {filtersAreCustomized(filters) && (
-                <a href="/explorer" className="text-sm underline text-gray-600">
-                  Reset filters
-                </a>
+                <a href="/explorer" className="text-sm underline text-gray-600">Reset filters</a>
               )}
             </div>
-            {totalIsCapped && (
-              <p className="mb-3 text-xs text-gray-500">
-                Showing the first {total.toLocaleString()} matching keywords. Add a filter to narrow the result set further.
-              </p>
-            )}
             {volumeFit && <VolumeFitChip fit={volumeFit} />}
             <ResultsTable
               rows={rows}
@@ -192,7 +201,7 @@ export default async function ExplorerPage({
               watchedKeywordIds={watchedKeywordIds}
               showWatchColumn={Boolean(user)}
             />
-            <Pagination page={filters.page} perPage={filters.perPage} total={total} totalIsCapped={totalIsCapped} />
+            <PaginationControls page={filters.page} hasNext={hasNext} />
           </>
         )}
       </div>

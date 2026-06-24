@@ -39,9 +39,11 @@ export interface PerfStripData {
   /**
    * Where the COUNT came from. 'meta' = default-landing total
    * precomputed on meta. 'facet' = category-only count precomputed
-   * on facets. 'live' = ran the bail-out COUNT(*).
+   * on facets. 'live' = ran the bail-out COUNT(*). 'deferred' = count
+   * was not run on the hot path; it streams in via <DeferredResultCount>
+   * (so countMs reads 0 here).
    */
-  countSource: 'live' | 'meta' | 'facet';
+  countSource: 'live' | 'meta' | 'facet' | 'deferred';
   /** Categories cache heuristic — fast = cache hit, slow = miss. */
   categoriesCacheHint: 'fast' | 'slow';
 }
