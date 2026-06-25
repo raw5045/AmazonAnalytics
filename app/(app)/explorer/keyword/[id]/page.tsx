@@ -20,6 +20,8 @@ import {
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isKeywordWatched } from '@/lib/watchlist/loadServer';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
+import { PerfPanel } from '@/app/(app)/PerfPanel';
+import { startHandlerTimer } from '@/lib/perf/handlerTimer';
 import { BackToExplorer } from './BackToExplorer';
 import { RankChart } from './RankChart';
 import { VolumeChart } from './VolumeChart';
@@ -41,14 +43,18 @@ export default async function KeywordDetailPage({
   params: Promise<{ id: string }>;
   searchParams?: Promise<{ from?: string | string[] }>;
 }) {
+  const timer = startHandlerTimer();
   const { id } = await params;
   if (!UUID_RE.test(id)) notFound();
 
   const detail = await fetchKeywordChartData(id);
+  timer.mark('chartData (fast loader)');
   if (!detail) notFound();
 
   const user = await getCurrentUser();
+  timer.mark('auth');
   const isWatched = user ? await isKeywordWatched(user.id, id) : false;
+  timer.mark('isWatched');
 
   const sp = searchParams ? await searchParams : {};
   const fromRaw = Array.isArray(sp.from) ? sp.from[0] : sp.from;
@@ -97,6 +103,16 @@ export default async function KeywordDetailPage({
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
+      <PerfPanel
+        admin={user?.role === 'admin'}
+        data={{
+          totalMs: timer.totalMs(),
+          steps: [
+            ...timer.steps,
+            { label: 'weekly history', ms: 0, note: 'deferred (streams)' },
+          ],
+        }}
+      />
       <BackToExplorer href={backHref} cameFromExplorer={cameFromExplorer} />
 
       <header className="mt-3 mb-6">

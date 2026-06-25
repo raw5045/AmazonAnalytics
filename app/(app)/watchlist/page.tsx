@@ -20,6 +20,8 @@ import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
 import { WatchlistTable } from './WatchlistTable';
 import { WindowSelector } from './WindowSelector';
 import { BulkAddSection } from './BulkAddSection';
+import { PerfPanel } from '@/app/(app)/PerfPanel';
+import { startHandlerTimer } from '@/lib/perf/handlerTimer';
 
 export const metadata: Metadata = { title: 'Watchlist' };
 
@@ -28,11 +30,14 @@ export default async function WatchlistPage({
 }: {
   searchParams: Promise<SearchParamsLike>;
 }) {
+  const timer = startHandlerTimer();
   const sp = await searchParams;
   const user = await requireAuthenticatedUser();
+  timer.mark('auth');
   const filters = parseExplorerFilters(sp);  // we use `window`, `sort`, `matchMode`
 
   const items = await listWatchlistForUser(user.id);
+  timer.mark('listWatchlist');
   if (items.length === 0) {
     return (
       <div className="p-6">
@@ -62,6 +67,7 @@ export default async function WatchlistPage({
     sort: filters.sort,
     matchMode: filters.matchMode,
   });
+  timer.mark('fetchRowsByIds');
 
   const addedAtByKeyword = new Map(items.map((i) => [i.keywordId, i.addedAt]));
 
@@ -78,6 +84,10 @@ export default async function WatchlistPage({
 
   return (
     <div className="p-6">
+      <PerfPanel
+        admin={user.role === 'admin'}
+        data={{ totalMs: timer.totalMs(), steps: timer.steps }}
+      />
       <header className="mb-4 flex flex-wrap items-baseline justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Watchlist</h1>
