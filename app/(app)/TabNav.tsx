@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { Suspense, use, useEffect, useState } from 'react';
 
 /**
  * Top-level navigation: Explorer | Watchlist (N).
@@ -18,10 +18,13 @@ import { useEffect, useState } from 'react';
  * Detail-page URLs (/explorer/keyword/[id]) are intentionally NOT
  * remembered — clicking the Explorer tab from a detail page should
  * return to the keyword list, not back to the same detail page.
+ *
+ * The watchlist badge count arrives as a promise and streams in via
+ * <Suspense> (see WatchlistBadge) so it never blocks the nav render.
  */
 const LAST_EXPLORER_URL_KEY = 'kw-analytics.last-explorer-url';
 
-export function TabNav({ watchlistCount }: { watchlistCount: number }) {
+export function TabNav({ watchlistCountPromise }: { watchlistCountPromise: Promise<number> }) {
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
   const isExplorer = pathname === '/explorer' || pathname.startsWith('/explorer/');
@@ -68,13 +71,10 @@ export function TabNav({ watchlistCount }: { watchlistCount: number }) {
           isWatchlist ? 'text-gray-900' : 'text-gray-500 hover:text-gray-900'
         }`}
       >
-        Watchlist {watchlistCount > 0 && (
-          <span className={`ml-0.5 text-sm font-normal ${
-            isWatchlist ? 'text-gray-600' : 'text-gray-400'
-          }`}>
-            ({watchlistCount})
-          </span>
-        )}
+        Watchlist{' '}
+        <Suspense fallback={null}>
+          <WatchlistBadge countPromise={watchlistCountPromise} active={isWatchlist} />
+        </Suspense>
       </Link>
       <Link
         href="/category-builder"
@@ -85,5 +85,20 @@ export function TabNav({ watchlistCount }: { watchlistCount: number }) {
         Category Builder
       </Link>
     </nav>
+  );
+}
+
+/**
+ * Streams in the watchlist count from a server-provided promise so the badge
+ * never blocks the nav (or the page) on its COUNT(*). Rendered inside a
+ * <Suspense fallback={null}> in the Watchlist link; hidden when the count is 0.
+ */
+function WatchlistBadge({ countPromise, active }: { countPromise: Promise<number>; active: boolean }) {
+  const count = use(countPromise);
+  if (count <= 0) return null;
+  return (
+    <span className={`ml-0.5 text-sm font-normal ${active ? 'text-gray-600' : 'text-gray-400'}`}>
+      ({count})
+    </span>
   );
 }

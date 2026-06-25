@@ -21,14 +21,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     throw e;
   }
 
-  // One cheap COUNT(*) for the badge — page-level loaders will still
-  // fetch the full list for per-row star state.
-  const watchlistCount = await watchlistCountForUser(user.id);
+  // Kick off the badge COUNT(*) without awaiting — it streams into the nav
+  // via <Suspense>, so it never blocks the page shell behind it. A failed
+  // count just hides the badge instead of crashing the authed layout.
+  const watchlistCountPromise = watchlistCountForUser(user.id).catch(() => 0);
 
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-30 h-12 bg-white border-b px-6 flex items-center justify-between gap-4">
-        <TabNav watchlistCount={watchlistCount} />
+        <TabNav watchlistCountPromise={watchlistCountPromise} />
         <div className="text-sm text-gray-600 flex items-center gap-4 whitespace-nowrap">
           <span>{user.email}</span>
           {user.role === 'admin' && (
