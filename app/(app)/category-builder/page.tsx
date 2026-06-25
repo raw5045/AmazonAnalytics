@@ -7,11 +7,11 @@ import { CategoryBuilderClient } from './CategoryBuilderClient';
 export const metadata: Metadata = { title: 'Category Builder' };
 
 export default async function CategoryBuilderPage() {
-  // TEMP perf line (verifying the roots-only fix) — remove once confirmed.
+  // Load-timing readout — folds into the reusable admin-gated PerfLine next.
   const t0 = performance.now();
   const user = await getCurrentUser();
   const t1 = performance.now();
-  const [{ rootLevel }, categories] = await Promise.all([
+  const [rootLevel, categories] = await Promise.all([
     loadRootDepartments(),
     user ? listCustomCategoriesForUser(user.id) : Promise.resolve([]),
   ]);

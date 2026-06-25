@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { loadCategoryTree } from '@/lib/categoryBuilder/loadTree';
-import { childrenAtPath, parsePathParam } from '@/lib/categoryBuilder/treeNav';
+import { loadChildrenAtPath } from '@/lib/categoryBuilder/loadTree';
+import { parsePathParam } from '@/lib/categoryBuilder/treeNav';
 
 // Public, ungated: the category taxonomy is non-sensitive, and /category-builder
 // is itself a public route (middleware protects only /admin, /app, /explorer).
@@ -11,6 +11,5 @@ export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest) {
   const path = parsePathParam(req.nextUrl.searchParams.get('path'));
-  const { tree } = await loadCategoryTree();
-  return NextResponse.json({ children: childrenAtPath(tree, path) });
+  return NextResponse.json({ children: await loadChildrenAtPath(path) });
 }
