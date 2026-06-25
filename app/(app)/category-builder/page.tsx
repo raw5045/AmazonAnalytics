@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
-import { loadCategoryTree } from '@/lib/categoryBuilder/loadTree';
-import { childrenAtPath } from '@/lib/categoryBuilder/treeNav';
+import { loadRootDepartments } from '@/lib/categoryBuilder/loadTree';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
 import { CategoryBuilderClient } from './CategoryBuilderClient';
@@ -8,22 +7,19 @@ import { CategoryBuilderClient } from './CategoryBuilderClient';
 export const metadata: Metadata = { title: 'Category Builder' };
 
 export default async function CategoryBuilderPage() {
-  // TEMP perf instrumentation (cold-start diagnosis) — remove after measuring.
+  // TEMP perf line (verifying the roots-only fix) — remove once confirmed.
   const t0 = performance.now();
   const user = await getCurrentUser();
   const t1 = performance.now();
-  const [{ tree }, categories] = await Promise.all([
-    loadCategoryTree(),
+  const [{ rootLevel }, categories] = await Promise.all([
+    loadRootDepartments(),
     user ? listCustomCategoriesForUser(user.id) : Promise.resolve([]),
   ]);
   const t2 = performance.now();
-  const rootLevel = childrenAtPath(tree, []);
-  const t3 = performance.now();
   const perf =
     `auth ${(t1 - t0).toFixed(0)}ms · ` +
     `data ${(t2 - t1).toFixed(0)}ms · ` +
-    `roots ${(t3 - t2).toFixed(0)}ms · ` +
-    `total ${(t3 - t0).toFixed(0)}ms`;
+    `total ${(t2 - t0).toFixed(0)}ms`;
   console.log(`[cb perf] page: ${perf}`);
 
   return (
