@@ -24,6 +24,7 @@ import { ResultsTable } from './ResultsTable';
 import { PaginationControls } from './Pagination';
 import { ResultCountDisplay, DeferredResultCount, ResultCountSkeleton, PageOf, DeferredPageOf } from './ResultCount';
 import { PerfStrip } from './PerfStrip';
+import { ChartChunkWarmer } from './ChartChunkWarmer';
 
 export const metadata: Metadata = {
   title: 'Keyword Explorer',
@@ -134,6 +135,9 @@ export default async function ExplorerPage({
         customCategories={customCategories}
       />
       <div className="flex-1 p-6">
+        {/* Warm the recharts chunk (detail-page charts) on idle so the first
+            keyword the user opens doesn't pay the ~103 KB download. */}
+        <ChartChunkWarmer />
         <PerfStrip
           data={{
             handlerTotalMs,

@@ -23,8 +23,7 @@ import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { PerfPanel } from '@/app/(app)/PerfPanel';
 import { startHandlerTimer } from '@/lib/perf/handlerTimer';
 import { BackToExplorer } from './BackToExplorer';
-import { RankChart } from './RankChart';
-import { VolumeChart } from './VolumeChart';
+import { LazyRankChart, LazyVolumeChart } from './LazyCharts';
 import { FakeVolumeStrip } from './FakeVolumeStrip';
 import { TitleMatchHistory } from './TitleMatchHistory';
 import { KeywordVariantsBox } from './KeywordVariantsBox';
@@ -167,14 +166,14 @@ export default async function KeywordDetailPage({
       </header>
 
       <section className="mt-6">
-        <RankChart
+        <LazyRankChart
           history={chartHistory}
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
       </section>
 
       <section className="mt-6">
-        <VolumeChart
+        <LazyVolumeChart
           history={chartHistory}
           latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
         />
