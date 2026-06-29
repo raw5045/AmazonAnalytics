@@ -8,7 +8,22 @@ import { fetchKeywordRawHistory } from '@/lib/explorer/fetchKeywordDetail';
 import { RawDataTable } from './RawDataTable';
 
 export async function WeeklyHistoryTable({ id }: { id: string }) {
-  const rows = await fetchKeywordRawHistory(id);
+  // Owns its own error handling so a failed history query shows an inline
+  // message without tearing down the charts above — and crucially WITHOUT a
+  // client error boundary wrapping this <Suspense> (that de-opts the streaming
+  // that lets the charts paint first).
+  let rows;
+  try {
+    rows = await fetchKeywordRawHistory(id);
+  } catch (e) {
+    console.error('[weekly history] load failed', e);
+    return (
+      <p className="text-sm text-gray-500">
+        Couldn&apos;t load the weekly history table — refresh to retry. (The charts above are
+        unaffected.)
+      </p>
+    );
+  }
   return <RawDataTable rows={rows} />;
 }
 
