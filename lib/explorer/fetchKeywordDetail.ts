@@ -176,19 +176,30 @@ export interface KeywordChartData {
    * a kwm 52-week read (fallback). Used by all 4 charts.
    */
   chartHistory: KeywordDetailHistoryRow[];
-  enrichedProductsByAsin: Record<string, EnrichedProduct>;
-  /**
-   * The top-3 ASINs + titles from kwm for the current week.
-   * Used to populate TopProductsTable (slots 2 & 3 aren't in kcs).
-   * Empty array for dormant keywords.
-   */
-  currentWeekProductSlots: CurrentWeekProductSlot[];
   /**
    * Variant info for the current week, sourced from
    * import_duplicate_search_terms. Null when no duplicates for that week
    * or keyword is dormant.
    */
   currentWeekVariants: KeywordVariantInfo | null;
+}
+
+/**
+ * Top-clicked products for the current week — split OUT of fetchKeywordChartData
+ * so the detail page can stream it behind <Suspense>. The current-week kwm slice
+ * it reads is a SINGLE row from the 140M-row keyword_weekly_metrics table, but on
+ * a cold page that one row costs ~2s to fetch from Neon storage. Keeping it off
+ * the charts' critical path lets the header + charts paint immediately (they only
+ * need the compact, stays-warm series row + kcs).
+ */
+export interface KeywordProducts {
+  /**
+   * The top-3 ASINs + titles from kwm for the current week.
+   * Used to populate TopProductsTable (slots 2 & 3 aren't in kcs).
+   */
+  currentWeekProductSlots: CurrentWeekProductSlot[];
+  /** Keepa-enriched data for the top-3 ASINs at the current week, keyed by ASIN. */
+  enrichedProductsByAsin: Record<string, EnrichedProduct>;
 }
 
 /**
@@ -595,10 +606,13 @@ async function fetchKwmHistory(
 // ---------------------------------------------------------------------------
 
 /**
- * Fast loader: reads keyword_chart_series for chart history (single row),
- * plus a targeted current-week kwm read for product ASINs/titles and
- * variant info. Falls back to a full kwm scan when the series row is absent
- * or the table doesn't yet exist.
+ * Fast loader for the detail page's header + 4 charts. Reads only the compact,
+ * stays-warm data: keyword_chart_series (single row), kcs (current summary),
+ * calibration fits, and the current-week variants. The current-week kwm product
+ * slice + Keepa enrichment are split into fetchKeywordProducts so they can
+ * stream behind <Suspense> — that kwm slice is a single row on the 140M-row
+ * table that costs ~2s on a cold page, and the charts never need it. Falls back
+ * to a full kwm scan only when the series row is absent.
  *
  * Returns null when the search_term doesn't exist (→ 404).
  */
@@ -672,47 +686,19 @@ export async function fetchKeywordChartData(
   const current: KeywordDetailCurrent | null =
     currentRowsRaw.length > 0 ? mapCurrent(currentRowsRaw[0], fits) : null;
 
-  // Current week: run current-week kwm slice and variants in parallel.
-  // Only needed when the keyword is active (has a current kcs row).
-  let currentWeekProductSlots: CurrentWeekProductSlot[] = [];
+  // Current-week variants only (the box shows the current week). Cheap single-
+  // row lookup that the charts don't need but is small enough to keep here.
+  // The product slice + Keepa enrichment are deferred to fetchKeywordProducts
+  // (streamed) because the kwm slice is the ~2s cold-page hotspot.
   let currentWeekVariants: KeywordVariantInfo | null = null;
-
   if (current) {
-    const [currentWeekKwmAny, variantRowsAny] = await Promise.all([
-      // Targeted single-row kwm read for the current week — gives us the
-      // top-3 ASINs + titles that the series doesn't store.
-      sql`
-        SELECT
-          top_clicked_product_1_asin,
-          top_clicked_product_1_title,
-          top_clicked_product_2_asin,
-          top_clicked_product_2_title,
-          top_clicked_product_3_asin,
-          top_clicked_product_3_title
-        FROM keyword_weekly_metrics
-        WHERE search_term_id = ${searchTermId}
-          AND week_end_date = ${current.currentWeekEndDate}
-        LIMIT 1
-      `,
-      // Variant info for the current week only (the box only shows current).
-      sql`
-        SELECT duplicate_count, losing_ranks, raw_examples
-        FROM import_duplicate_search_terms
-        WHERE search_term_id = ${searchTermId}
-          AND week_end_date = ${current.currentWeekEndDate}
-        LIMIT 1
-      `,
-    ]);
-
-    const kwmRow = (currentWeekKwmAny as unknown as Array<Record<string, unknown>>)[0];
-    if (kwmRow) {
-      currentWeekProductSlots = [
-        { slot: 1, asin: (kwmRow.top_clicked_product_1_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_1_title as string | null) ?? null },
-        { slot: 2, asin: (kwmRow.top_clicked_product_2_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_2_title as string | null) ?? null },
-        { slot: 3, asin: (kwmRow.top_clicked_product_3_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_3_title as string | null) ?? null },
-      ];
-    }
-
+    const variantRowsAny = await sql`
+      SELECT duplicate_count, losing_ranks, raw_examples
+      FROM import_duplicate_search_terms
+      WHERE search_term_id = ${searchTermId}
+        AND week_end_date = ${current.currentWeekEndDate}
+      LIMIT 1
+    `;
     const variantRow = (variantRowsAny as unknown as Array<{
       duplicate_count: number;
       losing_ranks: number[];
@@ -725,35 +711,6 @@ export async function fetchKeywordChartData(
         rawExamples: variantRow.raw_examples ?? [],
       };
     }
-  }
-
-  // Run the enriched-products query in parallel with the current-week queries
-  // (it also needs current_week_end_date, which requires the current row).
-  let enrichedProductsByAsin: Record<string, EnrichedProduct> = {};
-  if (current) {
-    const enrichedRowsAny = await sql`
-      SELECT
-        a.asin, a.title, a.brand, a.image_url,
-        a.category_path, a.category_root, a.category_leaf,
-        a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
-        a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
-        a.enrichment_status::text AS enrichment_status
-      FROM asin_weekly_data a
-      JOIN keyword_current_summary kcs
-        ON kcs.search_term_id = ${searchTermId}
-      JOIN keyword_weekly_metrics kwm
-        ON kwm.search_term_id = kcs.search_term_id
-        AND kwm.week_end_date = kcs.current_week_end_date
-      WHERE a.week_end_date = kcs.current_week_end_date
-        AND a.asin = ANY(ARRAY[
-          kwm.top_clicked_product_1_asin,
-          kwm.top_clicked_product_2_asin,
-          kwm.top_clicked_product_3_asin
-        ]::text[])
-    `;
-    enrichedProductsByAsin = mapEnrichedProducts(
-      enrichedRowsAny as unknown as Array<Record<string, unknown>>,
-    );
   }
 
   // Determine chartHistory: series fast path or kwm fallback.
@@ -775,10 +732,82 @@ export async function fetchKeywordChartData(
     lastSeenWeek: toIsoDate(term.last_seen_week),
     current,
     chartHistory,
-    enrichedProductsByAsin,
-    currentWeekProductSlots,
     currentWeekVariants,
   };
+}
+
+// ---------------------------------------------------------------------------
+// fetchKeywordProducts — DEFERRED loader for the streamed Top-Products box
+// ---------------------------------------------------------------------------
+
+/**
+ * Reads the current-week top-3 product ASINs/titles (from kwm) plus their Keepa
+ * enrichment (from asin_weekly_data). Split out of fetchKeywordChartData and
+ * streamed behind <Suspense>: the current-week kwm slice is a single row on the
+ * 140M-row table that costs ~2s on a cold page, so off the charts' critical path
+ * it no longer delays first paint.
+ *
+ * The caller passes the current week (from kcs) and only invokes this for active
+ * keywords (dormant ones have no current week and no products box).
+ */
+export async function fetchKeywordProducts(
+  searchTermId: string,
+  currentWeekEndDate: string,
+): Promise<KeywordProducts> {
+  const sql = neon(env.DATABASE_URL);
+
+  // kwm slice first — this is the cold-page hotspot, and running it first also
+  // warms the current-week kwm page for the enriched query's join below.
+  const currentWeekKwmAny = await sql`
+    SELECT
+      top_clicked_product_1_asin,
+      top_clicked_product_1_title,
+      top_clicked_product_2_asin,
+      top_clicked_product_2_title,
+      top_clicked_product_3_asin,
+      top_clicked_product_3_title
+    FROM keyword_weekly_metrics
+    WHERE search_term_id = ${searchTermId}
+      AND week_end_date = ${currentWeekEndDate}
+    LIMIT 1
+  `;
+
+  let currentWeekProductSlots: CurrentWeekProductSlot[] = [];
+  const kwmRow = (currentWeekKwmAny as unknown as Array<Record<string, unknown>>)[0];
+  if (kwmRow) {
+    currentWeekProductSlots = [
+      { slot: 1, asin: (kwmRow.top_clicked_product_1_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_1_title as string | null) ?? null },
+      { slot: 2, asin: (kwmRow.top_clicked_product_2_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_2_title as string | null) ?? null },
+      { slot: 3, asin: (kwmRow.top_clicked_product_3_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_3_title as string | null) ?? null },
+    ];
+  }
+
+  // Keepa-enriched data for the top-3 ASINs at the current week (≤3 rows).
+  const enrichedRowsAny = await sql`
+    SELECT
+      a.asin, a.title, a.brand, a.image_url,
+      a.category_path, a.category_root, a.category_leaf,
+      a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
+      a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
+      a.enrichment_status::text AS enrichment_status
+    FROM asin_weekly_data a
+    JOIN keyword_current_summary kcs
+      ON kcs.search_term_id = ${searchTermId}
+    JOIN keyword_weekly_metrics kwm
+      ON kwm.search_term_id = kcs.search_term_id
+      AND kwm.week_end_date = kcs.current_week_end_date
+    WHERE a.week_end_date = kcs.current_week_end_date
+      AND a.asin = ANY(ARRAY[
+        kwm.top_clicked_product_1_asin,
+        kwm.top_clicked_product_2_asin,
+        kwm.top_clicked_product_3_asin
+      ]::text[])
+  `;
+  const enrichedProductsByAsin = mapEnrichedProducts(
+    enrichedRowsAny as unknown as Array<Record<string, unknown>>,
+  );
+
+  return { currentWeekProductSlots, enrichedProductsByAsin };
 }
 
 // ---------------------------------------------------------------------------

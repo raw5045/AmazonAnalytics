@@ -3,20 +3,17 @@
  *
  * Server component:
  *   1. Validate the [id] param (cheap 404 path)
- *   2. Call fetchKeywordChartData (FAST): reads keyword_chart_series + a
- *      targeted current-week kwm slice. Returns everything for the header,
- *      4 charts, top-products box, and variants box immediately.
- *   3. Stream the "Weekly history" raw table behind a <Suspense> boundary
- *      via WeeklyHistoryTable (calls fetchKeywordRawHistory — the slow query).
+ *   2. Call fetchKeywordChartData (FAST): reads keyword_chart_series + kcs +
+ *      fits + current-week variants — everything the header + 4 charts need,
+ *      all from compact, stays-warm tables.
+ *   3. Stream the "Top clicked products" box (fetchKeywordProducts) and the
+ *      "Weekly history" table (fetchKeywordRawHistory) behind <Suspense> — both
+ *      read the 140M-row kwm table, a ~2s cold-page hotspot, off the critical path.
  */
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import {
-  fetchKeywordChartData,
-  type EnrichedProduct,
-  type CurrentWeekProductSlot,
-} from '@/lib/explorer/fetchKeywordDetail';
+import { fetchKeywordChartData } from '@/lib/explorer/fetchKeywordDetail';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isKeywordWatched } from '@/lib/watchlist/loadServer';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
@@ -28,6 +25,7 @@ import { FakeVolumeStrip } from './FakeVolumeStrip';
 import { TitleMatchHistory } from './TitleMatchHistory';
 import { KeywordVariantsBox } from './KeywordVariantsBox';
 import { WeeklyHistoryTable, HistoryTableSkeleton } from './WeeklyHistoryTable';
+import { TopProductsSection, TopProductsSkeleton } from './TopProductsSection';
 
 export const metadata: Metadata = {
   title: 'Keyword detail',
@@ -69,36 +67,11 @@ export default async function KeywordDetailPage({
     searchTermNormalized,
     current,
     chartHistory,
-    enrichedProductsByAsin,
-    currentWeekProductSlots,
     currentWeekVariants,
   } = detail;
 
   const showNormalized =
     searchTermNormalized && searchTermNormalized.toLowerCase() !== searchTermRaw.toLowerCase();
-
-  // Top-clicked products: sourced from fetchKeywordChartData's targeted
-  // current-week kwm read (currentWeekProductSlots). Slots 2 + 3 aren't
-  // in kcs; the fast loader fetches them from kwm for the current week only.
-  const topClickedSlots: Array<{
-    slot: 1 | 2 | 3;
-    asin: string | null;
-    fallbackTitle: string | null;
-    clickShare?: string | null;
-    conversionShare?: string | null;
-  }> = currentWeekProductSlots.map((s: CurrentWeekProductSlot) => ({
-    slot: s.slot,
-    asin: s.asin,
-    fallbackTitle: s.title,
-    // Click/conversion shares for slot 1 come from kcs (already in `current`).
-    ...(s.slot === 1
-      ? {
-          clickShare: current?.topClickedProduct1ClickShareCurrent ?? null,
-          conversionShare: current?.topClickedProduct1ConversionShareCurrent ?? null,
-        }
-      : {}),
-  }));
-  const hasAnyProduct = topClickedSlots.some((s) => s.asin);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -179,11 +152,10 @@ export default async function KeywordDetailPage({
         />
       </section>
 
-      {hasAnyProduct && (
-        <section className="mt-6">
-          <h2 className="text-sm font-semibold text-gray-700 mb-3">Top clicked products</h2>
-          <TopProductsTable slots={topClickedSlots} enrichedByAsin={enrichedProductsByAsin} />
-        </section>
+      {current && (
+        <Suspense fallback={<TopProductsSkeleton />}>
+          <TopProductsSection id={id} currentWeekEndDate={current.currentWeekEndDate} />
+        </Suspense>
       )}
 
       <section className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -228,100 +200,6 @@ function formatHeadlineVolume(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M / mo`;
   if (n >= 10_000) return `${Math.round(n / 1_000)}K / mo`;
   return `${n.toLocaleString()} / mo`;
-}
-
-interface TopProductSlot {
-  slot: 1 | 2 | 3;
-  asin: string | null;
-  fallbackTitle: string | null;
-  clickShare?: string | null;
-  conversionShare?: string | null;
-}
-
-/**
- * Compact table replacing the old image-heavy ProductCard layout
- * (which was the dominant cause of slow page loads). Shows the three
- * top-clicked products' price, review count + star rating, and
- * leaf category — all from already-fetched Keepa data.
- */
-function TopProductsTable({
-  slots,
-  enrichedByAsin,
-}: {
-  slots: TopProductSlot[];
-  enrichedByAsin: Record<string, EnrichedProduct>;
-}) {
-  const rows = slots.filter((s): s is TopProductSlot & { asin: string } => !!s.asin);
-  return (
-    <div className="overflow-x-auto border rounded">
-      <table className="w-full text-sm">
-        <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">
-          <tr>
-            <th className="p-2 w-8">#</th>
-            <th className="p-2">Product</th>
-            <th className="p-2 text-right">Price</th>
-            <th className="p-2 text-right">Reviews</th>
-            <th className="p-2">Leaf category</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y">
-          {rows.map((s) => {
-            const enriched = enrichedByAsin[s.asin];
-            const title = enriched?.title ?? s.fallbackTitle ?? null;
-            return (
-              <tr key={`${s.slot}-${s.asin}`} className="align-top">
-                <td className="p-2 font-mono text-gray-600">{s.slot}</td>
-                <td className="p-2 max-w-md">
-                  <div className="truncate" title={title ?? undefined}>
-                    {title ?? <span className="text-gray-400">—</span>}
-                  </div>
-                  <div className="text-xs text-gray-500 font-mono">
-                    <a
-                      href={`https://www.amazon.com/dp/${s.asin}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="hover:underline"
-                    >
-                      {s.asin}
-                    </a>
-                  </div>
-                </td>
-                <td className="p-2 text-right tabular-nums">
-                  {formatPrice(enriched?.currentPriceCents ?? null)}
-                </td>
-                <td className="p-2 text-right tabular-nums whitespace-nowrap">
-                  {formatReviews(enriched?.reviewCount ?? null, enriched?.averageRatingX10 ?? null)}
-                </td>
-                <td className="p-2 text-xs text-gray-700">
-                  {enriched?.categoryLeaf ?? enriched?.categoryPath ?? <span className="text-gray-400">—</span>}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function formatPrice(cents: number | null): React.ReactNode {
-  if (cents === null || !Number.isFinite(cents)) return <span className="text-gray-400">—</span>;
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
-function formatReviews(count: number | null, ratingX10: number | null): React.ReactNode {
-  if (count === null || !Number.isFinite(count)) return <span className="text-gray-400">—</span>;
-  const star =
-    ratingX10 !== null && Number.isFinite(ratingX10)
-      ? <span className="text-yellow-600">★ {(ratingX10 / 10).toFixed(1)}</span>
-      : null;
-  const reviewStr = count >= 1000 ? `${(count / 1000).toFixed(1)}k` : count.toLocaleString();
-  return (
-    <span>
-      {reviewStr}
-      {star && <> · {star}</>}
-    </span>
-  );
 }
 
 function ImprovementChip({ improvement }: { improvement: number }) {
