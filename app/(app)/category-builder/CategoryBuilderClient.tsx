@@ -28,6 +28,9 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
   const [levels, setLevels] = useState<Map<string, LightNode[]>>(() => new Map([['', rootLevel]]));
   const [levelLoading, setLevelLoading] = useState(false);
   const [addLoading, setAddLoading] = useState(false);
+  // Path whose tree fetch failed — drives a "Couldn't load — retry" row instead
+  // of the misleading "No sub-categories." empty state.
+  const [errorPathKey, setErrorPathKey] = useState<string | null>(null);
 
   // The "cart" of leaf names to build the custom category from.
   const [cart, setCart] = useState<string[]>([]);
@@ -40,7 +43,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
   const [categories, setCategories] = useState<CustomCategoryDTO[]>(initialCategories);
 
   // Transient notice ("Added N") shown after addLeaves().
-  const [addedNotice, setAddedNotice] = useState<string | null>(null);
+  const [addedNotice, setAddedNotice] = useState<{ text: string; tone: 'ok' | 'err' } | null>(null);
   const addedNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Error shown near Save button.
@@ -60,50 +63,62 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
   // Helpers
   // ---------------------------------------------------------------------------
 
+  // Transient notice near the cart (success = green, error = red), auto-dismissed.
+  function notify(text: string, tone: 'ok' | 'err' = 'ok') {
+    setAddedNotice({ text, tone });
+    if (addedNoticeTimer.current !== null) clearTimeout(addedNoticeTimer.current);
+    addedNoticeTimer.current = setTimeout(() => {
+      setAddedNotice(null);
+      addedNoticeTimer.current = null;
+    }, tone === 'err' ? 3500 : 2000);
+  }
+
   function addLeaves(names: string[]) {
     setCart((prev) => {
       const existing = new Set(prev);
       const incoming = names.filter((n) => !existing.has(n));
       const next = [...prev, ...incoming];
       // Transient notice: how many were newly added.
-      let notice: string;
       if (incoming.length > 0) {
-        notice = `Added ${incoming.length}`;
+        notify(`Added ${incoming.length}`);
       } else if (names.length === 0) {
-        notice = 'Nothing to add';
+        notify('Nothing to add');
       } else {
-        notice = 'Already in cart';
+        notify('Already in cart');
       }
-      setAddedNotice(notice);
-      // Clear any previous timer before starting a new one.
-      if (addedNoticeTimer.current !== null) clearTimeout(addedNoticeTimer.current);
-      addedNoticeTimer.current = setTimeout(() => {
-        setAddedNotice(null);
-        addedNoticeTimer.current = null;
-      }, 2000);
       return next;
     });
   }
 
-  // Drill into a child by name: push the segment, then fetch + cache that level
-  // (unless we already have it cached, e.g. from a previous drill).
-  async function drillInto(name: string) {
-    const nextPath = [...path, name];
-    const key = nextPath.join(PATH_SEP);
-    setPath(nextPath);
-    if (levels.has(key)) return;
+  // Fetch + cache a level's children (no-op if already cached). On failure,
+  // flags the path so the UI shows a retry row instead of "No sub-categories."
+  async function fetchLevel(targetPath: string[]) {
+    const key = targetPath.join(PATH_SEP);
+    if (levels.has(key)) {
+      setErrorPathKey((cur) => (cur === key ? null : cur));
+      return;
+    }
     setLevelLoading(true);
+    setErrorPathKey((cur) => (cur === key ? null : cur));
     try {
       const res = await fetch(`/api/category-builder/tree?path=${encodeURIComponent(key)}`);
       if (!res.ok) throw new Error(`tree ${res.status}`);
       const json = (await res.json()) as { children: LightNode[] };
       setLevels((prev) => new Map(prev).set(key, json.children));
     } catch {
-      // Don't cache the failure — leave the key absent so a re-click re-fetches,
-      // rather than permanently showing "No sub-categories." after a transient blip.
+      // Don't cache the failure — flag it so the user gets a retry affordance
+      // rather than the misleading "No sub-categories." after a transient blip.
+      setErrorPathKey(key);
     } finally {
       setLevelLoading(false);
     }
+  }
+
+  // Drill into a child by name: push the segment, then fetch + cache that level.
+  async function drillInto(name: string) {
+    const nextPath = [...path, name];
+    setPath(nextPath);
+    await fetchLevel(nextPath);
   }
 
   // Add every terminal leaf under `segments` to the cart, fetched on demand.
@@ -115,7 +130,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
       const json = (await res.json()) as { leaves: string[] };
       addLeaves(json.leaves);
     } catch {
-      addLeaves([]);
+      notify("Couldn't load that category — try again", 'err');
     } finally {
       setAddLoading(false);
     }
@@ -269,7 +284,15 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
           {levelLoading && currentLevel.length === 0 && (
             <li className="px-4 py-6 text-sm text-gray-400 text-center">Loading…</li>
           )}
-          {!levelLoading && currentLevel.length === 0 && (
+          {!levelLoading && currentLevel.length === 0 && errorPathKey === pathKey && (
+            <li className="px-4 py-6 text-sm text-center">
+              <span className="text-red-600">Couldn&apos;t load this level.</span>{' '}
+              <button onClick={() => fetchLevel(path)} className="text-blue-600 underline">
+                Retry
+              </button>
+            </li>
+          )}
+          {!levelLoading && currentLevel.length === 0 && errorPathKey !== pathKey && (
             <li className="px-4 py-6 text-sm text-gray-400 text-center">No sub-categories.</li>
           )}
           {currentLevel.map((node) => {
@@ -325,8 +348,14 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
       <div className="w-80 shrink-0 flex flex-col gap-4">
         {/* Added notice */}
         {addedNotice !== null && (
-          <div className="text-xs font-semibold text-green-700 bg-green-50 border border-green-200 rounded px-3 py-1.5">
-            {addedNotice}
+          <div
+            className={`text-xs font-semibold rounded px-3 py-1.5 border ${
+              addedNotice.tone === 'err'
+                ? 'text-red-700 bg-red-50 border-red-200'
+                : 'text-green-700 bg-green-50 border-green-200'
+            }`}
+          >
+            {addedNotice.text}
           </div>
         )}
 

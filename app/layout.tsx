@@ -14,7 +14,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Amazon SFR Analytics",
+  title: {
+    default: "Amazon SFR Analytics",
+    template: "%s · Amazon SFR Analytics",
+  },
   description: "Weekly Amazon Search Frequency Rank analytics",
 };
 

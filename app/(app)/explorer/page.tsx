@@ -120,6 +120,15 @@ export default async function ExplorerPage({
   const firstRow = rows.length === 0 ? 0 : (filters.page - 1) * filters.perPage + 1;
   const lastRow = (filters.page - 1) * filters.perPage + rows.length;
 
+  // For the "past the last page" message: same filters, back to page 1.
+  const pageOneParams = new URLSearchParams();
+  for (const [k, v] of Object.entries(sp ?? {})) {
+    if (v === undefined || k === 'page') continue;
+    if (Array.isArray(v)) v.forEach((vv) => pageOneParams.append(k, vv));
+    else pageOneParams.set(k, v);
+  }
+  const pageOneHref = pageOneParams.toString() ? `/explorer?${pageOneParams.toString()}` : '/explorer';
+
   return (
     <div className="flex">
       {/* key forces a remount when the active view changes so the
@@ -174,7 +183,14 @@ export default async function ExplorerPage({
             <div className="mb-4 flex items-center justify-between">
               <div className="text-sm text-gray-600">
                 {rows.length === 0 ? (
-                  'No results — try removing a filter.'
+                  filters.page > 1 ? (
+                    <span>
+                      You&apos;re past the last page of results.{' '}
+                      <a href={pageOneHref} className="text-blue-700 underline">Go to page 1</a>
+                    </span>
+                  ) : (
+                    'No results — try removing a filter.'
+                  )
                 ) : total !== null ? (
                   // Cheaply-known total (default landing / single leaf / q-path): inline, no flash.
                   <span className="flex items-center gap-1">
