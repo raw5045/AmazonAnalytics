@@ -56,14 +56,26 @@ export async function POST(req: Request): Promise<Response> {
     return new Response('Invalid signature', { status: 400 });
   }
 
-  if (event.type === 'user.created' || event.type === 'user.updated') {
-    await syncUserFromClerk({
-      clerkUserId: event.data.id,
-      email: extractEmail(event.data),
-      name: extractName(event.data),
-    });
-  } else if (event.type === 'user.deleted') {
-    await db.delete(users).where(eq(users.clerkUserId, event.data.id));
+  // Wrap the DB sync: a Neon blip here would otherwise throw an unhandled 500
+  // AFTER the signature already verified, leaving the account half-provisioned
+  // (can sign in via Clerk, but no app row → no digests). Returning 500 makes
+  // Clerk retry the webhook; logging the id aids triage.
+  try {
+    if (event.type === 'user.created' || event.type === 'user.updated') {
+      await syncUserFromClerk({
+        clerkUserId: event.data.id,
+        email: extractEmail(event.data),
+        name: extractName(event.data),
+      });
+    } else if (event.type === 'user.deleted') {
+      await db.delete(users).where(eq(users.clerkUserId, event.data.id));
+    }
+  } catch (e) {
+    console.error(
+      `[clerk webhook] DB sync failed for ${event.type} clerkUserId=${event.data.id}:`,
+      e,
+    );
+    return new Response('DB sync failed', { status: 500 });
   }
 
   return new Response('ok', { status: 200 });

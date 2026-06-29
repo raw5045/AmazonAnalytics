@@ -284,10 +284,11 @@ export const importBatchFn = inngest.createFunction(
         .where(eq(uploadBatches.id, batchId)),
     );
 
-    await step.sendEvent('summary-refresh', {
-      name: 'summary/refresh-requested',
-      data: { batchId },
-    });
+    // NOTE: the summary refresh runs INLINE in importFile.ts after each file's
+    // import, so there is intentionally no 'summary/refresh-requested' consumer.
+    // The old step.sendEvent here was a dead Plan 2 → Plan 3 handoff and was
+    // removed: a future handler firing on it would double-run the ~30-min refresh
+    // concurrently with the inline one (two writers racing the kcs stage-and-swap).
 
     return {
       ok: true,

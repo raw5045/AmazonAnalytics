@@ -39,7 +39,14 @@ export async function callKeepa(
   if (!apiKey) throw new Error('KEEPA_API_KEY not set');
   const qs = new URLSearchParams({ key: apiKey, domain: '1', asin });
   if (opts.rating) qs.set('rating', '1');
-  const res = await fetch(`${KEEPA_BASE}?${qs.toString()}`);
+  // 30s timeout: a stalled Keepa connection would otherwise wedge the per-ASIN
+  // enrichment loop indefinitely. The job's heartbeat is a separate setInterval,
+  // so a hung fetch keeps writing fresh beats and never trips orphan detection —
+  // it could hang ~19-24h with no failure email. AbortSignal makes a stall throw
+  // so the caller's error path fires.
+  const res = await fetch(`${KEEPA_BASE}?${qs.toString()}`, {
+    signal: AbortSignal.timeout(30_000),
+  });
   if (!res.ok) {
     throw new Error(`Keepa HTTP ${res.status} for ${asin}`);
   }

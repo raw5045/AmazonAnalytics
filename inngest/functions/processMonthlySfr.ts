@@ -16,6 +16,7 @@
  */
 import { inngest } from '../client';
 import { startMonthlySfrJob } from '@/worker/monthlySfrJobs';
+import { sendMonthlySfrEmail } from '@/lib/notifications/sendMonthlySfrEmail';
 
 interface MonthlySfrUploadedEvent {
   storageKey: string;
@@ -52,6 +53,15 @@ export const processMonthlySfr = inngest.createFunction(
     });
 
     if (!completion) {
+      // Mirror processCalibrationUpload: a silent timeout previously went
+      // unnoticed for an hour — email the admins so it's actionable.
+      await step.run('send-email-timeout', async () => {
+        await sendMonthlySfrEmail({
+          outcome: 'timeout',
+          monthEndDate: data.monthEndDate,
+          filename: data.filename,
+        });
+      });
       return {
         ok: false,
         outcome: 'timeout',
@@ -59,9 +69,20 @@ export const processMonthlySfr = inngest.createFunction(
       };
     }
 
+    const success = completion.data?.success ?? false;
+    await step.run('send-email', async () => {
+      await sendMonthlySfrEmail({
+        outcome: success ? 'completed' : 'failed',
+        monthEndDate: data.monthEndDate,
+        filename: data.filename,
+        rowsUpserted: (completion.data?.result as { upserted?: number } | null)?.upserted ?? null,
+        error: (completion.data?.error as string | null) ?? null,
+      });
+    });
+
     return {
-      ok: completion.data?.success ?? false,
-      outcome: completion.data?.success ? 'completed' : 'failed',
+      ok: success,
+      outcome: success ? 'completed' : 'failed',
       storageKey: data.storageKey,
       monthEndDate: data.monthEndDate,
       result: completion.data?.result ?? null,
