@@ -33,15 +33,22 @@ export async function WeeklyHistoryTable({ id }: { id: string }) {
  */
 export function HistoryTableSkeleton() {
   return (
-    <div className="border rounded animate-pulse">
-      {/* Header row */}
-      <div className="h-8 bg-gray-100 border-b" />
-      {/* Two data rows — RawDataTable defaults to showing the 2 most recent */}
-      {[0, 1].map((i) => (
-        <div key={i} className="h-10 bg-gray-50 border-b last:border-b-0" />
-      ))}
-      {/* "Show all N weeks" button area */}
-      <div className="h-9 bg-white border-t" />
+    <div className="rounded border">
+      {/* Explicit loading row so the (slow) history read clearly reads as
+          "loading", not "broken". */}
+      <div className="flex items-center gap-2 border-b px-4 py-3 text-sm text-gray-600">
+        <span
+          className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600"
+          aria-hidden
+        />
+        Loading weekly history…
+      </div>
+      {/* Faint skeleton rows beneath, sized to approximate the table (limits CLS). */}
+      <div className="animate-pulse">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="h-10 border-b bg-gray-50 last:border-b-0" />
+        ))}
+      </div>
     </div>
   );
 }
