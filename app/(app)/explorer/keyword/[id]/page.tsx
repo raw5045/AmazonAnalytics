@@ -21,6 +21,7 @@ import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isKeywordWatched } from '@/lib/watchlist/loadServer';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { PerfPanel } from '@/app/(app)/PerfPanel';
+import { ErrorBoundary } from '@/app/(app)/_components/ErrorBoundary';
 import { startHandlerTimer } from '@/lib/perf/handlerTimer';
 import { BackToExplorer } from './BackToExplorer';
 import { RankChart } from './RankChart';
@@ -200,9 +201,18 @@ export default async function KeywordDetailPage({
 
       <section className="mt-8">
         <h2 className="text-sm font-semibold text-gray-700 mb-2">Weekly history</h2>
-        <Suspense fallback={<HistoryTableSkeleton />}>
-          <WeeklyHistoryTable id={id} />
-        </Suspense>
+        <ErrorBoundary
+          fallback={
+            <p className="text-sm text-gray-500">
+              Couldn&apos;t load the weekly history table — refresh to retry. (The charts above
+              are unaffected.)
+            </p>
+          }
+        >
+          <Suspense fallback={<HistoryTableSkeleton />}>
+            <WeeklyHistoryTable id={id} />
+          </Suspense>
+        </ErrorBoundary>
       </section>
 
       {/* Variants box: only for active keywords whose current week had >1
