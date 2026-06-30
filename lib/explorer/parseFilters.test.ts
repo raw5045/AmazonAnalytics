@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { parseExplorerFilters, EXPLORER_DEFAULTS, parseLeafPaths } from './parseFilters';
+import {
+  parseExplorerFilters,
+  EXPLORER_DEFAULTS,
+  parseLeafPaths,
+  MAX_LEAF_PATHS,
+  MAX_LEAF_PATH_LENGTH,
+  MAX_CUSTOM_CATEGORY_IDS,
+} from './parseFilters';
 
 describe('parseExplorerFilters', () => {
   it('returns full defaults for empty searchParams', () => {
@@ -155,6 +162,14 @@ describe('parseLeafPaths', () => {
       .toEqual(['Clothing, Shoes & Jewelry › Pants']));
   it('trims and drops blanks', () =>
     expect(parseLeafPaths(['  A › B  ', '', '  '])).toEqual(['A › B']));
+  it('drops paths longer than the per-path cap', () => {
+    const long = 'x'.repeat(MAX_LEAF_PATH_LENGTH + 1);
+    expect(parseLeafPaths(['A › B', long])).toEqual(['A › B']);
+  });
+  it('caps the number of paths', () => {
+    const many = Array.from({ length: MAX_LEAF_PATHS + 50 }, (_, i) => `Dept › Leaf ${i}`);
+    expect(parseLeafPaths(many)).toHaveLength(MAX_LEAF_PATHS);
+  });
 });
 
 describe('parseExplorerFilters — Movement jump', () => {
@@ -206,5 +221,9 @@ describe('parseExplorerFilters — customCategoryIds', () => {
   });
   it('defaults customCategoryIds to []', () => {
     expect(parseExplorerFilters({}).customCategoryIds).toEqual([]);
+  });
+  it('caps the number of custom category ids', () => {
+    const many = Array.from({ length: MAX_CUSTOM_CATEGORY_IDS + 10 }, (_, i) => `id-${i}`).join(',');
+    expect(parseExplorerFilters({ custom: many }).customCategoryIds).toHaveLength(MAX_CUSTOM_CATEGORY_IDS);
   });
 });

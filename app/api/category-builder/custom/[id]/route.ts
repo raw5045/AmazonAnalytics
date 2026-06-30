@@ -14,6 +14,7 @@ import {
   normalizePaths,
   isValidUuid,
   isUniqueViolation,
+  MAX_LEAF_PATHS_PER_CATEGORY,
 } from '@/lib/customCategories/validation';
 
 export const runtime = 'nodejs';
@@ -28,6 +29,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
   const leafPaths = normalizePaths(body.leafPaths);
   if (leafPaths.length === 0) return NextResponse.json({ error: 'A category needs at least one leaf.' }, { status: 400 });
+  if (leafPaths.length > MAX_LEAF_PATHS_PER_CATEGORY) {
+    return NextResponse.json({ error: `A category can include at most ${MAX_LEAF_PATHS_PER_CATEGORY.toLocaleString()} leaves.` }, { status: 400 });
+  }
 
   try {
     const [updated] = await db

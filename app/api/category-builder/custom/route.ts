@@ -14,6 +14,7 @@ import {
   normalizePaths,
   isUniqueViolation,
   MAX_CUSTOM_CATEGORIES,
+  MAX_LEAF_PATHS_PER_CATEGORY,
 } from '@/lib/customCategories/validation';
 
 export const runtime = 'nodejs';
@@ -33,6 +34,9 @@ export async function POST(req: Request) {
   if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
   const leafPaths = normalizePaths(body.leafPaths);
   if (leafPaths.length === 0) return NextResponse.json({ error: 'Add at least one leaf category before saving.' }, { status: 400 });
+  if (leafPaths.length > MAX_LEAF_PATHS_PER_CATEGORY) {
+    return NextResponse.json({ error: `A category can include at most ${MAX_LEAF_PATHS_PER_CATEGORY.toLocaleString()} leaves.` }, { status: 400 });
+  }
 
   const [{ n }] = await db
     .select({ n: sql<number>`COUNT(*)::int` })

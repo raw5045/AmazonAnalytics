@@ -40,6 +40,18 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   perPage: 100,
 };
 
+/**
+ * Hard caps on category-filter array sizes — same spirit as the per_page cap
+ * in parseExplorerFilters: keep a hostile or buggy client from sending an
+ * unbounded `leaf` / `custom` list that would bloat the query (or a stored
+ * saved-view blob). The real typeahead multi-select never approaches these;
+ * they only trip on abuse. Over-long individual paths are dropped — a real
+ * Keepa path ("Dept › Sub › Leaf") is well under MAX_LEAF_PATH_LENGTH.
+ */
+export const MAX_LEAF_PATHS = 2000;
+export const MAX_LEAF_PATH_LENGTH = 256;
+export const MAX_CUSTOM_CATEGORY_IDS = 50;
+
 export type SearchParamsLike = Record<string, string | string[] | undefined>;
 
 const WINDOW_VALUES: WindowKey[] = ['1w', '4w', '13w', '26w', '52w'];
@@ -104,7 +116,11 @@ function parseSeverities(value: string | undefined): SeverityKey[] {
  */
 function parseLeafCategories(value: string | undefined): string[] {
   if (!value) return [];
-  return value.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.length <= MAX_LEAF_PATH_LENGTH)
+    .slice(0, MAX_CUSTOM_CATEGORY_IDS);
 }
 
 /**
@@ -116,7 +132,10 @@ function parseLeafCategories(value: string | undefined): string[] {
 export function parseLeafPaths(value: string | string[] | undefined): string[] {
   if (value === undefined) return [];
   const arr = Array.isArray(value) ? value : [value];
-  return arr.map((s) => s.trim()).filter((s) => s.length > 0);
+  return arr
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.length <= MAX_LEAF_PATH_LENGTH)
+    .slice(0, MAX_LEAF_PATHS);
 }
 
 function parseTitleSlots(value: string | undefined): number[] {

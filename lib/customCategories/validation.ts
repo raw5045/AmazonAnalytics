@@ -1,5 +1,15 @@
 export const MAX_CUSTOM_CATEGORIES = 25;
 export const MAX_NAME_LENGTH = 80;
+/**
+ * Upper bound on how many leaf paths one custom category may store. Set above
+ * the full Keepa taxonomy (~11.4k leaves) so no legitimate selection — even
+ * "every leaf under a top-level department" — is ever blocked, while a
+ * hostile/buggy payload of arbitrary strings is rejected (guards the jsonb
+ * column from unbounded growth). Per-path length is capped too; a real path
+ * ("Dept › Sub › Leaf") is well under MAX_LEAF_PATH_LENGTH.
+ */
+export const MAX_LEAF_PATHS_PER_CATEGORY = 12000;
+export const MAX_LEAF_PATH_LENGTH = 256;
 
 export function validateName(raw: unknown): { ok: true; name: string } | { ok: false; error: string } {
   if (typeof raw !== 'string') return { ok: false, error: 'name must be a string' };
@@ -17,7 +27,7 @@ export function normalizePaths(raw: unknown): string[] {
   for (const v of raw) {
     if (typeof v !== 'string') continue;
     const s = v.trim();
-    if (s.length === 0 || seen.has(s)) continue;
+    if (s.length === 0 || s.length > MAX_LEAF_PATH_LENGTH || seen.has(s)) continue;
     seen.add(s);
     out.push(s);
   }
