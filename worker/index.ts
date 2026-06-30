@@ -14,6 +14,7 @@ import { serve } from 'inngest/express';
 import { inngest } from '../inngest/client';
 import { functions } from '../inngest/functions';
 import { BOOT_ID, BOOTED_AT } from '../lib/runtime';
+import { reclaimStaleKeepaRunsOnBoot } from './keepaJobs';
 
 const GIT_SHA =
   process.env.RAILWAY_GIT_COMMIT_SHA ??
@@ -62,4 +63,17 @@ app.listen(port, () => {
   console.log(`Inngest worker listening on port ${port}`);
   console.log(`BOOT_ID=${BOOT_ID} pid=${process.pid}`);
   console.log(`Registered ${functions.length} function(s):`, functions.map((f) => f.id()).join(', '));
+
+  // Boot-time reclaim: flip any Keepa run left 'running' by a dead previous
+  // boot to 'orphaned' so its durable orchestrator wraps up promptly (next
+  // ≤5-min poll) instead of burning the full 24h budget. Fire-and-forget —
+  // never blocks startup; import path is intentionally excluded (see
+  // reclaimStaleKeepaRunsOnBoot + the 2026-05-16 false-orphan note).
+  reclaimStaleKeepaRunsOnBoot()
+    .then((ids) => {
+      if (ids.length > 0) {
+        console.warn(`[boot] reclaimed ${ids.length} stale Keepa run(s): ${ids.map((i) => i.slice(0, 8)).join(', ')}`);
+      }
+    })
+    .catch((e) => console.error('[boot] Keepa run reclaim failed:', e));
 });

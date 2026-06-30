@@ -127,6 +127,54 @@ export async function markRunOrphanedByOrchestrator(runId: string, reason: strin
   return result.rows.length > 0;
 }
 
+/**
+ * Boot-time reclaim: orphan any Keepa enrichment run that a previous worker
+ * boot left 'running' with a stale heartbeat (worker died or redeployed
+ * mid-run). The durable orchestrator re-reads run status every 5 min, so once
+ * a stale run flips to 'orphaned' it observes the change on its next poll and
+ * sends the orphaned-variant email — instead of burning its full 24h poll
+ * budget waiting for a worker that's never coming back.
+ *
+ * Gated on heartbeat staleness (>5 min), NOT bare owner_boot_id, so a run
+ * still being actively written by a live OLD-deploy worker during a rolling
+ * deploy is never falsely reclaimed: the Keepa heartbeat ticks every 60s on a
+ * separate connection, so a >5-min-stale heartbeat genuinely means the process
+ * is gone. (The import path deliberately has no equivalent sweep — a staleness
+ * check there false-orphaned a live import on 2026-05-16; see
+ * inngest/functions/importBatch.ts.)
+ *
+ * Safe to call once at worker startup. CAS-guarded via
+ * markRunOrphanedByOrchestrator (only orphans rows still 'running'). Returns
+ * the reclaimed run ids.
+ */
+export async function reclaimStaleKeepaRunsOnBoot(): Promise<string[]> {
+  const STALE_MS = 5 * 60_000;
+  const cutoff = new Date(Date.now() - STALE_MS);
+  const stale = await db
+    .select({
+      id: keepaEnrichmentRuns.id,
+      weekEndDate: keepaEnrichmentRuns.weekEndDate,
+      heartbeatAt: keepaEnrichmentRuns.heartbeatAt,
+    })
+    .from(keepaEnrichmentRuns)
+    .where(and(eq(keepaEnrichmentRuns.status, 'running'), sql`${keepaEnrichmentRuns.heartbeatAt} < ${cutoff}`));
+
+  const reclaimed: string[] = [];
+  for (const run of stale) {
+    const staleMin = Math.round((Date.now() - run.heartbeatAt.getTime()) / 60_000);
+    const reason = `Reclaimed on worker boot: heartbeat stale by ${staleMin} min (worker died/redeployed mid-run)`;
+    // CAS re-check inside markRunOrphanedByOrchestrator: skip if the worker
+    // won a late race and already flipped the run to completed/failed.
+    if (await markRunOrphanedByOrchestrator(run.id, reason)) {
+      reclaimed.push(run.id);
+      console.warn(
+        `[keepa-boot-reclaim] orphaned stale run ${run.id.slice(0, 8)} (week ${run.weekEndDate}): stale ${staleMin} min`,
+      );
+    }
+  }
+  return reclaimed;
+}
+
 async function updateHeartbeat(runId: string): Promise<void> {
   await db.execute(sql`
     UPDATE keepa_enrichment_runs
