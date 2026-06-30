@@ -1,8 +1,8 @@
 /**
  * Detached background worker that refreshes kcs Keepa aggregate
  * columns (lowest_price_cents, highest_price_cents, least_reviews,
- * most_reviews, top_clicked_leaf_category) + the leaf-category
- * facets table — without doing a full kcs rebuild.
+ * most_reviews, top_clicked_leaf_category, top_clicked_category_path)
+ * + the category-path facets table — without doing a full kcs rebuild.
  *
  * Triggered by `keepa/aggregates-sync-requested` after a successful
  * Keepa enrichment run, so that newly-enriched ASINs (especially
@@ -86,7 +86,8 @@ export function startKcsKeepaSyncJob(
              a.asin,
              a.current_price_cents,
              a.review_count,
-             a.category_leaf
+             a.category_leaf,
+             a.category_path
            FROM asin_weekly_data a
            WHERE a.week_end_date <= $1::date
              AND a.enrichment_status = 'active'
@@ -113,7 +114,8 @@ export function startKcsKeepaSyncJob(
             most_reviews        = GREATEST(p1.review_count,     p2.review_count,        p3.review_count),
             avg_price_cents     = (SELECT AVG(v)::bigint FROM unnest(ARRAY[p1.current_price_cents, p2.current_price_cents, p3.current_price_cents]) v WHERE v IS NOT NULL),
             avg_reviews         = (SELECT AVG(v)::int    FROM unnest(ARRAY[p1.review_count,        p2.review_count,        p3.review_count])        v WHERE v IS NOT NULL),
-            top_clicked_leaf_category = p1.category_leaf
+            top_clicked_leaf_category = p1.category_leaf,
+            top_clicked_category_path = p1.category_path
           FROM keyword_weekly_metrics kwm
           LEFT JOIN tmp_asin_enriched_sync p1 ON p1.asin = kwm.top_clicked_product_1_asin
           LEFT JOIN tmp_asin_enriched_sync p2 ON p2.asin = kwm.top_clicked_product_2_asin
@@ -124,30 +126,30 @@ export function startKcsKeepaSyncJob(
         rowsUpdated = upd.rowCount ?? 0;
         log(`phase=2 done: updated ${rowsUpdated.toLocaleString()} rows in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
-        // Phase 3: rebuild leaf-category facets for current snapshot
-        log('phase=3 rebuilding leaf-category facets');
+        // Phase 3: rebuild category-path facets for current snapshot
+        log('phase=3 rebuilding category-path facets');
         await c.query(
           `DELETE FROM keyword_current_summary_leaf_category_facets WHERE snapshot_version = $1::uuid`,
           [sv],
         );
         const ins = await c.query(
           `INSERT INTO keyword_current_summary_leaf_category_facets
-             (snapshot_version, leaf_category, default_severity_count, all_count)
+             (snapshot_version, category_path, default_severity_count, all_count)
            SELECT
              $1::uuid,
-             top_clicked_leaf_category,
+             top_clicked_category_path,
              COUNT(*) FILTER (
                WHERE fake_volume_severity_current IS NULL
                   OR fake_volume_severity_current IN ('none', 'warning')
              )::int,
              COUNT(*)::int
            FROM keyword_current_summary
-           WHERE top_clicked_leaf_category IS NOT NULL
-           GROUP BY top_clicked_leaf_category`,
+           WHERE top_clicked_category_path IS NOT NULL
+           GROUP BY top_clicked_category_path`,
           [sv],
         );
         facetsInserted = ins.rowCount ?? 0;
-        log(`phase=3 done: ${facetsInserted.toLocaleString()} leaf facets`);
+        log(`phase=3 done: ${facetsInserted.toLocaleString()} path facets`);
 
         await c.query(`DROP TABLE tmp_asin_enriched_sync`);
         success = true;
