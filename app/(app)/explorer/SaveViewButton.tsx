@@ -74,6 +74,11 @@ export function SaveViewButton({
       const data = (await res.json()) as { view: SavedView };
       setIsOpen(false);
       router.push(`/explorer?view=${data.view.id}`);
+    } catch {
+      // fetch() itself rejected (offline, DNS failure, connection reset).
+      // Without this catch the rejection went unhandled and the modal sat
+      // open with no feedback — surface it like an HTTP error instead.
+      setError('Network error — please check your connection and try again.');
     } finally {
       setIsSaving(false);
     }

@@ -77,19 +77,25 @@ export function SavedViewsDropdown({
   const deleteView = async (view: SavedView) => {
     if (!confirm(`Delete "${view.name}"? This cannot be undone.`)) return;
     setOpen(false);
-    const res = await fetch(`/api/explorer/saved-views/${view.id}`, { method: 'DELETE' });
-    if (!res.ok) {
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      alert(`Failed to delete: ${body.error ?? res.statusText}`);
-      return;
-    }
-    // If the deleted view was the active one, drop the ?view= param;
-    // otherwise just refresh so the layout re-fetches savedViews
-    // without the deleted row.
-    if (activeView?.id === view.id) {
-      router.push('/explorer');
-    } else {
-      router.refresh();
+    try {
+      const res = await fetch(`/api/explorer/saved-views/${view.id}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        alert(`Failed to delete: ${body.error ?? res.statusText}`);
+        return;
+      }
+      // If the deleted view was the active one, drop the ?view= param;
+      // otherwise just refresh so the layout re-fetches savedViews
+      // without the deleted row.
+      if (activeView?.id === view.id) {
+        router.push('/explorer');
+      } else {
+        router.refresh();
+      }
+    } catch {
+      // fetch() rejected (network down). deleteView reports via alert(), so
+      // keep that channel rather than introducing inline error state here.
+      alert('Network error — could not delete the view. Please check your connection and try again.');
     }
   };
 
@@ -110,6 +116,10 @@ export function SavedViewsDropdown({
       }
       setRenamingView(null);
       router.refresh();
+    } catch {
+      // fetch() rejected (network down) — mirror the HTTP-error path so the
+      // rename modal shows feedback instead of silently doing nothing.
+      setRenameError('Network error — please check your connection and try again.');
     } finally {
       setIsRenaming(false);
     }
