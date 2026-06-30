@@ -82,7 +82,17 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       .where(eq(uploadedFiles.id, f.id));
   }
 
-  // Delete the file rows
+  // Delete the file rows.
+  //
+  // NOTE: slow on a large DB (~10 min). keyword_weekly_metrics (~172M rows)
+  // has a NO-ACTION FK on source_file_id with NO index, so PG seq-scans the
+  // whole table to verify no child rows — even though a never-imported batch
+  // (all this route ever cancels, per the status guards above) has zero kwm
+  // rows. Batch 4 decision (2026-06-30): the kwm(source_file_id) index was
+  // DEFERRED (admin-only, not launch-blocking; the index adds permanent
+  // insert overhead on the 174GB hot-import path). Fast cleanup for an
+  // abandoned batch meanwhile is marking it status='failed' (no row delete →
+  // no scan). Revisit the index post-launch if cancels become frequent.
   await db.delete(uploadedFiles).where(eq(uploadedFiles.batchId, id));
 
   // Finally, delete the batch itself
