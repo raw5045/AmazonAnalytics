@@ -1,6 +1,6 @@
 /**
  * GET  /api/category-builder/custom → list current user's custom categories
- * POST /api/category-builder/custom → create one { name, leafNames }
+ * POST /api/category-builder/custom → create one { name, leafPaths }
  */
 import { NextResponse } from 'next/server';
 import { eq, sql } from 'drizzle-orm';

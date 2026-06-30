@@ -1,5 +1,5 @@
 /**
- * PATCH  /api/category-builder/custom/[id] → rename / replace leafNames
+ * PATCH  /api/category-builder/custom/[id] → rename / replace leafPaths
  * DELETE /api/category-builder/custom/[id] → delete
  */
 import { NextResponse } from 'next/server';

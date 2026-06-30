@@ -2,7 +2,8 @@
  * Integration test for the custom-categories DB layer.
  *
  * Gated by RUN_INTEGRATION=1 (same as all integration tests). Requires a
- * test database with migration 0038 applied (custom_categories table).
+ * test database with migrations 0038 + 0039 applied (custom_categories table
+ * with the leaf_paths column).
  *
  * Tests the security-critical user-scoping and graceful-skip-of-unknown-IDs
  * behaviour of the two DB-layer functions, against real Postgres.
@@ -66,7 +67,7 @@ describe('custom-categories DB layer (integration)', () => {
 
       // Insert custom_categories for user A.
       const { rows: aSupplementsRows } = await client.query<{ id: string }>(
-        `INSERT INTO custom_categories (user_id, name, leaf_names)
+        `INSERT INTO custom_categories (user_id, name, leaf_paths)
          VALUES ($1, 'A-Supplements', $2::jsonb)
          RETURNING id`,
         [userAId, JSON.stringify(['Collagen', 'Iron'])],
@@ -74,7 +75,7 @@ describe('custom-categories DB layer (integration)', () => {
       aSupplementsId = aSupplementsRows[0].id;
 
       const { rows: aMineralsRows } = await client.query<{ id: string }>(
-        `INSERT INTO custom_categories (user_id, name, leaf_names)
+        `INSERT INTO custom_categories (user_id, name, leaf_paths)
          VALUES ($1, 'A-Minerals', $2::jsonb)
          RETURNING id`,
         [userAId, JSON.stringify(['Zinc', 'Iron'])],
@@ -83,7 +84,7 @@ describe('custom-categories DB layer (integration)', () => {
 
       // Insert custom_categories for user B.
       const { rows: bCatRows } = await client.query<{ id: string }>(
-        `INSERT INTO custom_categories (user_id, name, leaf_names)
+        `INSERT INTO custom_categories (user_id, name, leaf_paths)
          VALUES ($1, 'B-Cat', $2::jsonb)
          RETURNING id`,
         [userBId, JSON.stringify(['SecretLeaf'])],
