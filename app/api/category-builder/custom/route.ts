@@ -11,7 +11,7 @@ import { customCategories } from '@/db/schema';
 import { listCustomCategoriesForUser, rowToDTO } from '@/lib/customCategories/loadServer';
 import {
   validateName,
-  normalizeLeafNames,
+  normalizePaths,
   isUniqueViolation,
   MAX_CUSTOM_CATEGORIES,
 } from '@/lib/customCategories/validation';
@@ -28,11 +28,11 @@ export async function POST(req: Request) {
   let user;
   try { user = await requireAuthenticatedUser(); } catch (e) { return handleAuthError(e); }
 
-  const body = (await req.json().catch(() => ({}))) as { name?: unknown; leafNames?: unknown };
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown; leafPaths?: unknown };
   const nameResult = validateName(body.name);
   if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
-  const leafNames = normalizeLeafNames(body.leafNames);
-  if (leafNames.length === 0) return NextResponse.json({ error: 'Add at least one leaf category before saving.' }, { status: 400 });
+  const leafPaths = normalizePaths(body.leafPaths);
+  if (leafPaths.length === 0) return NextResponse.json({ error: 'Add at least one leaf category before saving.' }, { status: 400 });
 
   const [{ n }] = await db
     .select({ n: sql<number>`COUNT(*)::int` })
@@ -45,7 +45,7 @@ export async function POST(req: Request) {
   try {
     const [created] = await db
       .insert(customCategories)
-      .values({ userId: user.id, name: nameResult.name, leafNames })
+      .values({ userId: user.id, name: nameResult.name, leafPaths })
       .returning();
     return NextResponse.json({ category: rowToDTO(created) });
   } catch (e) {

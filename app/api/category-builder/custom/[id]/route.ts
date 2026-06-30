@@ -11,7 +11,7 @@ import { customCategories } from '@/db/schema';
 import { rowToDTO } from '@/lib/customCategories/loadServer';
 import {
   validateName,
-  normalizeLeafNames,
+  normalizePaths,
   isValidUuid,
   isUniqueViolation,
 } from '@/lib/customCategories/validation';
@@ -23,16 +23,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   try { user = await requireAuthenticatedUser(); } catch (e) { return handleAuthError(e); }
   const { id } = await params;
   if (!isValidUuid(id)) return NextResponse.json({ error: 'invalid category id' }, { status: 400 });
-  const body = (await req.json().catch(() => ({}))) as { name?: unknown; leafNames?: unknown };
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown; leafPaths?: unknown };
   const nameResult = validateName(body.name);
   if (!nameResult.ok) return NextResponse.json({ error: nameResult.error }, { status: 400 });
-  const leafNames = normalizeLeafNames(body.leafNames);
-  if (leafNames.length === 0) return NextResponse.json({ error: 'A category needs at least one leaf.' }, { status: 400 });
+  const leafPaths = normalizePaths(body.leafPaths);
+  if (leafPaths.length === 0) return NextResponse.json({ error: 'A category needs at least one leaf.' }, { status: 400 });
 
   try {
     const [updated] = await db
       .update(customCategories)
-      .set({ name: nameResult.name, leafNames, updatedAt: new Date() })
+      .set({ name: nameResult.name, leafPaths, updatedAt: new Date() })
       .where(and(eq(customCategories.id, id), eq(customCategories.userId, user.id)))
       .returning();
     if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 });

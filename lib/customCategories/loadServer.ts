@@ -6,7 +6,7 @@ import { customCategories } from '@/db/schema';
 export interface CustomCategoryDTO {
   id: string;
   name: string;
-  leafNames: string[];
+  leafPaths: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -16,7 +16,7 @@ export function rowToDTO(r: typeof customCategories.$inferSelect): CustomCategor
   return {
     id: r.id,
     name: r.name,
-    leafNames: (r.leafNames as string[]) ?? [],
+    leafPaths: (r.leafPaths as string[]) ?? [],
     createdAt: r.createdAt.toISOString(),
     updatedAt: r.updatedAt.toISOString(),
   };
