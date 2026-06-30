@@ -2,6 +2,7 @@
 
 import { useState, useTransition, useRef } from 'react';
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
+import { splitCategoryPath } from '@/lib/categoryBuilder/pathDisplay';
 import type { LightNode } from '@/lib/categoryBuilder/treeNav';
 import type { CustomCategoryDTO } from '@/lib/customCategories/loadServer';
 
@@ -73,15 +74,15 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
     }, tone === 'err' ? 3500 : 2000);
   }
 
-  function addLeaves(names: string[]) {
+  function addLeaves(paths: string[]) {
     setCart((prev) => {
       const existing = new Set(prev);
-      const incoming = names.filter((n) => !existing.has(n));
+      const incoming = paths.filter((p) => !existing.has(p));
       const next = [...prev, ...incoming];
       // Transient notice: how many were newly added.
       if (incoming.length > 0) {
         notify(`Added ${incoming.length}`);
-      } else if (names.length === 0) {
+      } else if (paths.length === 0) {
         notify('Nothing to add');
       } else {
         notify('Already in cart');
@@ -136,8 +137,8 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
     }
   }
 
-  function removeFromCart(leafName: string) {
-    setCart((prev) => prev.filter((n) => n !== leafName));
+  function removeFromCart(path: string) {
+    setCart((prev) => prev.filter((p) => p !== path));
   }
 
   function clearCart() {
@@ -151,7 +152,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
   function startEditing(c: CustomCategoryDTO) {
     setEditingId(c.id);
     setName(c.name);
-    setCart(c.leafNames);
+    setCart(c.leafPaths);
     setSaveError(null);
     setAddedNotice(null);
   }
@@ -175,7 +176,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
         const res = await fetch(url, {
           method,
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ name: name.trim(), leafNames: cart }),
+          body: JSON.stringify({ name: name.trim(), leafPaths: cart }),
         });
 
         const json = await res.json() as { category?: CustomCategoryDTO; error?: string };
@@ -383,23 +384,29 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
               <div className="text-xs text-gray-500 font-medium">
                 {cart.length === 0
                   ? 'No leaves yet — add from the browser'
-                  : `${cart.length} leaf${cart.length === 1 ? '' : 's'} selected`}
+                  : `${cart.length} categor${cart.length === 1 ? 'y' : 'ies'} selected`}
               </div>
 
               {cart.length > 0 && (
                 <ul className="max-h-48 overflow-y-auto divide-y divide-gray-100 border border-gray-200 rounded text-xs">
-                  {cart.map((leaf) => (
-                    <li key={leaf} className="flex items-center justify-between px-2 py-1.5 hover:bg-gray-50">
-                      <span className="truncate text-gray-700">{leaf}</span>
-                      <button
-                        onClick={() => removeFromCart(leaf)}
-                        className="ml-2 shrink-0 text-gray-400 hover:text-red-500"
-                        aria-label={`Remove ${leaf}`}
-                      >
-                        ✕
-                      </button>
-                    </li>
-                  ))}
+                  {cart.map((path) => {
+                    const { leaf, prefix } = splitCategoryPath(path);
+                    return (
+                      <li key={path} className="flex items-center justify-between px-2 py-1.5 hover:bg-gray-50">
+                        <span className="min-w-0 truncate text-gray-700" title={path}>
+                          <span className="font-medium">{leaf}</span>
+                          {prefix && <span className="text-gray-400"> · {prefix}</span>}
+                        </span>
+                        <button
+                          onClick={() => removeFromCart(path)}
+                          className="ml-2 shrink-0 text-gray-400 hover:text-red-500"
+                          aria-label={`Remove ${path}`}
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
 
@@ -449,7 +456,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
                 >
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">{c.name}</p>
-                    <p className="text-xs text-gray-500">{c.leafNames.length} leaves</p>
+                    <p className="text-xs text-gray-500">{c.leafPaths.length} categories</p>
                   </div>
                   <div className="flex gap-1 shrink-0">
                     <button

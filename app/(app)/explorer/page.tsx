@@ -93,8 +93,8 @@ export default async function ExplorerPage({
   // selection, not the expanded leaf set.
   let queryFilters = filters;
   if (user && filters.customCategoryIds.length > 0) {
-    const merged = await expandCustomCategories(user.id, filters.customCategoryIds, filters.leafCategories);
-    queryFilters = { ...filters, leafCategories: merged };
+    const merged = await expandCustomCategories(user.id, filters.customCategoryIds, filters.leafPaths);
+    queryFilters = { ...filters, leafPaths: merged };
   }
 
   const handlerStartedAt = Date.now();
@@ -286,7 +286,7 @@ function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boole
     f.rankMax !== null ||
     f.jump !== null ||
     f.category !== null ||
-    f.leafCategories.length > 0 ||
+    f.leafPaths.length > 0 ||
     f.customCategoryIds.length > 0 ||
     JSON.stringify(f.severities) !== JSON.stringify(EXPLORER_DEFAULTS.severities) ||
     JSON.stringify(f.titleSlots) !== JSON.stringify(EXPLORER_DEFAULTS.titleSlots) ||

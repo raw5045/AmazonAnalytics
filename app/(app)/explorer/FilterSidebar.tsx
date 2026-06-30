@@ -62,7 +62,7 @@ interface PendingFilters {
   /** Numeric string; only used when jump === 'custom'. */
   jumpTo: string;
   category: string;
-  leafCategories: string[];
+  leafPaths: string[];
   /** Whether the leaf-categories filter is in individual-leaf or custom-category mode. */
   leafMode: 'leaf' | 'custom';
   customCategoryIds: string[];
@@ -85,7 +85,7 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     jumpFrom: f.jumpFrom?.toString() ?? '',
     jumpTo: f.jumpTo?.toString() ?? '',
     category: f.category ?? '',
-    leafCategories: f.leafCategories,
+    leafPaths: f.leafPaths,
     leafMode: f.customCategoryIds.length > 0 ? 'custom' : 'leaf',
     customCategoryIds: f.customCategoryIds,
     severities: f.severities,
@@ -116,8 +116,8 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.category) params.set('category', p.category);
   if (p.leafMode === 'custom') {
     if (p.customCategoryIds.length > 0) params.set('custom', p.customCategoryIds.join(','));
-  } else if (p.leafCategories.length > 0) {
-    params.set('leaf', p.leafCategories.join(','));
+  } else if (p.leafPaths.length > 0) {
+    for (const path of p.leafPaths) params.append('leaf', path);
   }
   // Default severities = ['none', 'warning']. Only emit when different.
   const defaultSev = JSON.stringify([...EXPLORER_DEFAULTS.severities].sort());
@@ -147,7 +147,7 @@ export function FilterSidebar({
   filters: ExplorerFilters;
   categories: string[];
   leafCategories: string[];
-  customCategories?: { id: string; name: string; leafNames: string[] }[];
+  customCategories?: { id: string; name: string; leafPaths: string[] }[];
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -458,8 +458,8 @@ export function FilterSidebar({
           <>
             <LeafCategoryTypeahead
               options={leafCategories}
-              selected={pending.leafCategories}
-              onChange={(next) => set('leafCategories', next)}
+              selected={pending.leafPaths}
+              onChange={(next) => set('leafPaths', next)}
             />
             <p className="text-xs text-gray-500 mt-1">
               Long-tail category for the most-clicked product. {leafCategories.length.toLocaleString()} options —
@@ -491,7 +491,7 @@ export function FilterSidebar({
                       />
                       <span>
                         {c.name}{' '}
-                        <span className="text-gray-400">({c.leafNames.length})</span>
+                        <span className="text-gray-400">({c.leafPaths.length})</span>
                       </span>
                     </label>
                   ))}
@@ -501,7 +501,7 @@ export function FilterSidebar({
                     pending.customCategoryIds.includes(c.id),
                   );
                   const selectedCount = selectedCats.length;
-                  const uniqueLeaves = new Set(selectedCats.flatMap((c) => c.leafNames)).size;
+                  const uniqueLeaves = new Set(selectedCats.flatMap((c) => c.leafPaths)).size;
                   return selectedCount > 0 ? (
                     <p className="text-xs text-gray-500 mt-1">
                       {selectedCount} selected → {uniqueLeaves} leaves

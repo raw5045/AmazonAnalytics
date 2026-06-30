@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { splitCategoryPath } from '@/lib/categoryBuilder/pathDisplay';
 
 /**
  * Multi-select search-as-you-type combobox for the leaf-category
@@ -83,22 +84,25 @@ export function LeafCategoryTypeahead({
       {/* Chips for currently-selected categories */}
       {selected.length > 0 && (
         <div className="mb-1 flex flex-wrap gap-1">
-          {selected.map((cat) => (
-            <span
-              key={cat}
-              className="inline-flex items-center gap-1 rounded bg-blue-50 border border-blue-200 px-2 py-0.5 text-xs text-blue-900"
-            >
-              <span className="max-w-[180px] truncate" title={cat}>{cat}</span>
-              <button
-                type="button"
-                onClick={() => removeCategory(cat)}
-                className="text-blue-700 hover:text-blue-900 leading-none"
-                aria-label={`Remove ${cat}`}
+          {selected.map((cat) => {
+            const { leaf } = splitCategoryPath(cat);
+            return (
+              <span
+                key={cat}
+                className="inline-flex items-center gap-1 rounded bg-blue-50 border border-blue-200 px-2 py-0.5 text-xs text-blue-900"
               >
-                ×
-              </button>
-            </span>
-          ))}
+                <span className="max-w-[180px] truncate" title={cat}>{leaf}</span>
+                <button
+                  type="button"
+                  onClick={() => removeCategory(cat)}
+                  className="text-blue-700 hover:text-blue-900 leading-none"
+                  aria-label={`Remove ${cat}`}
+                >
+                  ×
+                </button>
+              </span>
+            );
+          })}
         </div>
       )}
 
@@ -134,7 +138,7 @@ export function LeafCategoryTypeahead({
             setDraft('');
           }
         }}
-        placeholder={selected.length === 0 ? 'Type to search 9k+ categories…' : 'Add another category…'}
+        placeholder={selected.length === 0 ? 'Type to search 11k+ categories…' : 'Add another category…'}
         className="filter-input"
         aria-label="Add leaf category"
         aria-expanded={open}
@@ -146,21 +150,25 @@ export function LeafCategoryTypeahead({
           role="listbox"
           className="absolute z-10 mt-1 max-h-72 w-full overflow-y-auto bg-white border border-gray-300 rounded shadow-lg text-sm"
         >
-          {matches.map((cat, i) => (
-            <li
-              key={cat}
-              role="option"
-              aria-selected={i === highlight}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                addCategory(cat);
-              }}
-              onMouseEnter={() => setHighlight(i)}
-              className={`px-2 py-1 cursor-pointer ${i === highlight ? 'bg-blue-100' : 'hover:bg-gray-50'}`}
-            >
-              {cat}
-            </li>
-          ))}
+          {matches.map((cat, i) => {
+            const { leaf, prefix } = splitCategoryPath(cat);
+            return (
+              <li
+                key={cat}
+                role="option"
+                aria-selected={i === highlight}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  addCategory(cat);
+                }}
+                onMouseEnter={() => setHighlight(i)}
+                className={`px-2 py-1 cursor-pointer ${i === highlight ? 'bg-blue-100' : 'hover:bg-gray-50'}`}
+              >
+                <div className="font-medium text-gray-800">{leaf}</div>
+                {prefix && <div className="text-[11px] text-gray-400 truncate" title={cat}>{prefix}</div>}
+              </li>
+            );
+          })}
           {matches.length === 50 && (
             <li className="px-2 py-1 text-xs text-gray-500 italic border-t">
               First 50 matches shown. Type more to narrow.
