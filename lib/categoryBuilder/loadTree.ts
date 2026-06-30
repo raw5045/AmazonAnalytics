@@ -109,23 +109,17 @@ export async function loadChildrenAtPath(path: string[]): Promise<LightNode[]> {
 const buildCachedLeaves = unstable_cache(
   async (_sv: string, wk: string, pathStr: string, prefix: string): Promise<string[]> => {
     const sql = neon(env.DATABASE_URL);
-    // Every distinct category_path is a terminal node; the leaves under `path`
-    // are the last segments of paths at or below it. Trim/dedupe/sort in JS to
-    // match collectDescendantLeaves exactly.
     const rows = (await sql`
       SELECT DISTINCT category_path FROM asin_weekly_data
       WHERE week_end_date = ${wk}::date
         AND (category_path = ${pathStr} OR starts_with(category_path, ${prefix}))
         AND category_path IS NOT NULL AND category_path <> ''
     `) as Array<{ category_path: string }>;
-    const names = new Set<string>();
-    for (const r of rows) {
-      const segs = r.category_path.split(PATH_SEP).map((s) => s.trim()).filter(Boolean);
-      if (segs.length) names.add(segs[segs.length - 1]);
-    }
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
+    return rows
+      .map((r) => r.category_path)
+      .sort((a, b) => a.localeCompare(b));
   },
-  ['category-builder-leaves'],
+  ['category-builder-leaves-v2'],
   { revalidate: REVALIDATE, tags: TAGS },
 );
 

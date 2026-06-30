@@ -125,7 +125,7 @@ function isDefaultSeverity(severities: SeverityKey[]): boolean {
 
 /** True when none of the Keepa-aggregate filters are set. */
 function noKeepaFilters(f: ExplorerFilters): boolean {
-  return f.leafCategories.length === 0;
+  return f.leafPaths.length === 0;
 }
 
 /**
@@ -165,9 +165,9 @@ function canUseCategoryFacet(f: ExplorerFilters): boolean {
 }
 
 /**
- * True when the filter set is "single-leaf-category-only + default
- * severity": exactly ONE leaf category filter, no broad cat, no other
- * narrowing. Lets us use the precomputed leaf-facet count. Multi-leaf
+ * True when the filter set is "single category-path-only + default
+ * severity": exactly ONE category-path filter, no broad cat, no other
+ * narrowing. Lets us use the precomputed leaf-facet count. Multi-path
  * selections fall through to the live COUNT(*) path.
  */
 function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
@@ -177,7 +177,7 @@ function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
     && f.rankMax === null
     && f.jump === null
     && f.category === null
-    && f.leafCategories.length === 1
+    && f.leafPaths.length === 1
     && f.titleMatchMode === null
     && isDefaultSeverity(f.severities)
   );
@@ -200,7 +200,7 @@ export async function runExplorerQuery(
     reqId,
     driver,
     page: filters.page,
-    leafCount: filters.leafCategories.length,
+    leafCount: filters.leafPaths.length,
     sort: filters.sort,
     rankMax: filters.rankMax,
     qMode: filters.q ? filters.qMode : null,
@@ -308,7 +308,7 @@ async function runExplorerQueryInner(
         SELECT default_severity_count AS n
         FROM keyword_current_summary_leaf_category_facets
         WHERE snapshot_version = ${snapshotVersion}::uuid
-          AND leaf_category = ${filters.leafCategories[0]}
+          AND category_path = ${filters.leafPaths[0]}
       `) as Array<{ n: number }>;
       if (facetRows.length > 0) {
         precomputedTotal = facetRows[0].n;
@@ -526,7 +526,7 @@ export async function countExplorerMatches(
   // 'start' with no terminal after minutes ⇒ a genuine server-side hang; 'ok'
   // with no UI update ⇒ the streamed result isn't reaching the client.
   const tStart = Date.now();
-  const leafCount = filters.leafCategories.length;
+  const leafCount = filters.leafPaths.length;
   console.log('[explorer count] start', JSON.stringify({ leafCount }));
   const sqlClient = neon(env.DATABASE_URL);
   let currentWeekEndDate: string | undefined;

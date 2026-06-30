@@ -25,13 +25,13 @@ async function fetchLeafCategories(): Promise<string[]> {
     const sv = meta[0]?.sv;
     if (sv) {
       const rows = (await sql`
-        SELECT leaf_category
+        SELECT category_path
         FROM keyword_current_summary_leaf_category_facets
         WHERE snapshot_version = ${sv}::uuid
-        ORDER BY leaf_category
-      `) as Array<{ leaf_category: string }>;
+        ORDER BY category_path
+      `) as Array<{ category_path: string }>;
       if (rows.length > 0) {
-        return rows.map((r) => r.leaf_category);
+        return rows.map((r) => r.category_path);
       }
     }
   } catch {
@@ -42,15 +42,15 @@ async function fetchLeafCategories(): Promise<string[]> {
   // returns empty for a populated kcs (e.g. immediately after migration
   // before the first refresh).
   const rows = (await sql`
-    SELECT DISTINCT top_clicked_leaf_category AS leaf_category
+    SELECT DISTINCT top_clicked_category_path AS category_path
     FROM keyword_current_summary
-    WHERE top_clicked_leaf_category IS NOT NULL
-    ORDER BY top_clicked_leaf_category
-  `) as Array<{ leaf_category: string }>;
-  return rows.map((r) => r.leaf_category);
+    WHERE top_clicked_category_path IS NOT NULL
+    ORDER BY top_clicked_category_path
+  `) as Array<{ category_path: string }>;
+  return rows.map((r) => r.category_path);
 }
 
-export const listLeafCategories = unstable_cache(fetchLeafCategories, ['explorer-leaf-categories'], {
+export const listLeafCategories = unstable_cache(fetchLeafCategories, ['explorer-leaf-categories-v2'], {
   revalidate: 60 * 60, // 1 hour
   tags: ['explorer-leaf-categories'],
 });

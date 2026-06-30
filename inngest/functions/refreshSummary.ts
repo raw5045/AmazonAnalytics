@@ -303,6 +303,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         least_reviews, most_reviews,
         avg_price_cents, avg_reviews,
         top_clicked_leaf_category,
+        top_clicked_category_path,
         search_term_normalized,
         updated_at
       )
@@ -380,6 +381,11 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         -- the leaf cat of the SECOND product isn't really "this
         -- keyword's category").
         p1.category_leaf AS top_clicked_leaf_category,
+        -- Full Keepa category PATH from the slot-1 (most-clicked) ASIN, the
+        -- path-aware analogue of top_clicked_leaf_category above. Powers the
+        -- explorer category-path filter + custom categories. Same slot-1 /
+        -- NULL-on-unenriched semantics as the leaf column.
+        p1.category_path AS top_clicked_category_path,
         -- Denormalized normalized keyword text for the explorer q-filter. Copied
         -- verbatim from search_terms.search_term_normalized (the canonical
         -- normalizeForMatch form the GIN trigram index and the regex/LIKE match
@@ -518,18 +524,18 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     );
     await client.query(
       `INSERT INTO keyword_current_summary_leaf_category_facets
-         (snapshot_version, leaf_category, default_severity_count, all_count)
+         (snapshot_version, category_path, default_severity_count, all_count)
        SELECT
          $1::uuid,
-         top_clicked_leaf_category,
+         top_clicked_category_path,
          COUNT(*) FILTER (
            WHERE fake_volume_severity_current IS NULL
               OR fake_volume_severity_current IN ('none', 'warning')
          )::int,
          COUNT(*)::int
        FROM keyword_current_summary
-       WHERE top_clicked_leaf_category IS NOT NULL
-       GROUP BY top_clicked_leaf_category`,
+       WHERE top_clicked_category_path IS NOT NULL
+       GROUP BY top_clicked_category_path`,
       [newSnapshotVersion],
     );
 
@@ -668,7 +674,8 @@ async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string
       a.current_price_cents,
       a.review_count,
       a.average_rating_x10,
-      a.category_leaf
+      a.category_leaf,
+      a.category_path
     FROM asin_weekly_data a
     WHERE a.week_end_date <= $1::date
       AND a.enrichment_status = 'active'
