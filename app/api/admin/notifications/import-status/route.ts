@@ -31,8 +31,19 @@ export async function GET() {
     throw e;
   }
 
+  // Shared admin ops view (verified Batch 4): returns imports across ALL
+  // admins with no created_by filter, by design. Admins co-administer one
+  // data pipeline, so seeing each other's import filenames/status is
+  // operational visibility, not a cross-tenant leak — every caller is
+  // requireAdmin-gated above.
+  //
   // Active = the worker is currently processing it (heartbeat fresh, not
-  // at a terminal phase).
+  // at a terminal phase). NOTE: a hung import that still heartbeats passes
+  // the freshness filter and shows as 'active'. An admin tells hung-but-
+  // heartbeating from healthy via the returned phase + startedAt — a static
+  // phase across refreshes plus a long startedAt age means stuck. (Precise
+  // per-phase age would need an import_phase_at column; import_phase_timings
+  // only logs a phase once it completes, not the in-flight one. Deferred.)
   const active = await db
     .select({
       fileId: uploadedFiles.id,

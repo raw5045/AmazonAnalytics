@@ -68,6 +68,16 @@ export async function POST(req: Request): Promise<Response> {
         name: extractName(event.data),
       });
     } else if (event.type === 'user.deleted') {
+      // FK cleanup on user delete (verified Batch 4): saved_views,
+      // watchlist_items, weekly_digest_sends, custom_categories CASCADE and
+      // weekly_digest_runs.triggered_by SETs NULL — so a REGULAR user deletes
+      // cleanly. The 5 admin-provenance refs (audit_log, app_settings,
+      // fake_volume_rules, upload_batches, schema_versions) are ON DELETE
+      // RESTRICT by design (preserve history), so deleting an ADMIN who owns
+      // such rows throws 23503 → caught below → 500 → Clerk retries. Accepted:
+      // admins aren't deleted via Clerk in practice. Follow-up if that changes:
+      // a set-null migration on those refs (upload_batches.created_by_user_id
+      // is NOT NULL, so that one also needs its NOT NULL dropped).
       await db.delete(users).where(eq(users.clerkUserId, event.data.id));
     }
   } catch (e) {
