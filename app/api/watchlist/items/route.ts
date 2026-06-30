@@ -62,9 +62,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'keyword not found' }, { status: 404 });
   }
 
-  // Cap check. Race-safe enough — even if two requests both pass this
-  // check, the second insert would land at 101 and the user can prune;
-  // the goal is a clear UX error in the common case.
+  // Cap check. COUNT-then-insert is not atomic: two simultaneous POSTs
+  // from one user can both pass and overshoot by one (101). Accepted —
+  // soft UX cap, overshoot is harmless and the user can prune. Make it
+  // strict with a per-user advisory lock only if that ever matters.
   const [{ n }] = await db
     .select({ n: sql<number>`COUNT(*)::int` })
     .from(watchlistItems)

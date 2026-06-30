@@ -38,6 +38,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `A category can include at most ${MAX_LEAF_PATHS_PER_CATEGORY.toLocaleString()} leaves.` }, { status: 400 });
   }
 
+  // Per-user cap. COUNT-then-insert is not atomic: two simultaneous POSTs
+  // from one user can both pass and overshoot by one. Accepted — this is a
+  // soft UX cap (overshoot is harmless and the user can prune). Make it
+  // strict with a per-user advisory lock only if that ever matters.
   const [{ n }] = await db
     .select({ n: sql<number>`COUNT(*)::int` })
     .from(customCategories)
