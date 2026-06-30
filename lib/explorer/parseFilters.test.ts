@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseExplorerFilters, EXPLORER_DEFAULTS } from './parseFilters';
+import { parseExplorerFilters, EXPLORER_DEFAULTS, parseLeafPaths } from './parseFilters';
 
 describe('parseExplorerFilters', () => {
   it('returns full defaults for empty searchParams', () => {
@@ -33,7 +33,7 @@ describe('parseExplorerFilters', () => {
       jumpFrom: null,
       jumpTo: null,
       category: 'Electronics',
-      leafCategories: [],
+      leafPaths: [],
       customCategoryIds: [],
       severities: ['warning', 'critical'],
       titleSlots: [1, 2],
@@ -45,23 +45,13 @@ describe('parseExplorerFilters', () => {
     });
   });
 
-  it('parses single leaf-category filter', () => {
-    const f = parseExplorerFilters({ leaf: 'Face Moisturizers' });
-    expect(f.leafCategories).toEqual(['Face Moisturizers']);
-  });
-
-  it('parses multiple comma-separated leaf categories', () => {
-    const f = parseExplorerFilters({ leaf: 'Face Moisturizers,Anti-aging Creams,Toilet Paper' });
-    expect(f.leafCategories).toEqual(['Face Moisturizers', 'Anti-aging Creams', 'Toilet Paper']);
-  });
-
-  it('trims whitespace and drops empty entries from leaf list', () => {
-    const f = parseExplorerFilters({ leaf: '  Foo, , Bar  ,Baz' });
-    expect(f.leafCategories).toEqual(['Foo', 'Bar', 'Baz']);
+  it('parseExplorerFilters reads repeated leaf params as leafPaths', () => {
+    const f = parseExplorerFilters({ leaf: ['Clothing, Shoes & Jewelry › Pants', 'Books › Subjects › Self-Help › General'] });
+    expect(f.leafPaths).toEqual(['Clothing, Shoes & Jewelry › Pants', 'Books › Subjects › Self-Help › General']);
   });
 
   it('returns empty array for missing leaf param', () => {
-    expect(parseExplorerFilters({}).leafCategories).toEqual([]);
+    expect(parseExplorerFilters({}).leafPaths).toEqual([]);
   });
 
   it('parses custom threshold jump with both bounds', () => {
@@ -151,6 +141,20 @@ describe('parseExplorerFilters', () => {
     const f = parseExplorerFilters({ window: ['52w', '1w'] });
     expect(f.window).toBe('52w');
   });
+});
+
+describe('parseLeafPaths', () => {
+  it('returns [] for undefined', () => expect(parseLeafPaths(undefined)).toEqual([]));
+  it('wraps a single string path', () =>
+    expect(parseLeafPaths('Health & Household › Air Fresheners'))
+      .toEqual(['Health & Household › Air Fresheners']));
+  it('keeps repeated params as separate paths', () =>
+    expect(parseLeafPaths(['A › B', 'C › D'])).toEqual(['A › B', 'C › D']));
+  it('does NOT split on commas in department names', () =>
+    expect(parseLeafPaths(['Clothing, Shoes & Jewelry › Pants']))
+      .toEqual(['Clothing, Shoes & Jewelry › Pants']));
+  it('trims and drops blanks', () =>
+    expect(parseLeafPaths(['  A › B  ', '', '  '])).toEqual(['A › B']));
 });
 
 describe('parseExplorerFilters — Movement jump', () => {

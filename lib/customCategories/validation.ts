@@ -9,8 +9,8 @@ export function validateName(raw: unknown): { ok: true; name: string } | { ok: f
   return { ok: true, name };
 }
 
-/** Coerce an incoming leaf_names blob into a deduped string[] (first-occurrence order). */
-export function normalizeLeafNames(raw: unknown): string[] {
+/** Coerce an incoming blob of full category paths into a deduped string[] (first-occurrence order). */
+export function normalizePaths(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
   const out: string[] = [];

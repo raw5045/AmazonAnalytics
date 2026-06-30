@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateName, normalizeLeafNames, MAX_CUSTOM_CATEGORIES } from './validation';
+import { validateName, normalizePaths, MAX_CUSTOM_CATEGORIES } from './validation';
 
 describe('validateName', () => {
   it('trims and accepts a normal name', () => {
@@ -10,12 +10,14 @@ describe('validateName', () => {
   it('rejects non-strings', () => { expect(validateName(42).ok).toBe(false); });
 });
 
-describe('normalizeLeafNames', () => {
+describe('normalizePaths', () => {
   it('dedupes, drops blanks, keeps order of first occurrence', () => {
-    expect(normalizeLeafNames(['Collagen', 'Iron', 'Collagen', '', '  '])).toEqual(['Collagen', 'Iron']);
+    expect(normalizePaths(['Collagen', 'Iron', 'Collagen', '', '  '])).toEqual(['Collagen', 'Iron']);
   });
-  it('returns [] for non-arrays', () => { expect(normalizeLeafNames('nope')).toEqual([]); });
-  it('drops non-string members', () => { expect(normalizeLeafNames(['Collagen', 5, null])).toEqual(['Collagen']); });
+  it('returns [] for non-arrays', () => { expect(normalizePaths('nope')).toEqual([]); });
+  it('drops non-string members', () => { expect(normalizePaths(['Collagen', 5, null])).toEqual(['Collagen']); });
+  it('keeps full paths intact (no splitting)', () =>
+    expect(normalizePaths(['A › B › C', 'A › B › C', 'X › Y'])).toEqual(['A › B › C', 'X › Y']));
 });
 
 describe('limits', () => {

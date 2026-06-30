@@ -58,14 +58,15 @@ export interface ExplorerFilters {
   jumpTo: number | null;
   category: string | null;
   /**
-   * Keepa leaf categories (e.g. ["Face Moisturizers", "Anti-aging Creams"])
+   * Full Keepa category paths (e.g.
+   * ["Health & Household › Air Fresheners", "Beauty › Face Moisturizers"])
    * for the slot-1 top-clicked ASIN. Independent from `category` (the
    * broad BA cat). Multi-select with OR semantics — a keyword matches
-   * if its leaf is in this list. Empty array = no leaf filter.
+   * if its full path is in this list. Empty array = no leaf filter.
    *
    * Precursor for saved-searches with custom leaf-set filters.
    */
-  leafCategories: string[];
+  leafPaths: string[];
   /** IDs of the user's custom categories selected in the filter (by reference).
    *  The page loader expands these to leaf names and unions into the leaf filter. */
   customCategoryIds: string[];

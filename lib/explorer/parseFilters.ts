@@ -29,7 +29,7 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   jumpFrom: null,
   jumpTo: null,
   category: null,
-  leafCategories: [],
+  leafPaths: [],
   customCategoryIds: [],
   severities: ['none', 'warning'],
   titleSlots: [1, 2, 3],
@@ -107,6 +107,18 @@ function parseLeafCategories(value: string | undefined): string[] {
   return value.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
+/**
+ * Repeated `leaf` URL param(s) → string[] of full category paths. Each value is
+ * one complete path. Department names contain commas ("Clothing, Shoes &
+ * Jewelry"), so we do NOT comma-split — repeated params are the delimiter. Next
+ * delivers repeated params as string[] and a lone one as string.
+ */
+export function parseLeafPaths(value: string | string[] | undefined): string[] {
+  if (value === undefined) return [];
+  const arr = Array.isArray(value) ? value : [value];
+  return arr.map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
 function parseTitleSlots(value: string | undefined): number[] {
   if (!value) return EXPLORER_DEFAULTS.titleSlots;
   const parts = value
@@ -165,7 +177,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     jumpFrom: jump === 'custom' ? jumpFrom : null,
     jumpTo: jump === 'custom' ? jumpTo : null,
     category: getOne(searchParams.category) ?? null,
-    leafCategories: parseLeafCategories(getOne(searchParams.leaf)),
+    leafPaths: parseLeafPaths(searchParams.leaf),
     customCategoryIds: parseLeafCategories(getOne(searchParams.custom)),
     severities,
     titleSlots,
