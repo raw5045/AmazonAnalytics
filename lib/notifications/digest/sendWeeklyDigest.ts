@@ -109,6 +109,14 @@ export async function sendWeeklyDigest(opts: {
     console.warn(`[sendWeeklyDigest] RESEND_API_KEY not set — skipping send for ${weekEndDate}.`);
   } else {
     const resend = new Resend(apiKey);
+    // Send-then-mark is deliberate: at-least-once delivery. If the worker
+    // hard-crashes after Resend accepts a batch but before markOne records
+    // 'sent', a resume re-sends that chunk (≤100 users). Accepted — for a
+    // weekly digest a rare duplicate beats a MISS, which a pre-send marker
+    // would cause (mark 'sent', then crash before the send → that user is
+    // never retried). Exactly-once would need Resend idempotency keys; not
+    // worth it at this scale. The (week,user) unique send row bounds the
+    // blast radius to one in-flight chunk.
     for (const group of chunk(recipients, CHUNK_SIZE)) {
       const payloads = group.map((r) => buildEmailPayload(r, weekEndDate, appUrl, from, rowsByUser));
       try {
