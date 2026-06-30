@@ -84,7 +84,7 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     jumpFrom: typeof f.jumpFrom === 'number' ? f.jumpFrom : null,
     jumpTo: typeof f.jumpTo === 'number' ? f.jumpTo : null,
     category: typeof f.category === 'string' ? f.category : null,
-    leafCategories: Array.isArray(f.leafCategories) ? (f.leafCategories as string[]) : [],
+    leafPaths: Array.isArray(f.leafPaths) ? (f.leafPaths as string[]) : [],
     customCategoryIds: Array.isArray(f.customCategoryIds) ? (f.customCategoryIds as string[]) : [],
     severities: Array.isArray(f.severities) ? (f.severities as ExplorerFilters['severities']) : ['none', 'warning'],
     titleSlots: Array.isArray(f.titleSlots) ? (f.titleSlots as number[]) : [1, 2, 3],
@@ -113,8 +113,8 @@ function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
   if (typeof f.jumpFrom === 'number') p.jump_from = String(f.jumpFrom);
   if (typeof f.jumpTo === 'number') p.jump_to = String(f.jumpTo);
   if (typeof f.category === 'string') p.category = f.category;
-  if (Array.isArray(f.leafCategories) && f.leafCategories.length > 0) {
-    p.leaf = (f.leafCategories as string[]).join(',');
+  if (Array.isArray(f.leafPaths) && f.leafPaths.length > 0) {
+    p.leaf = f.leafPaths as string[]; // SearchParamsLike allows string[]; repeated-param shape
   }
   if (Array.isArray(f.customCategoryIds) && f.customCategoryIds.length > 0) {
     p.custom = (f.customCategoryIds as string[]).join(',');

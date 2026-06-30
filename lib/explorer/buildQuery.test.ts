@@ -187,6 +187,17 @@ describe('buildExplorerQuery', () => {
     });
   });
 
+  describe('leaf path filter', () => {
+    it('filters by full category path when leafPaths set', () => {
+      const built = buildExplorerQuery(
+        { ...baseFilters, leafPaths: ['Automotive › Interior Accessories › Air Fresheners'] },
+        '2026-06-20',
+      );
+      expect(built.sql).toContain('top_clicked_category_path IN');
+      expect(built.args).toContain('Automotive › Interior Accessories › Air Fresheners');
+    });
+  });
+
   describe('severity filter (1.6)', () => {
     it('default [none, warning] includes NULLs', () => {
       const { sql } = buildExplorerQuery(baseFilters);

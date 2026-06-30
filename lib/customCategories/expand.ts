@@ -3,26 +3,26 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { customCategories } from '@/db/schema';
 
-/** Pure: union base leaf names with each row's leafNames, deduped + sorted. */
-export function mergeCustomLeaves(base: string[], rows: Array<{ leafNames: string[] }>): string[] {
+/** Pure: union base paths with each row's leafPaths, deduped + sorted. */
+export function mergeCustomPaths(base: string[], rows: Array<{ leafPaths: string[] }>): string[] {
   const set = new Set(base);
-  for (const r of rows) for (const n of r.leafNames) set.add(n);
+  for (const r of rows) for (const n of r.leafPaths) set.add(n);
   return [...set].sort((a, b) => a.localeCompare(b));
 }
 
 /**
- * Expand selected custom-category IDs (for one user) into leaf names and union
- * with `baseLeaves`. Unknown/deleted IDs are silently skipped (graceful).
+ * Expand selected custom-category IDs (for one user) into full category paths
+ * and union with `basePaths`. Unknown/deleted IDs are silently skipped.
  */
 export async function expandCustomCategories(
   userId: string,
   ids: string[],
-  baseLeaves: string[],
+  basePaths: string[],
 ): Promise<string[]> {
-  if (ids.length === 0) return baseLeaves;
+  if (ids.length === 0) return basePaths;
   const rows = await db
-    .select({ leafNames: customCategories.leafNames })
+    .select({ leafPaths: customCategories.leafPaths })
     .from(customCategories)
     .where(and(eq(customCategories.userId, userId), inArray(customCategories.id, ids)));
-  return mergeCustomLeaves(baseLeaves, rows.map((r) => ({ leafNames: (r.leafNames as string[]) ?? [] })));
+  return mergeCustomPaths(basePaths, rows.map((r) => ({ leafPaths: (r.leafPaths as string[]) ?? [] })));
 }

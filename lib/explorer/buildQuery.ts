@@ -256,9 +256,9 @@ function pushKcsPredicates(
   if (filters.category) {
     where.push(`kcs.top_clicked_category_1_current = ${next(filters.category)}`);
   }
-  if (filters.leafCategories.length > 0) {
-    const ps = filters.leafCategories.map((c) => next(c)).join(', ');
-    where.push(`kcs.top_clicked_leaf_category IN (${ps})`);
+  if (filters.leafPaths.length > 0) {
+    const ps = filters.leafPaths.map((c) => next(c)).join(', ');
+    where.push(`kcs.top_clicked_category_path IN (${ps})`);
   }
   if (filters.severities.length > 0 && filters.severities.length < 3) {
     const params = filters.severities.map((s) => next(s)).join(', ');

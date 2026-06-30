@@ -1,20 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-
-// Mock the DB client so this unit test can run without env vars.
-// The DB-dependent expandCustomCategories is tested via integration tests.
 vi.mock('@/db/client', () => ({ db: {} }));
+import { mergeCustomPaths } from './expand';
 
-import { mergeCustomLeaves } from './expand';
-
-describe('mergeCustomLeaves', () => {
-  it('unions selected categories leaves into the base set, deduped + sorted', () => {
+describe('mergeCustomPaths', () => {
+  it('unions selected categories paths into the base set, deduped + sorted', () => {
     const rows = [
-      { id: 'a', leafNames: ['Collagen', 'Iron'] },
-      { id: 'b', leafNames: ['Iron', 'Zinc'] },
+      { id: 'a', leafPaths: ['H › Collagen', 'H › Iron'] },
+      { id: 'b', leafPaths: ['H › Iron', 'H › Zinc'] },
     ];
-    expect(mergeCustomLeaves(['Magnesium'], rows)).toEqual(['Collagen', 'Iron', 'Magnesium', 'Zinc']);
+    expect(mergeCustomPaths(['H › Magnesium'], rows))
+      .toEqual(['H › Collagen', 'H › Iron', 'H › Magnesium', 'H › Zinc']);
   });
-  it('returns the base unchanged (deduped+sorted) when no rows', () => {
-    expect(mergeCustomLeaves(['Collagen'], [])).toEqual(['Collagen']);
-  });
+  it('returns base unchanged when no rows', () =>
+    expect(mergeCustomPaths(['H › Collagen'], [])).toEqual(['H › Collagen']));
 });
