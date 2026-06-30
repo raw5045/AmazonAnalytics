@@ -123,6 +123,11 @@ export const keywordCurrentSummary = pgTable(
     avgReviews: integer('avg_reviews'),
     /** Keepa leaf category for the slot-1 (most-clicked) ASIN. */
     topClickedLeafCategory: text('top_clicked_leaf_category'),
+    /**
+     * Full Keepa category path of the slot-1 (most-clicked) ASIN — the
+     * path-aware filter key (keep `topClickedLeafCategory` for display).
+     */
+    topClickedCategoryPath: text('top_clicked_category_path'),
 
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -149,7 +154,7 @@ export const keywordCurrentSummary = pgTable(
     estVol26wIdx: index('kcs_est_vol_26w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume26wAgo),
     estVol52wIdx: index('kcs_est_vol_52w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume52wAgo),
     estVol1wIdx: index('kcs_est_vol_1w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume1wAgo),
-    leafCategoryIdx: index('kcs_leaf_category_idx').on(t.currentWeekEndDate, t.topClickedLeafCategory),
+    leafPathIdx: index('kcs_leaf_path_idx').on(t.currentWeekEndDate, t.topClickedCategoryPath),
     lowestPriceIdx: index('kcs_lowest_price_idx').on(t.currentWeekEndDate, t.lowestPriceCents),
     mostReviewsIdx: index('kcs_most_reviews_idx').on(t.currentWeekEndDate, t.mostReviews),
     avgPriceIdx: index('kcs_avg_price_idx').on(t.currentWeekEndDate, t.avgPriceCents),
