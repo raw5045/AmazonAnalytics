@@ -55,10 +55,12 @@ export const MAX_CUSTOM_CATEGORY_IDS = 50;
 /**
  * Cap on the paged OFFSET ((page-1)*perPage). A stray ?page=99999 otherwise
  * makes the main query do an OFFSET ~10M scan (~33s observed) before the "past
- * the last page" message can even render. 100k is ~10x the 10,000 result-count
- * display cap, so realistic paging never reaches it.
+ * the last page" message can even render. Set to the same ~10,000 ceiling as
+ * the result-count display (which stops counting at 10,001) — so paging covers
+ * exactly the counted range and clamps to the last counted page beyond it.
+ * (A looser 100k cap was tried first, but OFFSET 100k was still ~20s on prod.)
  */
-export const MAX_EXPLORER_OFFSET = 100_000;
+export const MAX_EXPLORER_OFFSET = 10_000;
 
 export type SearchParamsLike = Record<string, string | string[] | undefined>;
 
