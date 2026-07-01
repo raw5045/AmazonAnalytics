@@ -48,7 +48,11 @@ export interface PerfStripData {
   categoriesCacheHint: 'fast' | 'slow';
 }
 
-export function PerfStrip({ data }: { data: PerfStripData }) {
+export function PerfStrip({ admin, data }: { admin: boolean; data: PerfStripData }) {
+  // Admin-gated, matching the sibling PerfPanel — the per-layer query timing
+  // breakdown is an internal diagnostic, not something to surface to end users.
+  if (!admin) return null;
+
   const countLabel = data.countSource === 'live'
     ? `count=${data.countMs}ms (live)`
     : `count=0ms (${data.countSource})`;

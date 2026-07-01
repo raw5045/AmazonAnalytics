@@ -148,6 +148,7 @@ export default async function ExplorerPage({
             keyword the user opens doesn't pay the ~103 KB download. */}
         <ChartChunkWarmer />
         <PerfStrip
+          admin={user?.role === 'admin'}
           data={{
             handlerTotalMs,
             metaLookupMs: rqTimings.metaLookupMs,
