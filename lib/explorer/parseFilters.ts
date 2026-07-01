@@ -52,6 +52,14 @@ export const MAX_LEAF_PATHS = 2000;
 export const MAX_LEAF_PATH_LENGTH = 256;
 export const MAX_CUSTOM_CATEGORY_IDS = 50;
 
+/**
+ * Cap on the paged OFFSET ((page-1)*perPage). A stray ?page=99999 otherwise
+ * makes the main query do an OFFSET ~10M scan (~33s observed) before the "past
+ * the last page" message can even render. 100k is ~10x the 10,000 result-count
+ * display cap, so realistic paging never reaches it.
+ */
+export const MAX_EXPLORER_OFFSET = 100_000;
+
 export type SearchParamsLike = Record<string, string | string[] | undefined>;
 
 const WINDOW_VALUES: WindowKey[] = ['1w', '4w', '13w', '26w', '52w'];
@@ -180,10 +188,12 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const severities = parseSeverities(getOne(searchParams.severity));
   const titleSlots = parseTitleSlots(getOne(searchParams.titles));
 
-  const page = parsePositiveInt(getOne(searchParams.page)) ?? EXPLORER_DEFAULTS.page;
   const perPageRaw = parsePositiveInt(getOne(searchParams.per_page)) ?? EXPLORER_DEFAULTS.perPage;
   // Hard cap — protect the DB from a hostile per_page value.
   const perPage = Math.min(perPageRaw, 500);
+  const rawPage = parsePositiveInt(getOne(searchParams.page)) ?? EXPLORER_DEFAULTS.page;
+  // Clamp the page so the resulting OFFSET can't explode (see MAX_EXPLORER_OFFSET).
+  const page = Math.min(rawPage, Math.floor(MAX_EXPLORER_OFFSET / perPage) + 1);
 
   return {
     window,

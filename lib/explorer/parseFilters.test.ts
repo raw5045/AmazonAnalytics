@@ -6,6 +6,7 @@ import {
   MAX_LEAF_PATHS,
   MAX_LEAF_PATH_LENGTH,
   MAX_CUSTOM_CATEGORY_IDS,
+  MAX_EXPLORER_OFFSET,
 } from './parseFilters';
 
 describe('parseExplorerFilters', () => {
@@ -136,6 +137,16 @@ describe('parseExplorerFilters', () => {
 
   it('caps per_page at 500', () => {
     expect(parseExplorerFilters({ per_page: '99999' }).perPage).toBe(500);
+  });
+
+  it('clamps an absurd page so the OFFSET stays bounded', () => {
+    const f = parseExplorerFilters({ page: '99999', per_page: '100' });
+    expect((f.page - 1) * f.perPage).toBeLessThanOrEqual(MAX_EXPLORER_OFFSET);
+    expect(f.page).toBeLessThan(99999);
+  });
+
+  it('leaves a normal page number unclamped', () => {
+    expect(parseExplorerFilters({ page: '5' }).page).toBe(5);
   });
 
   it('treats negative or zero rank values as null', () => {
