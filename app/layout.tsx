@@ -15,10 +15,11 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Amazon SFR Analytics",
-    template: "%s · Amazon SFR Analytics",
+    default: "KeywordQuarry",
+    template: "%s · KeywordQuarry",
   },
-  description: "Weekly Amazon Search Frequency Rank analytics",
+  description:
+    "Find high-demand, low-competition Amazon keywords. Weekly-fresh search data, fake-volume detection, and exact leaf-category mapping.",
 };
 
 export default function RootLayout({
