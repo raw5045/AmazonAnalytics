@@ -11,7 +11,9 @@ export function validateContact(
 ): { ok: true; input: ContactInput } | { ok: false; error: string } {
   if (!raw || typeof raw !== 'object') return { ok: false, error: 'invalid payload' };
   const r = raw as Record<string, unknown>;
-  const name = typeof r.name === 'string' ? r.name.trim() : '';
+  // Collapse control characters in the name — it lands in an email subject
+  // line, where embedded newlines can visually spoof inbox previews.
+  const name = typeof r.name === 'string' ? r.name.replace(/[\r\n\t]+/g, ' ').trim() : '';
   const email = typeof r.email === 'string' ? r.email.trim() : '';
   const message = typeof r.message === 'string' ? r.message.trim() : '';
   if (name.length === 0 || name.length > 100) return { ok: false, error: 'name must be 1–100 characters' };

@@ -56,6 +56,13 @@ export async function sendContactEmail(input: ContactInput): Promise<{ sent: boo
   }
 }
 
+// Matches buildImportEmail.ts's escapeHtml (incl. single quotes) so a future
+// refactor that interpolates these values into an HTML attribute stays safe.
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
