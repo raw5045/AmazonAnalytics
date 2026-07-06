@@ -6,6 +6,7 @@ import { processMonthlySfr } from './processMonthlySfr';
 import { processCalibrationUpload } from './processCalibrationUpload';
 import { syncKcsKeepaAggregates } from './syncKcsKeepaAggregates';
 import { sendWeeklyDigestFn } from './sendWeeklyDigest';
+import { warmExplorerLandingFn } from './warmExplorerLanding';
 
 // Note: `importFileFn` is no longer registered. The batch path
 // (importBatchFn) now calls processFileImport directly via the worker's
@@ -21,4 +22,5 @@ export const functions = [
   processCalibrationUpload,
   syncKcsKeepaAggregates,
   sendWeeklyDigestFn,
+  warmExplorerLandingFn,
 ];

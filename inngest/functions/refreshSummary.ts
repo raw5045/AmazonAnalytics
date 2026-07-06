@@ -38,6 +38,7 @@ import { Pool, type PoolClient } from 'pg';
 import { pickFitForWeek, buildVolumeExpressions, type FitParams } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 import { kwmRowToEntry, appendWeek, type ChartSeriesKwmRow } from '@/lib/explorer/chartSeries';
+import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
 
 /** Rebuild at most this many gapped/new terms per refresh; the detail page
  *  falls back to a live kwm read for any beyond the cap, and they're retried
@@ -583,6 +584,15 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     } catch (e) {
       console.warn('[refreshSummary] chart-series maintenance failed (non-fatal):', (e as Error).message);
     }
+
+    // Warm the landing path against the just-swapped table: the freshly
+    // built rows have no hint bits and their top-of-rank pages aren't in
+    // Neon's cache yet — run the real landing query once here so the first
+    // visitor after a refresh doesn't pay that cost. Fail-soft inside.
+    const warm = await warmExplorerLanding(client);
+    console.log(
+      `[refreshSummary] landing warm-up: ${warm.ok ? `${warm.rows} rows in ${warm.ms}ms` : 'failed (non-fatal)'}`,
+    );
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;

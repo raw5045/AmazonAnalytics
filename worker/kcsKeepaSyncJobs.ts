@@ -27,6 +27,7 @@
  */
 import { Pool } from 'pg';
 import { inngest } from '@/inngest/client';
+import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
 
 const inflight = new Set<string>();
 
@@ -152,6 +153,24 @@ export function startKcsKeepaSyncJob(
         log(`phase=3 done: ${facetsInserted.toLocaleString()} path facets`);
 
         await c.query(`DROP TABLE tmp_asin_enriched_sync`);
+
+        // Phase 4: vacuum away the churn we just created. The Phase-2 UPDATE
+        // rewrites ~4M rows (non-HOT — indexed columns change), leaving dead
+        // tuples that make the explorer's rank-ordered landing scan wade
+        // scattered heap pages until autovacuum catches up — observed as
+        // 30-50s cold loads (2026-07-05 incident). Pay that cost here, inside
+        // the overnight job, instead of on the first visitor of the morning.
+        // VACUUM can't run in a transaction; this client runs autocommit.
+        log('phase=4 VACUUM (ANALYZE) keyword_current_summary');
+        const t4 = Date.now();
+        await c.query(`VACUUM (ANALYZE) keyword_current_summary`);
+        log(`phase=4 done in ${((Date.now() - t4) / 1000).toFixed(1)}s`);
+
+        // Phase 5: re-warm the landing path (top-of-rank pages + hint bits)
+        // so the next real visitor hits warm cache. Fail-soft inside.
+        const warm = await warmExplorerLanding(c);
+        log(`phase=5 landing warm-up: ${warm.ok ? `${warm.rows} rows in ${warm.ms}ms` : 'failed (non-fatal)'}`);
+
         success = true;
       } finally {
         c.release();
