@@ -1,29 +1,35 @@
 /**
- * /explorer/keyword/<id> — keyword detail page (Plan 3.3 / T5 fast-first-view).
+ * /explorer/keyword/<id> — keyword detail page.
  *
  * Server component:
  *   1. Validate the [id] param (cheap 404 path)
- *   2. Call fetchKeywordChartData (FAST): reads keyword_chart_series + kcs +
- *      fits + current-week variants — everything the header + 4 charts need,
- *      all from compact, stays-warm tables.
- *   3. Stream the "Top clicked products" box (fetchKeywordProducts) and the
- *      "Weekly history" table (fetchKeywordRawHistory) behind <Suspense> — both
- *      read the 140M-row kwm table, a ~2s cold-page hotspot, off the critical path.
+ *   2. Await ONLY fetchKeywordHeader (search_terms + kcs + fits — compact,
+ *      stays-warm reads, ~100-300ms cold) so the shell + header paint fast.
+ *   3. Stream everything heavier behind <Suspense>:
+ *      - Trend chart + the two strips (share ONE cached
+ *        fetchKeywordChartHistory — the keyword_chart_series read can hit
+ *        multi-second Neon cold-layer reads; 2026-07-07 investigation)
+ *      - Top clicked products (single row on the 140M-row kwm table)
+ *      - Weekly history table (kwm 52-week scan)
+ *      - Variants box (import_duplicate_search_terms single row)
  */
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { fetchKeywordChartData } from '@/lib/explorer/fetchKeywordDetail';
+import { fetchKeywordHeader } from '@/lib/explorer/fetchKeywordDetail';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isKeywordWatched } from '@/lib/watchlist/loadServer';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { PerfPanel } from '@/app/(app)/PerfPanel';
 import { startHandlerTimer } from '@/lib/perf/handlerTimer';
 import { BackToExplorer } from './BackToExplorer';
-import { LazyRankChart, LazyVolumeChart } from './LazyCharts';
-import { FakeVolumeStrip } from './FakeVolumeStrip';
-import { TitleMatchHistory } from './TitleMatchHistory';
-import { KeywordVariantsBox } from './KeywordVariantsBox';
+import { ChartSkeleton } from './ChartSkeleton';
+import {
+  TrendChartSection,
+  StripsSection,
+  StripsSkeleton,
+  VariantsSection,
+} from './StreamedSections';
 import { WeeklyHistoryTable, HistoryTableSkeleton } from './WeeklyHistoryTable';
 import { TopProductsSection, TopProductsSkeleton } from './TopProductsSection';
 
@@ -44,9 +50,9 @@ export default async function KeywordDetailPage({
   const { id } = await params;
   if (!UUID_RE.test(id)) notFound();
 
-  const detail = await fetchKeywordChartData(id);
-  timer.mark('chartData (fast loader)');
-  if (!detail) notFound();
+  const header = await fetchKeywordHeader(id);
+  timer.mark('header (term + kcs + fits)');
+  if (!header) notFound();
 
   const user = await getCurrentUser();
   timer.mark('auth');
@@ -62,13 +68,8 @@ export default async function KeywordDetailPage({
   // direct entries fall back to a normal link to backHref.)
   const cameFromExplorer = Boolean(fromRaw && fromRaw.startsWith('/explorer'));
 
-  const {
-    searchTermRaw,
-    searchTermNormalized,
-    current,
-    chartHistory,
-    currentWeekVariants,
-  } = detail;
+  const { searchTermRaw, searchTermNormalized, current } = header;
+  const latestWeek = current?.currentWeekEndDate ?? header.lastSeenWeek;
 
   const showNormalized =
     searchTermNormalized && searchTermNormalized.toLowerCase() !== searchTermRaw.toLowerCase();
@@ -81,6 +82,7 @@ export default async function KeywordDetailPage({
           totalMs: timer.totalMs(),
           steps: [
             ...timer.steps,
+            { label: 'charts (series)', ms: 0, note: 'deferred (streams)' },
             { label: 'weekly history', ms: 0, note: 'deferred (streams)' },
           ],
         }}
@@ -132,24 +134,16 @@ export default async function KeywordDetailPage({
           </div>
         ) : (
           <div className="mt-3 inline-block bg-amber-50 border border-amber-200 text-amber-900 text-sm px-3 py-2 rounded">
-            This keyword is dormant — last seen <strong>{detail.lastSeenWeek}</strong>. The
+            This keyword is dormant — last seen <strong>{header.lastSeenWeek}</strong>. The
             history below is preserved; the explorer&apos;s active snapshot has dropped it.
           </div>
         )}
       </header>
 
       <section className="mt-6">
-        <LazyRankChart
-          history={chartHistory}
-          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
-        />
-      </section>
-
-      <section className="mt-6">
-        <LazyVolumeChart
-          history={chartHistory}
-          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
-        />
+        <Suspense fallback={<ChartSkeleton title="Est. volume trend (52w)" />}>
+          <TrendChartSection id={id} latestWeek={latestWeek} />
+        </Suspense>
       </section>
 
       {current && (
@@ -159,14 +153,9 @@ export default async function KeywordDetailPage({
       )}
 
       <section className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <FakeVolumeStrip
-          history={chartHistory}
-          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
-        />
-        <TitleMatchHistory
-          history={chartHistory}
-          latestWeek={current?.currentWeekEndDate ?? detail.lastSeenWeek}
-        />
+        <Suspense fallback={<StripsSkeleton />}>
+          <StripsSection id={id} latestWeek={latestWeek} />
+        </Suspense>
       </section>
 
       <section className="mt-8">
@@ -177,15 +166,12 @@ export default async function KeywordDetailPage({
       </section>
 
       {/* Variants box: only for active keywords whose current week had >1
-          raw CSV phrasing. Sourced from the fast loader's current-week
-          import_duplicate_search_terms read. */}
-      {current && currentWeekVariants && (
-        <section className="mt-6">
-          <KeywordVariantsBox
-            weekEndDate={current.currentWeekEndDate}
-            variants={currentWeekVariants}
-          />
-        </section>
+          raw CSV phrasing. Streams; renders nothing when there are no
+          variants (the common case). */}
+      {current && (
+        <Suspense fallback={null}>
+          <VariantsSection id={id} currentWeekEndDate={current.currentWeekEndDate} />
+        </Suspense>
       )}
     </div>
   );

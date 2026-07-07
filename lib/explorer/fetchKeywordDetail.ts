@@ -1,18 +1,24 @@
 /**
- * Server-side data fetcher for the /explorer/keyword/<id> page.
+ * Server-side data fetchers for the /explorer/keyword/<id> page.
  *
- * Exports three loaders:
- *   - fetchKeywordChartData(id)  — FAST: reads keyword_chart_series (compact)
- *       plus search_terms, kcs current, fits, current-week kwm (for product
- *       ASINs/titles + variants). Falls back to a full kwm 52-week read when
- *       the series row is absent or the table doesn't exist yet.
- *   - fetchKeywordRawHistory(id) — SLOW: full 52-week kwm scan for the
- *       "Weekly history" raw table, streamed behind <Suspense>.
+ * Loaders, in page order:
+ *   - fetchKeywordHeader(id)       — BLOCKING: search_terms + kcs current +
+ *       fits. Compact stays-warm reads (~100-300ms cold); everything the page
+ *       shell + header needs. Returns null → 404.
+ *   - fetchKeywordChartHistory(id) — STREAMED: keyword_chart_series single-row
+ *       read (falls back to a full kwm 52-week read when the series row is
+ *       absent). Wrapped in React cache() so the chart section and the strips
+ *       section share ONE read per request. Kept off the blocking path because
+ *       the 8.8GB series table can hit multi-second Neon cold-layer reads
+ *       (2026-07-07 investigation: 4-page PK lookups measured at 1.5-15s cold).
+ *   - fetchCurrentWeekVariants(id, week) — STREAMED: variants box single row.
+ *   - fetchKeywordProducts(id, week)     — STREAMED: top-products kwm slice.
+ *   - fetchKeywordRawHistory(id)         — STREAMED: full 52-week kwm scan for
+ *       the "Weekly history" raw table.
  *   - fetchKeywordDetail(id)     — legacy single loader; kept for any other
- *       callers; composes the two functions above.
- *
- * Both hit existing indexes (kcs PK on search_term_id, kwm_term_week_idx).
+ *       callers.
  */
+import { cache } from 'react';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import type { SeverityKey } from './types';
@@ -159,29 +165,17 @@ export interface CurrentWeekProductSlot {
 }
 
 /**
- * Return type of fetchKeywordChartData — everything the detail page
- * needs to render its header, charts, top-products box, and variants
- * box. The raw "Weekly history" table is NOT included; it streams in
- * separately via fetchKeywordRawHistory.
+ * Return type of fetchKeywordHeader — everything the page shell + header
+ * need. Charts, strips, products, variants, and the raw history table all
+ * stream in separately.
  */
-export interface KeywordChartData {
+export interface KeywordHeaderData {
   searchTermId: string;
   searchTermRaw: string;
   searchTermNormalized: string;
   firstSeenWeek: string;
   lastSeenWeek: string;
   current: KeywordDetailCurrent | null;
-  /**
-   * History rows derived from keyword_chart_series (fast path) or from
-   * a kwm 52-week read (fallback). Used by all 4 charts.
-   */
-  chartHistory: KeywordDetailHistoryRow[];
-  /**
-   * Variant info for the current week, sourced from
-   * import_duplicate_search_terms. Null when no duplicates for that week
-   * or keyword is dormant.
-   */
-  currentWeekVariants: KeywordVariantInfo | null;
 }
 
 /**
@@ -602,31 +596,24 @@ async function fetchKwmHistory(
 }
 
 // ---------------------------------------------------------------------------
-// fetchKeywordChartData — FAST loader for the detail-page header + charts
+// fetchKeywordHeader — BLOCKING loader for the page shell + header
 // ---------------------------------------------------------------------------
 
 /**
- * Fast loader for the detail page's header + 4 charts. Reads only the compact,
- * stays-warm data: keyword_chart_series (single row), kcs (current summary),
- * calibration fits, and the current-week variants. The current-week kwm product
- * slice + Keepa enrichment are split into fetchKeywordProducts so they can
- * stream behind <Suspense> — that kwm slice is a single row on the 140M-row
- * table that costs ~2s on a cold page, and the charts never need it. Falls back
- * to a full kwm scan only when the series row is absent.
+ * The only loader the detail page awaits before rendering. Reads just the
+ * compact, stays-warm rows: search_terms (PK), kcs current (PK), and the
+ * 3-row fits table — ~100-300ms even cold. Everything heavier (series,
+ * kwm, variants) streams behind <Suspense>.
  *
  * Returns null when the search_term doesn't exist (→ 404).
  */
-export async function fetchKeywordChartData(
+export async function fetchKeywordHeader(
   searchTermId: string,
-): Promise<KeywordChartData | null> {
+): Promise<KeywordHeaderData | null> {
   const dbUrl = env.DATABASE_URL;
   const sql = neon(dbUrl);
 
-  // Run term, current, fits, and enriched products in parallel.
-  // We also attempt to read the series row; if the table is absent we catch
-  // and fall back. The current-week kwm slice (for product slots + variants)
-  // needs kcs.current_week_end_date, so it runs after the current query.
-  const [termRowsAny, currentRowsAny, fitsResult, seriesResult] = await Promise.all([
+  const [termRowsAny, currentRowsAny, fits] = await Promise.all([
     sql`
       SELECT id, search_term_raw, search_term_normalized,
              first_seen_week, last_seen_week
@@ -655,17 +642,6 @@ export async function fetchKeywordChartData(
       WHERE search_term_id = ${searchTermId}
     `,
     fetchFits(dbUrl),
-    // Series read: catch "relation does not exist" (table not yet migrated)
-    // and treat as no series → fallback.
-    sql`
-      SELECT series
-      FROM keyword_chart_series
-      WHERE search_term_id = ${searchTermId}
-    `.catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('relation') && msg.includes('does not exist')) return [];
-      throw err;
-    }),
   ]);
 
   const termRows = termRowsAny as unknown as Array<{
@@ -680,49 +656,8 @@ export async function fetchKeywordChartData(
   const term = termRows[0];
 
   const currentRowsRaw = currentRowsAny as unknown as Array<Record<string, unknown>>;
-  const fits = fitsResult;
-  const seriesRows = seriesResult as unknown as Array<{ series: ChartSeriesEntry[] }>;
-
   const current: KeywordDetailCurrent | null =
     currentRowsRaw.length > 0 ? mapCurrent(currentRowsRaw[0], fits) : null;
-
-  // Current-week variants only (the box shows the current week). Cheap single-
-  // row lookup that the charts don't need but is small enough to keep here.
-  // The product slice + Keepa enrichment are deferred to fetchKeywordProducts
-  // (streamed) because the kwm slice is the ~2s cold-page hotspot.
-  let currentWeekVariants: KeywordVariantInfo | null = null;
-  if (current) {
-    const variantRowsAny = await sql`
-      SELECT duplicate_count, losing_ranks, raw_examples
-      FROM import_duplicate_search_terms
-      WHERE search_term_id = ${searchTermId}
-        AND week_end_date = ${current.currentWeekEndDate}
-      LIMIT 1
-    `;
-    const variantRow = (variantRowsAny as unknown as Array<{
-      duplicate_count: number;
-      losing_ranks: number[];
-      raw_examples: string[];
-    }>)[0];
-    if (variantRow) {
-      currentWeekVariants = {
-        duplicateCount: variantRow.duplicate_count,
-        losingRanks: variantRow.losing_ranks ?? [],
-        rawExamples: variantRow.raw_examples ?? [],
-      };
-    }
-  }
-
-  // Determine chartHistory: series fast path or kwm fallback.
-  let chartHistory: KeywordDetailHistoryRow[];
-  if (seriesRows.length > 0 && seriesRows[0].series?.length > 0) {
-    chartHistory = seriesToHistoryRows(seriesRows[0].series, fits);
-  } else {
-    // Fallback: full kwm scan (same as before; correct but slow on cold cache).
-    const kwmRows = await fetchKwmHistory(dbUrl, searchTermId);
-    // No variant data needed for charts (series doesn't store them).
-    chartHistory = kwmRows.map((r) => mapHistory(r, new Map(), fits));
-  }
 
   return {
     searchTermId: term.id,
@@ -731,8 +666,88 @@ export async function fetchKeywordChartData(
     firstSeenWeek: toIsoDate(term.first_seen_week),
     lastSeenWeek: toIsoDate(term.last_seen_week),
     current,
-    chartHistory,
-    currentWeekVariants,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// fetchKeywordChartHistory — STREAMED loader for the chart + strips
+// ---------------------------------------------------------------------------
+
+/**
+ * History rows for the trend chart + the two strips, derived from
+ * keyword_chart_series (single-row read) or from a kwm 52-week read when the
+ * series row is absent.
+ *
+ * Wrapped in React cache(): TrendChartSection and StripsSection both call
+ * this during the same request render, and the second caller reuses the
+ * first's promise — one series read per page view.
+ *
+ * Streamed (not blocking) because the series table's storage layers go cold
+ * on Neon between weekly rewrites; a 4-page PK lookup was measured at
+ * 1.5-15s cold (2026-07-07). The warm sweeps make that rare; streaming makes
+ * it survivable — the header paints regardless.
+ */
+export const fetchKeywordChartHistory = cache(
+  async (searchTermId: string): Promise<KeywordDetailHistoryRow[]> => {
+    const dbUrl = env.DATABASE_URL;
+    const sql = neon(dbUrl);
+
+    const [fits, seriesResult] = await Promise.all([
+      fetchFits(dbUrl),
+      // Series read: catch "relation does not exist" (table not yet migrated)
+      // and treat as no series → fallback.
+      sql`
+        SELECT series
+        FROM keyword_chart_series
+        WHERE search_term_id = ${searchTermId}
+      `.catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('relation') && msg.includes('does not exist')) return [];
+        throw err;
+      }),
+    ]);
+
+    const seriesRows = seriesResult as unknown as Array<{ series: ChartSeriesEntry[] }>;
+    if (seriesRows.length > 0 && seriesRows[0].series?.length > 0) {
+      return seriesToHistoryRows(seriesRows[0].series, fits);
+    }
+    // Fallback: full kwm scan (correct but slow on cold cache).
+    const kwmRows = await fetchKwmHistory(dbUrl, searchTermId);
+    // No variant data needed for charts (series doesn't store them).
+    return kwmRows.map((r) => mapHistory(r, new Map(), fits));
+  },
+);
+
+// ---------------------------------------------------------------------------
+// fetchCurrentWeekVariants — STREAMED loader for the variants box
+// ---------------------------------------------------------------------------
+
+/**
+ * Variant info for the current week, from import_duplicate_search_terms.
+ * Null when the week had no duplicate raw phrasings (the common case).
+ */
+export async function fetchCurrentWeekVariants(
+  searchTermId: string,
+  currentWeekEndDate: string,
+): Promise<KeywordVariantInfo | null> {
+  const sql = neon(env.DATABASE_URL);
+  const variantRowsAny = await sql`
+    SELECT duplicate_count, losing_ranks, raw_examples
+    FROM import_duplicate_search_terms
+    WHERE search_term_id = ${searchTermId}
+      AND week_end_date = ${currentWeekEndDate}
+    LIMIT 1
+  `;
+  const variantRow = (variantRowsAny as unknown as Array<{
+    duplicate_count: number;
+    losing_ranks: number[];
+    raw_examples: string[];
+  }>)[0];
+  if (!variantRow) return null;
+  return {
+    duplicateCount: variantRow.duplicate_count,
+    losingRanks: variantRow.losing_ranks ?? [],
+    rawExamples: variantRow.raw_examples ?? [],
   };
 }
 
