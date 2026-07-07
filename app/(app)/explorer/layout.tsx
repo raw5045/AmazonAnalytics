@@ -2,6 +2,7 @@ import { listSavedViewsForUser } from '@/lib/savedViews/loadServer';
 import type { SavedView } from '@/lib/savedViews/types';
 import { SavedViewsDropdown } from './SavedViewsDropdown';
 import { SaveViewButton } from './SaveViewButton';
+import { SavedViewsBar } from './SavedViewsBar';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 
 /**
@@ -16,12 +17,12 @@ export default async function ExplorerLayout({ children }: { children: React.Rea
 
   return (
     <>
-      <div className="sticky top-[52px] z-20 flex h-12 items-center justify-end gap-2 border-b border-slate-200 bg-white px-6">
+      <SavedViewsBar>
         <div className="w-72">
           <SavedViewsDropdown views={savedViews} />
         </div>
         <SaveViewButton savedViewsCount={savedViews.length} />
-      </div>
+      </SavedViewsBar>
       {children}
     </>
   );
