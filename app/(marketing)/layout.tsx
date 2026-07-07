@@ -29,27 +29,29 @@ export default async function MarketingLayout({
 
   return (
     <div className="flex min-h-screen flex-col bg-white">
-      <header className="border-b border-gray-200">
+      {/* Navy header — matches the landing hero canvas (Moz-style, 2026-07-07)
+          and frames the white content pages consistently. */}
+      <header className="bg-[#0B1E3A]">
         <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="text-lg font-semibold tracking-tight text-gray-900">
-            Keyword<span className="text-blue-600">Quarry</span>
+          <Link href="/" className="text-lg font-semibold tracking-tight text-white">
+            Keyword<span className="text-sky-400">Quarry</span>
           </Link>
           <div className="hidden items-center gap-6 sm:flex">
             {NAV_LINKS.map((l) => (
               <Link
                 key={l.href}
                 href={l.href}
-                className="text-sm text-gray-600 hover:text-gray-900"
+                className="text-sm text-slate-300 transition hover:text-white"
               >
                 {l.label}
               </Link>
             ))}
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             {userId ? (
               <Link
                 href="/app"
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-[#0B1E3A] transition hover:bg-amber-200"
               >
                 Go to app
               </Link>
@@ -57,13 +59,13 @@ export default async function MarketingLayout({
               <>
                 <Link
                   href="/sign-in"
-                  className="text-sm font-medium text-gray-700 hover:text-gray-900"
+                  className="text-sm font-medium text-slate-200 transition hover:text-white"
                 >
                   Sign in
                 </Link>
                 <Link
                   href="/sign-up"
-                  className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                  className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-[#0B1E3A] transition hover:bg-amber-200"
                 >
                   Get started free
                 </Link>
@@ -75,13 +77,13 @@ export default async function MarketingLayout({
 
       <main className="flex-1">{children}</main>
 
-      <footer className="border-t border-gray-200 bg-gray-50">
-        <div className="mx-auto grid max-w-6xl gap-8 px-4 py-10 sm:grid-cols-4 sm:px-6">
+      <footer className="bg-[#0B1E3A]">
+        <div className="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:grid-cols-4 sm:px-6">
           <div>
-            <p className="text-base font-semibold text-gray-900">
-              Keyword<span className="text-blue-600">Quarry</span>
+            <p className="text-base font-semibold text-white">
+              Keyword<span className="text-sky-400">Quarry</span>
             </p>
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-sm text-slate-400">
               Find the high-demand, low-competition Amazon keywords your next
               launch needs.
             </p>
@@ -108,9 +110,9 @@ export default async function MarketingLayout({
             ]}
           />
         </div>
-        <div className="border-t border-gray-200">
+        <div className="border-t border-white/10">
           <div className="mx-auto max-w-6xl px-4 py-4 sm:px-6">
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-slate-500">
               © {new Date().getFullYear()} KeywordQuarry. All rights reserved.
               KeywordQuarry is not affiliated with, endorsed by, or sponsored by
               Amazon.com, Inc. or its affiliates.
@@ -131,11 +133,11 @@ function FooterCol({
 }) {
   return (
     <div>
-      <p className="text-sm font-semibold text-gray-900">{title}</p>
+      <p className="text-sm font-semibold text-white">{title}</p>
       <ul className="mt-2 space-y-2">
         {links.map((l) => (
           <li key={l.href}>
-            <Link href={l.href} className="text-sm text-gray-600 hover:text-gray-900">
+            <Link href={l.href} className="text-sm text-slate-400 transition hover:text-white">
               {l.label}
             </Link>
           </li>
