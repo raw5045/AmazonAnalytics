@@ -20,9 +20,8 @@ export function ChartChunkWarmer() {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     const warm = () => {
-      // Same module specifiers LazyCharts uses → same chunks → cache reuse.
-      void import('./keyword/[id]/RankChart');
-      void import('./keyword/[id]/VolumeChart');
+      // Same module specifier LazyCharts uses → same chunk → cache reuse.
+      void import('./keyword/[id]/TrendChart');
     };
 
     const w = window as typeof window & {

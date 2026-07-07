@@ -4,13 +4,13 @@ import dynamic from 'next/dynamic';
 import { ChartSkeleton } from './ChartSkeleton';
 
 /**
- * Client wrappers that lazy-load the two recharts charts.
+ * Client wrapper that lazy-loads the recharts trend chart.
  *
  * recharts is ~103 KB gzipped — the single biggest JS chunk in the app — and is
- * used ONLY by these two charts. Loading them via next/dynamic keeps recharts
- * out of the detail route's initial client bundle, so the header, current-week
+ * used ONLY by TrendChart. Loading it via next/dynamic keeps recharts out of
+ * the detail route's initial client bundle, so the header, current-week
  * numbers, top-products, weekly-history, and the two lightweight (recharts-free)
- * charts hydrate immediately; the recharts charts swap in behind a ChartSkeleton.
+ * strips hydrate immediately; the chart swaps in behind a ChartSkeleton.
  *
  * ssr:false because recharts' <ResponsiveContainer> renders nothing useful on
  * the server anyway (it measures the container width on the client), so server-
@@ -22,12 +22,7 @@ import { ChartSkeleton } from './ChartSkeleton';
  * hence this 'use client' boundary instead of calling dynamic() in the server
  * page.tsx (which also wouldn't code-split a Client Component import).
  */
-export const LazyRankChart = dynamic(() => import('./RankChart').then((m) => m.RankChart), {
-  ssr: false,
-  loading: () => <ChartSkeleton title="Rank trend (52w)" />,
-});
-
-export const LazyVolumeChart = dynamic(() => import('./VolumeChart').then((m) => m.VolumeChart), {
+export const LazyTrendChart = dynamic(() => import('./TrendChart').then((m) => m.TrendChart), {
   ssr: false,
   loading: () => <ChartSkeleton title="Est. volume trend (52w)" />,
 });
