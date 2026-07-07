@@ -52,7 +52,7 @@ export function KeywordVariantsBox({
   }
 
   return (
-    <div className="border rounded p-4">
+    <div className="card-app p-4">
       <div className="flex items-baseline justify-between mb-2">
         <h2 className="text-sm font-semibold text-gray-700">Keyword variants</h2>
         <span className="text-xs text-gray-500">week ending {weekEndDate}</span>

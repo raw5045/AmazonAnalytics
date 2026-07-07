@@ -20,7 +20,7 @@ export default async function CategoryBuilderPage() {
 
   return (
     <div className="p-6">
-      <h1 className="text-lg font-semibold text-gray-900 mb-4">Category Builder</h1>
+      <h1 className="mb-4 text-2xl font-semibold tracking-tight text-gray-900">Category Builder</h1>
       <PerfPanel
         admin={user?.role === 'admin'}
         data={{ totalMs: timer.totalMs(), steps: timer.steps }}

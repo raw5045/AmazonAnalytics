@@ -37,7 +37,7 @@ export async function TrendChartSection({
   } catch (e) {
     console.error('[trend chart] load failed', e);
     return (
-      <div className="border rounded p-4">
+      <div className="card-app p-4">
         <h2 className="text-sm font-semibold text-gray-700 mb-2">Est. volume trend (52w)</h2>
         <p className="text-sm text-gray-500">
           Couldn&apos;t load the chart — refresh to retry. (The rest of the page is unaffected.)
@@ -61,7 +61,7 @@ export async function StripsSection({
   } catch (e) {
     console.error('[strips] load failed', e);
     return (
-      <div className="border rounded p-4 lg:col-span-2">
+      <div className="card-app p-4 lg:col-span-2">
         <p className="text-sm text-gray-500">
           Couldn&apos;t load the fake-volume / title-match strips — refresh to retry.
         </p>

@@ -50,16 +50,16 @@ export function ResultsTable({
   };
   if (rows.length === 0) {
     return (
-      <div className="border rounded p-8 text-center text-sm text-gray-500">
+      <div className="card-app p-8 text-center text-sm text-gray-500">
         No keywords match these filters. Try removing one to broaden the search.
       </div>
     );
   }
 
   return (
-    <div className="overflow-x-auto border rounded">
+    <div className="card-app overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">
+        <thead className="bg-[#F8FAFD] text-left text-xs uppercase tracking-wider text-slate-500">
           <tr>
             {showWatchColumn && (
               <th className="p-2 w-8 text-center" title="Click to add/remove from watchlist">
@@ -129,9 +129,9 @@ export function ResultsTable({
             )}
           </tr>
         </thead>
-        <tbody className="divide-y">
+        <tbody className="divide-y divide-slate-100">
           {rows.map((r) => (
-            <tr key={r.searchTermId} className="hover:bg-gray-50">
+            <tr key={r.searchTermId} className="hover:bg-[#F2F7FF]">
               {showWatchColumn && (
                 // No onClick stopPropagation here — ResultsTable is a server
                 // component, so passing an event handler to a native element

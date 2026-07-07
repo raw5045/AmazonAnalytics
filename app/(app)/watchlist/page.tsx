@@ -41,11 +41,11 @@ export default async function WatchlistPage({
   if (items.length === 0) {
     return (
       <div className="p-6">
-        <header className="mb-4">
-          <h1 className="text-2xl font-semibold">Watchlist</h1>
-          <p className="text-sm text-gray-600">
+        <header className="mb-4 flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">Watchlist</h1>
+          <span className="inline-flex items-center rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-900">
             0 of {MAX_WATCHED_KEYWORDS} keywords watched
-          </p>
+          </span>
         </header>
         <BulkAddSection currentCount={0} />
         <div className="mt-6 max-w-2xl text-center text-gray-600 mx-auto">
@@ -88,12 +88,12 @@ export default async function WatchlistPage({
         admin={user.role === 'admin'}
         data={{ totalMs: timer.totalMs(), steps: timer.steps }}
       />
-      <header className="mb-4 flex flex-wrap items-baseline justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold">Watchlist</h1>
-          <p className="text-sm text-gray-600">
+      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">Watchlist</h1>
+          <span className="inline-flex items-center rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs font-medium text-blue-900">
             {items.length} of {MAX_WATCHED_KEYWORDS} keywords watched
-          </p>
+          </span>
         </div>
         <WindowSelector current={filters.window} />
       </header>

@@ -70,19 +70,21 @@ export function WatchToggle({
         onClick={toggle}
         disabled={inflight}
         aria-pressed={isWatched}
-        className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded border ${
+        // Styled for the detail page's navy title band (its only call site):
+        // amber outline when idle, solid amber while watching.
+        className={`inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium ${
           isWatched
-            ? 'bg-yellow-50 border-yellow-400 text-yellow-900 hover:bg-yellow-100'
-            : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'
+            ? 'border-amber-300 bg-amber-300 text-[#0B1E3A] hover:bg-amber-200'
+            : 'border-amber-300/60 bg-transparent text-amber-200 hover:border-amber-300 hover:text-amber-100'
         } ${inflight ? 'opacity-60 cursor-wait' : ''}`}
       >
-        <span className={isWatched ? 'text-yellow-500' : 'text-gray-400'}>
+        <span className={isWatched ? 'text-[#0B1E3A]' : 'text-amber-300'}>
           {isWatched ? '★' : '☆'}
         </span>
         {isWatched ? 'Watching' : 'Watch'}
       </button>
       {error && (
-        <p className="text-xs text-red-700">
+        <p className="text-xs text-red-300">
           {error.message}
           {error.isCap && (
             <>

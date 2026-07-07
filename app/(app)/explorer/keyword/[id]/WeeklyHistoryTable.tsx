@@ -33,7 +33,7 @@ export async function WeeklyHistoryTable({ id }: { id: string }) {
  */
 export function HistoryTableSkeleton() {
   return (
-    <div className="rounded border">
+    <div className="card-app overflow-hidden">
       {/* Explicit loading row so the (slow) history read clearly reads as
           "loading", not "broken". */}
       <div className="flex items-center gap-2 border-b px-4 py-3 text-sm text-gray-600">

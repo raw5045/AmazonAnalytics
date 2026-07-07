@@ -247,7 +247,7 @@ function VolumeFitChip({ fit }: { fit: VolumeFitMeta }) {
   // Render as "Month YYYY" — friendlier than the raw date.
   const monthLabel = formatMonthLabel(fit.calibrationMonthEndDate);
   return (
-    <div className="mb-3 inline-flex items-center gap-2 rounded border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-600">
+    <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs text-blue-900">
       <span>
         Est. monthly volume from <strong>{monthLabel}</strong> calibration fit
       </span>

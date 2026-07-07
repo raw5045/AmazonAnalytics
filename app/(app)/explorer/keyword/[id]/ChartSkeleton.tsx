@@ -6,7 +6,7 @@
  */
 export function ChartSkeleton({ title, height = 280 }: { title: string; height?: number }) {
   return (
-    <div className="border rounded p-4">
+    <div className="card-app p-4">
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
         <span className="inline-flex items-center gap-2 text-xs text-gray-500">

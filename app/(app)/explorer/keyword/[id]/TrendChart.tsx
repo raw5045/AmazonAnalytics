@@ -71,7 +71,7 @@ export function TrendChart({
   const accent = metric === 'volume' ? 'green' : 'blue';
 
   return (
-    <div className="border rounded p-4">
+    <div className="card-app p-4">
       <div className="flex flex-wrap items-center justify-between gap-y-2 mb-2">
         <h2 className="text-sm font-semibold text-gray-700">
           {metric === 'volume' ? 'Est. volume trend (52w)' : 'Rank trend (52w)'}

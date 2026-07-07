@@ -66,7 +66,7 @@ export function BackToExplorer({
       href={href}
       onClick={handleClick}
       prefetch={false}
-      className="text-sm underline text-gray-600 hover:text-gray-900"
+      className="text-sm text-slate-300 underline hover:text-white"
     >
       ← Back to explorer
     </Link>

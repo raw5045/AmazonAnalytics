@@ -301,7 +301,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
             return (
               <li
                 key={node.name}
-                className="flex items-center px-4 py-2.5 border-b border-gray-100 last:border-b-0 hover:bg-gray-50 group"
+                className="flex items-center px-4 py-2.5 border-b border-gray-100 last:border-b-0 hover:bg-[#F2F7FF] group"
               >
                 {/* Name — clicking drills in if there are children */}
                 <button
@@ -361,7 +361,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
         )}
 
         {/* Build panel */}
-        <div className="border border-gray-200 rounded-lg overflow-hidden">
+        <div className="card-app overflow-hidden">
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
             <span className="text-sm font-semibold text-gray-700">
               {editingId !== null ? 'Edit category' : 'Build custom category'}
@@ -420,7 +420,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
                 <button
                   onClick={handleSave}
                   disabled={!canSave}
-                  className="flex-1 rounded bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex-1 rounded-full bg-amber-300 px-3 py-1.5 text-xs font-semibold text-[#0B1E3A] hover:bg-amber-200 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {isPending ? 'Saving…' : editingId !== null ? 'Update' : 'Save Custom Category'}
                 </button>
@@ -442,7 +442,7 @@ export function CategoryBuilderClient({ rootLevel, initialCategories, signedIn }
 
         {/* Saved categories */}
         {signedIn && categories.length > 0 && (
-          <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <div className="card-app overflow-hidden">
             <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
               <span className="text-sm font-semibold text-gray-700">Your custom categories</span>
             </div>

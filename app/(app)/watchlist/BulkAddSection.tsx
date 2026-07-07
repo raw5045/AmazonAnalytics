@@ -62,9 +62,9 @@ export function BulkAddSection({ currentCount }: { currentCount: number }) {
   }
 
   return (
-    <details className="mb-4 border rounded bg-gray-50">
-      <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-gray-800">
-        Add keywords — one per line
+    <details className="card-app mb-4 overflow-hidden">
+      <summary className="cursor-pointer select-none px-4 py-2.5 text-sm font-semibold text-gray-800">
+        ＋ Add keywords — one per line
       </summary>
       <div className="px-3 pb-3 pt-1 space-y-2">
         {atCap ? (
@@ -85,7 +85,7 @@ export function BulkAddSection({ currentCount }: { currentCount: number }) {
               <button
                 type="submit"
                 disabled={!canSubmit}
-                className="px-3 py-1.5 text-sm rounded border bg-white border-gray-300 text-gray-800 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="rounded-full bg-amber-300 px-4 py-1.5 text-sm font-semibold text-[#0B1E3A] hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {submitting ? 'Adding…' : 'Add to watchlist'}
               </button>

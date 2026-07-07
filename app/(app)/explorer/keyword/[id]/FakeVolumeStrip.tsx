@@ -30,7 +30,7 @@ export function FakeVolumeStrip({
   const data = gapFillHistory(history, calendar);
 
   return (
-    <div className="border rounded p-4">
+    <div className="card-app p-4">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-semibold text-gray-700">Fake-volume history (52w)</h2>
         <Legend />

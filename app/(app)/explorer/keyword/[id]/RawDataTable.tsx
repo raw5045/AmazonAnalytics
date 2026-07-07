@@ -31,7 +31,7 @@ export function RawDataTable({ rows }: { rows: KeywordDetailHistoryRow[] }) {
 
   if (rows.length === 0) {
     return (
-      <div className="border rounded p-6 text-sm text-gray-500">
+      <div className="card-app p-6 text-sm text-gray-500">
         No history found for this keyword.
       </div>
     );
@@ -44,7 +44,7 @@ export function RawDataTable({ rows }: { rows: KeywordDetailHistoryRow[] }) {
   const hiddenCount = allRows.length - visibleRows.length;
 
   return (
-    <div className="border rounded">
+    <div className="card-app overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">

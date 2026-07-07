@@ -201,7 +201,7 @@ export function FilterSidebar({
   return (
     <>
       <LoadingOverlay show={isPending} />
-      <aside className="w-72 border-r sticky top-24 self-start h-[calc(100vh-6rem)] flex flex-col">
+      <aside className="sticky top-[100px] flex h-[calc(100vh-100px)] w-72 flex-col self-start border-r border-slate-200 bg-white">
       {/* Scrollable filter content area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-5">
       <div className="flex items-center justify-between">
@@ -239,14 +239,14 @@ export function FilterSidebar({
         )}
 
         {/* Whole-word (default, fast) vs broad substring (opt-in, slower). */}
-        <div className="flex rounded border border-gray-300 overflow-hidden text-xs font-medium mt-2">
+        <div className="mt-2 flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium">
           <button
             type="button"
             onClick={() => set('qMode', 'word')}
-            className={`flex-1 py-1 px-2 ${
+            className={`flex-1 px-2 py-1 ${
               pending.qMode === 'word'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-50'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
             }`}
           >
             Whole word
@@ -254,10 +254,10 @@ export function FilterSidebar({
           <button
             type="button"
             onClick={() => set('qMode', 'broad')}
-            className={`flex-1 py-1 px-2 border-l border-gray-300 ${
+            className={`flex-1 border-l border-slate-300 px-2 py-1 ${
               pending.qMode === 'broad'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-50'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
             }`}
           >
             Broad (slower)
@@ -302,18 +302,18 @@ export function FilterSidebar({
       </FieldGroup>
 
       {/* Movement card — metric toggle + window + preset + optional custom inputs */}
-      <div className="border border-gray-200 rounded p-3 space-y-3">
-        <p className="text-xs font-medium text-gray-700">Movement</p>
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-[#FAFBFD] p-3">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Movement</p>
 
         {/* Metric toggle */}
-        <div className="flex rounded border border-gray-300 overflow-hidden text-xs font-medium">
+        <div className="flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium">
           <button
             type="button"
             onClick={() => setPending((p) => ({ ...p, jumpMetric: 'rank', jump: '', jumpFrom: '', jumpTo: '' }))}
-            className={`flex-1 py-1 px-2 ${
+            className={`flex-1 px-2 py-1 ${
               pending.jumpMetric === 'rank'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-50'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
             }`}
           >
             Rank
@@ -321,10 +321,10 @@ export function FilterSidebar({
           <button
             type="button"
             onClick={() => setPending((p) => ({ ...p, jumpMetric: 'volume', jump: '', jumpFrom: '', jumpTo: '' }))}
-            className={`flex-1 py-1 px-2 border-l border-gray-300 ${
+            className={`flex-1 border-l border-slate-300 px-2 py-1 ${
               pending.jumpMetric === 'volume'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-50'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
             }`}
           >
             Volume
@@ -429,14 +429,14 @@ export function FilterSidebar({
 
       <FieldGroup label="Leaf categories (Keepa, slot-1)">
         {/* Leaf | Custom segmented toggle */}
-        <div className="flex rounded border border-gray-300 overflow-hidden text-xs font-medium mb-2">
+        <div className="mb-2 flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium">
           <button
             type="button"
             onClick={() => set('leafMode', 'leaf')}
-            className={`flex-1 py-1 px-2 ${
+            className={`flex-1 px-2 py-1 ${
               pending.leafMode === 'leaf'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-50'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
             }`}
           >
             Leaf
@@ -444,10 +444,10 @@ export function FilterSidebar({
           <button
             type="button"
             onClick={() => set('leafMode', 'custom')}
-            className={`flex-1 py-1 px-2 border-l border-gray-300 ${
+            className={`flex-1 border-l border-slate-300 px-2 py-1 ${
               pending.leafMode === 'custom'
-                ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700 hover:bg-gray-50'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
             }`}
           >
             Custom
@@ -593,7 +593,7 @@ export function FilterSidebar({
           type="button"
           onClick={apply}
           disabled={!dirty || isPending}
-          className="flex-1 bg-blue-600 text-white text-sm font-medium px-3 py-2 rounded hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          className="flex-1 rounded-full bg-amber-300 px-3 py-2 text-sm font-semibold text-[#0B1E3A] hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
         >
           {isPending ? 'Applying…' : dirty ? 'Apply filters' : 'Filters applied'}
         </button>
@@ -609,9 +609,9 @@ export function FilterSidebar({
       <style jsx>{`
         .filter-input {
           width: 100%;
-          border: 1px solid #d1d5db;
-          border-radius: 4px;
-          padding: 4px 8px;
+          border: 1px solid #cbd5e1;
+          border-radius: 8px;
+          padding: 5px 9px;
           font-size: 13px;
           background: white;
         }
@@ -628,7 +628,7 @@ export function FilterSidebar({
 function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-gray-700 mb-1">{label}</label>
+      <label className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500">{label}</label>
       {children}
     </div>
   );

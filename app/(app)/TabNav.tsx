@@ -55,33 +55,27 @@ export function TabNav({ watchlistCountPromise }: { watchlistCountPromise: Promi
     } catch {}
   }, [pathname, searchParams]);
 
+  // Navy-bar tabs (2026-07 reskin): active = white with an amber underline
+  // pinned to the bar's bottom edge; inactive = slate, brightens on hover.
+  const tabClass = (active: boolean) =>
+    `relative flex h-full items-center whitespace-nowrap px-1 text-sm font-semibold ${
+      active
+        ? 'text-white after:absolute after:inset-x-0 after:bottom-0 after:h-[3px] after:rounded-t after:bg-amber-300'
+        : 'text-slate-300 hover:text-white'
+    }`;
+
   return (
-    <nav className="flex items-center gap-6">
-      <Link
-        href={explorerHref}
-        className={`text-base font-semibold whitespace-nowrap ${
-          isExplorer ? 'text-gray-900' : 'text-gray-500 hover:text-gray-900'
-        }`}
-      >
+    <nav className="flex h-full items-stretch gap-6">
+      <Link href={explorerHref} className={tabClass(isExplorer)}>
         Explorer
       </Link>
-      <Link
-        href="/watchlist"
-        className={`text-base font-semibold whitespace-nowrap ${
-          isWatchlist ? 'text-gray-900' : 'text-gray-500 hover:text-gray-900'
-        }`}
-      >
+      <Link href="/watchlist" className={tabClass(isWatchlist)}>
         Watchlist{' '}
         <Suspense fallback={null}>
           <WatchlistBadge countPromise={watchlistCountPromise} active={isWatchlist} />
         </Suspense>
       </Link>
-      <Link
-        href="/category-builder"
-        className={`text-base font-semibold whitespace-nowrap ${
-          isCategoryBuilder ? 'text-gray-900' : 'text-gray-500 hover:text-gray-900'
-        }`}
-      >
+      <Link href="/category-builder" className={tabClass(isCategoryBuilder)}>
         Category Builder
       </Link>
     </nav>
@@ -97,7 +91,7 @@ function WatchlistBadge({ countPromise, active }: { countPromise: Promise<number
   const count = use(countPromise);
   if (count <= 0) return null;
   return (
-    <span className={`ml-0.5 text-sm font-normal ${active ? 'text-gray-600' : 'text-gray-400'}`}>
+    <span className={`ml-0.5 text-sm font-normal ${active ? 'text-slate-300' : 'text-slate-500'}`}>
       ({count})
     </span>
   );

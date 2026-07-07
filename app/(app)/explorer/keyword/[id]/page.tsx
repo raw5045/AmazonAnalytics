@@ -75,72 +75,77 @@ export default async function KeywordDetailPage({
     searchTermNormalized && searchTermNormalized.toLowerCase() !== searchTermRaw.toLowerCase();
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <PerfPanel
-        admin={user?.role === 'admin'}
-        data={{
-          totalMs: timer.totalMs(),
-          steps: [
-            ...timer.steps,
-            { label: 'charts (series)', ms: 0, note: 'deferred (streams)' },
-            { label: 'weekly history', ms: 0, note: 'deferred (streams)' },
-          ],
-        }}
-      />
-      <BackToExplorer href={backHref} cameFromExplorer={cameFromExplorer} />
+    <>
+      {/* Navy title band (2026-07 reskin) — echoes the landing hero; the
+          stats read as chips. Content below sits on the tinted canvas. */}
+      <div className="bg-gradient-to-r from-[#0B1E3A] via-[#0D2447] to-[#123B73] px-6 py-5 text-white">
+        <div className="mx-auto max-w-6xl">
+          <PerfPanel
+            admin={user?.role === 'admin'}
+            data={{
+              totalMs: timer.totalMs(),
+              steps: [
+                ...timer.steps,
+                { label: 'charts (series)', ms: 0, note: 'deferred (streams)' },
+                { label: 'weekly history', ms: 0, note: 'deferred (streams)' },
+              ],
+            }}
+          />
+          <BackToExplorer href={backHref} cameFromExplorer={cameFromExplorer} />
 
-      <header className="mt-3 mb-6">
-        <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-semibold">&ldquo;{searchTermRaw}&rdquo;</h1>
-          {user && <WatchToggle keywordId={id} initialIsWatched={isWatched} />}
-        </div>
-        {showNormalized && (
-          <p className="text-xs text-gray-500 mt-1">Normalized: {searchTermNormalized}</p>
-        )}
+          <header className="mt-3">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="text-2xl font-semibold tracking-tight">&ldquo;{searchTermRaw}&rdquo;</h1>
+              {user && <WatchToggle keywordId={id} initialIsWatched={isWatched} />}
+            </div>
+            {showNormalized && (
+              <p className="mt-1 text-xs text-slate-400">Normalized: {searchTermNormalized}</p>
+            )}
 
-        {current ? (
-          <div className="mt-3 flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm">
-            <span>
-              <span className="text-gray-500">Current rank:</span>{' '}
-              <span className="font-mono font-medium">{current.currentRank.toLocaleString()}</span>
-            </span>
-            {current.estimatedMonthlyVolumeCurrent !== null && (
-              <span>
-                <span className="text-gray-500">Est. monthly searches:</span>{' '}
-                <span
-                  className="font-mono font-medium"
-                  title={
-                    current.estimatedMonthlyVolumeIsExtrapolated
-                      ? `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — estimate uses extrapolated parameters (this week predates the earliest calibration fit)`
-                      : `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — rough estimate from rank → volume calibration fit (typical accuracy ±30%)`
-                  }
-                >
-                  ~{formatHeadlineVolume(current.estimatedMonthlyVolumeCurrent)}
-                  {current.estimatedMonthlyVolumeIsExtrapolated && (
-                    <span className="ml-1 text-amber-600">*</span>
-                  )}
+            {current ? (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-slate-300">
+                  Current rank
+                  <span className="font-mono font-semibold text-white">{current.currentRank.toLocaleString()}</span>
                 </span>
-              </span>
+                {current.estimatedMonthlyVolumeCurrent !== null && (
+                  <span
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-slate-300"
+                    title={
+                      current.estimatedMonthlyVolumeIsExtrapolated
+                        ? `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — estimate uses extrapolated parameters (this week predates the earliest calibration fit)`
+                        : `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — rough estimate from rank → volume calibration fit (typical accuracy ±30%)`
+                    }
+                  >
+                    Est. monthly searches
+                    <span className="font-mono font-semibold text-white">
+                      ~{formatHeadlineVolume(current.estimatedMonthlyVolumeCurrent)}
+                      {current.estimatedMonthlyVolumeIsExtrapolated && (
+                        <span className="ml-1 text-amber-300">*</span>
+                      )}
+                    </span>
+                  </span>
+                )}
+                {current.improvement1w !== null && (
+                  <ImprovementChip improvement={current.improvement1w} />
+                )}
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-slate-300">
+                  Latest
+                  <span className="font-mono font-semibold text-white">{current.currentWeekEndDate}</span>
+                </span>
+              </div>
+            ) : (
+              <div className="mt-3 inline-block rounded-lg border border-amber-300/40 bg-amber-300/10 px-3 py-2 text-sm text-amber-200">
+                This keyword is dormant — last seen <strong>{header.lastSeenWeek}</strong>. The
+                history below is preserved; the explorer&apos;s active snapshot has dropped it.
+              </div>
             )}
-            {current.improvement1w !== null && (
-              <span>
-                <span className="text-gray-500">vs prior week:</span>{' '}
-                <ImprovementChip improvement={current.improvement1w} />
-              </span>
-            )}
-            <span className="text-gray-500">
-              Latest: {current.currentWeekEndDate}
-            </span>
-          </div>
-        ) : (
-          <div className="mt-3 inline-block bg-amber-50 border border-amber-200 text-amber-900 text-sm px-3 py-2 rounded">
-            This keyword is dormant — last seen <strong>{header.lastSeenWeek}</strong>. The
-            history below is preserved; the explorer&apos;s active snapshot has dropped it.
-          </div>
-        )}
-      </header>
+          </header>
+        </div>
+      </div>
 
-      <section className="mt-6">
+      <div className="p-6 max-w-6xl mx-auto">
+      <section>
         <Suspense fallback={<ChartSkeleton title="Est. volume trend (52w)" />}>
           <TrendChartSection id={id} latestWeek={latestWeek} />
         </Suspense>
@@ -173,7 +178,8 @@ export default async function KeywordDetailPage({
           <VariantsSection id={id} currentWeekEndDate={current.currentWeekEndDate} />
         </Suspense>
       )}
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -188,18 +194,31 @@ function formatHeadlineVolume(n: number): string {
   return `${n.toLocaleString()} / mo`;
 }
 
+/** Rank-movement chip for the navy title band (green up / red down). */
 function ImprovementChip({ improvement }: { improvement: number }) {
-  if (improvement === 0) return <span className="font-mono">0</span>;
+  if (improvement === 0) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-slate-300">
+        vs prior week <span className="font-mono font-semibold text-white">0</span>
+      </span>
+    );
+  }
   if (improvement > 0) {
     return (
-      <span className="font-mono text-green-700">
-        ↑ {improvement.toLocaleString()}
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-400/15 px-3 py-1 text-emerald-300/80">
+        vs prior week{' '}
+        <span className="font-mono font-semibold text-emerald-300">
+          ↑ {improvement.toLocaleString()}
+        </span>
       </span>
     );
   }
   return (
-    <span className="font-mono text-red-700">
-      ↓ {Math.abs(improvement).toLocaleString()}
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-red-400/15 px-3 py-1 text-red-300/80">
+      vs prior week{' '}
+      <span className="font-mono font-semibold text-red-300">
+        ↓ {Math.abs(improvement).toLocaleString()}
+      </span>
     </span>
   );
 }

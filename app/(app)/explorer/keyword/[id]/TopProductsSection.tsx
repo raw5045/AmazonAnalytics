@@ -60,7 +60,7 @@ export function TopProductsSkeleton() {
   return (
     <section className="mt-6">
       <h2 className="text-sm font-semibold text-gray-700 mb-3">Top clicked products</h2>
-      <div className="rounded border">
+      <div className="card-app overflow-hidden">
         <div className="flex items-center gap-2 border-b px-4 py-3 text-sm text-gray-600">
           <span
             className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-gray-600"
@@ -99,7 +99,7 @@ function TopProductsTable({
 }) {
   const rows = slots.filter((s): s is TopProductSlot & { asin: string } => !!s.asin);
   return (
-    <div className="overflow-x-auto border rounded">
+    <div className="card-app overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">
           <tr>

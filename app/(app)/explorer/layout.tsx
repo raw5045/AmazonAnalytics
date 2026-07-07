@@ -16,7 +16,7 @@ export default async function ExplorerLayout({ children }: { children: React.Rea
 
   return (
     <>
-      <div className="sticky top-12 z-20 h-12 bg-white border-b px-6 flex items-center justify-end gap-2">
+      <div className="sticky top-[52px] z-20 flex h-12 items-center justify-end gap-2 border-b border-slate-200 bg-white px-6">
         <div className="w-72">
           <SavedViewsDropdown views={savedViews} />
         </div>

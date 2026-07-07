@@ -27,14 +27,27 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const watchlistCountPromise = watchlistCountForUser(user.id).catch(() => 0);
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 h-12 bg-white border-b px-6 flex items-center justify-between gap-4">
-        <TabNav watchlistCountPromise={watchlistCountPromise} />
-        <div className="text-sm text-gray-600 flex items-center gap-4 whitespace-nowrap">
-          <span>{user.email}</span>
+    <div className="flex min-h-screen flex-col bg-[#F4F6FA]">
+      {/* Navy brand bar (2026-07 reskin) — mirrors the marketing header so
+          landing → app feels like one product. Active tab = amber underline. */}
+      <header className="sticky top-0 z-30 flex h-[52px] items-center justify-between gap-4 bg-[#0B1E3A] px-6">
+        <div className="flex h-full items-center gap-7">
+          <Link href="/explorer" className="whitespace-nowrap text-[15px] font-bold tracking-tight text-white">
+            Keyword<span className="text-sky-400">Quarry</span>
+          </Link>
+          <TabNav watchlistCountPromise={watchlistCountPromise} />
+        </div>
+        <div className="flex items-center gap-4 whitespace-nowrap text-sm text-slate-300">
           {user.role === 'admin' && (
-            <Link href="/admin" className="underline">Admin</Link>
+            <Link href="/admin" className="text-sky-300 hover:text-sky-200">Admin</Link>
           )}
+          <span className="hidden sm:inline text-xs text-slate-400">{user.email}</span>
+          <span
+            aria-hidden
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-sky-400 to-blue-600 text-[11px] font-bold text-white"
+          >
+            {user.email.slice(0, 1).toUpperCase()}
+          </span>
         </div>
       </header>
       <main className="flex-1">{children}</main>
