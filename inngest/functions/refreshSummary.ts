@@ -39,11 +39,20 @@ import { pickFitForWeek, buildVolumeExpressions, type FitParams } from '@/lib/an
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 import { kwmRowToEntry, appendWeek, type ChartSeriesKwmRow } from '@/lib/explorer/chartSeries';
 import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
+import { warmChartSeriesLayers } from '@/lib/explorer/warmSeries';
 
-/** Rebuild at most this many gapped/new terms per refresh; the detail page
- *  falls back to a live kwm read for any beyond the cap, and they're retried
- *  next refresh. Generous default so a normal week never hits it. */
-const CHART_SERIES_REBUILD_CAP = 100_000;
+/** Terms per chart-series rebuild chunk. Bounds worker memory: each chunk
+ *  reads ≤52 kwm rows per term (~10k terms ≈ up to ~520k rows in flight). */
+const CHART_SERIES_REBUILD_CHUNK = 10_000;
+
+/** Absolute per-refresh ceiling across all rebuild chunks — a runaway
+ *  backstop only, sized ABOVE the full active set so even a from-scratch
+ *  drain finishes in one refresh. NOT a working limit: the 2026-07-07
+ *  incident left 412k active terms with no series row (→ the slow kwm
+ *  fallback on 1-in-10 detail pages) because weekly newcomer churn
+ *  (~400-500k) exceeded the old flat 100k cap and the backlog never
+ *  drained. */
+const CHART_SERIES_REBUILD_MAX_TERMS = 6_000_000;
 
 /**
  * The trigram GIN on keyword_current_summary.search_term_normalized powers the
@@ -593,6 +602,15 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     console.log(
       `[refreshSummary] landing warm-up: ${warm.ok ? `${warm.rows} rows in ${warm.ms}ms` : 'failed (non-fatal)'}`,
     );
+
+    // Sweep the chart-series heap: the maintenance above rewrote most of the
+    // table, laying down fresh storage layers that would otherwise serve
+    // their first random detail-page reads from S3 at seconds per page.
+    // Fail-soft inside; the 6-hourly cron keeps the layers hot between runs.
+    const seriesWarm = await warmChartSeriesLayers(client);
+    console.log(
+      `[refreshSummary] series warm sweep: ${seriesWarm.ok ? `${seriesWarm.rows} rows / ${seriesWarm.mb} MB in ${seriesWarm.ms}ms` : 'failed (non-fatal)'}`,
+    );
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;
@@ -749,12 +767,15 @@ async function stageRankAtOffset(client: PoolClient, weeksAgo: number): Promise<
  *     (re-import / ReplaceWeek → replace the last entry). Runs as a
  *     single set-returning UPDATE; no per-row round-trips.
  *
- * (B) TARGETED REBUILD — for active terms still not at the current week
- *     after phase A (newcomers, gapped terms, or missing rows). Reads
- *     each term's 52-week kwm window, builds the series in TypeScript
- *     using the shared helpers, and batch-upserts. Bounded by
- *     CHART_SERIES_REBUILD_CAP so a pathological import can't stall
- *     the process indefinitely.
+ * (B) TARGETED REBUILD — for active terms still not at their current week
+ *     after phase A (newcomers, gapped terms, or missing rows). Loops in
+ *     memory-bounded chunks (CHART_SERIES_REBUILD_CHUNK) until the active
+ *     set is fully covered: each chunk reads its terms' 52-week kwm
+ *     windows, builds the series in TypeScript using the shared helpers,
+ *     and batch-upserts — the upsert stamps last_week = the term's kcs
+ *     week, which removes the term from the selection predicate, so the
+ *     loop always converges. CHART_SERIES_REBUILD_MAX_TERMS is a runaway
+ *     backstop only.
  *
  * Called fail-soft from refreshKeywordCurrentSummary — a series error
  * must NEVER fail the import/refresh; the detail page falls back to a
@@ -818,103 +839,134 @@ export async function maintainChartSeries(
     scope ? [scope] : [],
   );
 
-  // (B) TARGETED REBUILD for active terms still not at the current week
-  //     (newcomers / gapped / missing). Bounded by the cap.
-  const { rows: rebuildRows } = await client.query<{ search_term_id: string }>(
-    `
-    SELECT k.search_term_id
-    FROM keyword_current_summary k
-    LEFT JOIN keyword_chart_series s ON s.search_term_id = k.search_term_id
-    WHERE (s.search_term_id IS NULL OR s.last_week <> k.current_week_end_date)
-      ${scope ? 'AND k.search_term_id = ANY($1::uuid[])' : ''}
-    LIMIT ${CHART_SERIES_REBUILD_CAP}
-    `,
-    scope ? [scope] : [],
-  );
-  if (rebuildRows.length === 0) return;
-  if (rebuildRows.length >= CHART_SERIES_REBUILD_CAP) {
-    console.warn(
-      `[refreshSummary] chart-series rebuild hit the cap of ${CHART_SERIES_REBUILD_CAP}; ` +
-        'remaining behind/new terms stay stale this cycle (covered by the ' +
-        'detail-page kwm fallback) and are retried next refresh.',
+  // (B) TARGETED REBUILD for active terms still not at their current week
+  //     (newcomers / gapped / missing). Chunked loop until drained: every
+  //     upserted term stamps last_week = its kcs current_week_end_date
+  //     (a term's newest kwm row IS its kcs week), which removes it from
+  //     the predicate — so each iteration strictly shrinks the remainder.
+  let rebuiltTotal = 0;
+  let chunkIndex = 0;
+  for (;;) {
+    const { rows: rebuildRows } = await client.query<{ search_term_id: string }>(
+      `
+      SELECT k.search_term_id
+      FROM keyword_current_summary k
+      LEFT JOIN keyword_chart_series s ON s.search_term_id = k.search_term_id
+      WHERE (s.search_term_id IS NULL OR s.last_week <> k.current_week_end_date)
+        ${scope ? 'AND k.search_term_id = ANY($1::uuid[])' : ''}
+      LIMIT ${CHART_SERIES_REBUILD_CHUNK}
+      `,
+      scope ? [scope] : [],
+    );
+    if (rebuildRows.length === 0) break;
+    const ids = rebuildRows.map((r) => r.search_term_id);
+
+    // Read each rebuild term's 52-week window (matches the chart window /
+    // backfill: week >= current_week - 357 days), grouped by term.
+    const { rows: kwmRows } = await client.query<
+      ChartSeriesKwmRow & { search_term_id: string }
+    >(
+      `
+      SELECT search_term_id, week_end_date, actual_rank,
+             fake_volume_severity, fake_volume_eval_status,
+             top_clicked_product_1_click_share, top_clicked_product_1_conversion_share,
+             keyword_in_title_1, keyword_in_title_2, keyword_in_title_3,
+             keyword_in_title_1_loose, keyword_in_title_2_loose, keyword_in_title_3_loose
+      FROM keyword_weekly_metrics
+      WHERE search_term_id = ANY($1::uuid[])
+        AND week_end_date >= ($2::date - INTERVAL '357 days')
+      ORDER BY search_term_id, week_end_date ASC
+      `,
+      [ids, currentWeekEndDate],
+    );
+
+    // Group rows by term, build series via the shared helpers.
+    type SeriesBatch = { searchTermId: string; series: string; lastWeek: string };
+    const batches: SeriesBatch[] = [];
+
+    let currentId: string | null = null;
+    let currentSeries: ReturnType<typeof appendWeek> = [];
+
+    for (const row of kwmRows) {
+      if (row.search_term_id !== currentId) {
+        // Flush the previous term (if any)
+        if (currentId !== null && currentSeries.length > 0) {
+          const lastEntry = currentSeries[currentSeries.length - 1];
+          batches.push({
+            searchTermId: currentId,
+            series: JSON.stringify(currentSeries),
+            lastWeek: lastEntry.w,
+          });
+        }
+        currentId = row.search_term_id;
+        currentSeries = [];
+      }
+      const entry = kwmRowToEntry(row as ChartSeriesKwmRow);
+      currentSeries = appendWeek(currentSeries, entry, 52);
+    }
+    // Flush the final term
+    if (currentId !== null && currentSeries.length > 0) {
+      const lastEntry = currentSeries[currentSeries.length - 1];
+      batches.push({
+        searchTermId: currentId,
+        series: JSON.stringify(currentSeries),
+        lastWeek: lastEntry.w,
+      });
+    }
+
+    if (batches.length > 0) {
+      // Batch-upsert. Using unnest for efficient multi-row upsert.
+      const searchTermIds = batches.map((b) => b.searchTermId);
+      const seriesJsons = batches.map((b) => b.series);
+      const lastWeeks = batches.map((b) => b.lastWeek);
+
+      await client.query(
+        `
+        INSERT INTO keyword_chart_series (search_term_id, series, last_week, updated_at)
+        SELECT unnest($1::uuid[]),
+               unnest($2::text[])::jsonb,
+               unnest($3::date[]),
+               now()
+        ON CONFLICT (search_term_id) DO UPDATE
+          SET series     = EXCLUDED.series,
+              last_week  = EXCLUDED.last_week,
+              updated_at = EXCLUDED.updated_at
+        `,
+        [searchTermIds, seriesJsons, lastWeeks],
+      );
+    }
+
+    // Selected terms with NO kwm rows in the window can't be upserted and
+    // would re-select forever. By construction they shouldn't exist (every
+    // kcs term's current week is a kwm row inside the 357-day window), so
+    // treat one as a data bug: log and stop rather than spin.
+    if (batches.length < rebuildRows.length) {
+      console.error(
+        `[refreshSummary] chart-series rebuild: ${rebuildRows.length - batches.length} of ` +
+          `${rebuildRows.length} selected terms had no kwm rows in the 52w window — ` +
+          'stopping the rebuild loop early (remaining terms use the detail-page kwm fallback).',
+      );
+      break;
+    }
+
+    rebuiltTotal += batches.length;
+    chunkIndex += 1;
+    console.log(
+      `[refreshSummary] chart-series rebuild chunk ${chunkIndex}: ${batches.length} terms (${rebuiltTotal} total)`,
+    );
+
+    if (rebuiltTotal >= CHART_SERIES_REBUILD_MAX_TERMS) {
+      console.warn(
+        `[refreshSummary] chart-series rebuild hit the ${CHART_SERIES_REBUILD_MAX_TERMS} ` +
+          'per-refresh ceiling — stopping; remainder is retried next refresh.',
+      );
+      break;
+    }
+  }
+  if (rebuiltTotal > 0) {
+    console.log(
+      `[refreshSummary] chart-series rebuild complete: ${rebuiltTotal} terms across ${chunkIndex} chunks`,
     );
   }
-  const ids = rebuildRows.map((r) => r.search_term_id);
-
-  // Read each rebuild term's 52-week window (matches the chart window /
-  // backfill: week >= current_week - 357 days), grouped by term.
-  const { rows: kwmRows } = await client.query<
-    ChartSeriesKwmRow & { search_term_id: string }
-  >(
-    `
-    SELECT search_term_id, week_end_date, actual_rank,
-           fake_volume_severity, fake_volume_eval_status,
-           top_clicked_product_1_click_share, top_clicked_product_1_conversion_share,
-           keyword_in_title_1, keyword_in_title_2, keyword_in_title_3,
-           keyword_in_title_1_loose, keyword_in_title_2_loose, keyword_in_title_3_loose
-    FROM keyword_weekly_metrics
-    WHERE search_term_id = ANY($1::uuid[])
-      AND week_end_date >= ($2::date - INTERVAL '357 days')
-    ORDER BY search_term_id, week_end_date ASC
-    `,
-    [ids, currentWeekEndDate],
-  );
-
-  // Group rows by term, build series via the shared helpers.
-  type SeriesBatch = { searchTermId: string; series: string; lastWeek: string };
-  const batches: SeriesBatch[] = [];
-
-  let currentId: string | null = null;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let currentSeries: ReturnType<typeof appendWeek> = [];
-
-  for (const row of kwmRows) {
-    if (row.search_term_id !== currentId) {
-      // Flush the previous term (if any)
-      if (currentId !== null && currentSeries.length > 0) {
-        const lastEntry = currentSeries[currentSeries.length - 1];
-        batches.push({
-          searchTermId: currentId,
-          series: JSON.stringify(currentSeries),
-          lastWeek: lastEntry.w,
-        });
-      }
-      currentId = row.search_term_id;
-      currentSeries = [];
-    }
-    const entry = kwmRowToEntry(row as ChartSeriesKwmRow);
-    currentSeries = appendWeek(currentSeries, entry, 52);
-  }
-  // Flush the final term
-  if (currentId !== null && currentSeries.length > 0) {
-    const lastEntry = currentSeries[currentSeries.length - 1];
-    batches.push({
-      searchTermId: currentId,
-      series: JSON.stringify(currentSeries),
-      lastWeek: lastEntry.w,
-    });
-  }
-
-  if (batches.length === 0) return;
-
-  // Batch-upsert. Using unnest for efficient multi-row upsert.
-  const searchTermIds = batches.map((b) => b.searchTermId);
-  const seriesJsons = batches.map((b) => b.series);
-  const lastWeeks = batches.map((b) => b.lastWeek);
-
-  await client.query(
-    `
-    INSERT INTO keyword_chart_series (search_term_id, series, last_week, updated_at)
-    SELECT unnest($1::uuid[]),
-           unnest($2::text[])::jsonb,
-           unnest($3::date[]),
-           now()
-    ON CONFLICT (search_term_id) DO UPDATE
-      SET series     = EXCLUDED.series,
-          last_week  = EXCLUDED.last_week,
-          updated_at = EXCLUDED.updated_at
-    `,
-    [searchTermIds, seriesJsons, lastWeeks],
-  );
 }
 
