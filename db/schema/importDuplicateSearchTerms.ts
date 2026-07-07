@@ -44,6 +44,10 @@ export const importDuplicateSearchTerms = pgTable(
   (t) => ({
     fileIdx: index('idst_file_idx').on(t.uploadedFileId),
     weekIdx: index('idst_week_idx').on(t.weekEndDate),
+    // Serves the detail page's per-keyword reads (migration 0042): the
+    // variants box (term + week) and the raw-history variants read (term
+    // only, via the leading column) — the latter was a seq scan before.
+    termWeekIdx: index('idst_term_week_idx').on(t.searchTermId, t.weekEndDate),
   }),
 );
 
