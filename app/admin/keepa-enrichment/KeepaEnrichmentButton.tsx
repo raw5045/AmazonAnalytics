@@ -11,7 +11,13 @@ export function KeepaEnrichmentButton({ currentWeek }: { currentWeek: string | n
 
   async function fire() {
     if (!currentWeek) return;
-    if (!confirm(`Trigger a FULL Keepa enrichment for ${currentWeek}? This will call the Keepa API for ~140k ASINs and take ~24 hours.`)) {
+    if (!confirm(
+      `Trigger a FULL Keepa enrichment for ${currentWeek}?\n\n` +
+      `This re-fetches EVERY in-scope ASIN (~135k) from the Keepa API — roughly 29 hours ` +
+      `at current pacing. ASINs fetched within the last 24h are skipped, so re-firing after ` +
+      `a crash resumes instead of restarting.\n\n` +
+      `Avoid starting one within ~30h of the next weekly upload.`,
+    )) {
       return;
     }
     setError(null);

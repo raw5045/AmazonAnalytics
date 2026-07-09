@@ -2,9 +2,12 @@
  * Admin endpoint: trigger a FULL Keepa enrichment for the current
  * kcs week. Fires `keepa.enrich-week-requested` with `mode: 'full'`.
  *
- * Full mode skips the port-over phase and calls Keepa API for every
- * in-scope ASIN — used as a monthly refresh to pull fresh prices /
- * reviews / categories on every ASIN, not just newly-discovered ones.
+ * Full mode re-fetches EVERY in-scope ASIN from the Keepa API and
+ * upserts over the week's existing rows — the monthly freshener for
+ * prices / reviews / categories. Only rows enriched within the last
+ * 24h are skipped (makes a crashed run resumable and an immediate
+ * re-fire a loud no-op). ~135k ASINs ≈ 29 hours at current pacing;
+ * don't start one within ~30h of the next weekly upload.
  *
  * Body: optional `{ weekEndDate?: string }`. Defaults to the current
  * kcs week if omitted.

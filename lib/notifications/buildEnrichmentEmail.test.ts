@@ -43,6 +43,31 @@ describe('buildEnrichmentEmail — completed variant', () => {
   });
 });
 
+describe('buildEnrichmentEmail — completed no-op variant', () => {
+  const email = buildEnrichmentEmail({ ...baseInput, outcome: 'completed', noop: true });
+
+  it('subject warns instead of celebrating', () => {
+    expect(email.subject).toContain('⚠');
+    expect(email.subject).toContain('nothing to fetch');
+    expect(email.subject).toContain('2026-05-02');
+    expect(email.subject).not.toContain('✓');
+  });
+
+  it('text body says zero ASINs were fetched and why', () => {
+    expect(email.text).toContain('zero ASINs');
+    expect(email.text).toContain('last 24 hours');
+  });
+
+  it('html uses the amber warning color, not green', () => {
+    expect(email.html).toContain('#b45309');
+    expect(email.html).not.toContain('#15803d');
+  });
+
+  it("still shows the week's existing dataset for context", () => {
+    expect(email.text).toContain('139,201');
+  });
+});
+
 describe('buildEnrichmentEmail — failed variant', () => {
   const email = buildEnrichmentEmail({
     ...baseInput,

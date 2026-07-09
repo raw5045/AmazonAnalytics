@@ -205,6 +205,10 @@ export const enrichKeepaForWeek = inngest.createFunction(
         ? (final.completedAt ?? new Date()).getTime() - final.startedAt.getTime()
         : 0;
       const tokensSpent = (final?.processedAsins ?? 0) * 2;
+      // A "completed" run that fetched zero ASINs is a no-op (the week was
+      // already covered) — flag it so the email can't masquerade as a fresh
+      // enrichment. (The 2026-07-08 full-refresh no-op looked like success.)
+      const noop = outcome === 'completed' && (final?.totalAsins ?? 0) === 0;
       // outcome is statically narrowed to completed | failed | orphaned
       // by the timeout-handling block above (the `if outcome === 'timeout'`
       // path always reassigns outcome).
@@ -215,6 +219,7 @@ export const enrichKeepaForWeek = inngest.createFunction(
         durationMs,
         tokensSpent,
         errorMessage: final?.errorMessage ?? undefined,
+        noop,
       });
     });
 

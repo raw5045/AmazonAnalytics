@@ -333,12 +333,15 @@ async function runEnrichment(
   try {
     // PHASE 0 (diff mode only): port forward most-recent 'active'
     // enrichment per ASIN from prior weeks. This satisfies the
-    // listScope.NOT EXISTS clause for unchanged ASINs, so the Keepa
+    // listScope diff-mode filter for unchanged ASINs, so the Keepa
     // API only gets called for genuinely new ASINs + any prior
     // 'no_price' / 'delisted' / 'error' rows that get a fresh retry.
     //
     // Skip in 'full' mode — the admin button forces a complete re-fetch
-    // (run monthly to refresh prices/reviews/etc).
+    // (run monthly to refresh prices/reviews/etc). In full mode listScope
+    // returns every in-scope ASIN except rows enriched <24h ago, and
+    // insertRow upserts over the week's existing rows. At Keepa pacing
+    // (~25k ASINs / 5.4h) a full pass over ~135k ASINs runs ~29 hours.
     if (mode === 'diff') {
       portedCount = await portRowsFromPriorWeeks(workClient, weekEndDate);
       console.log(
@@ -348,7 +351,7 @@ async function runEnrichment(
       console.log(`[keepa-job ${runId.slice(0, 8)}] week ${weekEndDate}: FULL mode — no port-over`);
     }
 
-    const asins = await listScope(workClient, weekEndDate);
+    const asins = await listScope(workClient, weekEndDate, mode);
     console.log(
       `[keepa-job ${runId.slice(0, 8)}] week ${weekEndDate}: ${asins.length} ASINs to enrich via Keepa API`,
     );
@@ -504,19 +507,37 @@ async function portRowsFromPriorWeeks(client: PoolClient, weekEndDate: string): 
 // ============================================================================
 
 /**
- * Candidate ASIN set for a given week — same logic as before:
- *   1. top-3 in-scope ASINs (rank ≤ 100K, NOT excluded category) that
- *      don't already have a row in asin_weekly_data for this week.
+ * Candidate ASIN set for a given week:
+ *   1. top-3 in-scope ASINs (rank ≤ 100K, NOT excluded category).
  *   2. PLUS: ASINs previously marked 'delisted' whose most-recent
  *      enriched_at is > 30 days old AND that are still in scope this
  *      week. (Task 6 mechanism.)
+ *
+ * The final filter depends on mode:
+ *   diff — skip any ASIN that already has a row for this week (ported
+ *          or fetched): only genuinely new ASINs hit the Keepa API.
+ *   full — skip only rows enriched within the last 24h, so a full run
+ *          RE-FETCHES every carried-forward price/review even though
+ *          the week already has rows. The 24h guard makes a crashed
+ *          multi-hour run resumable (re-fire skips what it already
+ *          refreshed) and makes an immediate re-fire a loud no-op.
+ *          (Before 2026-07-09 full mode used the diff filter, so firing
+ *          it after the weekly enrichment silently fetched nothing.)
  */
-async function listScope(client: PoolClient, weekEndDate: string): Promise<string[]> {
+async function listScope(
+  client: PoolClient,
+  weekEndDate: string,
+  mode: KeepaEnrichmentMode,
+): Promise<string[]> {
   const year = new Date(`${weekEndDate}T00:00:00Z`).getUTCFullYear();
   const partition = `keyword_weekly_metrics_${year}`;
   const exclPlaceholders = EXCLUDED_CATEGORIES_ARRAY
     .map((_, i) => `$${i + 2}`)
     .join(',');
+  const alreadyCoveredCondition =
+    mode === 'full'
+      ? `a.asin = c.asin AND a.week_end_date = $1::date AND a.enriched_at > NOW() - INTERVAL '24 hours'`
+      : `a.asin = c.asin AND a.week_end_date = $1::date`;
 
   const { rows } = await client.query<{ asin: string }>(
     `
@@ -557,7 +578,7 @@ async function listScope(client: PoolClient, weekEndDate: string): Promise<strin
     FROM all_candidates c
     WHERE NOT EXISTS (
       SELECT 1 FROM asin_weekly_data a
-      WHERE a.asin = c.asin AND a.week_end_date = $1::date
+      WHERE ${alreadyCoveredCondition}
     )
     `,
     [weekEndDate, ...EXCLUDED_CATEGORIES_ARRAY],
@@ -565,6 +586,16 @@ async function listScope(client: PoolClient, weekEndDate: string): Promise<strin
   return rows.map((r) => r.asin);
 }
 
+/**
+ * Upsert a fetched row. DO UPDATE (not DO NOTHING) so full-mode re-fetches
+ * overwrite the week's carried-forward values with fresh Keepa data, and
+ * diff-mode recovery conflicts land the fresher fetch.
+ *
+ * Downgrade guard: never replace an existing 'active' row with an 'error'
+ * row — a transient Keepa failure during a re-fetch must not wipe good
+ * (if stale) data. The errored ASIN stays >24h-old, so the next full run
+ * retries it.
+ */
 async function insertRow(client: PoolClient, row: EnrichmentRow): Promise<void> {
   await client.query(
     `
@@ -576,7 +607,31 @@ async function insertRow(client: PoolClient, row: EnrichmentRow): Promise<void> 
       variations, promotions, enrichment_status, error_message
     )
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
-    ON CONFLICT (asin, week_end_date) DO NOTHING
+    ON CONFLICT (asin, week_end_date) DO UPDATE SET
+      title = EXCLUDED.title,
+      brand = EXCLUDED.brand,
+      image_url = EXCLUDED.image_url,
+      category_path = EXCLUDED.category_path,
+      category_root = EXCLUDED.category_root,
+      category_leaf = EXCLUDED.category_leaf,
+      current_price_cents = EXCLUDED.current_price_cents,
+      sales_rank = EXCLUDED.sales_rank,
+      review_count = EXCLUDED.review_count,
+      average_rating_x10 = EXCLUDED.average_rating_x10,
+      last_rating_update = EXCLUDED.last_rating_update,
+      avg30_price_cents = EXCLUDED.avg30_price_cents,
+      avg90_price_cents = EXCLUDED.avg90_price_cents,
+      avg180_price_cents = EXCLUDED.avg180_price_cents,
+      avg365_price_cents = EXCLUDED.avg365_price_cents,
+      variations = EXCLUDED.variations,
+      promotions = EXCLUDED.promotions,
+      enrichment_status = EXCLUDED.enrichment_status,
+      error_message = EXCLUDED.error_message,
+      enriched_at = NOW()
+    WHERE NOT (
+      asin_weekly_data.enrichment_status = 'active'
+      AND EXCLUDED.enrichment_status = 'error'
+    )
     `,
     [
       row.asin,

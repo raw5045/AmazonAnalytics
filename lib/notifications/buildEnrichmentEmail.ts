@@ -39,6 +39,13 @@ export interface EnrichmentEmailInput {
    * needing to open Inngest / Railway logs.
    */
   errorMessage?: string;
+  /**
+   * True when a 'completed' run fetched ZERO ASINs (the week was already
+   * covered — e.g. a full refresh fired within 24h of the last fetch pass).
+   * Renders a distinct "nothing to fetch" variant so a no-op can never
+   * masquerade as a fresh enrichment.
+   */
+  noop?: boolean;
 }
 
 export interface BuiltEnrichmentEmail {
@@ -59,6 +66,7 @@ export function buildEnrichmentEmail(i: EnrichmentEmailInput): BuiltEnrichmentEm
 }
 
 function buildCompleted(i: EnrichmentEmailInput): BuiltEnrichmentEmail {
+  if (i.noop) return buildCompletedNoop(i);
   const total = countTotal(i.counts);
   const explorerUrl = `${i.appUrl}/explorer`;
   const subject = `✓ Keepa enrichment completed — week of ${i.weekEndDate}`;
@@ -83,6 +91,41 @@ function buildCompleted(i: EnrichmentEmailInput): BuiltEnrichmentEmail {
     rows: standardRows(i, total),
     afterRowsHtml:
       '<p style="margin: 16px 0 0 0; color: #555;">Detail-page product cards and review/rating columns for this week are now showing fresh Keepa data.</p>',
+    linkUrl: explorerUrl,
+    linkText: 'Open the explorer',
+  });
+  return { subject, text: lines.join('\n'), html };
+}
+
+/**
+ * 'completed' run that fetched nothing. Amber, not green — the operator
+ * probably expected a re-fetch (this is what a full refresh fired within
+ * 24h of the last fetch pass produces).
+ */
+function buildCompletedNoop(i: EnrichmentEmailInput): BuiltEnrichmentEmail {
+  const total = countTotal(i.counts);
+  const explorerUrl = `${i.appUrl}/explorer`;
+  const subject = `⚠ Keepa enrichment: nothing to fetch — week of ${i.weekEndDate}`;
+  const lines = [
+    `The enrichment run for week ${i.weekEndDate} completed WITHOUT calling`,
+    `the Keepa API: zero ASINs needed fetching.`,
+    '',
+    `Every in-scope product already has a row for this week fetched within`,
+    `the last 24 hours. If you meant to force a full re-fetch, wait until`,
+    `the last pass is >24h old and fire it again.`,
+    '',
+    `The week's existing dataset (unchanged by this run):`,
+    ...formatStatusLines(i.counts, total),
+    '',
+    `View data: ${explorerUrl}`,
+  ];
+  const html = htmlShell({
+    headlineColor: '#b45309',
+    headline: '⚠ Keepa enrichment: nothing to fetch',
+    subhead: `Week of ${escapeHtml(i.weekEndDate)} — zero Keepa API calls made`,
+    rows: [['Existing dataset (unchanged)', formatStatusBreakdownHtml(i.counts, total)]],
+    afterRowsHtml:
+      '<p style="margin: 16px 0 0 0; color: #555;">Every in-scope product already has a row fetched within the last 24 hours. If you meant to force a full re-fetch, wait until the last pass is &gt;24h old and fire it again.</p>',
     linkUrl: explorerUrl,
     linkText: 'Open the explorer',
   });
