@@ -474,7 +474,11 @@ async function portRowsFromPriorWeeks(client: PoolClient, weekEndDate: string): 
       a.last_rating_update,
       a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
       a.variations, a.promotions,
-      'active'::asin_enrichment_status, NOW(), NULL
+      -- Preserve the source row's enriched_at: it means "when this ASIN's
+      -- data was last actually FETCHED from Keepa", carried through weekly
+      -- ports. (Until 2026-07-09 this wrote NOW(), which erased the
+      -- staleness signal the full-mode 7-day guard depends on.)
+      'active'::asin_enrichment_status, a.enriched_at, NULL
     FROM asin_weekly_data a
     JOIN (
       SELECT DISTINCT t.asin
@@ -516,11 +520,14 @@ async function portRowsFromPriorWeeks(client: PoolClient, weekEndDate: string): 
  * The final filter depends on mode:
  *   diff — skip any ASIN that already has a row for this week (ported
  *          or fetched): only genuinely new ASINs hit the Keepa API.
- *   full — skip only rows enriched within the last 24h, so a full run
- *          RE-FETCHES every carried-forward price/review even though
- *          the week already has rows. The 24h guard makes a crashed
- *          multi-hour run resumable (re-fire skips what it already
- *          refreshed) and makes an immediate re-fire a loud no-op.
+ *   full — skip only rows genuinely FETCHED within the last 14 days
+ *          (enriched_at survives the weekly port, so it really means
+ *          last-fetch time). A full run therefore re-fetches every
+ *          stale carried-forward price/review while skipping the last
+ *          two weekly pull-ins' fresh fetches — keeping the run under
+ *          ~24h (measured 2026-07-09: ~106k ASINs ≈ 23.2h) — and stays
+ *          resumable (a re-fire skips what it already refreshed) with
+ *          an immediate re-fire a loud no-op.
  *          (Before 2026-07-09 full mode used the diff filter, so firing
  *          it after the weekly enrichment silently fetched nothing.)
  */
@@ -536,7 +543,7 @@ async function listScope(
     .join(',');
   const alreadyCoveredCondition =
     mode === 'full'
-      ? `a.asin = c.asin AND a.week_end_date = $1::date AND a.enriched_at > NOW() - INTERVAL '24 hours'`
+      ? `a.asin = c.asin AND a.week_end_date = $1::date AND a.enriched_at > NOW() - INTERVAL '14 days'`
       : `a.asin = c.asin AND a.week_end_date = $1::date`;
 
   const { rows } = await client.query<{ asin: string }>(
