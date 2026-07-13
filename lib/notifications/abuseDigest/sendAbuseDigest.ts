@@ -8,7 +8,7 @@
 // crash between send and mark re-sends on retry — a duplicate email to the
 // admin inbox is harmless, a silent miss is not.
 import { Resend } from 'resend';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, eq, isNotNull, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { appSettings, users } from '@/db/schema';
 import { isUndeliverableEmail } from '@/lib/notifications/digest/recipients';
@@ -80,9 +80,11 @@ export async function sendAbuseDigest(opts?: {
     throw new Error(`[abuse-digest] Resend error: ${error.message ?? 'send failed'}`);
   }
 
-  // 5. Advance the key — but never move it backwards (a force re-send of an
-  //    older day must not re-open the cron's idempotency window).
-  await advanceLastSentDay(day);
+  // 5. Advance the key — only for COMPLETED ET days. A "today so far" send
+  //    (or a typo'd future day) must never seal tomorrow's cron window: the
+  //    full-day digest for today still needs to go out tomorrow morning.
+  //    Backwards moves are blocked inside advanceLastSentDay.
+  if (day <= previousEtDay(new Date())) await advanceLastSentDay(day);
 
   return {
     day,
@@ -103,13 +105,15 @@ async function getLastSentDay(): Promise<string | null> {
 }
 
 async function advanceLastSentDay(day: string): Promise<void> {
-  const last = await getLastSentDay();
-  if (last && last >= day) return;
+  // Atomic monotone advance: the conditional lives IN the upsert, so two
+  // concurrent sends can never move the key backwards (YYYY-MM-DD compares
+  // correctly as text; a missing 'day' key yields NULL → no update).
   await db
     .insert(appSettings)
     .values({ key: LAST_SENT_KEY, valueJson: { day } })
     .onConflictDoUpdate({
       target: appSettings.key,
       set: { valueJson: { day }, updatedAt: new Date() },
+      setWhere: sql`(${appSettings.valueJson}->>'day') < ${day}`,
     });
 }

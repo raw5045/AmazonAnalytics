@@ -173,7 +173,10 @@ inline-styled like the existing builders.
    `isUndeliverableEmail`. Zero recipients → warn and return without marking.
 5. **One** `resend.emails.send` with the admin list in `to:`. No per-recipient tracking,
    no batching, no unsubscribe (it's an internal ops email).
-6. On success, upsert the `app_settings` key to `day`. Send-then-mark: a crash between 5
+6. On success, upsert the `app_settings` key to `day` — but only when `day` is a
+   completed ET day (≤ yesterday), so a today-so-far force-send can never seal tomorrow's
+   cron window; the upsert is conditionally monotone (never moves backwards).
+   Send-then-mark: a crash between 5
    and 6 means a retry re-sends — a duplicate to the admin inbox is harmless
    (at-least-once, same philosophy as the weekly digest).
 - Missing `RESEND_API_KEY` → `console.warn` + return without marking (local dev fail-soft).
