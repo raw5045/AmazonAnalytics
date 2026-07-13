@@ -27,3 +27,5 @@ export { weeklyDigestRuns, weeklyDigestSends } from './weeklyDigest';
 export type { WeeklyDigestRunRow, WeeklyDigestSendRow } from './weeklyDigest';
 export * from './keywordChartSeries';
 export * from './customCategories';
+export * from './userActivityDaily';
+export * from './appActivityDaily';
