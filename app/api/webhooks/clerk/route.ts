@@ -67,8 +67,9 @@ export async function POST(req: Request): Promise<Response> {
   try {
     if (event.type === 'session.created') {
       // Sign-in stamp for the abuse digest. UPDATE matching zero rows (a
-      // session for a user we don't know) is a silent no-op by design —
-      // session events must never 500 into a Svix retry loop.
+      // session for a user we don't know) is a silent no-op by design — an
+      // unknown user must not 500 into a Svix retry loop. (A genuine DB
+      // error still throws → 500 → retry, which is what we want.)
       await db
         .update(users)
         .set({ lastLoginAt: new Date() })
@@ -94,7 +95,11 @@ export async function POST(req: Request): Promise<Response> {
     }
   } catch (e) {
     console.error(
-      `[clerk webhook] DB sync failed for ${event.type} clerkUserId=${event.data.id}:`,
+      `[clerk webhook] DB sync failed for ${event.type} ${
+        event.type === 'session.created'
+          ? `clerkUserId=${event.data.user_id} sessionId=${event.data.id}`
+          : `clerkUserId=${event.data.id}`
+      }:`,
       e,
     );
     return new Response('DB sync failed', { status: 500 });
