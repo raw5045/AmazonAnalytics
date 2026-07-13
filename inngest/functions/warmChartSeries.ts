@@ -19,6 +19,7 @@
 import { Pool } from 'pg';
 import { inngest } from '../client';
 import { warmChartSeriesLayers } from '@/lib/explorer/warmSeries';
+import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
 
 export const warmChartSeriesFn = inngest.createFunction(
   {
@@ -40,6 +41,13 @@ export const warmChartSeriesFn = inngest.createFunction(
       const result = await warmChartSeriesLayers(pool);
       console.log(
         `[warm-chart-series] ${result.ok ? 'ok' : 'FAILED'} rows=${result.rows} data=${result.mb}MB in ${result.ms}ms`,
+      );
+      // The ~9GB sweep can evict the explorer landing's pages from Neon's
+      // cache — re-warm the landing immediately so this cron can never be
+      // the reason a visitor's first query goes cold (2026-07-10 lesson).
+      const landing = await warmExplorerLanding(pool);
+      console.log(
+        `[warm-chart-series] landing re-warm: ${landing.ok ? `${landing.rows} rows in ${landing.ms}ms` : 'failed (non-fatal)'}`,
       );
       return result;
     } finally {

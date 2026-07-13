@@ -3,17 +3,21 @@
  *
  * Neon autosuspend is DISABLED on this project (owner setting), so this is
  * NOT about keeping compute alive. Its two remaining jobs, every 15 minutes
- * during waking hours (7am–11pm ET):
+ * AROUND THE CLOCK:
  *   1. Anti-eviction: the nightly jobs (refresh / enrichment / kcs sync)
  *      churn GBs through Neon's cache and evict the landing's ~630 pages;
- *      the ping keeps the exact visitor path resident into the morning.
+ *      the ping keeps the exact visitor path resident.
  *   2. Canary: each tick logs its duration — if landing latency ever
  *      regresses (e.g. a new churn source, a lost index twin), the worker
  *      logs show it before a human hits it.
  * The 30s+ churn class is handled at the source by the write jobs vacuuming
  * + warming (worker/kcsKeepaSyncJobs.ts, refreshSummary.ts).
  *
- * Cost: negligible — a ~630-buffer cached query, ~64 runs/day.
+ * 24h coverage (was 7am–11pm ET until 2026-07-10): the overnight jobs
+ * finish 2–5am ET — exactly when the cron used to be asleep — and an
+ * early-morning visitor hit a churned, unprotected landing for 79s.
+ *
+ * Cost: negligible — a ~630-buffer cached query, 96 runs/day.
  */
 import { Pool } from 'pg';
 import { inngest } from '../client';
@@ -25,7 +29,7 @@ export const warmExplorerLandingFn = inngest.createFunction(
     name: 'Keep-warm: explorer landing query',
     retries: 0, // it's a ping — the next tick is the retry
     concurrency: { limit: 1 },
-    triggers: [{ cron: 'TZ=America/New_York */15 7-22 * * *' }],
+    triggers: [{ cron: '*/15 * * * *' }],
   },
   async () => {
     const pool = new Pool({

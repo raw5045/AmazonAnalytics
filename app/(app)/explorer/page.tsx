@@ -20,6 +20,8 @@ import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
 import { Suspense } from 'react';
 import { FilterSidebar } from './FilterSidebar';
+import { LoadingIndicator } from './LoadingIndicator';
+import { ExplorerSkeleton } from './ExplorerSkeleton';
 import { ResultsTable } from './ResultsTable';
 import { PaginationControls } from './Pagination';
 import { ResultCountDisplay, DeferredResultCount, ResultCountSkeleton, PageOf, DeferredPageOf } from './ResultCount';
@@ -45,6 +47,31 @@ export default async function ExplorerPage({
 }) {
   const sp = await searchParams;
 
+  // Stream the shell immediately; ALL data work (rows query, categories,
+  // saved views) happens inside <ExplorerResults> behind Suspense. On a
+  // hard/cold load the skeleton + spinner paint in well under a second even
+  // if the rows query is having a bad day (2026-07-10: a post-full-sync
+  // churn window served a 79s query to a blank screen). Soft filter/sort/
+  // pagination changes run inside startTransition, so React keeps the old
+  // table mounted (LoadingOverlay covers feedback) — this fallback only
+  // shows on initial loads.
+  return (
+    <Suspense fallback={<ExplorerFallback />}>
+      <ExplorerResults sp={sp} />
+    </Suspense>
+  );
+}
+
+function ExplorerFallback() {
+  return (
+    <>
+      <LoadingIndicator label="keyword explorer" />
+      <ExplorerSkeleton />
+    </>
+  );
+}
+
+async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
   // The saved-views picker + Save button live in the layout header.
   // The page still needs the *active* view's stored filters so the
   // bookmark URL shape (`/explorer?view=<id>` with no filter params)
