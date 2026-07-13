@@ -23,7 +23,7 @@ export type SendImportEmailInput = Omit<ImportEmailInput, 'appUrl'>;
 export async function sendImportEmail(input: SendImportEmailInput): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.RESEND_FROM ?? 'onboarding@resend.dev';
-  const appUrl = process.env.APP_PUBLIC_URL ?? 'https://amazon-analytics-beta.vercel.app';
+  const appUrl = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
 
   if (!apiKey) {
     console.warn(

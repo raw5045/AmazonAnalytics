@@ -4,7 +4,7 @@ import { buildImportEmail } from './buildImportEmail';
 const baseInput = {
   filename: 'US_Top_Search_Terms_Simple_Week_2026_04_25.csv',
   batchId: '3cbf91d3-ae35-47be-af03-fc09bd97f252',
-  appUrl: 'https://amazon-analytics-beta.vercel.app',
+  appUrl: 'https://keywordquarry.com',
 };
 
 describe('buildImportEmail', () => {
@@ -34,7 +34,7 @@ describe('buildImportEmail', () => {
 
     it('text body has a link to the batch detail page', () => {
       expect(email.text).toContain(
-        'https://amazon-analytics-beta.vercel.app/admin/batches/3cbf91d3-ae35-47be-af03-fc09bd97f252',
+        'https://keywordquarry.com/admin/batches/3cbf91d3-ae35-47be-af03-fc09bd97f252',
       );
     });
 

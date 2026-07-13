@@ -1,6 +1,6 @@
 import type { MetadataRoute } from 'next';
 
-const BASE = process.env.APP_PUBLIC_URL ?? 'https://amazon-analytics-beta.vercel.app';
+const BASE = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
 
 export default function robots(): MetadataRoute.Robots {
   return {

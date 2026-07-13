@@ -99,7 +99,7 @@ export async function sendWeeklyDigest(opts: {
   // 5. Fan out in chunks.
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.RESEND_FROM ?? 'onboarding@resend.dev';
-  const appUrl = process.env.APP_PUBLIC_URL ?? 'https://amazon-analytics-beta.vercel.app';
+  const appUrl = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
 
   let sent = 0;
   let failed = 0;

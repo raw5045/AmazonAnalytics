@@ -14,6 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.APP_PUBLIC_URL ?? "https://keywordquarry.com"),
   title: {
     default: "KeywordQuarry",
     template: "%s · KeywordQuarry",

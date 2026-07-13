@@ -3,7 +3,7 @@ import { buildEnrichmentEmail } from './buildEnrichmentEmail';
 
 const baseInput = {
   weekEndDate: '2026-05-02',
-  appUrl: 'https://amazon-analytics-beta.vercel.app',
+  appUrl: 'https://keywordquarry.com',
   durationMs: 18 * 3_600_000 + 42 * 60_000, // 18h 42min
   tokensSpent: 281_600,
   counts: {
@@ -34,7 +34,7 @@ describe('buildEnrichmentEmail — completed variant', () => {
   });
 
   it('text body links to the explorer', () => {
-    expect(email.text).toContain('https://amazon-analytics-beta.vercel.app/explorer');
+    expect(email.text).toContain('https://keywordquarry.com/explorer');
   });
 
   it('html body uses the green success color', () => {
