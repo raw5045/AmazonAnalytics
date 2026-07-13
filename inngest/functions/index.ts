@@ -6,6 +6,7 @@ import { processMonthlySfr } from './processMonthlySfr';
 import { processCalibrationUpload } from './processCalibrationUpload';
 import { syncKcsKeepaAggregates } from './syncKcsKeepaAggregates';
 import { sendWeeklyDigestFn } from './sendWeeklyDigest';
+import { sendAbuseDigestFn } from './sendAbuseDigest';
 import { warmExplorerLandingFn } from './warmExplorerLanding';
 import { warmChartSeriesFn } from './warmChartSeries';
 
@@ -23,6 +24,7 @@ export const functions = [
   processCalibrationUpload,
   syncKcsKeepaAggregates,
   sendWeeklyDigestFn,
+  sendAbuseDigestFn,
   warmExplorerLandingFn,
   warmChartSeriesFn,
 ];
