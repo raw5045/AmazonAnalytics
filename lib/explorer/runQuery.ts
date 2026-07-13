@@ -56,6 +56,15 @@ interface ExplorerQueryResult {
    * at refresh time (cold start).
    */
   volumeFit: VolumeFitMeta | null;
+  /**
+   * The data week this result set was served from (kcs meta singleton).
+   * Surfaced in the UI as the data-vintage chip — both a user-facing
+   * freshness signal and a stale-serve tripwire (2026-07-13: a page once
+   * served the prior week's snapshot hours after the swap; showing the
+   * week makes any recurrence instantly visible). `null` if the meta
+   * lookup failed (the query still works, unpredicated).
+   */
+  currentWeekEndDate: string | null;
   /** Per-layer wall-clock timings for the perf instrumentation strip. */
   timings: {
     /** Meta-row lookup that supplies the current_week_end_date predicate. */
@@ -334,7 +343,7 @@ async function runExplorerQueryInner(
     const broad = await runBroad(sql, args);
     rowsMs = Date.now() - tRowsStart;
     if (broad === 'timeout') {
-      return broadTimeoutResult(volumeFit, metaLookupMs, rowsMs, currentWeekEndDate !== undefined);
+      return broadTimeoutResult(volumeFit, metaLookupMs, rowsMs, currentWeekEndDate);
     }
     rawRows = broad as unknown as RawRow[];
   } else {
@@ -402,7 +411,7 @@ async function runExplorerQueryInner(
         const cr = await runBroad(countSql, countArgs);
         countMs = Date.now() - tFallback;
         if (cr === 'timeout') {
-          return broadTimeoutResult(volumeFit, metaLookupMs, rowsMs, currentWeekEndDate !== undefined);
+          return broadTimeoutResult(volumeFit, metaLookupMs, rowsMs, currentWeekEndDate);
         }
         ({ total, totalIsCapped } = applyCountCap(extractCount(cr as unknown as Array<{ total: number | string }>)));
       } else {
@@ -429,6 +438,7 @@ async function runExplorerQueryInner(
     total,
     totalIsCapped,
     volumeFit,
+    currentWeekEndDate: currentWeekEndDate ?? null,
     timings: {
       metaLookupMs,
       rowsMs,
@@ -485,7 +495,7 @@ function broadTimeoutResult(
   volumeFit: VolumeFitMeta | null,
   metaLookupMs: number,
   rowsMs: number,
-  usedPredicate: boolean,
+  currentWeekEndDate: string | undefined,
 ): ExplorerQueryResult {
   return {
     rows: [],
@@ -493,8 +503,15 @@ function broadTimeoutResult(
     total: 0,
     totalIsCapped: false,
     volumeFit,
+    currentWeekEndDate: currentWeekEndDate ?? null,
     broadTimedOut: true,
-    timings: { metaLookupMs, rowsMs, countMs: 0, usedPredicate, countSource: 'live' },
+    timings: {
+      metaLookupMs,
+      rowsMs,
+      countMs: 0,
+      usedPredicate: currentWeekEndDate !== undefined,
+      countSource: 'live',
+    },
   };
 }
 

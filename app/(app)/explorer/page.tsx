@@ -138,7 +138,7 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
     categoriesPromise,
     leafCategoriesPromise,
   ]);
-  const { rows, hasNext, total, totalIsCapped, volumeFit, broadTimedOut, timings: rqTimings } = queryResult;
+  const { rows, hasNext, total, totalIsCapped, volumeFit, currentWeekEndDate, broadTimedOut, timings: rqTimings } = queryResult;
   const categories = categoriesTimed.result;
   const handlerTotalMs = Date.now() - handlerStartedAt;
 
@@ -239,7 +239,10 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
                 <a href="/explorer" className="text-sm underline text-gray-600">Reset filters</a>
               )}
             </div>
-            {volumeFit && <VolumeFitChip fit={volumeFit} />}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <DataWeekChip week={currentWeekEndDate} />
+              {volumeFit && <VolumeFitChip fit={volumeFit} />}
+            </div>
             <ResultsTable
               rows={rows}
               window={filters.window}
@@ -266,6 +269,34 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
 }
 
 /**
+ * Data-vintage chip: which Amazon Brand Analytics week the explorer is
+ * serving. A user-facing freshness signal AND a stale-serve tripwire —
+ * if this ever shows an older week than the latest import, something
+ * between the app and the database is serving a stale snapshot (observed
+ * once on 2026-07-08; root cause never reproduced).
+ */
+function DataWeekChip({ week }: { week: string | null }) {
+  if (!week) return null;
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
+      title="The Amazon Brand Analytics week currently loaded. Updates after each weekly import."
+    >
+      <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      Data: week ending <span className="font-semibold">{formatWeekLabel(week)}</span>
+    </div>
+  );
+}
+
+function formatWeekLabel(isoYyyyMmDd: string): string {
+  const [y, m, d] = isoYyyyMmDd.split('-');
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const idx = parseInt(m, 10) - 1;
+  if (idx < 0 || idx > 11) return isoYyyyMmDd;
+  return `${monthNames[idx]} ${parseInt(d, 10)}, ${y}`;
+}
+
+/**
  * Small inline chip that tells the user where the est-monthly-volume
  * numbers came from. Shown above the results table.
  */
@@ -274,7 +305,7 @@ function VolumeFitChip({ fit }: { fit: VolumeFitMeta }) {
   // Render as "Month YYYY" — friendlier than the raw date.
   const monthLabel = formatMonthLabel(fit.calibrationMonthEndDate);
   return (
-    <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs text-blue-900">
+    <div className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-blue-50 px-3 py-1 text-xs text-blue-900">
       <span>
         Est. monthly volume from <strong>{monthLabel}</strong> calibration fit
       </span>
