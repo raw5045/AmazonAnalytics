@@ -989,6 +989,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ### Task 7: Flag evaluation (TDD)
 
+> **Superseded in-flight:** the threshold values below were replaced by cap-derived ones in commit e1e757e (watchlist amber = half the 100 cap, no red; saved views amber = full 5-view quota) after review found the originals mathematically unreachable. The spec's table is the source of truth.
+
 **Files:**
 - Create: `lib/notifications/abuseDigest/evaluateFlags.test.ts`
 - Create: `lib/notifications/abuseDigest/evaluateFlags.ts`

@@ -32,7 +32,11 @@ export async function sendAbuseDigest(opts?: {
   day?: string;
   force?: boolean;
 }): Promise<SendAbuseDigestResult> {
-  const day = opts?.day ?? previousEtDay(new Date());
+  // completedThrough is captured at entry so a send straddling ET midnight
+  // fails toward a duplicate (accepted) rather than sealing a day whose
+  // final seconds weren't loaded.
+  const completedThrough = previousEtDay(new Date());
+  const day = opts?.day ?? completedThrough;
   const base = { day, sent: false, recipients: 0, flags: 0, activeUsers: 0 };
 
   // 1. Idempotency gate ('YYYY-MM-DD' strings compare correctly as text).
@@ -84,7 +88,7 @@ export async function sendAbuseDigest(opts?: {
   //    (or a typo'd future day) must never seal tomorrow's cron window: the
   //    full-day digest for today still needs to go out tomorrow morning.
   //    Backwards moves are blocked inside advanceLastSentDay.
-  if (day <= previousEtDay(new Date())) await advanceLastSentDay(day);
+  if (day <= completedThrough) await advanceLastSentDay(day);
 
   return {
     day,
