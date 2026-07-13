@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { UserButton } from '@clerk/nextjs';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
 import { watchlistCountForUser } from '@/lib/watchlist/loadServer';
@@ -42,12 +43,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <Link href="/admin" className="text-sky-300 hover:text-sky-200">Admin</Link>
           )}
           <span className="hidden sm:inline text-xs text-slate-400">{user.email}</span>
-          <span
-            aria-hidden
-            className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-sky-400 to-blue-600 text-[11px] font-bold text-white"
-          >
-            {user.email.slice(0, 1).toUpperCase()}
-          </span>
+          {/* Clerk avatar menu: Manage account + Sign out (sign-out lands on
+              the marketing homepage via ClerkProvider afterSignOutUrl). */}
+          <UserButton appearance={{ elements: { avatarBox: 'h-7 w-7' } }} />
         </div>
       </header>
       <main className="flex-1">{children}</main>
