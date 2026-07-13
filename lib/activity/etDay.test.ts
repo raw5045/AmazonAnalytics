@@ -21,6 +21,10 @@ describe('etDay', () => {
     // 2026-03-05T12:00:00Z = 2026-03-05 07:00 EST
     expect(etDay(new Date('2026-03-05T12:00:00Z'))).toBe('2026-03-05');
   });
+
+  it('throws on an Invalid Date rather than emitting garbage', () => {
+    expect(() => etDay(new Date(NaN))).toThrow();
+  });
 });
 
 describe('previousEtDay', () => {
@@ -47,5 +51,17 @@ describe('previousEtDay', () => {
   it('is correct on the fall-back morning (2026-11-01 is a 25h ET day)', () => {
     // 2026-11-01 07:30 EST = 12:30Z → previous ET day is 10-31
     expect(previousEtDay(new Date('2026-11-01T12:30:00Z'))).toBe('2026-10-31');
+  });
+
+  it('discriminates naive 24h-subtraction: morning after spring-forward', () => {
+    // 2026-03-09T04:30:00Z = 2026-03-09 00:30 EDT → previous ET day is 03-08.
+    // (Naive etDay(now - 24h) lands on 03-07 because Mar 8 04:30Z is still EST.)
+    expect(previousEtDay(new Date('2026-03-09T04:30:00Z'))).toBe('2026-03-08');
+  });
+
+  it('discriminates naive 24h-subtraction: late on the fall-back day', () => {
+    // 2026-11-02T04:30:00Z = 2026-11-01 23:30 EST → previous ET day is 10-31.
+    // (Naive etDay(now - 24h) lands on 11-01 because Nov 1 04:30Z is still EDT.)
+    expect(previousEtDay(new Date('2026-11-02T04:30:00Z'))).toBe('2026-10-31');
   });
 });
