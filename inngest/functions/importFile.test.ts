@@ -94,6 +94,10 @@ describe('processFileImport', () => {
 
   it('streams the fixture through staging and into keyword_weekly_metrics', async () => {
     const buf = readFileSync(path.join(__dirname, '../../lib/csv/fixtures/valid-sample.csv'));
+    // Re-entry lock UPDATE ... RETURNING id (importFile.ts:595-605) — one row
+    // back means the lock was acquired, so processFileImport proceeds past
+    // the `lockResult.rows.length === 0` branch instead of throwing.
+    mockExecute.mockResolvedValueOnce({ rows: [{ id: 'f1' }] });
     mockFindFile.mockResolvedValueOnce({
       id: 'f1',
       batchId: 'b1',
