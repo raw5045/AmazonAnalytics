@@ -2,6 +2,8 @@
 // Pure threshold evaluation. This module is the single tuning point for
 // what the digest flags — and the seam a future intra-day tripwire would
 // reuse unchanged (deferred v2; see the spec's non-goals).
+import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
+import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
 import type { AbuseDigestStats, Flag } from './types';
 
 /**
@@ -12,9 +14,16 @@ import type { AbuseDigestStats, Flag } from './types';
 export const THRESHOLDS = {
   signupsPerDay: { amber: 10, red: 25 },
   userReadsPerDay: { amber: 500, red: 2000 }, // explorer queries + detail views
-  userWatchlistAddsPerDay: { amber: 100, red: 500 },
-  userSavedViewsPerDay: { amber: 15 },
-  userCustomCategoriesPerDay: { amber: 10 },
+  // Derived from the live API caps so these can never drift into
+  // unreachable territory (a flag that can't fire fakes coverage):
+  // watchlist cap 100 → amber = half the quota added in one day; no red
+  // tier (>100/day is impossible — created-yesterday-and-still-existing
+  // rows can never exceed the live cap).
+  userWatchlistAddsPerDay: { amber: MAX_WATCHED_KEYWORDS / 2 },
+  // saved-views cap 5 → amber fires only when the whole quota was
+  // created in a single day.
+  userSavedViewsPerDay: { amber: MAX_VIEWS_PER_USER - 1 },
+  userCustomCategoriesPerDay: { amber: 10 }, // cap is 25 (MAX_CUSTOM_CATEGORIES) — 11-25 reachable
   honeypotTripsPerDay: { amber: 20 },
   contactSubmissionsPerDay: { amber: 10 },
 } as const;

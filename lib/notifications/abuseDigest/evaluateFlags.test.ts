@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluateFlags } from './evaluateFlags';
+import { evaluateFlags, THRESHOLDS } from './evaluateFlags';
 import type { AbuseDigestStats, PerUserActivity } from './types';
 
 function quietStats(): AbuseDigestStats {
@@ -72,18 +72,34 @@ describe('evaluateFlags', () => {
     const flags = evaluateFlags({
       ...quietStats(),
       activeUsers: [
-        userWith({ watchlistAdds: 101, savedViewsCreated: 16, customCategoriesCreated: 11 }),
+        userWith({ watchlistAdds: 51, savedViewsCreated: 5, customCategoriesCreated: 11 }),
       ],
     });
     expect(flags).toEqual([
-      { severity: 'amber', message: 'a@x.com: 101 watchlist adds (amber threshold: 100)' },
-      { severity: 'amber', message: 'a@x.com: 16 saved views created (amber threshold: 15)' },
+      { severity: 'amber', message: 'a@x.com: 51 watchlist adds (amber threshold: 50)' },
+      { severity: 'amber', message: 'a@x.com: 5 saved views created (amber threshold: 4)' },
       { severity: 'amber', message: 'a@x.com: 11 custom categories created (amber threshold: 10)' },
     ]);
-    const red = evaluateFlags({ ...quietStats(), activeUsers: [userWith({ watchlistAdds: 501 })] });
-    expect(red).toEqual([
-      { severity: 'red', message: 'a@x.com: 501 watchlist adds (red threshold: 500)' },
+  });
+
+  it('flags multiple users independently', () => {
+    const flags = evaluateFlags({
+      ...quietStats(),
+      activeUsers: [
+        userWith({ userId: 'u1', email: 'a@x.com', explorerQueries: 600 }),
+        userWith({ userId: 'u2', email: 'b@x.com', savedViewsCreated: 5 }),
+      ],
+    });
+    expect(flags).toEqual([
+      { severity: 'amber', message: 'a@x.com: 600 reads (amber threshold: 500)' },
+      { severity: 'amber', message: 'b@x.com: 5 saved views created (amber threshold: 4)' },
     ]);
+  });
+
+  it('every red threshold sits above its amber sibling', () => {
+    for (const t of Object.values(THRESHOLDS)) {
+      if ('red' in t) expect(t.red).toBeGreaterThan(t.amber);
+    }
   });
 
   it('flags contact-form pressure', () => {

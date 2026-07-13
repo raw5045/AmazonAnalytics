@@ -142,8 +142,8 @@ file (single tuning point), explicitly commented as v1 guesses:
 |---|---|---|
 | Signups per day | > 10 | > 25 |
 | Per-user reads (queries + detail views) | > 500 | > 2,000 |
-| Per-user watchlist adds | > 100 | > 500 |
-| Per-user saved views created | > 15 | — |
+| Per-user watchlist adds | > 50 (half the 100 cap) | — |
+| Per-user saved views created | > 4 (the full 5-view quota in a day) | — |
 | Per-user custom categories created | > 10 | — |
 | Honeypot trips per day | > 20 | — |
 | Contact submissions per day | > 10 | — |
