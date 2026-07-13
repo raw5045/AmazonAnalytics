@@ -81,6 +81,9 @@ describe('buildAbuseDigestEmail', () => {
     expect(built.html).toContain(`user${ACTIVE_USER_ROW_CAP - 1}@x.com`);
     expect(built.html).not.toContain(`user${ACTIVE_USER_ROW_CAP}@x.com`);
     expect(built.html).toContain('and 3 more active users');
+    expect(built.text).toContain(`user${ACTIVE_USER_ROW_CAP - 1}@x.com`);
+    expect(built.text).not.toContain(`user${ACTIVE_USER_ROW_CAP}@x.com`);
+    expect(built.text).toContain('and 3 more active users');
   });
 
   it(`caps rendered signups at ${SIGNUP_ROW_CAP} while headings keep the true count`, () => {

@@ -4,7 +4,7 @@
 // into the Railway worker's import graph via sendAbuseDigest.ts (the worker
 // runs plain Node via tsx). See the matching note in
 // lib/notifications/digest/loadDigestData.ts.
-import { and, asc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import {
   users,
@@ -14,10 +14,18 @@ import {
   userActivityDaily,
   appActivityDaily,
 } from '@/db/schema';
+import type { AppActivityMetric } from '@/lib/activity/bump';
 import { assemblePerUserActivity, type CounterRow, type UserInfo } from './assembleStats';
 import type { AbuseDigestStats, SignupRow } from './types';
 
 const SIGNIN_EMAILS_CAP = 10;
+
+// Compile-time tether to the writer's metric names (lib/activity/bump.ts) —
+// a rename on either side becomes a type error instead of silent zeros.
+const CONTACT_METRICS = {
+  submissions: 'contact_submission',
+  honeypotTrips: 'contact_honeypot',
+} satisfies Record<string, AppActivityMetric>;
 
 /**
  * Load everything the digest reports for one ET calendar day (YYYY-MM-DD).
@@ -109,7 +117,8 @@ export async function loadAbuseDigestData(day: string): Promise<AbuseDigestStats
   const signInRows = await db
     .select({ email: users.email })
     .from(users)
-    .where(and(gte(users.lastLoginAt, dayStart), lt(users.lastLoginAt, dayEnd)));
+    .where(and(gte(users.lastLoginAt, dayStart), lt(users.lastLoginAt, dayEnd)))
+    .orderBy(desc(users.lastLoginAt));
   const signIns = {
     count: signInRows.length,
     emails: signInRows.slice(0, SIGNIN_EMAILS_CAP).map((r) => r.email),
@@ -121,8 +130,8 @@ export async function loadAbuseDigestData(day: string): Promise<AbuseDigestStats
     .from(appActivityDaily)
     .where(eq(appActivityDaily.day, day));
   const contact = {
-    submissions: appRows.find((r) => r.metric === 'contact_submission')?.count ?? 0,
-    honeypotTrips: appRows.find((r) => r.metric === 'contact_honeypot')?.count ?? 0,
+    submissions: appRows.find((r) => r.metric === CONTACT_METRICS.submissions)?.count ?? 0,
+    honeypotTrips: appRows.find((r) => r.metric === CONTACT_METRICS.honeypotTrips)?.count ?? 0,
   };
 
   return { day, totalUsers, signups, activeUsers, signIns, contact };
