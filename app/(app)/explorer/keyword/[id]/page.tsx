@@ -19,6 +19,7 @@ import { notFound } from 'next/navigation';
 import { fetchKeywordHeader } from '@/lib/explorer/fetchKeywordDetail';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isKeywordWatched } from '@/lib/watchlist/loadServer';
+import { bumpUserActivity } from '@/lib/activity/bump';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { PerfPanel } from '@/app/(app)/PerfPanel';
 import { startHandlerTimer } from '@/lib/perf/handlerTimer';
@@ -58,6 +59,9 @@ export default async function KeywordDetailPage({
   timer.mark('auth');
   const isWatched = user ? await isKeywordWatched(user.id, id) : false;
   timer.mark('isWatched');
+
+  // Abuse-digest counter — fire-and-forget by contract (see lib/activity/bump.ts).
+  if (user) void bumpUserActivity(user.id, 'detail_view');
 
   const sp = searchParams ? await searchParams : {};
   const fromRaw = Array.isArray(sp.from) ? sp.from[0] : sp.from;

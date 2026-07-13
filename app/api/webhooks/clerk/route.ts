@@ -18,10 +18,14 @@ interface ClerkUserData {
   last_name?: string | null;
 }
 
-interface ClerkEvent {
-  type: 'user.created' | 'user.updated' | 'user.deleted';
-  data: ClerkUserData;
+interface ClerkSessionData {
+  id: string;
+  user_id: string;
 }
+
+type ClerkEvent =
+  | { type: 'user.created' | 'user.updated' | 'user.deleted'; data: ClerkUserData }
+  | { type: 'session.created'; data: ClerkSessionData };
 
 function extractEmail(data: ClerkUserData): string {
   const primary = data.email_addresses.find((e) => e.id === data.primary_email_address_id);
@@ -61,7 +65,15 @@ export async function POST(req: Request): Promise<Response> {
   // (can sign in via Clerk, but no app row → no digests). Returning 500 makes
   // Clerk retry the webhook; logging the id aids triage.
   try {
-    if (event.type === 'user.created' || event.type === 'user.updated') {
+    if (event.type === 'session.created') {
+      // Sign-in stamp for the abuse digest. UPDATE matching zero rows (a
+      // session for a user we don't know) is a silent no-op by design —
+      // session events must never 500 into a Svix retry loop.
+      await db
+        .update(users)
+        .set({ lastLoginAt: new Date() })
+        .where(eq(users.clerkUserId, event.data.user_id));
+    } else if (event.type === 'user.created' || event.type === 'user.updated') {
       await syncUserFromClerk({
         clerkUserId: event.data.id,
         email: extractEmail(event.data),

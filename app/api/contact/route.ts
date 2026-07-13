@@ -7,6 +7,7 @@
 import { NextResponse } from 'next/server';
 import { validateContact } from '@/lib/contact/validate';
 import { sendContactEmail } from '@/lib/notifications/sendContactEmail';
+import { bumpAppActivity } from '@/lib/activity/bump';
 
 export const runtime = 'nodejs';
 
@@ -14,6 +15,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
 
   if (typeof body.company === 'string' && body.company.trim().length > 0) {
+    void bumpAppActivity('contact_honeypot'); // abuse-digest counter (fire-and-forget)
     return NextResponse.json({ ok: true }); // honeypot tripped — swallow silently
   }
 
@@ -27,5 +29,6 @@ export async function POST(req: Request) {
       { status: 503 },
     );
   }
+  void bumpAppActivity('contact_submission'); // abuse-digest counter (fire-and-forget)
   return NextResponse.json({ ok: true });
 }

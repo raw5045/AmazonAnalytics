@@ -18,6 +18,7 @@ import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { loadSavedViewForUser } from '@/lib/savedViews/loadServer';
 import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
+import { bumpUserActivity } from '@/lib/activity/bump';
 import { Suspense } from 'react';
 import { FilterSidebar } from './FilterSidebar';
 import { LoadingIndicator } from './LoadingIndicator';
@@ -138,6 +139,8 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
     categoriesPromise,
     leafCategoriesPromise,
   ]);
+  // Abuse-digest counter — fire-and-forget by contract (see lib/activity/bump.ts).
+  if (user) void bumpUserActivity(user.id, 'explorer_query');
   const { rows, hasNext, total, totalIsCapped, volumeFit, currentWeekEndDate, broadTimedOut, timings: rqTimings } = queryResult;
   const categories = categoriesTimed.result;
   const handlerTotalMs = Date.now() - handlerStartedAt;
