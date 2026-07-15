@@ -109,6 +109,9 @@ Flip both Clerk redirect targets from `/app` to `/explorer`:
 ## Non-goals
 
 - No dashboard build-out now (parked for post-launch; `/app` reclaimable thanks to 307).
+  Reclaim note: the redirect source is exactly `/app` and the middleware matcher entry
+  is gone, so a future dashboard with sub-routes must restore its own matcher entry
+  (or live inside the `(app)` route group's auth gate).
 - No first-run/onboarding banner in the explorer.
 - No change to sign-out destination (`afterSignOutUrl="/"`), robots policy, or the
   TabNav's last-explorer-URL memory.
