@@ -62,6 +62,15 @@ same outcome as today with one extra internal hop.
 | `app/(marketing)/page.tsx` (~lines 87–89) | signed-in visitors `redirect('/app')` | `redirect('/explorer')`, and update the adjacent keep-in-sync comment to name `/explorer` |
 | `app/admin/layout.tsx` (~line 11) | non-admin authed users bounced to `/app` | bounce to `/explorer` |
 | `app/robots.ts` | disallows `/app` | **no change** — still correct for a redirect |
+| `middleware.ts` (line 8) | `'/app(.*)'` in the protected-route matcher | remove the entry — config redirects fire before middleware, so it would be dead code |
+| `app/(marketing)/layout.tsx` (~line 6, comment) | "The signed-in → /app redirect lives only in the landing page" | say `/explorer` |
+| `app/error.tsx` (~line 4, comment) | boundary coverage list names "/app landing" | drop it |
+| `app/api/category-builder/tree/route.ts` (~line 6, comment) | "middleware protects only /admin, /app, /explorer" — already stale (watchlist + category-builder are matched too) | reword to the accurate post-change list |
+
+**Amended 2026-07-15 during planning:** a broader grep (allowing `(`-suffixed matcher
+patterns, which the original quote-bounded grep missed) found the last four rows
+above: one real matcher entry in `middleware.ts` and three stale comments. No design
+change — they complete the "complete list."
 
 ### 3. Environment
 
@@ -94,8 +103,8 @@ Flip both Clerk redirect targets from `/app` to `/explorer`:
   returns 307 with `location: /explorer`.
 - Local signed-in-flow checks are skipped: localhost runs the dev Clerk instance
   (post-cutover wrinkle), so sign-in landing is verified on prod (ship checklist #5).
-- Grep proves no remaining `"/app"` route references outside `robots.ts` and this
-  spec/plan.
+- Grep proves no remaining `/app` route references — including `(`-suffixed matcher
+  patterns — outside `robots.ts`'s deliberate disallow and docs.
 
 ## Non-goals
 
