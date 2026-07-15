@@ -31,13 +31,6 @@ export const metadata: Metadata = {
   },
   description:
     'Spot rising Amazon demand in days, filter out fake volume, and zero in on the keywords barely anyone is competing over.',
-  openGraph: {
-    title: 'KeywordQuarry — Find high-demand, low-competition Amazon keywords',
-    description:
-      'Spot rising Amazon demand in days, filter out fake volume, and zero in on the keywords barely anyone is competing over.',
-    siteName: 'KeywordQuarry',
-    type: 'website',
-  },
 };
 
 const OTHER_TOOLS = [
