@@ -3,7 +3,7 @@
  *
  * Auth-aware CTA only — signed-in users see "Go to app", signed-out see
  * Sign in + Get started free. NO redirect here: /help, /terms, etc. must
- * render for everyone. The signed-in → /app redirect lives only in the
+ * render for everyone. The signed-in → /explorer redirect lives only in the
  * landing page (app/(marketing)/page.tsx).
  *
  * Mobile: the center nav links are hidden below `sm` (the footer carries
@@ -52,7 +52,7 @@ export default async function MarketingLayout({
           <div className="flex items-center gap-4">
             {userId ? (
               <Link
-                href="/app"
+                href="/explorer"
                 className="rounded-full bg-amber-300 px-4 py-2 text-sm font-semibold text-[#0B1E3A] transition hover:bg-amber-200"
               >
                 Go to app

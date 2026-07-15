@@ -5,7 +5,6 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 // it just redirects unauthenticated users before the route renders.
 const isProtectedRoute = createRouteMatcher([
   '/admin(.*)',
-  '/app(.*)',
   '/explorer(.*)',
   '/watchlist(.*)',
   '/category-builder(.*)',

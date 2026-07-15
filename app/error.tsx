@@ -1,8 +1,8 @@
 'use client';
 
 // General error boundary for route segments that don't have a closer error.tsx
-// (marketing home, /app landing, sign-in/up). Root-layout failures are handled
-// by global-error.tsx instead.
+// (marketing home, sign-in/up). Root-layout failures are handled by
+// global-error.tsx instead.
 import { useEffect } from 'react';
 import Link from 'next/link';
 

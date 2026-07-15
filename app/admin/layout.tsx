@@ -8,7 +8,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     await requireAdmin();
   } catch (e) {
     if (e instanceof AuthError) {
-      redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/app');
+      redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/explorer');
     }
     throw e;
   }
