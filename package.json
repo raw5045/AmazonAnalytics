@@ -43,6 +43,8 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@fontsource/arimo": "^5.2.8",
+    "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/postcss": "^4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
@@ -59,6 +61,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.3",
     "jsdom": "^29.0.2",
+    "png-to-ico": "^3.0.2",
     "prettier": "^3.8.3",
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
