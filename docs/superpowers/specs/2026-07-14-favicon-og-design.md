@@ -12,7 +12,8 @@ OG" bundle from the pre-launch backlog.
 | Question | Decision |
 |---|---|
 | Mark | **Owner's Draft 1**: white Q ring with a three-layer quarry-strata stack inside and the Q's tail drawn as a **key** (the "key"word pun), on a navy rounded tile |
-| Favicon detail level | **Full-detail mark at all sizes** (16/32/48/180). A simplified small-size cut (ring + key only) was shown and declined; it remains a documented future option if 16px legibility ever bothers the owner |
+| Favicon detail level | **Tiered** (revised 2026-07-14 after trade-off review): full-detail mark everywhere EXCEPT `favicon.ico`'s 16px layer, which uses the simplified cut (ring + key, same silhouette) so standard-DPI tabs stay crisp |
+| In-product placement | **BrandMark component in all three spots**: marketing nav + app header (bare artwork on the navy bars, left of the wordmark), marketing footer, and a landing-hero accent — the hero accent is a try-and-judge: owner reviews it visually and may alter or remove it |
 | Accent color | **Brand sky-400 `#38bdf8`** for the key (not the brighter draft cyan) — matches the "Quarry" wordmark accent so favicon, tab, and site read as one system. Amber stays reserved for CTAs/dividers |
 | OG layout | **OG-2 "Big mark split"**: copy left, mark bleeding off the right edge |
 | OG copy | Line 1 (headline): `Find the high-demand, low-competition Amazon keywords your next launch needs.` — with `high-demand, low-competition` in sky-400. Line 2 (subline): `Spot rising demand in days, filter out fake volume, and zero in on the keywords barely anyone is competing over.` Both verbatim — these are the two most important pieces of information per the owner |
@@ -47,6 +48,22 @@ line separates the ring from the key; key head + shaft + two teeth in sky-400. T
 implementer may fine-tune coordinates to better match the owner's draft PNG (e.g.
 tooth angles), but colors, structure, and the casing gap are fixed.
 
+### 1.1b `public/brand/mark-simple.svg` — simplified cut (favicon.ico 16px layer ONLY)
+
+```svg
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#0D1C36"/>
+  <circle cx="28" cy="28" r="15" fill="none" stroke="#ffffff" stroke-width="8"/>
+  <line x1="38" y1="38" x2="51" y2="51" stroke="#0D1C36" stroke-width="13" stroke-linecap="round"/>
+  <line x1="38" y1="38" x2="51" y2="51" stroke="#38bdf8" stroke-width="8" stroke-linecap="round"/>
+  <line x1="50" y1="52.5" x2="45.5" y2="57" stroke="#38bdf8" stroke-width="5" stroke-linecap="round"/>
+</svg>
+```
+
+Same silhouette as the full mark (ring + key tail + one tooth nub), no strata. Used
+exclusively for the 16px layer inside `favicon.ico`; every other deliverable uses the
+full-detail master.
+
 ### 1.2 `public/brand/og-master.svg` — the share card (1200×630)
 
 OG-2 layout, real-pixel geometry (derived from the approved 580px mock × 2.07):
@@ -75,7 +92,7 @@ deterministic; committed so builds never regenerate):
 | File | Content |
 |---|---|
 | `app/icon.svg` | Copy of `mark.svg` (Next serves it as the scalable favicon) |
-| `app/favicon.ico` | 16 + 32 + 48 rasters of the full-detail mark (replaces the Next scaffold icon) |
+| `app/favicon.ico` | 16px raster of `mark-simple.svg` + 32/48 rasters of the full-detail mark (replaces the Next scaffold icon) |
 | `app/apple-icon.png` | 180×180 raster of the mark |
 | `app/opengraph-image.png` | 1200×630 raster of the OG master |
 | `app/opengraph-image.alt.txt` | `KeywordQuarry — find the high-demand, low-competition Amazon keywords your next launch needs.` |
@@ -98,8 +115,29 @@ spec says "Arial", it means that bundled face.
   `metadataBase` stay as-is.
 - `app/layout.tsx`: add a `viewport` export with `themeColor: '#0B1E3A'` (navy mobile
   browser chrome).
-- Nothing else in app code changes. Admin pages, emails, and the in-app wordmark are
-  untouched.
+
+### 2.5 BrandMark component + in-product placements
+
+One server-safe React component rendering the mark as inline SVG (no image request,
+crisp at any size): `BrandMark({ size?: number, tile?: boolean })` — `tile: false`
+(default) renders the bare ring/strata/key artwork for navy surfaces; `tile: true`
+adds the rounded navy tile for light surfaces. Location follows repo convention for
+cross-route-group shared components (both `(marketing)` and `(app)` import it; the
+plan confirms the exact path, e.g. an app-root `app/BrandMark.tsx`).
+
+Placements (all four approved):
+1. **Marketing nav** (`app/(marketing)/layout.tsx` header): bare mark ~26px, left of
+   the existing wordmark, vertically centered.
+2. **Marketing footer** (same file, footer block): bare mark ~22px beside the footer
+   wordmark.
+3. **App header** (`app/(app)/layout.tsx`): bare mark ~24px, left of the wordmark in
+   the navy bar.
+4. **Landing hero accent** (`app/(marketing)/page.tsx`): a tiled mark (~72px) placed
+   near the hero headline. **Try-and-judge:** the owner reviews this one visually
+   after implementation and may resize, restyle, or remove it — the spec authorizes
+   removal without a spec change.
+
+Admin pages and emails stay untouched.
 
 ## Part 3 — Ops (dashboard) steps
 
@@ -126,13 +164,11 @@ spec says "Arial", it means that bundled face.
   from view-source (`/opengraph-image.png`, `/twitter-image.png`) load directly.
 - Clerk sign-in card shows logo + favicon + "Contact support@keywordquarry.com".
 - Email: send a test mail to support@keywordquarry.com, confirm it lands in Gmail.
+- Visual pass on all four BrandMark placements (localhost, then prod): nav, footer,
+  app header, hero accent — with the owner's keep/alter/remove verdict on the hero.
 
 ## Non-goals
 
-- No simplified small-size favicon variant (owner chose full detail everywhere;
-  the simplified cut design exists in the chat record as a future option).
-- No marketing-page redesign or in-app logo placement changes (the header wordmark
-  stays text-only).
 - No dark-mode-specific favicon variant, no PWA manifest/maskable icons.
 - No dynamic per-page OG images (one site-wide card).
 - No mailbox for support@ (forwarding only).
