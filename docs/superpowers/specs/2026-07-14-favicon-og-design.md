@@ -111,9 +111,15 @@ via `pnpm-lock.yaml` (no font binaries committed to the repo). Where this spec s
 
 - Next metadata **file conventions** do the work: `app/icon.svg`, `app/favicon.ico`,
   `app/apple-icon.png`, `app/opengraph-image.png` (+ `.alt.txt`), `app/twitter-image.png`
-  at the `app/` root are auto-injected site-wide. No per-page metadata changes; the
-  existing `openGraph` text metadata in `app/(marketing)/page.tsx` and the root
-  `metadataBase` stay as-is.
+  at the `app/` root are auto-injected site-wide. The root `metadataBase` stays as-is.
+  **Revised 2026-07-14 during implementation:** the page-level `openGraph` block in
+  `app/(marketing)/page.tsx` was REMOVED and replaced by a root-layout
+  `openGraph: { siteName, type }` — this Next version shallow-merges metadata per
+  segment, so any page-level `openGraph` wholesale-replaces the parent's and silently
+  drops the file-convention `og:image`; with only siteName/type at the root,
+  `og:title`/`og:description` auto-derive from each page's resolved title/description
+  (verified on `/` and `/pricing`). Also: the OG master uses Arimo weight 700 — the
+  pinned face ships 400/700 only, so where §1.2 says "weight 800" read 700.
 - `app/layout.tsx`: add a `viewport` export with `themeColor: '#0B1E3A'` (navy mobile
   browser chrome).
 
