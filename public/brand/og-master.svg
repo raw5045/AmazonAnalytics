@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0B1E3A"/>
+  <text x="52" y="128" font-family="Arimo" font-weight="700" font-size="30" fill="#ffffff">Keyword<tspan fill="#38bdf8">Quarry</tspan></text>
+  <text font-family="Arimo" font-weight="700" font-size="46" fill="#ffffff">
+    <tspan x="52" y="212">Find the <tspan fill="#38bdf8">high-demand,</tspan></tspan>
+    <tspan x="52" y="270"><tspan fill="#38bdf8">low-competition</tspan> Amazon</tspan>
+    <tspan x="52" y="328">keywords your next</tspan>
+    <tspan x="52" y="386">launch needs.</tspan>
+  </text>
+  <rect x="52" y="422" width="110" height="8" rx="4" fill="#fcd34d"/>
+  <text font-family="Arimo" font-size="25" fill="#cbd5e1">
+    <tspan x="52" y="482">Spot rising demand in days, filter out fake</tspan>
+    <tspan x="52" y="520">volume, and zero in on the keywords barely</tspan>
+    <tspan x="52" y="558">anyone is competing over.</tspan>
+  </text>
+  <g transform="translate(790 55) scale(8.125)">
+    <circle cx="29" cy="29" r="16" fill="none" stroke="#ffffff" stroke-width="7"/>
+    <path d="M29 20 L38 24.5 L29 29 L20 24.5 Z" fill="#ffffff"/>
+    <path d="M20 24.5 L29 29 L38 24.5 L38 29 L29 33.5 L20 29 Z" fill="#9aa3b5"/>
+    <path d="M20 29.5 L29 34 L38 29.5 L38 34 L29 38.5 L20 34 Z" fill="#5d6879"/>
+    <line x1="38.5" y1="38.5" x2="53" y2="53" stroke="#0B1E3A" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="39.5" cy="39.5" r="6" fill="#38bdf8"/>
+    <line x1="39" y1="39" x2="52" y2="52" stroke="#38bdf8" stroke-width="6.5" stroke-linecap="round"/>
+    <line x1="47" y1="47" x2="44.2" y2="49.8" stroke="#38bdf8" stroke-width="4"/>
+    <line x1="51" y1="51" x2="48.2" y2="53.8" stroke="#38bdf8" stroke-width="4"/>
+  </g>
+</svg>
