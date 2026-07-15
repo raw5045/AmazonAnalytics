@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { auth } from '@clerk/nextjs/server';
 import { redirect } from 'next/navigation';
+import { BrandMark } from '@/app/BrandMark';
 import {
   Check,
   X,
@@ -132,9 +133,14 @@ export default async function HomePage() {
           <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr]">
             {/* Left: locked hero copy */}
             <div className="text-center lg:text-left">
-              <span className="inline-block rounded-full border border-amber-300/40 bg-amber-300/10 px-3.5 py-1 text-xs font-semibold tracking-wide text-amber-300">
-                Free during beta
-              </span>
+              {/* Hero brand accent — try-and-judge per spec §2.5: the owner
+                  reviews this visually and may resize or remove it. */}
+              <div className="flex items-center justify-center gap-4 lg:justify-start">
+                <BrandMark size={64} tile />
+                <span className="inline-block rounded-full border border-amber-300/40 bg-amber-300/10 px-3.5 py-1 text-xs font-semibold tracking-wide text-amber-300">
+                  Free during beta
+                </span>
+              </div>
               <h1 className="mt-6 text-balance text-4xl font-bold leading-[1.12] tracking-tight text-white sm:text-5xl">
                 Find the <span className="whitespace-nowrap">high-demand,</span>{' '}
                 <span className="whitespace-nowrap text-amber-300">low-competition</span>{' '}

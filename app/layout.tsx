@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
@@ -21,6 +21,10 @@ export const metadata: Metadata = {
   },
   description:
     "Find high-demand, low-competition Amazon keywords. Weekly-fresh search data, fake-volume detection, and exact leaf-category mapping.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0B1E3A",
 };
 
 export default function RootLayout({

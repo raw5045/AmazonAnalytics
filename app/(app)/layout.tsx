@@ -5,6 +5,7 @@ import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
 import { watchlistCountForUser } from '@/lib/watchlist/loadServer';
 import { TabNav } from './TabNav';
+import { BrandMark } from '@/app/BrandMark';
 
 /**
  * Layout shared by /explorer/* and /watchlist/*.
@@ -33,8 +34,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           landing → app feels like one product. Active tab = amber underline. */}
       <header className="sticky top-0 z-30 flex h-[52px] items-center justify-between gap-4 bg-[#0B1E3A] px-6">
         <div className="flex h-full items-center gap-7">
-          <Link href="/explorer" className="whitespace-nowrap text-[15px] font-bold tracking-tight text-white">
-            Keyword<span className="text-sky-400">Quarry</span>
+          <Link href="/explorer" className="flex items-center gap-2 whitespace-nowrap text-[15px] font-bold tracking-tight text-white">
+            <BrandMark size={24} />
+            <span>Keyword<span className="text-sky-400">Quarry</span></span>
           </Link>
           <TabNav watchlistCountPromise={watchlistCountPromise} />
         </div>

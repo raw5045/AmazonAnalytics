@@ -12,6 +12,7 @@
  */
 import Link from 'next/link';
 import { auth } from '@clerk/nextjs/server';
+import { BrandMark } from '@/app/BrandMark';
 
 const NAV_LINKS = [
   { href: '/help', label: 'How it works' },
@@ -33,8 +34,9 @@ export default async function MarketingLayout({
           and frames the white content pages consistently. */}
       <header className="bg-[#0B1E3A]">
         <nav className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="text-lg font-semibold tracking-tight text-white">
-            Keyword<span className="text-sky-400">Quarry</span>
+          <Link href="/" className="flex items-center gap-2.5 text-lg font-semibold tracking-tight text-white">
+            <BrandMark size={26} />
+            <span>Keyword<span className="text-sky-400">Quarry</span></span>
           </Link>
           <div className="hidden items-center gap-6 sm:flex">
             {NAV_LINKS.map((l) => (
@@ -80,8 +82,9 @@ export default async function MarketingLayout({
       <footer className="bg-[#0B1E3A]">
         <div className="mx-auto grid max-w-6xl gap-8 px-4 py-12 sm:grid-cols-4 sm:px-6">
           <div>
-            <p className="text-base font-semibold text-white">
-              Keyword<span className="text-sky-400">Quarry</span>
+            <p className="flex items-center gap-2 text-base font-semibold text-white">
+              <BrandMark size={22} />
+              <span>Keyword<span className="text-sky-400">Quarry</span></span>
             </p>
             <p className="mt-2 text-sm text-slate-400">
               Find the high-demand, low-competition Amazon keywords your next
