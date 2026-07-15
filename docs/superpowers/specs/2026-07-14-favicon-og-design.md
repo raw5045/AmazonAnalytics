@@ -102,9 +102,10 @@ deterministic; committed so builds never regenerate):
 Tooling: a devDependency SVG rasterizer chosen at plan time (`@resvg/resvg-js`
 preferred — self-contained font loading, no native system-font dependence — with
 `png-to-ico` for the .ico; `sharp` acceptable fallback). Text in the OG master must be
-rendered with a font file bundled in the repo — use an open-licensed Arial-metric face
-(Arimo, `public/brand/fonts/`) — so output is identical on every machine. Where this
-spec says "Arial", it means that bundled face.
+rendered with a pinned font so output is identical on every machine: an open-licensed
+Arial-metric face (Arimo) supplied by the `@fontsource/arimo` devDependency and locked
+via `pnpm-lock.yaml` (no font binaries committed to the repo). Where this spec says
+"Arial", it means that pinned face.
 
 ## Part 2 — Code wiring
 
