@@ -397,12 +397,17 @@ function DeltaVolCell({ value }: { value: number }) {
   return <span className="text-red-700" title={`${value.toLocaleString()} searches / month (est.)`}>-{compact}</span>;
 }
 
-/** Prior-window volume under the swap: 0 = newcomer (unranked then). */
+/**
+ * Prior-window volume under the swap: 0 = newcomer (unranked then); em-dash =
+ * no fit for that week. Keyed on priorRank/volumePrior, NOT volumeDelta, so the
+ * watchlist's legal "prior present, delta null" rows still show their prior.
+ * (Amended 2026-07-16 after Task 3 review.)
+ */
 function PriorVolumeCell({ r }: { r: ExplorerRow }) {
-  if (r.volumeDelta === null) return <span className="text-gray-400">—</span>;
   if (r.priorRank === null) return <span title="Not ranked that week">0</span>;
+  if (r.volumePrior === null) return <span className="text-gray-400">—</span>;
   return (
-    <span title={r.volumePrior !== null ? `${r.volumePrior.toLocaleString()} searches / month (est.)` : undefined}>
+    <span title={`${r.volumePrior.toLocaleString()} searches / month (est.)`}>
       {formatVolume(r.volumePrior)}
     </span>
   );
