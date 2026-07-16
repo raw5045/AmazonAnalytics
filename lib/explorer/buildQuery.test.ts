@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerQuery } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters } from './types';
 
@@ -97,8 +97,8 @@ describe('buildExplorerQuery', () => {
       expect(norm(reviews.sql)).toContain('ORDER BY kcs.avg_reviews DESC NULLS LAST');
       expect(norm(reviews.sql)).toContain('ORDER BY k.avg_reviews DESC NULLS LAST');
       const imp = buildExplorerQuery({ ...baseFilters, q: 'hair', window: '4w', sort: 'imp' });
-      expect(norm(imp.sql)).toContain('ORDER BY kcs.improvement_4w DESC NULLS LAST');
-      expect(norm(imp.sql)).toContain('ORDER BY k.improvement DESC NULLS LAST');
+      expect(norm(imp.sql)).toContain('ORDER BY (kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_4w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_4w_ago END) DESC');
+      expect(norm(imp.sql)).toContain('ORDER BY k.volume_delta DESC');
     });
 
     it('composes other filters into the inner WHERE (alongside the match)', () => {
@@ -289,14 +289,14 @@ describe('buildExplorerQuery', () => {
       expect(norm(sql)).toContain('ORDER BY kcs.current_rank DESC');
     });
 
-    it('imp → improvement DESC NULLS LAST (window-relative)', () => {
+    it('imp → volume delta DESC (window-relative)', () => {
       const { sql } = buildExplorerQuery({ ...baseFilters, window: '4w', sort: 'imp' });
-      expect(norm(sql)).toContain('ORDER BY kcs.improvement_4w DESC NULLS LAST');
+      expect(norm(sql)).toContain('ORDER BY (kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_4w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_4w_ago END) DESC');
     });
 
-    it('decline → improvement ASC NULLS LAST (window-relative)', () => {
+    it('decline → volume delta ASC (window-relative)', () => {
       const { sql } = buildExplorerQuery({ ...baseFilters, window: '13w', sort: 'decline' });
-      expect(norm(sql)).toContain('ORDER BY kcs.improvement_13w ASC NULLS LAST');
+      expect(norm(sql)).toContain('ORDER BY (kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_13w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_13w_ago END) ASC');
     });
 
     it('title_gap (loose default) → keyword_title_match_count_loose_current ASC', () => {
@@ -442,13 +442,65 @@ describe('buildExplorerQuery', () => {
       expect(norm(sql)).toContain('top_clicked_category_1_current =');
       expect(norm(sql)).toContain('IS NULL OR kcs.fake_volume_severity_current IN');
       expect(norm(sql)).toContain('NOT kcs.keyword_in_title_1_loose_current OR');
-      expect(norm(sql)).toContain('ORDER BY kcs.improvement_4w DESC NULLS LAST');
+      expect(norm(sql)).toContain('ORDER BY (kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_4w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_4w_ago END) DESC');
       expect(args.slice(-2)).toEqual([50, 50]);
       expect(args.length).toBe(countArgs.length + 2);
       // q set → single-table kcs path: window count, single-table fallback.
       expect(norm(sql)).toContain('kcs.search_term_normalized ~');
       expect(norm(sql)).toContain('(count(*) OVER ())::int AS total');
       expect(norm(countSql)).not.toContain('LIMIT 10001');
+    });
+  });
+
+  describe('volume-delta imp/decline sorts', () => {
+    const DELTA_4W = '(kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_4w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_4w_ago END)';
+    const ELIGIBLE_4W = '(kcs.estimated_monthly_volume_current IS NOT NULL AND (kcs.rank_4w_ago IS NULL OR kcs.estimated_monthly_volume_4w_ago IS NOT NULL))';
+
+    it('legacy path: imp orders DESC by the delta expression and applies eligibility to rows AND count', () => {
+      const { sql, countSql } = buildExplorerQuery({ ...baseFilters, sort: 'imp', window: '4w' }, '2026-07-05');
+      expect(sql).toContain(`ORDER BY ${DELTA_4W} DESC`);
+      expect(sql).toContain(ELIGIBLE_4W);
+      expect(sql).toContain('AS volume_delta');
+      expect(sql).toContain('AS volume_prior');
+      expect(countSql).toContain(ELIGIBLE_4W);
+    });
+
+    it('legacy path: decline orders ASC', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'decline', window: '4w' }, '2026-07-05');
+      expect(sql).toContain(`ORDER BY ${DELTA_4W} ASC`);
+    });
+
+    it('1w window uses prior_week_rank as the discriminator', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'imp', window: '1w' }, '2026-07-05');
+      expect(sql).toContain('CASE WHEN kcs.prior_week_rank IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_1w_ago END');
+    });
+
+    it('other sorts get NO eligibility predicate and still select the aliases', () => {
+      const { sql, countSql } = buildExplorerQuery({ ...baseFilters, sort: 'rank', window: '4w' }, '2026-07-05');
+      expect(sql).not.toContain('IS NOT NULL AND (kcs.rank_4w_ago IS NULL');
+      expect(countSql).not.toContain('IS NOT NULL AND (kcs.rank_4w_ago IS NULL');
+      expect(sql).toContain('AS volume_delta');
+    });
+
+    it('q path: inner orders by the expression, outer by k.volume_delta, count keeps eligibility', () => {
+      const { sql, countSql } = buildExplorerQuery({ ...baseFilters, sort: 'imp', window: '4w', q: 'gummies' }, '2026-07-05');
+      expect(sql).toContain(`ORDER BY ${DELTA_4W} DESC`);
+      expect(sql).toContain('ORDER BY k.volume_delta DESC');
+      expect(sql).toContain('k.volume_prior');
+      expect(countSql).toContain(ELIGIBLE_4W);
+    });
+
+    it('eligibility predicate binds no args (countArgs prefix invariant holds)', () => {
+      const plain = buildExplorerQuery({ ...baseFilters, sort: 'rank', window: '4w' }, '2026-07-05');
+      const withSort = buildExplorerQuery({ ...baseFilters, sort: 'imp', window: '4w' }, '2026-07-05');
+      expect(withSort.args.length).toBe(plain.args.length);
+    });
+
+    it('sortUsesVolumeDelta is true only for imp/decline', () => {
+      expect(sortUsesVolumeDelta('imp')).toBe(true);
+      expect(sortUsesVolumeDelta('decline')).toBe(true);
+      expect(sortUsesVolumeDelta('rank')).toBe(false);
+      expect(sortUsesVolumeDelta('added_desc')).toBe(false);
     });
   });
 });

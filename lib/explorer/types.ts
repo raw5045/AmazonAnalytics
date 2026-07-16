@@ -113,6 +113,14 @@ export interface ExplorerRow {
    */
   estimatedMonthlyVolumeCurrent: number | null;
   /**
+   * Estimated monthly volume at the selected window's start; unranked-then
+   * coalesces to 0 (spec 2026-07-16). NULL when no historical fit exists
+   * for a then-ranked keyword (delta not computable).
+   */
+  volumePrior: number | null;
+  /** estimatedMonthlyVolumeCurrent − volumePrior; the imp/decline sort key. */
+  volumeDelta: number | null;
+  /**
    * Keepa-derived aggregates over the top-3 clicked ASINs at the
    * current week. NULL when all 3 ASINs are unenriched. See
    * migrations 0029 (ranges, no longer displayed) + 0030 (averages).

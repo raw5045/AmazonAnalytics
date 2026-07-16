@@ -21,6 +21,7 @@ import type {
   BuiltExplorerQuery,
   ExplorerFilters,
   MatchMode,
+  SortKey,
   WindowKey,
 } from './types';
 import { findJumpPreset } from './jumpPresets';
@@ -49,6 +50,46 @@ const WINDOW_TO_IMPROVEMENT_COLUMN: Record<WindowKey, string> = {
   '26w': 'improvement_26w',
   '52w': 'improvement_52w',
 };
+
+/**
+ * Volume-delta sort machinery (spec 2026-07-16). The expression and the
+ * eligibility predicate MUST stay byte-identical (modulo the alias prefix)
+ * with migration 0044's partial indexes, or the planner won't match them
+ * and the unfiltered sort degrades to a full top-N scan.
+ * `alias` is 'kcs.' (inner queries) or '' (the migration DDL).
+ */
+export function volumeDeltaExpr(window: WindowKey, alias: string): string {
+  const rankCol = WINDOW_TO_RANK_COLUMN[window];
+  const volCol = WINDOW_TO_VOLUME_COLUMN[window];
+  return `(${alias}estimated_monthly_volume_current - CASE WHEN ${alias}${rankCol} IS NULL THEN 0 ELSE ${alias}${volCol} END)`;
+}
+
+/** The prior-volume display value: unranked-then coalesces to 0 (spec). */
+export function volumePriorExpr(window: WindowKey, alias: string): string {
+  const rankCol = WINDOW_TO_RANK_COLUMN[window];
+  const volCol = WINDOW_TO_VOLUME_COLUMN[window];
+  return `CASE WHEN ${alias}${rankCol} IS NULL THEN 0 ELSE ${alias}${volCol} END`;
+}
+
+/**
+ * Rows where the delta is computable. Under imp/decline this is a WHERE
+ * clause (and the partial-index predicate); rows failing it are hidden
+ * under these two sorts ONLY. Binds no args.
+ */
+export function volumeDeltaEligibility(window: WindowKey, alias: string): string {
+  const rankCol = WINDOW_TO_RANK_COLUMN[window];
+  const volCol = WINDOW_TO_VOLUME_COLUMN[window];
+  return `${alias}estimated_monthly_volume_current IS NOT NULL AND (${alias}${rankCol} IS NULL OR ${alias}${volCol} IS NOT NULL)`;
+}
+
+/**
+ * True when `sort` applies the eligibility predicate — which also means
+ * precomputed totals (meta/facet) are WRONG for it. runQuery's count
+ * short-circuits consult this.
+ */
+export function sortUsesVolumeDelta(sort: SortKey): boolean {
+  return sort === 'imp' || sort === 'decline';
+}
 
 /**
  * The kcs display columns common to every path, in row-mapper order, AFTER
@@ -94,7 +135,7 @@ export function buildExplorerQuery(
 
   const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[filters.window];
-  const orderBy = buildOrderBy(filters.sort, improvementCol, filters.matchMode);
+  const orderBy = buildOrderBy(filters.sort, improvementCol, filters.matchMode, filters.window);
 
   // ---- q path: single-table whole-word / broad match on the denormalized
   //      kcs.search_term_normalized (current-week-only, no cap). The inner
@@ -116,6 +157,8 @@ export function buildExplorerQuery(
       'kcs.current_rank',
       `kcs.${priorRankCol} AS prior_rank`,
       `kcs.${improvementCol} AS improvement`,
+      `${volumePriorExpr(filters.window, 'kcs.')} AS volume_prior`,
+      `${volumeDeltaExpr(filters.window, 'kcs.')} AS volume_delta`,
       ...KCS_DISPLAY_COLS.map((c) => `kcs.${c}`),
     ].join(',\n        ');
     const outerCols = [
@@ -124,6 +167,8 @@ export function buildExplorerQuery(
       'k.current_rank',
       'k.prior_rank',
       'k.improvement',
+      'k.volume_prior',
+      'k.volume_delta',
       ...KCS_DISPLAY_COLS.map((c) => `k.${c}`),
       'k.total',
     ].join(',\n      ');
@@ -162,6 +207,8 @@ export function buildExplorerQuery(
       kcs.current_rank,
       kcs.${priorRankCol} AS prior_rank,
       kcs.${improvementCol} AS improvement,
+      ${volumePriorExpr(filters.window, 'kcs.')} AS volume_prior,
+      ${volumeDeltaExpr(filters.window, 'kcs.')} AS volume_delta,
       ${KCS_DISPLAY_COLS.map((c) => `kcs.${c}`).join(',\n      ')}
   `.trim();
 
@@ -273,6 +320,10 @@ function pushKcsPredicates(
     const joiner = filters.titleMatchMode === 'all' ? ' AND ' : ' OR ';
     where.push(`(${conditions.join(joiner)})`);
   }
+  if (sortUsesVolumeDelta(filters.sort)) {
+    // No bound args — countArgs prefix invariant unaffected.
+    where.push(`(${volumeDeltaEligibility(filters.window, 'kcs.')})`);
+  }
   return where;
 }
 
@@ -281,6 +332,7 @@ function buildOrderBy(
   sort: ExplorerFilters['sort'],
   improvementCol: string,
   matchMode: MatchMode,
+  window: WindowKey,
 ): string {
   switch (sort) {
     case 'rank':
@@ -288,9 +340,9 @@ function buildOrderBy(
     case 'rank_desc':
       return 'ORDER BY kcs.current_rank DESC';
     case 'imp':
-      return `ORDER BY kcs.${improvementCol} DESC NULLS LAST`;
+      return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} DESC`;
     case 'decline':
-      return `ORDER BY kcs.${improvementCol} ASC NULLS LAST`;
+      return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ASC`;
     case 'title_gap': {
       const col = matchMode === 'loose'
         ? 'keyword_title_match_count_loose_current'
@@ -327,9 +379,9 @@ function buildOuterOrderBy(sort: ExplorerFilters['sort'], matchMode: MatchMode):
     case 'rank_desc':
       return 'ORDER BY k.current_rank DESC';
     case 'imp':
-      return 'ORDER BY k.improvement DESC NULLS LAST';
+      return 'ORDER BY k.volume_delta DESC';
     case 'decline':
-      return 'ORDER BY k.improvement ASC NULLS LAST';
+      return 'ORDER BY k.volume_delta ASC';
     case 'title_gap': {
       const col = matchMode === 'loose'
         ? 'keyword_title_match_count_loose_current'

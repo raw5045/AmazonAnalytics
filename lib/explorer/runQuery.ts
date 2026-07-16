@@ -390,6 +390,10 @@ async function runExplorerQueryInner(
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
     estimatedMonthlyVolumeCurrent: parseBigint(r.estimated_monthly_volume_current),
+    // Stopgap — replaced by the real mapping in the volume-sort plan's next task.
+    volumePrior: null,
+    // Stopgap — replaced by the real mapping in the volume-sort plan's next task.
+    volumeDelta: null,
     avgPriceCents: parseBigint(r.avg_price_cents),
     avgReviews: r.avg_reviews ?? null,
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,
