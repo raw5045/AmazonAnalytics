@@ -29,6 +29,7 @@ export function ResultsTable({
   showWatchColumn = false,
   addedAtByKeyword,
   onWatchStarToggle,
+  volSortHidesIneligible = true,
 }: {
   rows: ExplorerRow[];
   window: WindowKey;
@@ -45,13 +46,26 @@ export function ResultsTable({
   addedAtByKeyword?: Map<string, string>;
   /** Called when the ⭐ in any row is toggled. Used by /watchlist to animate-remove. */
   onWatchStarToggle?: (keywordId: string, isNowWatched: boolean) => void;
+  /**
+   * Whether the active volume-delta sort hides ineligible rows server-side
+   * (true on the explorer; the watchlist never hides rows — they sort last).
+   * Drives one sentence of the Δ-header tooltip.
+   */
+  volSortHidesIneligible?: boolean;
 }) {
   // Always carry `from` so the detail page can tell it was reached from the
   // explorer (even the default, unfiltered view) and restore it instantly via
   // router.back() instead of a cold re-render. See BackToExplorer.
   const fromParam = `?from=${encodeURIComponent(backUrl)}`;
   // Volume-movement sorts context-swap the window + Δ columns (spec 2026-07-16).
+  // Keep in sync with sortUsesVolumeDelta in lib/explorer/buildQuery.ts (not
+  // imported — keeps the SQL builder out of the watchlist client bundle).
   const volSort = currentSort === 'imp' || currentSort === 'decline';
+  const deltaTitle =
+    'Click to sort by estimated search-volume change in the selected window. First click shows biggest improvements first. '
+    + (volSortHidesIneligible
+      ? "Keywords whose volume can't be estimated for the comparison week are hidden under this sort."
+      : "Keywords whose volume can't be estimated for the comparison week sort last (shown as —).");
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
     if (matchMode === 'loose') {
       return slot === 1 ? r.keywordInTitle1Loose : slot === 2 ? r.keywordInTitle2Loose : r.keywordInTitle3Loose;
@@ -99,7 +113,7 @@ export function ResultsTable({
               firstClickKey="imp"
               currentSort={currentSort}
               align="right"
-              title="Click to sort by estimated search-volume change in the selected window. First click shows biggest improvements first. Keywords whose volume can't be estimated for the comparison week are hidden under this sort."
+              title={deltaTitle}
             />
             <th
               className="p-2 text-right"
