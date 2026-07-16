@@ -269,7 +269,7 @@ Subject: Amazon Keywords Updated! See what changed in your Watchlist and explore
 
 ### Rendering rules
 
-- **Δ cell color** (same convention the explorer's movement cells use — `DeltaCell` at design time, `DeltaVolCell` since the 2026-07-16 volume-sort amendment retired the rank-Δ column): improvement (rank dropped, `improvement_1w > 0`) = green `+N`; decline (`< 0`) = red `−N`; `0` = gray `0`; no prior-week data (`improvement_1w` null) = gray "—".
+- **Δ cell color** (same semantics as the explorer's `DeltaCell`): improvement (rank dropped, `improvement_1w > 0`) = green `+N`; decline (`< 0`) = red `−N`; `0` = gray `0`; no prior-week data (`improvement_1w` null) = gray "—".
 - **Keyword name** links to `<appUrl>/explorer/keyword/<searchTermId>`.
 - **Ranks** use `toLocaleString()` (thousands separators). **Volume** uses the explorer's compact format (`45K`, `1.2M`, `1,234`), reusing the same formatting logic the explorer table uses (extracted/shared, not duplicated).
 - **Not-ranked row** (`current_rank` null): current rank and Δ render as muted "—"; the row carries a small "not ranked this week" annotation so the user understands why.
