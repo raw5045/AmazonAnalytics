@@ -19,6 +19,10 @@ const VOLUME_WINDOW_LABEL: Record<WindowKey, string> = {
   '52w': 'Est. vol. 52w ago',
 };
 
+// Both movement headers (Δ in the rank layout, Δ vol. in the volume layout)
+// MUST carry identical sort keys — hoisted so they can't drift apart.
+const DELTA_SORT_KEYS = { ascKey: 'decline', descKey: 'imp', firstClickKey: 'imp' } as const;
+
 export function ResultsTable({
   rows,
   window,
@@ -106,9 +110,7 @@ export function ResultsTable({
             {volSort ? null : (
               <SortableHeader
                 label="Δ"
-                ascKey="decline"
-                descKey="imp"
-                firstClickKey="imp"
+                {...DELTA_SORT_KEYS}
                 currentSort={currentSort}
                 align="right"
                 title={deltaTitle}
@@ -130,9 +132,7 @@ export function ResultsTable({
                 </th>
                 <SortableHeader
                   label="Δ vol."
-                  ascKey="decline"
-                  descKey="imp"
-                  firstClickKey="imp"
+                  {...DELTA_SORT_KEYS}
                   currentSort={currentSort}
                   align="right"
                   title={deltaTitle}
