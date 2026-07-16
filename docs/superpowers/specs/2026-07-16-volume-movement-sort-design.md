@@ -115,6 +115,30 @@ watched keywords would read as data loss, and the exclusion's perf/count rationa
 cell renders an em-dash for those rows. Also for precision: the `1w` window's rank
 discriminator column is `prior_week_rank` (kcs has no `rank_1w_ago`).
 
+## Amendment — static five-column layout (owner, 2026-07-16, after live audit)
+
+The context-swap shipped, but auditing deltas against their inputs proved hard:
+under the swap you could never see both ranks AND both volumes at once, and the
+reading order (prior vol → Δ → current vol) was jumbled. Owner-revised layout,
+**static under every sort** (the swap is removed):
+
+> ☆ | Search term | **Current rank** (sortable) | **Prior rank** (window label,
+> e.g. "Rank 4w ago") | **Est. monthly vol.** (current) | **Est. vol. N wks ago**
+> (`PriorVolumeCell`: 0 = newcomer, — = no fit) | **Δ vol.** (sortable
+> imp/decline, signed/colored, — when not computable) | Avg price | … (remaining
+> columns unchanged)
+
+- The rank-Δ column is retired (owner's list omits it; prior rank sits beside
+  current rank so rank movement stays visible). `DeltaCell` is deleted; the
+  `improvement` row field stays in the payload (SQL alias unchanged).
+- The Δ-vol header keeps the imp/decline sort keys, first-click-improvements,
+  and the surface-accurate tooltip (`volSortHidesIneligible` prop unchanged).
+- To make room, the **Leaf category column shrinks** (`max-w-xs` → `max-w-40`,
+  still truncated with full-path title tooltip); the table already scrolls
+  horizontally as a fallback.
+- `volSort`/`VOLUME_WINDOW_LABEL` conditional rendering is removed; the
+  prior-vol column header uses the static window-specific label.
+
 ## Performance (owner-raised, resolved during brainstorming)
 
 - **Filtered queries:** unchanged shape — filters select first, the subset sort costs
