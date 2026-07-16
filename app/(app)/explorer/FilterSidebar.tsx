@@ -33,8 +33,8 @@ const SEVERITIES: Array<{ value: SeverityKey; label: string }> = [
 const SORTS: Array<{ value: SortKey; label: string }> = [
   { value: 'rank', label: 'Best current rank' },
   { value: 'rank_desc', label: 'Worst current rank' },
-  { value: 'imp', label: 'Biggest improvement (window)' },
-  { value: 'decline', label: 'Biggest decline (window)' },
+  { value: 'imp', label: 'Biggest improvement (search volume)' },
+  { value: 'decline', label: 'Biggest decline (search volume)' },
   { value: 'title_gap', label: 'Most title gaps' },
   { value: 'avg_price_asc', label: 'Cheapest avg price (top-3)' },
   { value: 'avg_price_desc', label: 'Most expensive avg price (top-3)' },

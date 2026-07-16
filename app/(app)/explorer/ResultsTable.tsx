@@ -11,6 +11,14 @@ const WINDOW_LABEL: Record<WindowKey, string> = {
   '52w': 'Rank 52w ago',
 };
 
+const VOLUME_WINDOW_LABEL: Record<WindowKey, string> = {
+  '1w': 'Est. vol. prior week',
+  '4w': 'Est. vol. 4w ago',
+  '13w': 'Est. vol. 13w ago',
+  '26w': 'Est. vol. 26w ago',
+  '52w': 'Est. vol. 52w ago',
+};
+
 export function ResultsTable({
   rows,
   window,
@@ -42,6 +50,8 @@ export function ResultsTable({
   // explorer (even the default, unfiltered view) and restore it instantly via
   // router.back() instead of a cold re-render. See BackToExplorer.
   const fromParam = `?from=${encodeURIComponent(backUrl)}`;
+  // Volume-movement sorts context-swap the window + Δ columns (spec 2026-07-16).
+  const volSort = currentSort === 'imp' || currentSort === 'decline';
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
     if (matchMode === 'loose') {
       return slot === 1 ? r.keywordInTitle1Loose : slot === 2 ? r.keywordInTitle2Loose : r.keywordInTitle3Loose;
@@ -76,15 +86,20 @@ export function ResultsTable({
               align="right"
               title="Click to sort by current rank. Lower rank = more search volume."
             />
-            <th className="p-2 text-right">{WINDOW_LABEL[window]}</th>
+            <th
+              className="p-2 text-right"
+              title={volSort ? 'Estimated monthly search volume at the start of the selected window. 0 = not ranked that week.' : undefined}
+            >
+              {volSort ? VOLUME_WINDOW_LABEL[window] : WINDOW_LABEL[window]}
+            </th>
             <SortableHeader
-              label="Δ"
+              label={volSort ? 'Δ vol.' : 'Δ'}
               ascKey="decline"
               descKey="imp"
               firstClickKey="imp"
               currentSort={currentSort}
               align="right"
-              title="Click to sort by improvement in the selected window. First click shows biggest improvements first."
+              title="Click to sort by estimated search-volume change in the selected window. First click shows biggest improvements first. Keywords whose volume can't be estimated for the comparison week are hidden under this sort."
             />
             <th
               className="p-2 text-right"
@@ -161,10 +176,18 @@ export function ResultsTable({
               </td>
               <td className="p-2 text-right tabular-nums">{r.currentRank.toLocaleString()}</td>
               <td className="p-2 text-right tabular-nums text-gray-600">
-                {r.priorRank?.toLocaleString() ?? <span className="text-gray-400">—</span>}
+                {volSort
+                  ? <PriorVolumeCell r={r} />
+                  : (r.priorRank?.toLocaleString() ?? <span className="text-gray-400">—</span>)}
               </td>
               <td className="p-2 text-right tabular-nums">
-                {r.improvement !== null ? <DeltaCell value={r.improvement} /> : <span className="text-gray-400">—</span>}
+                {volSort
+                  ? (r.volumeDelta !== null
+                      ? <DeltaVolCell value={r.volumeDelta} />
+                      : <span className="text-gray-400">—</span>)
+                  : (r.improvement !== null
+                      ? <DeltaCell value={r.improvement} />
+                      : <span className="text-gray-400">—</span>)}
               </td>
               <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolumeCurrent !== null ? `${r.estimatedMonthlyVolumeCurrent.toLocaleString()} searches / month (est.)` : undefined}>
                 {formatVolume(r.estimatedMonthlyVolumeCurrent)}
@@ -202,6 +225,39 @@ function DeltaCell({ value }: { value: number }) {
   return <span className="text-red-700">{value.toLocaleString()}</span>;
 }
 
+/** Compact magnitude shared by formatVolume + DeltaVolCell. */
+function formatVolumeCompact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
+/** Signed compact volume delta; same color convention as the rank DeltaCell. */
+function DeltaVolCell({ value }: { value: number }) {
+  if (value === 0) return <span className="text-gray-500">0</span>;
+  const compact = formatVolumeCompact(Math.abs(value));
+  if (value > 0) {
+    return <span className="text-green-700" title={`+${value.toLocaleString()} searches / month (est.)`}>+{compact}</span>;
+  }
+  return <span className="text-red-700" title={`${value.toLocaleString()} searches / month (est.)`}>-{compact}</span>;
+}
+
+/**
+ * Prior-window volume under the swap: 0 = newcomer (unranked then); em-dash =
+ * no fit for that week. Keyed on priorRank/volumePrior, NOT volumeDelta, so the
+ * watchlist's legal "prior present, delta null" rows still show their prior.
+ */
+function PriorVolumeCell({ r }: { r: ExplorerRow }) {
+  if (r.priorRank === null) return <span title="Not ranked that week">0</span>;
+  if (r.volumePrior === null) return <span className="text-gray-400">—</span>;
+  return (
+    <span title={`${r.volumePrior.toLocaleString()} searches / month (est.)`}>
+      {formatVolume(r.volumePrior)}
+    </span>
+  );
+}
+
 function SeverityBadge({ severity }: { severity: SeverityKey | null }) {
   if (!severity || severity === 'none') return <span className="text-gray-300" aria-label="Clean">—</span>;
   if (severity === 'warning') {
@@ -237,10 +293,7 @@ function formatVolume(n: number | null): React.ReactNode {
   if (n === null || !Number.isFinite(n)) {
     return <span className="text-gray-400">—</span>;
   }
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
+  return formatVolumeCompact(n);
 }
 
 function formatAvgPrice(cents: number | null): React.ReactNode {
