@@ -14,8 +14,7 @@
  *
  * Rows come back ordered by `sort`, NOT in the order keywordIds was
  * passed in. The caller (the /watchlist page) re-sorts in JS for sort
- * keys this layer doesn't understand (the 'added_*' keys land in Phase
- * 7b alongside the addedAt-aware sort).
+ * keys this layer doesn't understand (the watchlist-only 'added_*' keys).
  */
 import 'server-only';
 import { neon } from '@neondatabase/serverless';
@@ -165,10 +164,10 @@ export async function fetchExplorerRowsByIds(opts: {
 }
 
 /**
- * Mirrors buildExplorerQuery.buildOrderBy. Sort keys Phase 7b will
- * introduce ('added_asc' / 'added_desc') aren't in the SortKey union
- * yet, but if a future caller passes one we silently fall back to the
- * default rank ordering — the watchlist page re-sorts in JS for those.
+ * Mirrors buildExplorerQuery.buildOrderBy. The 'added_asc' / 'added_desc'
+ * keys are in the SortKey union but are watchlist-only — this layer
+ * silently falls back to the default rank ordering for them, and the
+ * watchlist page re-sorts in JS.
  */
 function buildOrderBy(
   sort: SortKey,
@@ -200,8 +199,8 @@ function buildOrderBy(
     case 'avg_reviews_desc':
       return 'ORDER BY kcs.avg_reviews DESC NULLS LAST';
     default:
-      // Defensive: Phase 7b adds 'added_asc' / 'added_desc'; until then
-      // (or for any future unknown key) fall back to rank.
+      // Defensive: 'added_asc' / 'added_desc' (watchlist-only) land here,
+      // as does any future unknown key — fall back to rank.
       return 'ORDER BY kcs.current_rank ASC';
   }
 }
