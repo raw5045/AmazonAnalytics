@@ -20,6 +20,7 @@
 import 'server-only';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
+import { volumeDeltaExpr, volumePriorExpr } from './buildQuery';
 import type {
   ExplorerRow,
   MatchMode,
@@ -68,6 +69,8 @@ interface RawRow {
   // bigint comes back as string from pg/neon-http to avoid 53-bit
   // precision loss. Mapper parses to number.
   estimated_monthly_volume_current: string | number | null;
+  volume_prior: string | number | null;
+  volume_delta: string | number | null;
   avg_price_cents: string | number | null;
   avg_reviews: number | null;
   top_clicked_leaf_category: string | null;
@@ -85,7 +88,7 @@ export async function fetchExplorerRowsByIds(opts: {
 
   const priorRankCol = WINDOW_TO_RANK_COLUMN[opts.window];
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[opts.window];
-  const orderBy = buildOrderBy(opts.sort, improvementCol, opts.matchMode);
+  const orderBy = buildOrderBy(opts.sort, opts.window, opts.matchMode);
 
   // The SELECT list is byte-for-byte the same projection
   // buildExplorerQuery emits, so the row mapper output is identical to
@@ -96,6 +99,8 @@ export async function fetchExplorerRowsByIds(opts: {
       kcs.current_rank,
       kcs.${priorRankCol} AS prior_rank,
       kcs.${improvementCol} AS improvement,
+      ${volumePriorExpr(opts.window, 'kcs.')} AS volume_prior,
+      ${volumeDeltaExpr(opts.window, 'kcs.')} AS volume_delta,
       kcs.top_clicked_category_1_current,
       kcs.fake_volume_severity_current,
       kcs.keyword_title_match_count_current,
@@ -151,10 +156,8 @@ export async function fetchExplorerRowsByIds(opts: {
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
     estimatedMonthlyVolumeCurrent: parseBigint(r.estimated_monthly_volume_current),
-    // Stopgap — replaced by the real mapping in the volume-sort plan's next task.
-    volumePrior: null,
-    // Stopgap — replaced by the real mapping in the volume-sort plan's next task.
-    volumeDelta: null,
+    volumePrior: parseBigint(r.volume_prior),
+    volumeDelta: parseBigint(r.volume_delta),
     avgPriceCents: parseBigint(r.avg_price_cents),
     avgReviews: r.avg_reviews ?? null,
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,
@@ -169,7 +172,7 @@ export async function fetchExplorerRowsByIds(opts: {
  */
 function buildOrderBy(
   sort: SortKey,
-  improvementCol: string,
+  window: WindowKey,
   matchMode: MatchMode,
 ): string {
   switch (sort) {
@@ -177,10 +180,11 @@ function buildOrderBy(
       return 'ORDER BY kcs.current_rank ASC';
     case 'rank_desc':
       return 'ORDER BY kcs.current_rank DESC';
+    // NULLS LAST, not the explorer's eligibility exclusion — watchlist rows are never hidden (spec amendment 2026-07-16).
     case 'imp':
-      return `ORDER BY kcs.${improvementCol} DESC NULLS LAST`;
+      return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} DESC NULLS LAST`;
     case 'decline':
-      return `ORDER BY kcs.${improvementCol} ASC NULLS LAST`;
+      return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ASC NULLS LAST`;
     case 'title_gap': {
       const col = matchMode === 'loose'
         ? 'keyword_title_match_count_loose_current'
