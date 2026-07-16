@@ -106,6 +106,15 @@ drift impossible.
   shares `ResultsTable`, so behavior is identical there wherever these sorts are
   reachable.
 
+**Amended 2026-07-16 during planning:** the watchlist's by-IDs loader
+(`fetchExplorerRowsByIds`, a deliberate projection duplicate) gets the same aliases
+and volume ORDER BY, but **without the eligibility exclusion** — it sorts
+non-computable rows last (NULLS LAST) instead of hiding them. Hiding a user's own
+watched keywords would read as data loss, and the exclusion's perf/count rationale
+(partial indexes, count parity) doesn't apply to a small explicit-ID set. The Δ vol.
+cell renders an em-dash for those rows. Also for precision: the `1w` window's rank
+discriminator column is `prior_week_rank` (kcs has no `rank_1w_ago`).
+
 ## Performance (owner-raised, resolved during brainstorming)
 
 - **Filtered queries:** unchanged shape — filters select first, the subset sort costs
