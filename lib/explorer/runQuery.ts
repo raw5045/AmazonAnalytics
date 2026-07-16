@@ -19,6 +19,9 @@
  *  - category facets short-circuit (migration 0021): when filters are
  *    "category-only + default severity," count comes from
  *    keyword_current_summary_category_facets, not a live COUNT(*).
+ *  - volume-delta sorts (imp/decline) bypass ALL precomputed totals:
+ *    their eligibility predicate filters rows, so counts fall through
+ *    to the deferred live count (which inherits the predicate).
  *
  * Each short-circuit has a graceful fallback to the live count if the
  * meta/facets data is missing, so behavior is never broken.
@@ -30,10 +33,16 @@ import { neon } from '@neondatabase/serverless';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { env } from '@/lib/env';
-import { buildExplorerQuery, sortUsesVolumeDelta } from './buildQuery';
-import { applyCountCap, extractCount, extractWindowTotal } from './queryTotals';
-import type { ExplorerFilters, ExplorerRow, SeverityKey, VolumeFitMeta } from './types';
-import { EXPLORER_DEFAULTS } from './parseFilters';
+import { buildExplorerQuery } from './buildQuery';
+import {
+  applyCountCap,
+  canUseCategoryFacet,
+  canUseDefaultTotal,
+  canUseLeafCategoryFacet,
+  extractCount,
+  extractWindowTotal,
+} from './queryTotals';
+import type { ExplorerFilters, ExplorerRow, VolumeFitMeta } from './types';
 
 interface ExplorerQueryResult {
   rows: ExplorerRow[];
@@ -42,8 +51,10 @@ interface ExplorerQueryResult {
   /**
    * Exact match total when cheaply known (precomputed meta/facet, or the
    * q-path window count). `null` when the total is DEFERRED — the heavy
-   * legacy live-count case — and must be fetched separately via
-   * countExplorerMatches() inside a streamed boundary.
+   * legacy live-count case, or any volume-delta sort (imp/decline), whose
+   * eligibility predicate invalidates precomputed totals — and must be
+   * fetched separately via countExplorerMatches() inside a streamed
+   * boundary.
    */
   total: number | null;
   /** True when total === COUNT_CAP and the real total may be larger. Only meaningful when total !== null. */
@@ -121,83 +132,6 @@ interface MetaRow {
   default_severity_total: number | null;
   volume_fit_calibration_month_end_date: string | null;
   volume_fit_is_extrapolated: boolean | null;
-}
-
-/**
- * Severity defaults match parseFilters.ts EXPLORER_DEFAULTS.severities.
- * The precomputed counts (default_severity_total, default_severity_count
- * on facets) only apply when severities match this exact set.
- */
-function isDefaultSeverity(severities: SeverityKey[]): boolean {
-  const def = [...EXPLORER_DEFAULTS.severities].sort();
-  const cur = [...severities].sort();
-  return def.length === cur.length && def.every((s, i) => s === cur[i]);
-}
-
-/** True when none of the Keepa-aggregate filters are set. */
-function noKeepaFilters(f: ExplorerFilters): boolean {
-  return f.leafPaths.length === 0;
-}
-
-/**
- * True when the filter set is "default landing": no narrowing filters
- * beyond the default severity. Lets us skip the live COUNT(*) and use
- * the precomputed total on meta.
- */
-function canUseDefaultTotal(f: ExplorerFilters): boolean {
-  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
-  return (
-    !sortUsesVolumeDelta(f.sort)
-    && f.q === null
-    && f.rankMin === null
-    && f.rankMax === null
-    && f.jump === null
-    && f.category === null
-    && f.titleMatchMode === null
-    && isDefaultSeverity(f.severities)
-    && noKeepaFilters(f)
-  );
-}
-
-/**
- * True when the filter set is "broad-category-only + default severity":
- * exactly one broad category filter, no other narrowing. Lets us use
- * the per-category precomputed count from facets.
- */
-function canUseCategoryFacet(f: ExplorerFilters): boolean {
-  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
-  return (
-    !sortUsesVolumeDelta(f.sort)
-    && f.q === null
-    && f.rankMin === null
-    && f.rankMax === null
-    && f.jump === null
-    && f.category !== null
-    && f.titleMatchMode === null
-    && isDefaultSeverity(f.severities)
-    && noKeepaFilters(f)
-  );
-}
-
-/**
- * True when the filter set is "single category-path-only + default
- * severity": exactly ONE category-path filter, no broad cat, no other
- * narrowing. Lets us use the precomputed leaf-facet count. Multi-path
- * selections fall through to the live COUNT(*) path.
- */
-function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
-  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
-  return (
-    !sortUsesVolumeDelta(f.sort)
-    && f.q === null
-    && f.rankMin === null
-    && f.rankMax === null
-    && f.jump === null
-    && f.category === null
-    && f.leafPaths.length === 1
-    && f.titleMatchMode === null
-    && isDefaultSeverity(f.severities)
-  );
 }
 
 export async function runExplorerQuery(

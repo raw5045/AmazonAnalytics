@@ -1,6 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { applyCountCap, extractCount, extractWindowTotal } from './queryTotals';
+import {
+  applyCountCap,
+  canUseCategoryFacet,
+  canUseDefaultTotal,
+  canUseLeafCategoryFacet,
+  extractCount,
+  extractWindowTotal,
+} from './queryTotals';
 import { COUNT_CAP } from './buildQuery';
+import { EXPLORER_DEFAULTS } from './parseFilters';
+import type { ExplorerFilters } from './types';
+
+const baseFilters: ExplorerFilters = { ...EXPLORER_DEFAULTS };
 
 describe('applyCountCap', () => {
   it('passes through values at or below the cap', () => {
@@ -35,5 +46,30 @@ describe('extractWindowTotal', () => {
     // The guard that distinguishes this from extractCount: a row exists but
     // its `total` is absent → signal the caller to run the fallback count.
     expect(extractWindowTotal([{}])).toBeNull();
+  });
+});
+
+describe('count short-circuit guards under volume-delta sorts', () => {
+  // Otherwise-qualifying filter shape for each guard; only `sort` varies.
+  const defaultLanding: ExplorerFilters = { ...baseFilters };
+  const categoryOnly: ExplorerFilters = { ...baseFilters, category: 'Beauty' };
+  const leafOnly: ExplorerFilters = { ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'] };
+
+  it('canUseDefaultTotal stands down under imp/decline, holds under rank', () => {
+    expect(canUseDefaultTotal({ ...defaultLanding, sort: 'imp' })).toBe(false);
+    expect(canUseDefaultTotal({ ...defaultLanding, sort: 'decline' })).toBe(false);
+    expect(canUseDefaultTotal({ ...defaultLanding, sort: 'rank' })).toBe(true);
+  });
+
+  it('canUseCategoryFacet stands down under imp/decline, holds under rank', () => {
+    expect(canUseCategoryFacet({ ...categoryOnly, sort: 'imp' })).toBe(false);
+    expect(canUseCategoryFacet({ ...categoryOnly, sort: 'decline' })).toBe(false);
+    expect(canUseCategoryFacet({ ...categoryOnly, sort: 'rank' })).toBe(true);
+  });
+
+  it('canUseLeafCategoryFacet stands down under imp/decline, holds under rank', () => {
+    expect(canUseLeafCategoryFacet({ ...leafOnly, sort: 'imp' })).toBe(false);
+    expect(canUseLeafCategoryFacet({ ...leafOnly, sort: 'decline' })).toBe(false);
+    expect(canUseLeafCategoryFacet({ ...leafOnly, sort: 'rank' })).toBe(true);
   });
 });
