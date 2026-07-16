@@ -30,7 +30,7 @@ import { neon } from '@neondatabase/serverless';
 import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { env } from '@/lib/env';
-import { buildExplorerQuery } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta } from './buildQuery';
 import { applyCountCap, extractCount, extractWindowTotal } from './queryTotals';
 import type { ExplorerFilters, ExplorerRow, SeverityKey, VolumeFitMeta } from './types';
 import { EXPLORER_DEFAULTS } from './parseFilters';
@@ -107,6 +107,8 @@ interface RawRow {
   // bigint comes back as string from pg/neon-http to avoid 53-bit
   // precision loss. Mapper parses to number.
   estimated_monthly_volume_current: string | number | null;
+  volume_prior: string | number | null;
+  volume_delta: string | number | null;
   avg_price_cents: string | number | null;
   avg_reviews: number | null;
   top_clicked_leaf_category: string | null;
@@ -143,8 +145,10 @@ function noKeepaFilters(f: ExplorerFilters): boolean {
  * the precomputed total on meta.
  */
 function canUseDefaultTotal(f: ExplorerFilters): boolean {
+  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
   return (
-    f.q === null
+    !sortUsesVolumeDelta(f.sort)
+    && f.q === null
     && f.rankMin === null
     && f.rankMax === null
     && f.jump === null
@@ -161,8 +165,10 @@ function canUseDefaultTotal(f: ExplorerFilters): boolean {
  * the per-category precomputed count from facets.
  */
 function canUseCategoryFacet(f: ExplorerFilters): boolean {
+  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
   return (
-    f.q === null
+    !sortUsesVolumeDelta(f.sort)
+    && f.q === null
     && f.rankMin === null
     && f.rankMax === null
     && f.jump === null
@@ -180,8 +186,10 @@ function canUseCategoryFacet(f: ExplorerFilters): boolean {
  * selections fall through to the live COUNT(*) path.
  */
 function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
+  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
   return (
-    f.q === null
+    !sortUsesVolumeDelta(f.sort)
+    && f.q === null
     && f.rankMin === null
     && f.rankMax === null
     && f.jump === null
@@ -390,10 +398,8 @@ async function runExplorerQueryInner(
     topClickedProduct1ClickShare: r.top_clicked_product_1_click_share_current,
     topClickedProduct1ConversionShare: r.top_clicked_product_1_conversion_share_current,
     estimatedMonthlyVolumeCurrent: parseBigint(r.estimated_monthly_volume_current),
-    // Stopgap — replaced by the real mapping in the volume-sort plan's next task.
-    volumePrior: null,
-    // Stopgap — replaced by the real mapping in the volume-sort plan's next task.
-    volumeDelta: null,
+    volumePrior: parseBigint(r.volume_prior),
+    volumeDelta: parseBigint(r.volume_delta),
     avgPriceCents: parseBigint(r.avg_price_cents),
     avgReviews: r.avg_reviews ?? null,
     topClickedLeafCategory: r.top_clicked_leaf_category ?? null,
