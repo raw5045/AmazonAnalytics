@@ -117,27 +117,33 @@ discriminator column is `prior_week_rank` (kcs has no `rank_1w_ago`).
 
 ## Amendment — static five-column layout (owner, 2026-07-16, after live audit)
 
-The context-swap shipped, but auditing deltas against their inputs proved hard:
-under the swap you could never see both ranks AND both volumes at once, and the
-reading order (prior vol → Δ → current vol) was jumbled. Owner-revised layout,
-**static under every sort** (the swap is removed):
+The original context-swap shipped, but auditing deltas against their inputs
+proved hard: you could never see both ranks AND both volumes at once, and the
+reading order (prior vol → Δ → current vol) was jumbled. Owner-revised layout —
+**applies ONLY while sort ∈ {imp, decline}** (owner clarified pre-push after an
+initial static-everywhere implementation; every other sort keeps the original
+layout below):
 
-> ☆ | Search term | **Current rank** (sortable) | **Prior rank** (window label,
-> e.g. "Rank 4w ago") | **Est. monthly vol.** (current) | **Est. vol. N wks ago**
-> (`PriorVolumeCell`: 0 = newcomer, — = no fit) | **Δ vol.** (sortable
-> imp/decline, signed/colored, — when not computable) | Avg price | … (remaining
-> columns unchanged)
+> **Volume sorts (imp/decline):** ☆ | Search term | **Current rank** (sortable) |
+> **Prior rank** (window label, e.g. "Rank 4w ago") | **Est. monthly vol.**
+> (current) | **Est. vol. N wks ago** (`PriorVolumeCell`: 0 = newcomer, — = no
+> fit) | **Δ vol.** (sortable, signed/colored, — when not computable) | Avg
+> price | … (remaining columns unchanged)
+>
+> **Every other sort (original layout):** ☆ | Search term | **Current rank**
+> (sortable) | **Prior rank** | **Δ** (rank delta, `DeltaCell`; header is still
+> the click-in point for the volume sorts, tooltip explains) | **Est. monthly
+> vol.** | Avg price | …
 
-- The rank-Δ column is retired (owner's list omits it; prior rank sits beside
-  current rank so rank movement stays visible). `DeltaCell` is deleted; the
-  `improvement` row field stays in the payload (SQL alias unchanged).
-- The Δ-vol header keeps the imp/decline sort keys, first-click-improvements,
-  and the surface-accurate tooltip (`volSortHidesIneligible` prop unchanged).
-- To make room, the **Leaf category column shrinks** (`max-w-xs` → `max-w-40`,
-  still truncated with full-path title tooltip); the table already scrolls
-  horizontally as a fallback.
-- `volSort`/`VOLUME_WINDOW_LABEL` conditional rendering is removed; the
-  prior-vol column header uses the static window-specific label.
+- `DeltaCell` (rank Δ) is retained for the non-volume layout; `improvement`
+  stays rendered there. Under volume sorts the rank Δ column is absent — rank
+  movement reads off the adjacent rank pair.
+- The Δ/Δ-vol header keeps the imp/decline sort keys, first-click-improvements,
+  and the surface-accurate tooltip (`volSortHidesIneligible` prop) in both
+  modes; its position and label differ by mode (Δ after prior rank; Δ vol. after
+  prior vol.).
+- The **Leaf category column shrinks unconditionally** (`max-w-xs` → `max-w-40`,
+  truncated, full-path title tooltip) to make room for the five-column mode.
 
 ## Performance (owner-raised, resolved during brainstorming)
 
