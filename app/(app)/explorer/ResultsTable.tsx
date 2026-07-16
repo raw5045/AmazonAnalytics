@@ -57,9 +57,12 @@ export function ResultsTable({
   // explorer (even the default, unfiltered view) and restore it instantly via
   // router.back() instead of a cold re-render. See BackToExplorer.
   const fromParam = `?from=${encodeURIComponent(backUrl)}`;
-  // The Δ-vol column carries the imp/decline sorts; keep its keys in sync with
-  // sortUsesVolumeDelta in lib/explorer/buildQuery.ts (not imported — keeps the
-  // SQL builder out of the watchlist client bundle).
+  // Volume-movement sorts (imp/decline) switch to the five-column rank/vol
+  // layout below; every other sort keeps the original rank-Δ layout (spec
+  // amendment 2026-07-16). Keep in sync with sortUsesVolumeDelta in
+  // lib/explorer/buildQuery.ts (not imported — keeps the SQL builder out of
+  // the watchlist client bundle).
+  const volSort = currentSort === 'imp' || currentSort === 'decline';
   const deltaTitle =
     'Click to sort by estimated search-volume change in the selected window. First click shows biggest improvements first. '
     + (volSortHidesIneligible
@@ -100,27 +103,42 @@ export function ResultsTable({
               title="Click to sort by current rank. Lower rank = more search volume."
             />
             <th className="p-2 text-right">{WINDOW_LABEL[window]}</th>
+            {volSort ? null : (
+              <SortableHeader
+                label="Δ"
+                ascKey="decline"
+                descKey="imp"
+                firstClickKey="imp"
+                currentSort={currentSort}
+                align="right"
+                title={deltaTitle}
+              />
+            )}
             <th
               className="p-2 text-right"
               title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Typical accuracy ±30% (current fit's holdout MAPE). Note: Fresh_Produce keywords are NOT calibrated — those estimates can be wildly off. (Sort by Current rank for the equivalent volume order.)"
             >
               Est. monthly vol.
             </th>
-            <th
-              className="p-2 text-right"
-              title="Estimated monthly search volume at the start of the selected window. 0 = not ranked that week."
-            >
-              {VOLUME_WINDOW_LABEL[window]}
-            </th>
-            <SortableHeader
-              label="Δ vol."
-              ascKey="decline"
-              descKey="imp"
-              firstClickKey="imp"
-              currentSort={currentSort}
-              align="right"
-              title={deltaTitle}
-            />
+            {volSort ? (
+              <>
+                <th
+                  className="p-2 text-right"
+                  title="Estimated monthly search volume at the start of the selected window. 0 = not ranked that week."
+                >
+                  {VOLUME_WINDOW_LABEL[window]}
+                </th>
+                <SortableHeader
+                  label="Δ vol."
+                  ascKey="decline"
+                  descKey="imp"
+                  firstClickKey="imp"
+                  currentSort={currentSort}
+                  align="right"
+                  title={deltaTitle}
+                />
+              </>
+            ) : null}
             <SortableHeader
               label="Avg price"
               ascKey="avg_price_asc"
@@ -192,17 +210,28 @@ export function ResultsTable({
               <td className="p-2 text-right tabular-nums text-gray-600">
                 {r.priorRank?.toLocaleString() ?? <span className="text-gray-400">—</span>}
               </td>
+              {volSort ? null : (
+                <td className="p-2 text-right tabular-nums">
+                  {r.improvement !== null
+                    ? <DeltaCell value={r.improvement} />
+                    : <span className="text-gray-400">—</span>}
+                </td>
+              )}
               <td className="p-2 text-right tabular-nums" title={r.estimatedMonthlyVolumeCurrent !== null ? `${r.estimatedMonthlyVolumeCurrent.toLocaleString()} searches / month (est.)` : undefined}>
                 {formatVolume(r.estimatedMonthlyVolumeCurrent)}
               </td>
-              <td className="p-2 text-right tabular-nums text-gray-600">
-                <PriorVolumeCell r={r} />
-              </td>
-              <td className="p-2 text-right tabular-nums">
-                {r.volumeDelta !== null
-                  ? <DeltaVolCell value={r.volumeDelta} />
-                  : <span className="text-gray-400">—</span>}
-              </td>
+              {volSort ? (
+                <>
+                  <td className="p-2 text-right tabular-nums text-gray-600">
+                    <PriorVolumeCell r={r} />
+                  </td>
+                  <td className="p-2 text-right tabular-nums">
+                    {r.volumeDelta !== null
+                      ? <DeltaVolCell value={r.volumeDelta} />
+                      : <span className="text-gray-400">—</span>}
+                  </td>
+                </>
+              ) : null}
               <td className="p-2 text-right tabular-nums whitespace-nowrap">
                 {formatAvgPrice(r.avgPriceCents)}
               </td>
@@ -228,6 +257,12 @@ export function ResultsTable({
       </table>
     </div>
   );
+}
+
+function DeltaCell({ value }: { value: number }) {
+  if (value === 0) return <span className="text-gray-500">0</span>;
+  if (value > 0) return <span className="text-green-700">+{value.toLocaleString()}</span>;
+  return <span className="text-red-700">{value.toLocaleString()}</span>;
 }
 
 /** Compact magnitude shared by formatVolume + DeltaVolCell. */
