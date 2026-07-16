@@ -154,6 +154,9 @@ export const keywordCurrentSummary = pgTable(
     estVol26wIdx: index('kcs_est_vol_26w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume26wAgo),
     estVol52wIdx: index('kcs_est_vol_52w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume52wAgo),
     estVol1wIdx: index('kcs_est_vol_1w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume1wAgo),
+    // Volume-delta partial expression indexes for the imp/decline sorts live
+    // in raw SQL only (drizzle-kit can't emit expression indexes) — see
+    // migration 0044 + volumeDeltaExpr in lib/explorer/buildQuery.ts.
     leafPathIdx: index('kcs_leaf_path_idx').on(t.currentWeekEndDate, t.topClickedCategoryPath),
     lowestPriceIdx: index('kcs_lowest_price_idx').on(t.currentWeekEndDate, t.lowestPriceCents),
     mostReviewsIdx: index('kcs_most_reviews_idx').on(t.currentWeekEndDate, t.mostReviews),
