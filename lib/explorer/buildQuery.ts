@@ -58,14 +58,14 @@ const WINDOW_TO_IMPROVEMENT_COLUMN: Record<WindowKey, string> = {
  * and the unfiltered sort degrades to a full top-N scan.
  * `alias` is 'kcs.' (inner queries) or '' (the migration DDL).
  */
-export function volumeDeltaExpr(window: WindowKey, alias: string): string {
+export function volumeDeltaExpr(window: WindowKey, alias: 'kcs.' | ''): string {
   const rankCol = WINDOW_TO_RANK_COLUMN[window];
   const volCol = WINDOW_TO_VOLUME_COLUMN[window];
   return `(${alias}estimated_monthly_volume_current - CASE WHEN ${alias}${rankCol} IS NULL THEN 0 ELSE ${alias}${volCol} END)`;
 }
 
 /** The prior-volume display value: unranked-then coalesces to 0 (spec). */
-export function volumePriorExpr(window: WindowKey, alias: string): string {
+export function volumePriorExpr(window: WindowKey, alias: 'kcs.' | ''): string {
   const rankCol = WINDOW_TO_RANK_COLUMN[window];
   const volCol = WINDOW_TO_VOLUME_COLUMN[window];
   return `CASE WHEN ${alias}${rankCol} IS NULL THEN 0 ELSE ${alias}${volCol} END`;
@@ -76,7 +76,7 @@ export function volumePriorExpr(window: WindowKey, alias: string): string {
  * clause (and the partial-index predicate); rows failing it are hidden
  * under these two sorts ONLY. Binds no args.
  */
-export function volumeDeltaEligibility(window: WindowKey, alias: string): string {
+export function volumeDeltaEligibility(window: WindowKey, alias: 'kcs.' | ''): string {
   const rankCol = WINDOW_TO_RANK_COLUMN[window];
   const volCol = WINDOW_TO_VOLUME_COLUMN[window];
   return `${alias}estimated_monthly_volume_current IS NOT NULL AND (${alias}${rankCol} IS NULL OR ${alias}${volCol} IS NOT NULL)`;
@@ -93,9 +93,10 @@ export function sortUsesVolumeDelta(sort: SortKey): boolean {
 
 /**
  * The kcs display columns common to every path, in row-mapper order, AFTER
- * search_term_id / search_term_raw / current_rank / prior_rank / improvement.
- * Shared so the legacy join-select and the q-path inner/outer selects can't
- * drift. The runQuery row mapper reads each of these by name.
+ * search_term_id / search_term_raw / current_rank / prior_rank /
+ * improvement / volume_prior / volume_delta. Shared so the legacy
+ * join-select and the q-path inner/outer selects can't drift. The runQuery
+ * row mapper reads each of these by name.
  */
 const KCS_DISPLAY_COLS = [
   'top_clicked_category_1_current',
@@ -135,7 +136,7 @@ export function buildExplorerQuery(
 
   const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[filters.window];
-  const orderBy = buildOrderBy(filters.sort, improvementCol, filters.matchMode, filters.window);
+  const orderBy = buildOrderBy(filters.sort, filters.matchMode, filters.window);
 
   // ---- q path: single-table whole-word / broad match on the denormalized
   //      kcs.search_term_normalized (current-week-only, no cap). The inner
@@ -330,7 +331,6 @@ function pushKcsPredicates(
 /** ORDER BY for the inner (kcs) query, by the window-specific source columns. */
 function buildOrderBy(
   sort: ExplorerFilters['sort'],
-  improvementCol: string,
   matchMode: MatchMode,
   window: WindowKey,
 ): string {

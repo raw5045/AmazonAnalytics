@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerQuery, sortUsesVolumeDelta } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
-import type { ExplorerFilters } from './types';
+import type { ExplorerFilters, WindowKey } from './types';
 
 const baseFilters: ExplorerFilters = { ...EXPLORER_DEFAULTS };
 
@@ -487,6 +487,7 @@ describe('buildExplorerQuery', () => {
       expect(sql).toContain(`ORDER BY ${DELTA_4W} DESC`);
       expect(sql).toContain('ORDER BY k.volume_delta DESC');
       expect(sql).toContain('k.volume_prior');
+      expect(sql).toContain(ELIGIBLE_4W);
       expect(countSql).toContain(ELIGIBLE_4W);
     });
 
@@ -501,6 +502,24 @@ describe('buildExplorerQuery', () => {
       expect(sortUsesVolumeDelta('decline')).toBe(true);
       expect(sortUsesVolumeDelta('rank')).toBe(false);
       expect(sortUsesVolumeDelta('added_desc')).toBe(false);
+    });
+  });
+
+  describe('alias-stripped canonical strings (migration 0044 byte-match)', () => {
+    const CASES: Array<[WindowKey, string, string]> = [
+      ['1w', 'prior_week_rank', 'estimated_monthly_volume_1w_ago'],
+      ['4w', 'rank_4w_ago', 'estimated_monthly_volume_4w_ago'],
+      ['13w', 'rank_13w_ago', 'estimated_monthly_volume_13w_ago'],
+      ['26w', 'rank_26w_ago', 'estimated_monthly_volume_26w_ago'],
+      ['52w', 'rank_52w_ago', 'estimated_monthly_volume_52w_ago'],
+    ];
+    it.each(CASES)('window %s emits the canonical DDL strings', (w, rankCol, volCol) => {
+      expect(volumeDeltaExpr(w, '')).toBe(
+        `(estimated_monthly_volume_current - CASE WHEN ${rankCol} IS NULL THEN 0 ELSE ${volCol} END)`,
+      );
+      expect(volumeDeltaEligibility(w, '')).toBe(
+        `estimated_monthly_volume_current IS NOT NULL AND (${rankCol} IS NULL OR ${volCol} IS NOT NULL)`,
+      );
     });
   });
 });
