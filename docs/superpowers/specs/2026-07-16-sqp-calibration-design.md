@@ -88,6 +88,16 @@ retired — a POE upload now just stores validation data (POE no longer trains).
   writes `model_calibration_runs` (go-live). CLI (`scripts/fitVolumeModel.ts`) and
   the upload-triggered worker path both default to dry-run; persisting requires the
   explicit flag/action (owner-gated).
+- **Head extrapolation above the anchor** (owner-raised): ranks better than the
+  month's best SQP pair (~rank 12-class) are extrapolation territory — but small
+  (≈11 terms marketplace-wide) and bounded (monotone by construction; with the
+  measured head slope −0.42, rank 1 ≈ 2.8× the anchor). One principled exception
+  to POE-never-trains: **POE pairs at ranks better than the SQP anchor are
+  admitted as supplemental head training pairs** — the ≤100 band is where the two
+  sources measured within 4% of each other, and SQP is structurally blind there
+  (the owner's brand terms never include Amazon's overall top-10). This brackets
+  extrapolation to roughly ranks 1–4 (POE's best pair is rank 5). The run report
+  prints the implied rank-1 volume each month as the owner's gut-check.
 - The trim heuristic (10× under-trim, tuned for POE under-reporting) is kept but
   its threshold becomes a named parameter recorded in `fit_params` (it already
   records `trimDropRatio`); the first SQP fit reports how many pairs it dropped so
