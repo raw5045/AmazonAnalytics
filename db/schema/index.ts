@@ -18,6 +18,7 @@ export * from './asinWeeklyData';
 export * from './keepaEnrichmentRuns';
 export * from './monthlySfr';
 export * from './poeCalibrationData';
+export * from './sqpCalibrationData';
 export * from './modelCalibrationRuns';
 export * from './savedViews';
 export * from './keywordCurrentSummaryLeafCategoryFacets';
