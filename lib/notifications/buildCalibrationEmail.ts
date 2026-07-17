@@ -130,14 +130,15 @@ function buildCompleted(i: CalibrationEmailInput): BuiltCalibrationEmail {
           '',
           `Nothing changed in production — detail pages and kcs estimates still`,
           `use the current persisted fit.`,
+          '',
         ]
       : fit
         ? [
             `Estimated search volumes for the ${monthLabel(i.monthEndDate)} weeks will`,
             `update on the next explorer + detail page render.`,
+            '',
           ]
         : []),
-    '',
     `View latest data: ${explorerUrl}`,
   ];
 
@@ -245,6 +246,7 @@ function buildFailed(i: CalibrationEmailInput): BuiltCalibrationEmail {
     '',
     `Failed phase:  ${i.errorPhase ?? '(unknown)'}`,
     `Error:         ${i.errorMessage ?? '(no message captured)'}`,
+    ...(i.sqpWarning ? ['', `⚠ ${i.sqpWarning}`] : []),
     '',
     `Partial progress:`,
     `  BA rows upserted:   ${formatNumber(i.baRowsUpserted)}`,
@@ -264,6 +266,11 @@ function buildFailed(i: CalibrationEmailInput): BuiltCalibrationEmail {
     rows: [
       ['Failed phase', escapeHtml(i.errorPhase ?? '(unknown)')],
       ['Error', `<code style="font-size:12px;">${escapeHtml(i.errorMessage ?? '(no message captured)')}</code>`],
+      ...(i.sqpWarning
+        ? [
+            ['⚠ SQP month', `<span style="color:#b45309;">${escapeHtml(i.sqpWarning)}</span>`] as [string, string],
+          ]
+        : []),
       ['BA rows upserted', formatNumber(i.baRowsUpserted)],
       ['POE rows upserted', formatNumber(i.poeRowsUpserted)],
       ['SQP rows upserted', formatNumber(i.sqpRowsUpserted)],

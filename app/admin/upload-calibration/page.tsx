@@ -16,9 +16,9 @@ export default function UploadCalibrationPage() {
         You&apos;ll get an email when processing completes (typically 5-15
         minutes). Uploads that include an SQP file finish with a dry-run
         fit report — β, anchor, MAPE by rank band, and level vs the
-        production fit — but nothing goes live until the owner-gated
-        `scripts/fitVolumeModel.ts --persist` run. POE-only uploads just
-        store validation data.
+        production fit — but nothing goes live until the owner-gated{' '}
+        <code className="font-mono text-xs">scripts/fitVolumeModel.ts --persist</code>{' '}
+        run. POE-only uploads just store validation data.
       </p>
       <div className="mt-6">
         <CalibrationUploader />
