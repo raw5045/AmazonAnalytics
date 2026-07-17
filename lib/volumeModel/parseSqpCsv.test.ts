@@ -39,6 +39,20 @@ describe('parseSqpCsv', () => {
     expect(out.suggestedMonthEndDate).toBeNull();
   });
 
+  it('reports reportingRange monthly for monthly metadata', () => {
+    const out = parseSqpCsv(file('Brand=["X"],Reporting Range=["Monthly"],Select month=["June | 2026-06-01 - 2026-06-30 2026"]', [
+      '"a term","1","10","1","2026-06-30"',
+    ]));
+    expect(out.reportingRange).toBe('monthly');
+  });
+
+  it('reports reportingRange weekly for weekly metadata', () => {
+    const out = parseSqpCsv(file('Brand=["X"],Reporting Range=["Weekly"],Select week=["Week 28 | 2026-07-05 - 2026-07-11 2026"]', [
+      '"a term","1","10","1","2026-07-11"',
+    ]));
+    expect(out.reportingRange).toBe('weekly');
+  });
+
   it('skips rows with empty terms or non-numeric volumes', () => {
     const out = parseSqpCsv(file('Brand=["X"]', [
       '"","1","10","1","2026-06-30"',

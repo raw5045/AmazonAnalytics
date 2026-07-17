@@ -30,7 +30,12 @@ export interface IngestSqpResult {
   upsertMs: number;
   /** Month suggested by the file's `Select month` metadata (null for weekly files). */
   suggestedMonthEndDate: string | null;
-  /** Set when the file's suggested month ≠ the month it was imported under. */
+  /**
+   * Non-blocking warning(s) for the completion report: set when the file
+   * looks like a WEEKLY export uploaded to the monthly slot, and/or when
+   * the file's suggested month ≠ the month it was imported under. Both
+   * are concatenated when both apply.
+   */
   monthMismatchWarning: string | null;
 }
 
@@ -52,12 +57,22 @@ export async function ingestSqpCalibrationFromStream(
   const parsed = parseSqpCsv(text);
   const parseMs = Date.now() - parseStart;
 
-  const monthMismatchWarning =
-    parsed.suggestedMonthEndDate !== null && parsed.suggestedMonthEndDate !== monthEndDate
-      ? `SQP file metadata says the export covers the month ending ${parsed.suggestedMonthEndDate}, ` +
+  const warnings: string[] = [];
+  if (parsed.reportingRange === 'weekly') {
+    warnings.push(
+      `This looks like a WEEKLY SQP export (Reporting Range=Weekly) — weekly volumes are ` +
+        `~7× lower than monthly. Upload the MONTHLY export instead; these rows were ` +
+        `ingested as monthly and will distort any fit.`,
+    );
+  }
+  if (parsed.suggestedMonthEndDate !== null && parsed.suggestedMonthEndDate !== monthEndDate) {
+    warnings.push(
+      `SQP file metadata says the export covers the month ending ${parsed.suggestedMonthEndDate}, ` +
         `but it was imported under ${monthEndDate}. Rows are stored under ${monthEndDate} — ` +
-        `re-upload with the matching month end date if that was unintended.`
-      : null;
+        `re-upload with the matching month end date if that was unintended.`,
+    );
+  }
+  const monthMismatchWarning = warnings.length > 0 ? warnings.join(' ') : null;
 
   // Phase 2: bulk UPSERT
   const upsertStart = Date.now();

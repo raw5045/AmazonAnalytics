@@ -28,6 +28,14 @@ export interface ParsedSqpFile {
    * month field stays authoritative; this only pre-fills it.
    */
   suggestedMonthEndDate: string | null;
+  /**
+   * Which cadence the file's own metadata claims: 'weekly' when it carries
+   * `Reporting Range=[Weekly]` or a `Select week=[…]` key, 'monthly' for
+   * `Reporting Range=[Monthly]` / `Select month=[…]`, else 'unknown'.
+   * Callers use this to warn loudly when a weekly export (volumes ~7×
+   * lower than monthly) lands in the monthly calibration slot.
+   */
+  reportingRange: 'monthly' | 'weekly' | 'unknown';
   /** Raw metadata line, for provenance/debug display. */
   metadata: string;
 }
@@ -81,9 +89,21 @@ export function parseSqpCsv(text: string): ParsedSqpFile {
   const m = metadata.match(/Select month=\[[^\]]*?(\d{4}-\d{2}-\d{2})\s*-\s*(\d{4}-\d{2}-\d{2})/);
   if (m) suggestedMonthEndDate = m[2];
 
+  // Cadence markers, matched on the same quote-stripped metadata as the
+  // month regex ("? tolerates quotes surviving an unusual quoting shape).
+  // Weekly is checked FIRST so a file carrying both markers errs toward
+  // the weekly warning.
+  let reportingRange: 'monthly' | 'weekly' | 'unknown' = 'unknown';
+  if (/Reporting Range=\["?Weekly"?\]/.test(metadata) || /Select week=\[/.test(metadata)) {
+    reportingRange = 'weekly';
+  } else if (/Reporting Range=\["?Monthly"?\]/.test(metadata) || /Select month=\[/.test(metadata)) {
+    reportingRange = 'monthly';
+  }
+
   return {
     rows: [...byTerm.entries()].map(([searchTermNormalized, monthlyVolume]) => ({ searchTermNormalized, monthlyVolume })),
     suggestedMonthEndDate,
+    reportingRange,
     metadata,
   };
 }
