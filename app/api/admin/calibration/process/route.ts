@@ -1,9 +1,14 @@
 /**
- * Trigger background processing of an uploaded calibration pair
- * (BA + POE). Called by the UI after the browser has finished
- * PUTting both files to R2.
+ * Trigger background processing of an uploaded calibration set
+ * (BA + POE and/or SQP). Called by the UI after the browser has
+ * finished PUTting the files to R2.
  *
- * Request:  { jobKey, baStorageKey, poeStorageKey, baFilename, poeFilename, monthEndDate }
+ * BA is required; POE and SQP are each optional but at least one of
+ * them must be present (POE stores validation data, SQP trains the
+ * fit — spec 2026-07-16).
+ *
+ * Request:  { jobKey, baStorageKey, baFilename, monthEndDate,
+ *             poeStorageKey?, poeFilename?, sqpStorageKey?, sqpFilename? }
  * Response: { ok: true, eventId: string }
  */
 import { NextResponse } from 'next/server';
@@ -13,9 +18,11 @@ import { inngest } from '@/inngest/client';
 interface ProcessRequest {
   jobKey: string;
   baStorageKey: string;
-  poeStorageKey: string;
+  poeStorageKey?: string | null;
+  sqpStorageKey?: string | null;
   baFilename: string;
-  poeFilename: string;
+  poeFilename?: string | null;
+  sqpFilename?: string | null;
   monthEndDate: string;
 }
 
@@ -36,9 +43,7 @@ export async function POST(req: Request) {
   const required: (keyof ProcessRequest)[] = [
     'jobKey',
     'baStorageKey',
-    'poeStorageKey',
     'baFilename',
-    'poeFilename',
     'monthEndDate',
   ];
   for (const key of required) {
@@ -46,10 +51,32 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `${key} is required` }, { status: 400 });
     }
   }
+  // POE and SQP travel as (storageKey, filename) pairs — both or neither.
+  if (!!body.poeStorageKey !== !!body.poeFilename) {
+    return NextResponse.json(
+      { error: 'poeStorageKey and poeFilename must be provided together' },
+      { status: 400 },
+    );
+  }
+  if (!!body.sqpStorageKey !== !!body.sqpFilename) {
+    return NextResponse.json(
+      { error: 'sqpStorageKey and sqpFilename must be provided together' },
+      { status: 400 },
+    );
+  }
+  if (!body.poeStorageKey && !body.sqpStorageKey) {
+    return NextResponse.json(
+      { error: 'At least one of the POE / SQP files is required' },
+      { status: 400 },
+    );
+  }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(body.monthEndDate!)) {
     return NextResponse.json({ error: 'monthEndDate must be YYYY-MM-DD' }, { status: 400 });
   }
-  if (!body.baStorageKey!.startsWith('calibration/') || !body.poeStorageKey!.startsWith('calibration/')) {
+  const storageKeys = [body.baStorageKey!, body.poeStorageKey, body.sqpStorageKey].filter(
+    (k): k is string => !!k,
+  );
+  if (storageKeys.some((k) => !k.startsWith('calibration/'))) {
     return NextResponse.json(
       { error: 'Storage keys must be under the calibration/ prefix' },
       { status: 400 },
@@ -61,9 +88,11 @@ export async function POST(req: Request) {
     data: {
       jobKey: body.jobKey,
       baStorageKey: body.baStorageKey,
-      poeStorageKey: body.poeStorageKey,
+      poeStorageKey: body.poeStorageKey ?? null,
+      sqpStorageKey: body.sqpStorageKey ?? null,
       baFilename: body.baFilename,
-      poeFilename: body.poeFilename,
+      poeFilename: body.poeFilename ?? null,
+      sqpFilename: body.sqpFilename ?? null,
       monthEndDate: body.monthEndDate,
     },
   });

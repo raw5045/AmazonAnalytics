@@ -7,55 +7,62 @@ type Phase = 'idle' | 'presigning' | 'uploading' | 'finalizing' | 'queued' | 'fa
 export function CalibrationUploader() {
   const [baFile, setBaFile] = useState<File | null>(null);
   const [poeFile, setPoeFile] = useState<File | null>(null);
+  const [sqpFile, setSqpFile] = useState<File | null>(null);
   const [monthEndDate, setMonthEndDate] = useState<string>('');
   const [phase, setPhase] = useState<Phase>('idle');
   const [baPct, setBaPct] = useState(0);
   const [poePct, setPoePct] = useState(0);
+  const [sqpPct, setSqpPct] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [eventId, setEventId] = useState<string | null>(null);
 
   function reset() {
     setBaFile(null);
     setPoeFile(null);
+    setSqpFile(null);
     setMonthEndDate('');
     setPhase('idle');
     setBaPct(0);
     setPoePct(0);
+    setSqpPct(0);
     setError(null);
     setEventId(null);
   }
 
   async function startUpload() {
-    if (!baFile || !poeFile || !monthEndDate) return;
+    if (!baFile || (!poeFile && !sqpFile) || !monthEndDate) return;
     setError(null);
     setEventId(null);
 
     try {
-      // 1. Presign both URLs in one round-trip
+      // 1. Presign all URLs in one round-trip
       setPhase('presigning');
       const presignRes = await fetch('/api/admin/calibration/presign', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           baFilename: baFile.name,
-          poeFilename: poeFile.name,
+          poeFilename: poeFile?.name ?? null,
+          sqpFilename: sqpFile?.name ?? null,
           monthEndDate,
         }),
       });
       if (!presignRes.ok) {
         throw new Error(`presign failed (${presignRes.status})`);
       }
-      const { jobKey, ba, poe } = (await presignRes.json()) as {
+      const { jobKey, ba, poe, sqp } = (await presignRes.json()) as {
         jobKey: string;
         ba: { storageKey: string; uploadUrl: string };
-        poe: { storageKey: string; uploadUrl: string };
+        poe: { storageKey: string; uploadUrl: string } | null;
+        sqp: { storageKey: string; uploadUrl: string } | null;
       };
 
-      // 2. Browser → R2 direct uploads in parallel
+      // 2. Browser → R2 direct uploads in parallel (files present only)
       setPhase('uploading');
       await Promise.all([
         uploadOne(baFile, ba.uploadUrl, setBaPct),
-        uploadOne(poeFile, poe.uploadUrl, setPoePct),
+        ...(poeFile && poe ? [uploadOne(poeFile, poe.uploadUrl, setPoePct)] : []),
+        ...(sqpFile && sqp ? [uploadOne(sqpFile, sqp.uploadUrl, setSqpPct)] : []),
       ]);
 
       // 3. Notify server to fire the combined-processing Inngest event
@@ -66,9 +73,11 @@ export function CalibrationUploader() {
         body: JSON.stringify({
           jobKey,
           baStorageKey: ba.storageKey,
-          poeStorageKey: poe.storageKey,
+          poeStorageKey: poe?.storageKey ?? null,
+          sqpStorageKey: sqp?.storageKey ?? null,
           baFilename: baFile.name,
-          poeFilename: poeFile.name,
+          poeFilename: poeFile?.name ?? null,
+          sqpFilename: sqpFile?.name ?? null,
           monthEndDate,
         }),
       });
@@ -86,7 +95,7 @@ export function CalibrationUploader() {
 
   const canSubmit =
     baFile !== null &&
-    poeFile !== null &&
+    (poeFile !== null || sqpFile !== null) &&
     /^\d{4}-\d{2}-\d{2}$/.test(monthEndDate) &&
     (phase === 'idle' || phase === 'failed');
   const inputsDisabled = phase !== 'idle' && phase !== 'failed';
@@ -115,6 +124,9 @@ export function CalibrationUploader() {
         <span className="text-sm font-medium text-gray-700">
           POE 30-day search-volume CSV
         </span>
+        <span className="block text-xs text-gray-500">
+          Optional — stored as validation data (POE no longer trains the fit).
+        </span>
         <input
           type="file"
           accept=".csv,text/csv"
@@ -125,6 +137,28 @@ export function CalibrationUploader() {
         {poeFile && (
           <span className="mt-1 block text-xs text-gray-500">
             {poeFile.name} ({(poeFile.size / 1024).toFixed(1)} KB)
+          </span>
+        )}
+      </label>
+
+      <label className="block">
+        <span className="text-sm font-medium text-gray-700">
+          SQP monthly export (CSV)
+        </span>
+        <span className="block text-xs text-gray-500">
+          Brand Analytics → Search Query Performance → Monthly. Optional —
+          triggers a dry-run fit report. At least one of POE / SQP is required.
+        </span>
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          disabled={inputsDisabled}
+          onChange={(e) => setSqpFile(e.target.files?.[0] ?? null)}
+          className="mt-1 block w-full text-sm"
+        />
+        {sqpFile && (
+          <span className="mt-1 block text-xs text-gray-500">
+            {sqpFile.name} ({(sqpFile.size / 1024).toFixed(1)} KB)
           </span>
         )}
       </label>
@@ -149,7 +183,7 @@ export function CalibrationUploader() {
           disabled={!canSubmit}
           className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:bg-gray-300"
         >
-          Upload and create map
+          Upload and process
         </button>
         {phase === 'queued' && (
           <button
@@ -168,15 +202,28 @@ export function CalibrationUploader() {
           {phase === 'uploading' && (
             <div className="mt-1 text-gray-600">
               BA upload:  {baPct.toFixed(0)}%
-              <br />
-              POE upload: {poePct.toFixed(0)}%
+              {poeFile && (
+                <>
+                  <br />
+                  POE upload: {poePct.toFixed(0)}%
+                </>
+              )}
+              {sqpFile && (
+                <>
+                  <br />
+                  SQP upload: {sqpPct.toFixed(0)}%
+                </>
+              )}
             </div>
           )}
           {phase === 'queued' && (
             <div className="mt-1 text-gray-700">
-              ✓ Both files uploaded. Processing kicked off in background — BA
-              ingest ({'~'}5 min), POE ingest ({'<'}1 min), then fit ({'<'}1 min).
-              You&apos;ll get an email when it&apos;s done with the fit results.
+              ✓ Files uploaded. Processing kicked off in background — BA
+              ingest ({'~'}5 min), then POE/SQP ingest ({'<'}1 min each).
+              {sqpFile
+                ? ' The SQP upload finishes with a dry-run fit report — nothing goes live until an owner-gated --persist run.'
+                : ' POE-only upload: validation data is stored; no fit runs (SQP trains the model).'}{' '}
+              You&apos;ll get an email when it&apos;s done.
               <br />
               <span className="mt-2 inline-block text-gray-500">
                 Watch live in the{' '}

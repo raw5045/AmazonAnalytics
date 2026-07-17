@@ -7,8 +7,8 @@
  *
  * Used by:
  *   - scripts/fitVolumeModel.ts (CLI path, manual fit)
- *   - worker/calibrationJobs.ts (in-app upload path, fits automatically
- *     after a combined BA + POE upload)
+ *   - worker/calibrationJobs.ts (in-app upload path, dry-run fit
+ *     automatically after an upload that includes an SQP file)
  *
  * Model: 4-segment piecewise power law with breakpoints at 1k/10k/100k,
  * trained on SQP ⋈ monthly_sfr pairs (the owner's first-party Search
