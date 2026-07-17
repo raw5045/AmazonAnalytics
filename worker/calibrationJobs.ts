@@ -112,6 +112,8 @@ export function startCalibrationJob(
         monthEndDate: args.monthEndDate,
         notes: `Combined upload (${args.baFilename} + ${args.poeFilename})`,
         pool,
+        // Stopgap — Task 4/5 of the SQP plan own this call site.
+        persist: true,
       });
       log(
         `phase=fit done: β=${fitResult.beta.toFixed(4)}, A=${fitResult.scaleFactor.toFixed(0)}, ` +

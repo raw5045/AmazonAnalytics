@@ -40,7 +40,8 @@ async function main() {
 
   console.log(`\n=== Fitting rank→volume model for ${monthEndDate} ===\n`);
   try {
-    const r = await runFitOrchestration({ monthEndDate, notes });
+    // Stopgap — Task 4/5 of the SQP plan own this call site.
+    const r = await runFitOrchestration({ monthEndDate, notes, persist: true });
 
     console.log(`Total pairs:      ${r.nPairs.toLocaleString()}`);
     console.log(`Training set:     ${r.nTraining.toLocaleString()}`);
