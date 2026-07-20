@@ -60,6 +60,8 @@ export function canUseDefaultTotal(f: ExplorerFilters): boolean {
     && f.q === null
     && f.rankMin === null
     && f.rankMax === null
+    && f.reviewsMin === null
+    && f.reviewsMax === null
     && f.jump === null
     && f.category === null
     && f.titleMatchMode === null
@@ -81,6 +83,8 @@ export function canUseCategoryFacet(f: ExplorerFilters): boolean {
     && f.q === null
     && f.rankMin === null
     && f.rankMax === null
+    && f.reviewsMin === null
+    && f.reviewsMax === null
     && f.jump === null
     && f.category !== null
     && f.titleMatchMode === null
@@ -103,6 +107,8 @@ export function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
     && f.q === null
     && f.rankMin === null
     && f.rankMax === null
+    && f.reviewsMin === null
+    && f.reviewsMax === null
     && f.jump === null
     && f.category === null
     && f.leafPaths.length === 1

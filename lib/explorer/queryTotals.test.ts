@@ -73,3 +73,20 @@ describe('count short-circuit guards under volume-delta sorts', () => {
     expect(canUseLeafCategoryFacet({ ...leafOnly, sort: 'rank' })).toBe(true);
   });
 });
+
+describe('avg-reviews filter blocks precomputed totals', () => {
+  it('canUseDefaultTotal is false when either reviews bound is set', () => {
+    expect(canUseDefaultTotal({ ...baseFilters, reviewsMin: 100 })).toBe(false);
+    expect(canUseDefaultTotal({ ...baseFilters, reviewsMax: 0 })).toBe(false);
+  });
+
+  it('canUseCategoryFacet is false when either reviews bound is set', () => {
+    expect(canUseCategoryFacet({ ...baseFilters, category: 'Beauty', reviewsMax: 500 })).toBe(false);
+    expect(canUseCategoryFacet({ ...baseFilters, category: 'Beauty', reviewsMin: 1 })).toBe(false);
+  });
+
+  it('canUseLeafCategoryFacet is false when either reviews bound is set', () => {
+    expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], reviewsMin: 1 })).toBe(false);
+    expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], reviewsMax: 500 })).toBe(false);
+  });
+});
