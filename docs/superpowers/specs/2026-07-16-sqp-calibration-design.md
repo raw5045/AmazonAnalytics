@@ -98,6 +98,20 @@ retired — a POE upload now just stores validation data (POE no longer trains).
   (the owner's brand terms never include Amazon's overall top-10). This brackets
   extrapolation to roughly ranks 1–4 (POE's best pair is rank 5). The run report
   prints the implied rank-1 volume each month as the owner's gut-check.
+- **Ultra-head damping (owner decision 2026-07-16, post-dry-run review):** the
+  1-to-anchor zone is pure slope extrapolation and the available signals disagree
+  (global head slope ⇒ #1 ≈ 6.8M; a literal anchor↔POE-rank-5 line ⇒ ≈10M; the
+  owner's market judgment ⇒ 4–5M tops). Resolution: an explicit judgment
+  parameter. After the anchored grid search, the fit gains an **ultra-head
+  segment** covering ranks ≤ anchor.rank — breakpoint prepended at the anchor
+  rank, β = `ultraHeadBeta` (default **0.30**, CLI `--ultra-head-beta`,
+  `none`/null disables), scale factor continuity-matched to the fit's own value
+  at the anchor (no seam). Recorded in `fit_params.ultraHeadBeta` (additive
+  jsonb field; all consumers walk breakpoints/segments generically, zero reader
+  changes). Reports print the damped implied rank-1 alongside the undamped
+  value. Accepted trade: at β=0.30 the rank-5 prediction sits ~13% below POE's
+  observed rank-5 point. Self-correcting: months where a brand term ranks
+  higher shrink the judgment zone automatically. Skipped when anchor.rank ≤ 1.
 - The trim heuristic (10× under-trim, tuned for POE under-reporting) is kept but
   its threshold becomes a named parameter recorded in `fit_params` (it already
   records `trimDropRatio`); the first SQP fit reports how many pairs it dropped so
