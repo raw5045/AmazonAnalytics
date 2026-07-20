@@ -21,6 +21,11 @@
  * best rank (spec 2026-07-16, head-extrapolation amendment). Iterative
  * under-trim (default 10×, see `trimDropRatio`) drops pairs whose
  * reported volume clearly under-reports relative to the SFR rank.
+ * After the grid search an ultra-head damping segment (β default 0.30,
+ * owner-tunable via `ultraHeadBeta`, null disables) is prepended above
+ * the anchor, continuity-matched so there is no seam — the 1-to-anchor
+ * zone is pure extrapolation and the flatter β compresses the implied
+ * top of the curve (spec 2026-07-16, ultra-head damping).
  *
  * Category exclusion: keywords whose latest-week top-clicked category
  * is in EXCLUDED_CATEGORIES are filtered out before fitting — applied
@@ -86,9 +91,13 @@ export interface FitOrchestrationResult {
   /** Whether this run wrote model_calibration_runs (go-live) or was a dry-run. */
   persisted: boolean;
   calibrationMonthEndDate: string;
-  /** Head-segment β (for legacy callers and console display). */
+  /**
+   * First-segment β (for legacy callers and console display). When
+   * ultra-head damping is applied, the first segment IS the ultra-head
+   * segment — the fitted head β lives in fitParams.segments[1].
+   */
   beta: number;
-  /** Head-segment A. */
+  /** First-segment A (same caveat as `beta` under damping). */
   scaleFactor: number;
   /** Full piecewise fit. */
   fitParams: FitParamsJson;
@@ -110,8 +119,12 @@ export interface FitOrchestrationResult {
   poeValidation: { overall: number | null; top1k: number | null; rank1kTo10k: number | null; rank10kTo100k: number | null; above100k: number | null } | null;
   /** Median predicted-volume ratio (new fit ÷ current production fit) at fixed probe ranks per band. Null when no production fit exists. */
   levelDeltaVsProduction: { top1k: number; rank1kTo10k: number; rank10kTo100k: number; above100k: number } | null;
-  /** predictVolumeFromFit(1, fit) — the owner's monthly gut-check for the extrapolated top of the curve. */
+  /** predictVolumeFromFit(1, fit) — the owner's monthly gut-check for the extrapolated top of the curve. Damped when an ultra-head segment is applied. */
   impliedRank1Volume: number;
+  /** Implied rank-1 volume BEFORE ultra-head damping — reported beside the damped value so the owner sees what the judgment parameter changed. */
+  impliedRank1Undamped: number;
+  /** Ultra-head damping β actually applied above the anchor; null = no damping segment (disabled via `none`, or anchor already at rank ≤ 1). */
+  ultraHeadBeta: number | null;
   /** How many POE head-supplement pairs were admitted (spec amendment). */
   nPoeHeadPairs: number;
   /** The anchor pair used (always an SQP pair). */
@@ -151,10 +164,19 @@ export async function runFitOrchestration(args: {
    * SQP fit's drop count tells us whether it still earns its keep).
    */
   trimDropRatio?: number;
+  /**
+   * Ultra-head damping β — the owner-tunable judgment slope for the
+   * segment prepended above the anchor (spec 2026-07-16, "Ultra-head
+   * damping"). Default 0.30; pass null to disable damping entirely.
+   * Recorded in fit_params.ultraHeadBeta.
+   */
+  ultraHeadBeta?: number | null;
 }): Promise<FitOrchestrationResult> {
   const startedAt = Date.now();
   const persist = args.persist ?? false;
   const trimDropRatio = args.trimDropRatio ?? 10;
+  // `null` is meaningful (damping disabled) — only undefined defaults.
+  const requestedUltraHeadBeta = args.ultraHeadBeta === undefined ? 0.3 : args.ultraHeadBeta;
   const ownPool = !args.pool;
   const pool =
     args.pool ??
@@ -188,7 +210,21 @@ export async function runFitOrchestration(args: {
       breakpoints: DEFAULT_PIECEWISE_BREAKPOINTS,
       trimDropRatio,
     });
-    const fit = result.fit;
+    const rawFit = result.fit;
+
+    // Ultra-head damping (spec 2026-07-16): prepend the flatter
+    // judgment segment above the anchor BEFORE any validation below, so
+    // holdout MAPE, POE validation, level deltas, fitParams, and the
+    // persisted run all describe the fit consumers will actually read.
+    // Only pairs at ranks better than the anchor see different
+    // predictions — essentially just the admitted POE head pairs, which
+    // are being deliberately re-leveled. The undamped rank-1 is
+    // captured first so the report can show both gut-check values.
+    const impliedRank1Undamped = predictVolumeFromFit(1, rawFit);
+    const fit = withUltraHeadSegment(rawFit, anchor.rank, requestedUltraHeadBeta);
+    // Effective β for the report + fit_params: null when no segment was
+    // prepended (helper no-ops on null β or anchor rank ≤ 1).
+    const ultraHeadBeta = fit === rawFit ? null : requestedUltraHeadBeta;
 
     const stratified = stratifiedMapeFromFit(holdout, fit);
 
@@ -214,13 +250,15 @@ export async function runFitOrchestration(args: {
       segments: fit.segments,
       trimDropRatio,
       nDropped: result.nDropped,
+      ultraHeadBeta,
     };
 
     let runId: string | null = null;
     if (persist) {
       runId = await recordRun(pool, {
         calibrationMonthEndDate: args.monthEndDate,
-        // Legacy columns: head segment
+        // Legacy columns: first segment (= the ultra-head segment when
+        // damping is applied; readers use fit_params, these are fallback)
         beta: fit.segments[0].beta,
         scaleFactor: fit.segments[0].scaleFactor,
         fitParams,
@@ -256,6 +294,8 @@ export async function runFitOrchestration(args: {
       poeValidation,
       levelDeltaVsProduction,
       impliedRank1Volume,
+      impliedRank1Undamped,
+      ultraHeadBeta,
       nPoeHeadPairs,
       anchor,
       durationMs: Date.now() - startedAt,
@@ -338,6 +378,24 @@ export function probeLevelDelta(
     rank1kTo10k: bandMedian(LEVEL_DELTA_PROBES.rank1kTo10k),
     rank10kTo100k: bandMedian(LEVEL_DELTA_PROBES.rank10kTo100k),
     above100k: bandMedian(LEVEL_DELTA_PROBES.above100k),
+  };
+}
+
+/**
+ * Prepend an ultra-head segment covering ranks ≤ anchorRank (owner-tunable
+ * judgment parameter — spec 2026-07-16 "Ultra-head damping"). The 1-to-anchor
+ * zone has no calibration data; the flatter β compresses the extrapolated top
+ * (β 0.30 ⇒ rank-1 ≈ 2.0-2.2× the anchor instead of ~3.2×). Scale factor is
+ * continuity-matched to the fit's own prediction AT the anchor rank, so there
+ * is no seam. No-op when beta is null or anchorRank ≤ 1.
+ */
+export function withUltraHeadSegment(fit: PiecewiseFit, anchorRank: number, beta: number | null): PiecewiseFit {
+  if (beta === null || anchorRank <= 1) return fit;
+  const volAtAnchor = predictVolumeFromFit(anchorRank, fit);
+  const scaleFactor = volAtAnchor * Math.pow(anchorRank, beta);
+  return {
+    breakpoints: [anchorRank, ...fit.breakpoints],
+    segments: [{ beta, scaleFactor }, ...fit.segments],
   };
 }
 

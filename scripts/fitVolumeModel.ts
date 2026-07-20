@@ -13,11 +13,18 @@
  * refresh).
  *
  * Usage:
- *   pnpm tsx scripts/fitVolumeModel.ts <month-end-date> [--notes "free text"] [--persist]
+ *   pnpm tsx scripts/fitVolumeModel.ts <month-end-date> [--notes "free text"] [--persist] [--ultra-head-beta <β|none>]
+ *
+ * --ultra-head-beta: the flatter judgment β for the segment prepended
+ * above the SQP anchor (spec 2026-07-16, ultra-head damping — the
+ * 1-to-anchor zone is pure extrapolation). A number > 0 and < 2, or
+ * `none` to disable damping. Default 0.30.
  *
  * Examples:
  *   pnpm tsx scripts/fitVolumeModel.ts 2026-06-30 --notes "First SQP fit"          # dry-run
  *   pnpm tsx scripts/fitVolumeModel.ts 2026-06-30 --notes "June go-live" --persist # go live
+ *   pnpm tsx scripts/fitVolumeModel.ts 2026-06-30 --ultra-head-beta 0.25           # steeper damping
+ *   pnpm tsx scripts/fitVolumeModel.ts 2026-06-30 --ultra-head-beta none           # undamped
  */
 import { config } from 'dotenv';
 config({ path: '.env.local' });
@@ -26,12 +33,17 @@ import {
   FitInsufficientDataError,
 } from '@/lib/volumeModel/fitOrchestrator';
 
-function parseArgs(): { monthEndDate: string; notes: string | null; persist: boolean } {
+function parseArgs(): {
+  monthEndDate: string;
+  notes: string | null;
+  persist: boolean;
+  ultraHeadBeta: number | null | undefined;
+} {
   const args = process.argv.slice(2);
   const monthEndDate = args[0];
   if (!monthEndDate || !/^\d{4}-\d{2}-\d{2}$/.test(monthEndDate)) {
     console.error(
-      'Usage: pnpm tsx scripts/fitVolumeModel.ts <YYYY-MM-DD> [--notes "text"] [--persist]',
+      'Usage: pnpm tsx scripts/fitVolumeModel.ts <YYYY-MM-DD> [--notes "text"] [--persist] [--ultra-head-beta <β|none>]',
     );
     process.exit(1);
   }
@@ -40,7 +52,26 @@ function parseArgs(): { monthEndDate: string; notes: string | null; persist: boo
   // Don't let a flag (e.g. a value-less `--notes --persist`) become the note.
   const notes = rawNotes && !rawNotes.startsWith('--') ? rawNotes : null;
   const persist = args.includes('--persist');
-  return { monthEndDate, notes, persist };
+  // Ultra-head damping β: number in (0, 2), or `none` to disable.
+  // Absent → undefined, letting the orchestrator apply its 0.30 default.
+  const uIdx = args.indexOf('--ultra-head-beta');
+  let ultraHeadBeta: number | null | undefined;
+  if (uIdx >= 0) {
+    const raw = args[uIdx + 1];
+    if (raw === 'none') {
+      ultraHeadBeta = null;
+    } else {
+      const parsed = Number(raw);
+      if (raw === undefined || raw.startsWith('--') || !Number.isFinite(parsed) || parsed <= 0 || parsed >= 2) {
+        console.error(
+          '--ultra-head-beta expects a number > 0 and < 2 (e.g. 0.30), or `none` to disable damping.',
+        );
+        process.exit(1);
+      }
+      ultraHeadBeta = parsed;
+    }
+  }
+  return { monthEndDate, notes, persist, ultraHeadBeta };
 }
 
 function fmtPct(p: number | null): string {
@@ -56,13 +87,13 @@ function fmtRatio(r: number): string {
 }
 
 async function main() {
-  const { monthEndDate, notes, persist } = parseArgs();
+  const { monthEndDate, notes, persist, ultraHeadBeta } = parseArgs();
 
   console.log(
     `\n=== Fitting rank→volume model for ${monthEndDate} ${persist ? '(PERSIST — go-live)' : '(DRY RUN)'} ===\n`,
   );
   try {
-    const r = await runFitOrchestration({ monthEndDate, notes, persist });
+    const r = await runFitOrchestration({ monthEndDate, notes, persist, ultraHeadBeta });
     const nSqpPairs = r.nPairs - r.nPoeHeadPairs;
 
     console.log(`Calibration pairs:`);
@@ -85,7 +116,14 @@ async function main() {
       `  Anchor (SQP):           rank ${r.anchor.rank.toLocaleString()} → ${r.anchor.volume.toLocaleString()}/mo`,
     );
     console.log(
-      `  Implied rank-1 volume:  ${Math.round(r.impliedRank1Volume).toLocaleString()}/mo (extrapolated top of curve — gut-check)`,
+      r.ultraHeadBeta !== null
+        ? `  Ultra-head:             β=${r.ultraHeadBeta.toFixed(2)} above anchor rank ${r.anchor.rank.toLocaleString()} (damped)`
+        : `  Ultra-head:             disabled`,
+    );
+    console.log(
+      r.ultraHeadBeta !== null
+        ? `  Implied rank-1 volume:  ${Math.round(r.impliedRank1Volume).toLocaleString()}/mo (damped; undamped ${Math.round(r.impliedRank1Undamped).toLocaleString()}/mo — extrapolated top, gut-check)`
+        : `  Implied rank-1 volume:  ${Math.round(r.impliedRank1Volume).toLocaleString()}/mo (extrapolated top of curve — gut-check)`,
     );
 
     console.log(`\nValidation MAPE on holdout (${r.nHoldout} pairs):`);

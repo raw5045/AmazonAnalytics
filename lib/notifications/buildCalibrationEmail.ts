@@ -41,6 +41,10 @@ export interface CalibrationEmailFit {
   nDroppedAsOutliers?: number;
   /** predictVolumeFromFit(1, fit) — the owner's monthly gut-check. */
   impliedRank1Volume?: number;
+  /** Ultra-head damping β above the anchor (spec 2026-07-16); null/absent = no damping segment. */
+  ultraHeadBeta?: number | null;
+  /** Implied rank-1 volume BEFORE damping — shown beside the damped value. */
+  impliedRank1Undamped?: number;
   /** New fit scored against the month's POE pairs (validation only). */
   poeValidation?: {
     overall: number | null;
@@ -173,6 +177,11 @@ function buildCompleted(i: CalibrationEmailInput): BuiltCalibrationEmail {
             ['A (scale factor)', formatNumber(fit.scaleFactor)] as [string, string],
             ['Anchor (SQP)', fit.anchor ? `rank ${formatNumber(fit.anchor.rank)} → ${formatNumber(fit.anchor.volume)}/mo` : '—'] as [string, string],
             ['Implied rank-1 vol', formatNumber(fit.impliedRank1Volume != null ? Math.round(fit.impliedRank1Volume) : null)] as [string, string],
+            ...(fit.ultraHeadBeta != null
+              ? [
+                  ['Ultra-head damping', `β=${fit.ultraHeadBeta.toFixed(2)} above the anchor <span style="color:#999;">(undamped rank-1: ${formatNumber(fit.impliedRank1Undamped != null ? Math.round(fit.impliedRank1Undamped) : null)})</span>`] as [string, string],
+                ]
+              : []),
             ['Calibration pairs', `${formatNumber(fit.nPairs)} <span style="color:#999;">(${formatNumber(fit.nPoeHeadPairs)} POE head)</span>`] as [string, string],
             ['Outliers trimmed', formatNumber(fit.nDroppedAsOutliers)] as [string, string],
             ['Overall MAPE', formatPct(fit.mapeOverall)] as [string, string],
@@ -205,6 +214,11 @@ function fitReportText(fit: CalibrationEmailFit): string {
     `  A (scale factor):   ${formatNumber(fit.scaleFactor)}`,
     `  Anchor (SQP):       ${fit.anchor ? `rank ${formatNumber(fit.anchor.rank)} → ${formatNumber(fit.anchor.volume)}/mo` : '—'}`,
     `  Implied rank-1 vol: ${formatNumber(fit.impliedRank1Volume != null ? Math.round(fit.impliedRank1Volume) : null)}`,
+    ...(fit.ultraHeadBeta != null
+      ? [
+          `  Ultra-head damping: β=${fit.ultraHeadBeta.toFixed(2)} above the anchor (undamped rank-1: ${formatNumber(fit.impliedRank1Undamped != null ? Math.round(fit.impliedRank1Undamped) : null)})`,
+        ]
+      : []),
     `  Calibration pairs:  ${formatNumber(fit.nPairs)} (${formatNumber(fit.nPoeHeadPairs)} POE head supplements)`,
     `  Outliers trimmed:   ${formatNumber(fit.nDroppedAsOutliers)}`,
     ``,

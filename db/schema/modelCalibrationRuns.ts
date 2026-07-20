@@ -37,15 +37,18 @@ export const modelCalibrationRuns = pgTable(
     calibrationMonthEndDate: date('calibration_month_end_date').notNull(),
     /**
      * Power-law exponent (rank^-β) of the first (or only) segment.
-     * For piecewise fits, this is the head-segment β; refresh +
-     * detail-page predictors read fit_params for the full multi-
-     * segment data and only use this column as a fallback. Expected
-     * range: 0.3-1.5; data decides.
+     * For piecewise fits with ultra-head damping (fit_params.
+     * ultraHeadBeta set) the first segment is the prepended ultra-head
+     * segment, so this records the damping β (default 0.30) rather
+     * than the fitted head β; refresh + detail-page predictors read
+     * fit_params for the full multi-segment data and only use this
+     * column as a fallback. Expected range: 0.3-1.5; data decides.
      */
     beta: numeric('beta', { precision: 6, scale: 4 }).notNull(),
     /**
      * Constant A for the first (or only) segment.
-     * For piecewise fits, this is the head-segment A.
+     * For piecewise fits, this is the first segment's A (the
+     * ultra-head segment's A when damping is applied).
      */
     scaleFactor: numeric('scale_factor', { precision: 20, scale: 6 }).notNull(),
     /**
@@ -89,4 +92,12 @@ export interface FitParamsJson {
   trimDropRatio: number | null;
   /** How many calibration pairs were dropped as outliers. */
   nDropped: number;
+  /**
+   * Ultra-head damping β (spec 2026-07-16): when set, segments[0] is a
+   * prepended judgment segment with this flatter β covering ranks ≤
+   * anchor.rank, continuity-matched at the anchor. Null/absent = no
+   * damping segment (disabled, anchor at rank ≤ 1, or a pre-damping
+   * run). Additive — consumers walk breakpoints/segments generically.
+   */
+  ultraHeadBeta?: number | null;
 }
