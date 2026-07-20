@@ -55,6 +55,9 @@ interface PendingFilters {
   qMode: 'word' | 'broad';
   rankBest: string;
   rankWorst: string;
+  /** Numeric strings; empty = unset. Inclusive avg-reviews range (top-3 ASINs). */
+  reviewsMin: string;
+  reviewsMax: string;
   jump: JumpKey | '';
   jumpMetric: JumpMetric;
   /** Numeric string; only used when jump === 'custom'. */
@@ -80,6 +83,8 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     qMode: f.qMode,
     rankBest: f.rankMin?.toString() ?? '',
     rankWorst: f.rankMax?.toString() ?? '',
+    reviewsMin: f.reviewsMin?.toString() ?? '',
+    reviewsMax: f.reviewsMax?.toString() ?? '',
     jump: f.jump ?? '',
     jumpMetric: f.jumpMetric,
     jumpFrom: f.jumpFrom?.toString() ?? '',
@@ -105,6 +110,8 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.q.trim().length >= 3 && p.qMode === 'broad') params.set('qmode', 'broad');
   if (p.rankBest) params.set('rank_min', p.rankBest);
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
+  if (p.reviewsMin) params.set('reviews_min', p.reviewsMin);
+  if (p.reviewsMax) params.set('reviews_max', p.reviewsMax);
   if (p.jumpMetric === 'volume') params.set('jump_metric', 'volume');
   if (p.jump) {
     params.set('jump', p.jump);
@@ -299,6 +306,34 @@ export function FilterSidebar({
           />
         </div>
         <p className="text-xs text-gray-500 mt-1">Lower number = more searches. e.g. Best 1, Worst 10000 = top-10k.</p>
+      </FieldGroup>
+
+      <FieldGroup label="Avg reviews (top-3)">
+        <div className="flex gap-2">
+          <input
+            type="number"
+            min={0}
+            value={pending.reviewsMin}
+            onChange={(e) => set('reviewsMin', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Min"
+            className="filter-input flex-1"
+            aria-label="Minimum average reviews"
+          />
+          <input
+            type="number"
+            min={0}
+            value={pending.reviewsMax}
+            onChange={(e) => set('reviewsMax', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Max (e.g. 500)"
+            className="filter-input flex-1"
+            aria-label="Maximum average reviews"
+          />
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Mean review count of the top-3 clicked products. Excludes keywords without review data.
+        </p>
       </FieldGroup>
 
       {/* Movement card — metric toggle + window + preset + optional custom inputs */}

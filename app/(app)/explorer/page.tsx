@@ -346,6 +346,8 @@ function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boole
     f.q !== null ||
     f.rankMin !== null ||
     f.rankMax !== null ||
+    f.reviewsMin !== null ||
+    f.reviewsMax !== null ||
     f.jump !== null ||
     f.category !== null ||
     f.leafPaths.length > 0 ||
