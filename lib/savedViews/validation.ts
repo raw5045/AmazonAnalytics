@@ -110,6 +110,8 @@ function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
   if (f.qMode === 'broad') p.qmode = 'broad';
   if (typeof f.rankMin === 'number') p.rank_min = String(f.rankMin);
   if (typeof f.rankMax === 'number') p.rank_max = String(f.rankMax);
+  if (typeof f.reviewsMin === 'number') p.reviews_min = String(f.reviewsMin);
+  if (typeof f.reviewsMax === 'number') p.reviews_max = String(f.reviewsMax);
   if (typeof f.jump === 'string') p.jump = f.jump;
   if (f.jumpMetric === 'volume') p.jump_metric = 'volume';
   if (typeof f.jumpFrom === 'number') p.jump_from = String(f.jumpFrom);

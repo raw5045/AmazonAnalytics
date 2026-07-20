@@ -79,3 +79,24 @@ describe('normalizeFilters + normalizeFiltersBlob', () => {
     expect(normalizeFilters({ customCategoryIds: ['id-1', 'id-2'] }).customCategoryIds).toEqual(['id-1', 'id-2']);
   });
 });
+
+describe('avg-reviews filter round-trip', () => {
+  it('normalizeFilters preserves reviews bounds through the URL-param round-trip', () => {
+    const out = normalizeFilters({ ...EXPLORER_DEFAULTS, reviewsMin: 100, reviewsMax: 500 });
+    expect(out.reviewsMin).toBe(100);
+    expect(out.reviewsMax).toBe(500);
+  });
+
+  it('round-trips a 0 bound (typeof-number check, not truthiness)', () => {
+    const out = normalizeFilters({ ...EXPLORER_DEFAULTS, reviewsMax: 0 });
+    expect(out.reviewsMax).toBe(0);
+  });
+
+  it('normalizeFiltersBlob reads stored bounds and defaults legacy blobs to null', () => {
+    expect(normalizeFiltersBlob({ reviewsMin: 250 }).reviewsMin).toBe(250);
+    expect(normalizeFiltersBlob({ reviewsMax: 0 }).reviewsMax).toBe(0);
+    const legacy = normalizeFiltersBlob({ window: '4w' });
+    expect(legacy.reviewsMin).toBeNull();
+    expect(legacy.reviewsMax).toBeNull();
+  });
+});
