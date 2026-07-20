@@ -387,10 +387,14 @@ export function probeLevelDelta(
  * zone has no calibration data; the flatter β compresses the extrapolated top
  * (β 0.30 ⇒ rank-1 ≈ 2.0-2.2× the anchor instead of ~3.2×). Scale factor is
  * continuity-matched to the fit's own prediction AT the anchor rank, so there
- * is no seam. No-op when beta is null or anchorRank ≤ 1.
+ * is no seam. No-op when beta is null or anchorRank ≤ 1 — and when anchorRank
+ * ≥ the fit's first breakpoint, where prepending would unsort `breakpoints`
+ * (violating the PiecewiseFit invariant; can't happen with the production
+ * ~rank-12 SQP anchor vs the 1k breakpoint, but guard rather than trap).
  */
 export function withUltraHeadSegment(fit: PiecewiseFit, anchorRank: number, beta: number | null): PiecewiseFit {
   if (beta === null || anchorRank <= 1) return fit;
+  if (fit.breakpoints.length > 0 && anchorRank >= fit.breakpoints[0]) return fit;
   const volAtAnchor = predictVolumeFromFit(anchorRank, fit);
   const scaleFactor = volAtAnchor * Math.pow(anchorRank, beta);
   return {

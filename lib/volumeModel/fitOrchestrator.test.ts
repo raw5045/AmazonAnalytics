@@ -64,6 +64,10 @@ describe('withUltraHeadSegment', () => {
     expect(withUltraHeadSegment(base, 1, 0.3)).toBe(base);
   });
 
+  it('no-ops when the anchor sits at or beyond the first breakpoint (would unsort breakpoints)', () => {
+    expect(withUltraHeadSegment(base, 1500, 0.3)).toBe(base);
+  });
+
   it('keeps breakpoints sorted ascending', () => {
     const damped = withUltraHeadSegment(base, 15, 0.3);
     expect(damped.breakpoints).toEqual([15, 1000, 10000, 100000]);
