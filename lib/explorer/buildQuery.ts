@@ -259,11 +259,11 @@ export function buildExplorerQuery(
 export const COUNT_CAP = 10_000;
 
 /**
- * Push every kcs WHERE predicate (current_week_end_date, rank, jump,
- * category, leaf, severity, title-gap) onto a fresh clause list, binding
- * args via `next` in clause order. The `q` filter is NOT here — the q-path
- * appends its own match on kcs.search_term_normalized; the legacy path has
- * no q clause.
+ * Push every kcs WHERE predicate (current_week_end_date, rank, reviews,
+ * jump, category, leaf, severity, title-gap) onto a fresh clause list,
+ * binding args via `next` in clause order. The `q` filter is NOT here —
+ * the q-path appends its own match on kcs.search_term_normalized; the
+ * legacy path has no q clause.
  */
 function pushKcsPredicates(
   filters: ExplorerFilters,
@@ -281,6 +281,12 @@ function pushKcsPredicates(
   }
   if (filters.rankMax !== null) {
     where.push(`kcs.current_rank <= ${next(filters.rankMax)}`);
+  }
+  if (filters.reviewsMin !== null) {
+    where.push(`kcs.avg_reviews >= ${next(filters.reviewsMin)}`);
+  }
+  if (filters.reviewsMax !== null) {
+    where.push(`kcs.avg_reviews <= ${next(filters.reviewsMax)}`);
   }
   if (filters.jump) {
     let from: number | null = null;

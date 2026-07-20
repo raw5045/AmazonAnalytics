@@ -138,6 +138,58 @@ describe('buildExplorerQuery', () => {
     });
   });
 
+  describe('avg-reviews range filter', () => {
+    it('pushes both bounds into rows and count SQL (default path)', () => {
+      const { sql, countSql, args, countArgs } = buildExplorerQuery({ ...baseFilters, reviewsMin: 100, reviewsMax: 500 });
+      expect(norm(sql)).toContain('kcs.avg_reviews >= $');
+      expect(norm(sql)).toContain('kcs.avg_reviews <= $');
+      // Pin the NULL-drop semantics: bounds must be plain comparisons, not
+      // NULL-tolerant rewrites (unknown ≠ low — see ExplorerFilters docs).
+      expect(norm(sql)).not.toContain('avg_reviews IS NULL');
+      expect(norm(sql)).not.toContain('COALESCE');
+      expect(norm(countSql)).toContain('kcs.avg_reviews >= $');
+      expect(norm(countSql)).toContain('kcs.avg_reviews <= $');
+      expect(args).toContain(100);
+      expect(args).toContain(500);
+      expect(countArgs).toContain(100);
+      expect(countArgs).toContain(500);
+    });
+
+    it('emits a lone bound independently', () => {
+      const minOnly = buildExplorerQuery({ ...baseFilters, reviewsMin: 1000 });
+      expect(norm(minOnly.sql)).toContain('kcs.avg_reviews >= $');
+      expect(norm(minOnly.sql)).not.toContain('kcs.avg_reviews <= $');
+    });
+
+    it('treats reviewsMax: 0 as an active bound (not falsy-skipped)', () => {
+      // countArgs, not args: args ends in OFFSET 0 on page 1, which would
+      // satisfy a toContain(0) even if the bound were falsy-skipped.
+      const { sql, countArgs } = buildExplorerQuery({ ...baseFilters, reviewsMax: 0 });
+      expect(norm(sql)).toContain('kcs.avg_reviews <= $');
+      expect(countArgs).toContain(0);
+    });
+
+    it('emits no reviews predicates by default', () => {
+      const { sql, countSql } = buildExplorerQuery(baseFilters);
+      expect(norm(sql)).not.toContain('avg_reviews >=');
+      expect(norm(sql)).not.toContain('avg_reviews <=');
+      expect(norm(countSql)).not.toContain('avg_reviews >=');
+      expect(norm(countSql)).not.toContain('avg_reviews <=');
+    });
+
+    it('applies reviews predicates on the q path too', () => {
+      const { sql, countSql } = buildExplorerQuery({ ...baseFilters, q: 'magnesium', reviewsMax: 500 });
+      expect(norm(sql)).toContain('kcs.avg_reviews <= $');
+      expect(norm(countSql)).toContain('kcs.avg_reviews <= $');
+    });
+
+    it('composes with the volume-delta sorts (reviews + eligibility both present)', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'imp', reviewsMax: 500 });
+      expect(norm(sql)).toContain('kcs.avg_reviews <= $');
+      expect(norm(sql)).toContain('estimated_monthly_volume_current IS NOT NULL');
+    });
+  });
+
   describe('threshold jump (1.4)', () => {
     it('500k → 100k uses prior_week_rank for 1w window', () => {
       const { sql, countArgs } = buildExplorerQuery({ ...baseFilters, jump: '500k_to_100k' });
