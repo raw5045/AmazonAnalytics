@@ -10,7 +10,7 @@ Predecessors: Plan 3.4.2 (Watchlist), Plan 3.4.3 (Watchlist Bulk Add)
 When a new week's keyword refresh completes, an admin can broadcast a weekly digest email to all subscribed users. The email comes in two variants:
 
 - **Broadcast** (user has 0 watched keywords): a lightweight "new week is live — come explore" message with a CTA to `/explorer`.
-- **Watchlist** (user has ≥ 1 watched keyword): the same intro plus a table of every watched keyword's current-week movement (current rank, prior-week rank, 4-week-ago rank, 1-week Δ, est. monthly volume), sorted biggest-mover-first.
+- **Watchlist** (user has ≥ 1 watched keyword): the same intro plus a table of every watched keyword's current-week movement (current rank, prior-week rank, 4-week-ago rank, 1-week Δ, est. monthly volume), sorted gains-first (see amended Row order below).
 
 Sending is **admin-triggered** from a new `/admin/digests` page, not auto-fired on import. The digest can only be sent for the **current snapshot week** (the week `keyword_current_summary` currently reflects); prior weeks are frozen read-only history. Every email carries a one-click unsubscribe link.
 
@@ -25,7 +25,7 @@ This is the long-deferred notifications work flagged in the Plan 3.4.2 and 3.4.3
 | Variant split | `watchlist_count > 0` → watchlist variant; `= 0` → broadcast variant |
 | Watchlist content | Full snapshot — every watched keyword every week (not just movers) |
 | Email columns | 6: keyword, current rank, prior-week rank, 4-week-ago rank, Δ (1w), est. monthly volume |
-| Row order | Biggest movers first — `ORDER BY |improvement_1w| DESC`, ties broken by current rank asc |
+| Row order | **Amended 2026-07-20 (owner request):** signed movement — biggest gains first through biggest declines last (`ORDER BY improvement_1w DESC`), nulls last, ties broken by current rank asc. Originally shipped as `ORDER BY \|improvement_1w\| DESC` (absolute movers first). |
 | Fell-out-of-rankings | Still shown, with `current_rank` "—" and a muted "not ranked this week" note |
 | Recipients | All subscribed users with a non-null email |
 | No-watchlist users | Yes — they receive the broadcast variant (re-engagement nudge) |

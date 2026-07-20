@@ -18,9 +18,10 @@ export interface RawWatchlistRow extends DigestKeywordRow {
 }
 
 /**
- * Group raw (user, keyword) rows by user and sort each user's list
- * biggest-mover-first: |improvement1w| desc, nulls last, ties broken by
- * current rank asc. Pure — unit tested directly.
+ * Group raw (user, keyword) rows by user and sort each user's list by
+ * signed weekly movement: biggest gains first through biggest declines
+ * last (improvement1w desc), nulls last, ties broken by current rank
+ * asc. Pure — unit tested directly.
  */
 export function groupAndSortWatchlistRows(
   rows: RawWatchlistRow[],
@@ -46,7 +47,7 @@ export function groupAndSortWatchlistRows(
       if (aNull && bNull) return rankAsc(a, b);
       if (aNull) return 1;   // nulls last
       if (bNull) return -1;
-      const diff = Math.abs(b.improvement1w as number) - Math.abs(a.improvement1w as number);
+      const diff = (b.improvement1w as number) - (a.improvement1w as number);
       if (diff !== 0) return diff;
       return rankAsc(a, b);
     });
@@ -110,7 +111,7 @@ export async function loadEligibleRecipients(
 
 /**
  * Current-week metrics for every keyword watched by the given users,
- * grouped per user and sorted biggest-mover-first. LEFT JOIN to kcs so a
+ * grouped per user and sorted gains-first. LEFT JOIN to kcs so a
  * keyword that fell out of this week's rankings still returns (with null
  * metrics → "not ranked this week" in the email).
  */

@@ -3,7 +3,8 @@
  * Pure builder for the weekly digest email. Mirrors buildImportEmail.ts:
  * no network, returns { subject, text, html } so it can be snapshot/unit
  * tested. The caller passes a fully-signed unsubscribeUrl and (for the
- * watchlist variant) rows already sorted biggest-mover-first.
+ * watchlist variant) rows already sorted gains-first (signed movement,
+ * biggest declines last — see groupAndSortWatchlistRows).
  *
  * See docs/superpowers/specs/2026-05-31-weekly-digest-email-design.md §7.
  */
@@ -17,7 +18,7 @@ interface CommonInput {
 interface BroadcastInput extends CommonInput { variant: 'broadcast'; }
 interface WatchlistInput extends CommonInput {
   variant: 'watchlist';
-  rows: DigestKeywordRow[];   // already sorted biggest-mover-first
+  rows: DigestKeywordRow[];   // already sorted gains-first (declines last)
 }
 
 const GREEN = '#15803d';
@@ -72,7 +73,7 @@ function buildWatchlist(i: WatchlistInput): BuiltEmail {
   const text = [
     'Amazon Keywords Updated',
     '',
-    `The week of ${i.weekEndDate} is live. Here's how your ${i.rows.length} watched keywords moved this week — biggest movers first:`,
+    `The week of ${i.weekEndDate} is live. Here's how your ${i.rows.length} watched keywords moved this week — biggest gains first:`,
     '',
     ...textRows,
     '',
@@ -89,7 +90,7 @@ function buildWatchlist(i: WatchlistInput): BuiltEmail {
     <h1 style="margin:0 0 12px 0;font-size:20px;color:#111;">Amazon Keywords Updated</h1>
     <p style="margin:0 0 16px 0;color:#333;font-size:14px;">
       The week of <strong>${escapeHtml(i.weekEndDate)}</strong> is live. Here's how your
-      <strong>${i.rows.length}</strong> watched keywords moved this week — biggest movers first:
+      <strong>${i.rows.length}</strong> watched keywords moved this week — biggest gains first:
     </p>
     <table style="border-collapse:collapse;width:100%;font-size:13px;">
       <thead>

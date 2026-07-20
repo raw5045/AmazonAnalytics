@@ -32,13 +32,14 @@ describe('groupAndSortWatchlistRows', () => {
     expect(out.get('u2')?.map((r) => r.searchTermId)).toEqual(['b']);
   });
 
-  it('sorts each user by absolute improvement, biggest first', () => {
+  it('sorts each user by signed improvement — biggest gains first, biggest declines last', () => {
     const out = groupAndSortWatchlistRows([
       raw({ userId: 'u1', searchTermId: 'small', improvement1w: 10 }),
       raw({ userId: 'u1', searchTermId: 'bigdrop', improvement1w: -900 }),
       raw({ userId: 'u1', searchTermId: 'biggain', improvement1w: 500 }),
+      raw({ userId: 'u1', searchTermId: 'smalldrop', improvement1w: -5 }),
     ]);
-    expect(out.get('u1')?.map((r) => r.searchTermId)).toEqual(['bigdrop', 'biggain', 'small']);
+    expect(out.get('u1')?.map((r) => r.searchTermId)).toEqual(['biggain', 'small', 'smalldrop', 'bigdrop']);
   });
 
   it('puts null improvement (not-ranked / no-prior) last', () => {
