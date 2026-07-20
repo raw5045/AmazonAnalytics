@@ -24,6 +24,8 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   qMode: 'word',
   rankMin: null,
   rankMax: null,
+  reviewsMin: null,
+  reviewsMax: null,
   jump: null,
   jumpMetric: 'rank',
   jumpFrom: null,
@@ -111,6 +113,17 @@ function parsePositiveInt(value: string | undefined): number | null {
   return n;
 }
 
+/**
+ * Like parsePositiveInt but admits 0 — used by the avg-reviews bounds,
+ * where 0 is meaningful (reviews_max=0 = zero-review niches).
+ */
+function parseNonNegativeInt(value: string | undefined): number | null {
+  if (!value) return null;
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
 function parseSeverities(value: string | undefined): SeverityKey[] {
   if (!value) return EXPLORER_DEFAULTS.severities;
   const parts = value.split(',').filter((p) => SEVERITY_VALUES.includes(p as SeverityKey)) as SeverityKey[];
@@ -187,6 +200,9 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const rankMin = parsePositiveInt(getOne(searchParams.rank_min));
   const rankMax = parsePositiveInt(getOne(searchParams.rank_max));
 
+  const reviewsMin = parseNonNegativeInt(getOne(searchParams.reviews_min));
+  const reviewsMax = parseNonNegativeInt(getOne(searchParams.reviews_max));
+
   const severities = parseSeverities(getOne(searchParams.severity));
   const titleSlots = parseTitleSlots(getOne(searchParams.titles));
 
@@ -203,6 +219,8 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     qMode,
     rankMin,
     rankMax,
+    reviewsMin,
+    reviewsMax,
     jump,
     jumpMetric,
     jumpFrom: jump === 'custom' ? jumpFrom : null,

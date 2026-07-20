@@ -79,6 +79,8 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     qMode: f.qMode === 'broad' ? 'broad' : 'word',
     rankMin: typeof f.rankMin === 'number' ? f.rankMin : null,
     rankMax: typeof f.rankMax === 'number' ? f.rankMax : null,
+    reviewsMin: typeof f.reviewsMin === 'number' ? f.reviewsMin : null,
+    reviewsMax: typeof f.reviewsMax === 'number' ? f.reviewsMax : null,
     jump,
     jumpMetric,
     jumpFrom: typeof f.jumpFrom === 'number' ? f.jumpFrom : null,

@@ -49,6 +49,14 @@ export interface ExplorerFilters {
   qMode: 'word' | 'broad';
   rankMin: number | null;
   rankMax: number | null;
+  /**
+   * Inclusive avg-reviews bounds over the top-3 clicked ASINs
+   * (kcs.avg_reviews). When either bound is set, rows with NULL
+   * avg_reviews (unenriched top-3) are excluded — unknown ≠ low.
+   * 0 is a legal bound (max 0 = zero-review niches).
+   */
+  reviewsMin: number | null;
+  reviewsMax: number | null;
   jump: JumpKey | null;
   /** Which metric the Movement jump compares: rank columns or volume columns. */
   jumpMetric: 'rank' | 'volume';

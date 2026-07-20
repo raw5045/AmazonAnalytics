@@ -347,6 +347,8 @@ describe('buildExplorerQuery', () => {
         category: 'Electronics',
         rankMin: 1,
         rankMax: 1000,
+        reviewsMin: null,
+        reviewsMax: null,
         page: 2,
       };
       const { args, countArgs } = buildExplorerQuery(filters);

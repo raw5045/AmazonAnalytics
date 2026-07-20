@@ -20,6 +20,8 @@ describe('parseExplorerFilters', () => {
       q: 'wireless',
       rank_min: '1',
       rank_max: '1000',
+      reviews_min: '250',
+      reviews_max: '900',
       jump: '500k_to_100k',
       category: 'Electronics',
       severity: 'warning,critical',
@@ -36,6 +38,8 @@ describe('parseExplorerFilters', () => {
       qMode: 'word',
       rankMin: 1,
       rankMax: 1000,
+      reviewsMin: 250,
+      reviewsMax: 900,
       jump: '500k_to_100k',
       jumpMetric: 'rank',
       jumpFrom: null,
@@ -236,5 +240,30 @@ describe('parseExplorerFilters — customCategoryIds', () => {
   it('caps the number of custom category ids', () => {
     const many = Array.from({ length: MAX_CUSTOM_CATEGORY_IDS + 10 }, (_, i) => `id-${i}`).join(',');
     expect(parseExplorerFilters({ custom: many }).customCategoryIds).toHaveLength(MAX_CUSTOM_CATEGORY_IDS);
+  });
+});
+
+describe('parseExplorerFilters — avg-reviews range', () => {
+  it('parses reviews_min and reviews_max', () => {
+    const f = parseExplorerFilters({ reviews_min: '100', reviews_max: '500' });
+    expect(f.reviewsMin).toBe(100);
+    expect(f.reviewsMax).toBe(500);
+  });
+
+  it('accepts 0 as a bound (zero-review niches)', () => {
+    const f = parseExplorerFilters({ reviews_max: '0' });
+    expect(f.reviewsMin).toBeNull();
+    expect(f.reviewsMax).toBe(0);
+    // min=0 must parse as an active 0, not fall back to null — once the SQL
+    // predicate lands, min=0 excludes NULL avg_reviews rows while null doesn't.
+    expect(parseExplorerFilters({ reviews_min: '0' }).reviewsMin).toBe(0);
+  });
+
+  it('defaults to null and rejects garbage', () => {
+    expect(parseExplorerFilters({}).reviewsMin).toBeNull();
+    expect(parseExplorerFilters({}).reviewsMax).toBeNull();
+    const bad = parseExplorerFilters({ reviews_min: '-3', reviews_max: 'abc' });
+    expect(bad.reviewsMin).toBeNull();
+    expect(bad.reviewsMax).toBeNull();
   });
 });
