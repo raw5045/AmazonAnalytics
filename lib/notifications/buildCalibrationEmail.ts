@@ -45,6 +45,13 @@ export interface CalibrationEmailFit {
   ultraHeadBeta?: number | null;
   /** Implied rank-1 volume BEFORE damping — shown beside the damped value. */
   impliedRank1Undamped?: number;
+  /**
+   * Full piecewise fit params (the worker ships the whole orchestration
+   * result). Only `segments` is read here — on damped runs segments[0]
+   * is the ultra-head judgment segment and `beta` above records ITS β,
+   * so the fitted head β must come from segments[1].
+   */
+  fitParams?: { segments: Array<{ beta: number; scaleFactor: number }> } | null;
   /** New fit scored against the month's POE pairs (validation only). */
   poeValidation?: {
     overall: number | null;
@@ -173,7 +180,12 @@ function buildCompleted(i: CalibrationEmailInput): BuiltCalibrationEmail {
         : []),
       ...(fit
         ? [
-            ['β (rank decay)', fit.beta.toFixed(4)] as [string, string],
+            // On damped runs `beta` is the ultra-head damping β — report
+            // the fitted head β (segments[1]) distinctly; the ultra-head
+            // row below carries the damping β.
+            (fit.ultraHeadBeta != null && fit.fitParams?.segments?.[1] != null
+              ? ['Fitted head β', `${fit.fitParams.segments[1].beta.toFixed(4)} <span style="color:#999;">(anchor→1k)</span>`]
+              : ['β (rank decay)', fit.beta.toFixed(4)]) as [string, string],
             ['A (scale factor)', formatNumber(fit.scaleFactor)] as [string, string],
             ['Anchor (SQP)', fit.anchor ? `rank ${formatNumber(fit.anchor.rank)} → ${formatNumber(fit.anchor.volume)}/mo` : '—'] as [string, string],
             ['Implied rank-1 vol', formatNumber(fit.impliedRank1Volume != null ? Math.round(fit.impliedRank1Volume) : null)] as [string, string],
@@ -210,7 +222,12 @@ function buildCompleted(i: CalibrationEmailInput): BuiltCalibrationEmail {
 function fitReportText(fit: CalibrationEmailFit): string {
   return [
     `Fitted model${fit.persisted === false ? ' (DRY RUN)' : ''}:`,
-    `  β (rank decay):     ${fit.beta.toFixed(4)}`,
+    // On damped runs `beta` is the ultra-head damping β — report the
+    // fitted head β (segments[1]) distinctly; the ultra-head damping
+    // line below carries the damping β.
+    fit.ultraHeadBeta != null && fit.fitParams?.segments?.[1] != null
+      ? `  Fitted head β:      ${fit.fitParams.segments[1].beta.toFixed(4)} (anchor→1k)`
+      : `  β (rank decay):     ${fit.beta.toFixed(4)}`,
     `  A (scale factor):   ${formatNumber(fit.scaleFactor)}`,
     `  Anchor (SQP):       ${fit.anchor ? `rank ${formatNumber(fit.anchor.rank)} → ${formatNumber(fit.anchor.volume)}/mo` : '—'}`,
     `  Implied rank-1 vol: ${formatNumber(fit.impliedRank1Volume != null ? Math.round(fit.impliedRank1Volume) : null)}`,

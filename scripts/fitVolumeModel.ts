@@ -108,7 +108,14 @@ async function main() {
     console.log(`  Outliers trimmed:       ${r.nDroppedAsOutliers.toLocaleString()}`);
 
     console.log(`\nFit (${r.durationMs}ms):`);
-    console.log(`  Best β (head segment):  ${r.beta.toFixed(4)}`);
+    // On damped runs segments[0] is the prepended ultra-head judgment
+    // segment (r.beta = its constant β) — print the grid-searched head
+    // β distinctly; the ultra-head line below carries the damping β.
+    console.log(
+      r.ultraHeadBeta !== null
+        ? `  Fitted head β (anchor→1k):  ${r.fitParams.segments[1].beta.toFixed(4)}`
+        : `  Best β (head segment):  ${r.beta.toFixed(4)}`,
+    );
     console.log(
       `  Scale factor (A):       ${r.scaleFactor.toLocaleString(undefined, { maximumFractionDigits: 2 })}`,
     );
