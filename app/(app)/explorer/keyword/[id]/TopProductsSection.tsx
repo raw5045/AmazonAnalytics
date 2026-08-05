@@ -101,7 +101,7 @@ function TopProductsTable({
   return (
     <div className="card-app overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="bg-gray-50 text-left text-xs text-gray-600">
+        <thead className="bg-gray-50 text-left text-gray-600">
           <tr>
             <th className="p-2 w-8">#</th>
             <th className="p-2">Product</th>

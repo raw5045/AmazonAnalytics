@@ -89,7 +89,7 @@ export function ResultsTable({
   return (
     <div className="card-app overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="bg-[#F8FAFD] text-left text-xs text-slate-500">
+        <thead className="bg-[#F8FAFD] text-left text-slate-500">
           <tr>
             {showWatchColumn && (
               <th className="p-2 w-8 text-center" title="Click to add/remove from watchlist">
