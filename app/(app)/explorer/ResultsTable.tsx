@@ -118,7 +118,7 @@ export function ResultsTable({
             )}
             <th
               className="p-2 text-right"
-              title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Typical accuracy ±30% (current fit's holdout MAPE). Note: Fresh_Produce keywords are NOT calibrated — those estimates can be wildly off. (Sort by Current rank for the equivalent volume order.)"
+              title="Estimated monthly Amazon search volume, derived from the rank → volume calibration fit. Typical accuracy ±20% (current fits' holdout MAPE 17–19%). Note: Fresh_Produce keywords are NOT calibrated — those estimates can be wildly off. (Sort by Current rank for the equivalent volume order.)"
             >
               Est. monthly vol.
             </th>
@@ -265,22 +265,13 @@ function DeltaCell({ value }: { value: number }) {
   return <span className="text-red-700">{value.toLocaleString()}</span>;
 }
 
-/** Compact magnitude shared by formatVolume + DeltaVolCell. */
-function formatVolumeCompact(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
-}
-
-/** Signed compact volume delta; green = gained searches, red = lost. */
+/** Signed exact volume delta; green = gained searches, red = lost. */
 function DeltaVolCell({ value }: { value: number }) {
   if (value === 0) return <span className="text-gray-500">0</span>;
-  const compact = formatVolumeCompact(Math.abs(value));
   if (value > 0) {
-    return <span className="text-green-700" title={`+${value.toLocaleString()} searches / month (est.)`}>+{compact}</span>;
+    return <span className="text-green-700" title={`+${value.toLocaleString()} searches / month (est.)`}>+{value.toLocaleString()}</span>;
   }
-  return <span className="text-red-700" title={`${value.toLocaleString()} searches / month (est.)`}>-{compact}</span>;
+  return <span className="text-red-700" title={`${value.toLocaleString()} searches / month (est.)`}>{value.toLocaleString()}</span>;
 }
 
 /**
@@ -325,15 +316,16 @@ function TitleIcon({ present }: { present: boolean | null }) {
 }
 
 /**
- * Format an estimated monthly volume for the table cell. Compact (1.2M /
- * 423K / 1,234) so the column stays narrow without losing magnitude.
- * Null renders as a gray em-dash.
+ * Format an estimated monthly volume for the table cell. Exact count with
+ * thousands separators (owner decision 2026-07-21: specific numbers read
+ * as definitive; compact "42K" read as made-up). Null renders as a gray
+ * em-dash.
  */
 function formatVolume(n: number | null): React.ReactNode {
   if (n === null || !Number.isFinite(n)) {
     return <span className="text-gray-400">—</span>;
   }
-  return formatVolumeCompact(n);
+  return n.toLocaleString();
 }
 
 function formatAvgPrice(cents: number | null): React.ReactNode {

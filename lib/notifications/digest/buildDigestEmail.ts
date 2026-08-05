@@ -158,12 +158,9 @@ function fmtNum(n: number | null): string {
   return n.toLocaleString('en-US');
 }
 
-/** Compact volume: 1.2M / 423K / 1,234 — matches the explorer table. */
+/** Exact volume with thousands separators — matches the explorer table. */
 function fmtVol(n: number | null): string {
   if (n === null || !Number.isFinite(n)) return '—';
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${Math.round(n / 1_000)}K`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString('en-US');
 }
 

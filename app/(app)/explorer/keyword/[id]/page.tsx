@@ -118,7 +118,7 @@ export default async function KeywordDetailPage({
                     title={
                       current.estimatedMonthlyVolumeIsExtrapolated
                         ? `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — estimate uses extrapolated parameters (this week predates the earliest calibration fit)`
-                        : `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — rough estimate from rank → volume calibration fit (typical accuracy ±30%)`
+                        : `${current.estimatedMonthlyVolumeCurrent.toLocaleString()} — rough estimate from rank → volume calibration fit (typical accuracy ±20%)`
                     }
                   >
                     Est. monthly searches
@@ -188,13 +188,11 @@ export default async function KeywordDetailPage({
 }
 
 /**
- * Header-line volume format. Slightly more legible than the table-cell
- * compact format — uses commas for full numbers, M/K only when really
- * big. The ~ prefix in the header text signals "this is an estimate."
+ * Header-line volume format: exact count with thousands separators
+ * (matches the explorer table). The ~ prefix in the header text signals
+ * "this is an estimate."
  */
 function formatHeadlineVolume(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M / mo`;
-  if (n >= 10_000) return `${Math.round(n / 1_000)}K / mo`;
   return `${n.toLocaleString()} / mo`;
 }
 

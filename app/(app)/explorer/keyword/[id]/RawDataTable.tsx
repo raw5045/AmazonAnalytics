@@ -53,7 +53,7 @@ export function RawDataTable({ rows }: { rows: KeywordDetailHistoryRow[] }) {
               <th className="p-2 text-right">Rank</th>
               <th
                 className="p-2 text-right"
-                title="Estimated monthly Amazon search volume for this specific week, computed from the rank → volume calibration fit that covers this week's month. Typical accuracy ±30% on current fit. Note: Fresh_Produce keywords are not calibrated (their estimates can be wildly off)."
+                title="Estimated monthly Amazon search volume for this specific week, computed from the rank → volume calibration fit that covers this week's month. Typical accuracy ±20% on current fits (holdout MAPE 17–19%). Note: Fresh_Produce keywords are not calibrated (their estimates can be wildly off)."
               >
                 Est. monthly vol.
               </th>
@@ -169,13 +169,10 @@ function formatPct(s: string | null): React.ReactNode {
   return `${n.toFixed(1)}%`;
 }
 
-/** Compact display: 1.2M / 423K / 1,234. Null → gray em-dash. */
+/** Exact count with thousands separators (matches the explorer table). Null → gray em-dash. */
 function formatVolume(n: number | null): React.ReactNode {
   if (n === null || !Number.isFinite(n)) {
     return <span className="text-gray-400">—</span>;
   }
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${(n / 1_000).toFixed(0)}K`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();
 }
