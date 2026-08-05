@@ -63,7 +63,7 @@ export function KeywordVariantsBox({
         advertising targets and backend keyword expansion.
       </p>
       <table className="w-full text-sm">
-        <thead className="text-xs uppercase tracking-wide text-gray-600 text-left border-b">
+        <thead className="text-xs text-gray-600 text-left border-b">
           <tr>
             <th className="pb-2 font-medium">Variant</th>
             <th className="pb-2 font-medium text-right">Rank (SFR)</th>

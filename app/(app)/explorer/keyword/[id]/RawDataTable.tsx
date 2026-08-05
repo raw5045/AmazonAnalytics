@@ -47,7 +47,7 @@ export function RawDataTable({ rows }: { rows: KeywordDetailHistoryRow[] }) {
     <div className="card-app overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-600">
+          <thead className="bg-gray-50 text-left text-xs text-gray-600">
             <tr>
               <th className="p-2">Week</th>
               <th className="p-2 text-right">Rank</th>
