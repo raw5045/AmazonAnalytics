@@ -299,11 +299,17 @@ function pushKcsPredicates(
       if (found) { from = found.preset.from; to = found.preset.to; }
     }
     if (from !== null && to !== null) {
+      // Never-ranked-then counts as beyond any "was" threshold (owner decision
+      // 2026-07-21): a keyword that appears out of nowhere into the top N is
+      // exactly the movement these filters exist to find. Both metrics OR on
+      // the prior RANK being NULL — for the volume metric deliberately so:
+      // vol NULL with a prior rank present means a missing fit (unknown, not
+      // zero) and stays excluded, matching the Δ-vol eligibility semantics.
       if (filters.jumpMetric === 'volume') {
         const volCol = WINDOW_TO_VOLUME_COLUMN[filters.window];
-        where.push(`kcs.${volCol} < ${next(from)} AND kcs.estimated_monthly_volume_current > ${next(to)}`);
+        where.push(`(kcs.${volCol} < ${next(from)} OR kcs.${priorRankCol} IS NULL) AND kcs.estimated_monthly_volume_current > ${next(to)}`);
       } else {
-        where.push(`kcs.${priorRankCol} > ${next(from)} AND kcs.current_rank < ${next(to)}`);
+        where.push(`(kcs.${priorRankCol} > ${next(from)} OR kcs.${priorRankCol} IS NULL) AND kcs.current_rank < ${next(to)}`);
       }
     }
   }

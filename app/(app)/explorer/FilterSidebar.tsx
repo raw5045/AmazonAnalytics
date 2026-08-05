@@ -396,6 +396,9 @@ export function FilterSidebar({
             ))}
             <option value="custom">Custom…</option>
           </select>
+          <p className="text-xs text-gray-500 mt-1">
+            Includes keywords that weren&apos;t ranked at all back then.
+          </p>
         </FieldGroup>
 
         {/* Custom inputs — shown only when jump === 'custom' */}

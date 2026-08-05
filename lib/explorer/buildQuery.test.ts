@@ -467,6 +467,26 @@ describe('buildExplorerQuery', () => {
     });
   });
 
+  describe('Movement jump — newcomer inclusion (never-ranked counts as beyond any threshold)', () => {
+    it('rank jump ORs the prior-rank NULL case into rows and count SQL', () => {
+      const { sql, countSql } = buildExplorerQuery({ ...baseFilters, window: '26w', jump: '100k_to_50k', jumpMetric: 'rank' });
+      expect(norm(sql)).toContain('(kcs.rank_26w_ago > $');
+      expect(norm(sql)).toContain('OR kcs.rank_26w_ago IS NULL) AND kcs.current_rank < $');
+      expect(norm(countSql)).toContain('OR kcs.rank_26w_ago IS NULL) AND kcs.current_rank < $');
+    });
+
+    it('volume jump ORs the never-ranked case via the rank column (vol NULL from a missing fit stays excluded)', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, window: '13w', jump: 'v15k_to_30k', jumpMetric: 'volume' });
+      expect(norm(sql)).toContain('(kcs.estimated_monthly_volume_13w_ago < $');
+      expect(norm(sql)).toContain('OR kcs.rank_13w_ago IS NULL) AND kcs.estimated_monthly_volume_current > $');
+    });
+
+    it('custom rank jump gets the same newcomer inclusion', () => {
+      const { sql } = buildExplorerQuery({ ...baseFilters, window: '4w', jump: 'custom', jumpMetric: 'rank', jumpFrom: 200_000, jumpTo: 20_000 });
+      expect(norm(sql)).toContain('OR kcs.rank_4w_ago IS NULL) AND kcs.current_rank < $');
+    });
+  });
+
   describe('combined filters', () => {
     it('handles all filters together', () => {
       const { sql, args, countSql, countArgs } = buildExplorerQuery({
