@@ -30,6 +30,8 @@ export async function TopProductsSection({
       slot: s.slot,
       asin: s.asin,
       fallbackTitle: s.title,
+      clickShare: s.clickShare,
+      conversionShare: s.conversionShare,
     }));
     enrichedByAsin = products.enrichedProductsByAsin;
   } catch (e) {
@@ -82,6 +84,9 @@ interface TopProductSlot {
   slot: 1 | 2 | 3;
   asin: string | null;
   fallbackTitle: string | null;
+  /** Amazon-reported shares for the current week (numeric strings, e.g. "32.50"). */
+  clickShare: string | null;
+  conversionShare: string | null;
 }
 
 /**
@@ -105,6 +110,8 @@ function TopProductsTable({
           <tr>
             <th className="p-2 w-8">#</th>
             <th className="p-2">Product</th>
+            <th className="p-2 text-right" title="Share of all clicks for this keyword that went to this product (Amazon-reported, current week)">Click %</th>
+            <th className="p-2 text-right" title="Share of all conversions for this keyword that went to this product (Amazon-reported, current week)">Conv %</th>
             <th className="p-2 text-right">Price</th>
             <th className="p-2 text-right">Reviews</th>
             <th className="p-2">Leaf category</th>
@@ -132,6 +139,8 @@ function TopProductsTable({
                     </a>
                   </div>
                 </td>
+                <td className="p-2 text-right tabular-nums">{formatShare(s.clickShare)}</td>
+                <td className="p-2 text-right tabular-nums">{formatShare(s.conversionShare)}</td>
                 <td className="p-2 text-right tabular-nums">
                   {formatPrice(enriched?.currentPriceCents ?? null)}
                 </td>
@@ -148,6 +157,14 @@ function TopProductsTable({
       </table>
     </div>
   );
+}
+
+/** "32.50" → "32.5%" — same one-decimal style as the weekly history table. */
+function formatShare(pct: string | null): React.ReactNode {
+  if (pct === null) return <span className="text-gray-400">—</span>;
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return <span className="text-gray-400">—</span>;
+  return `${n.toFixed(1)}%`;
 }
 
 function formatPrice(cents: number | null): React.ReactNode {

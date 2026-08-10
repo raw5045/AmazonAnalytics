@@ -162,6 +162,9 @@ export interface CurrentWeekProductSlot {
   slot: 1 | 2 | 3;
   asin: string | null;
   title: string | null;
+  /** Amazon-reported shares for this slot (numeric(5,2) → string, e.g. "32.50"). */
+  clickShare: string | null;
+  conversionShare: string | null;
 }
 
 /**
@@ -777,10 +780,16 @@ export async function fetchKeywordProducts(
     SELECT
       top_clicked_product_1_asin,
       top_clicked_product_1_title,
+      top_clicked_product_1_click_share,
+      top_clicked_product_1_conversion_share,
       top_clicked_product_2_asin,
       top_clicked_product_2_title,
+      top_clicked_product_2_click_share,
+      top_clicked_product_2_conversion_share,
       top_clicked_product_3_asin,
-      top_clicked_product_3_title
+      top_clicked_product_3_title,
+      top_clicked_product_3_click_share,
+      top_clicked_product_3_conversion_share
     FROM keyword_weekly_metrics
     WHERE search_term_id = ${searchTermId}
       AND week_end_date = ${currentWeekEndDate}
@@ -791,9 +800,9 @@ export async function fetchKeywordProducts(
   const kwmRow = (currentWeekKwmAny as unknown as Array<Record<string, unknown>>)[0];
   if (kwmRow) {
     currentWeekProductSlots = [
-      { slot: 1, asin: (kwmRow.top_clicked_product_1_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_1_title as string | null) ?? null },
-      { slot: 2, asin: (kwmRow.top_clicked_product_2_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_2_title as string | null) ?? null },
-      { slot: 3, asin: (kwmRow.top_clicked_product_3_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_3_title as string | null) ?? null },
+      { slot: 1, asin: (kwmRow.top_clicked_product_1_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_1_title as string | null) ?? null, clickShare: (kwmRow.top_clicked_product_1_click_share as string | null) ?? null, conversionShare: (kwmRow.top_clicked_product_1_conversion_share as string | null) ?? null },
+      { slot: 2, asin: (kwmRow.top_clicked_product_2_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_2_title as string | null) ?? null, clickShare: (kwmRow.top_clicked_product_2_click_share as string | null) ?? null, conversionShare: (kwmRow.top_clicked_product_2_conversion_share as string | null) ?? null },
+      { slot: 3, asin: (kwmRow.top_clicked_product_3_asin as string | null) ?? null, title: (kwmRow.top_clicked_product_3_title as string | null) ?? null, clickShare: (kwmRow.top_clicked_product_3_click_share as string | null) ?? null, conversionShare: (kwmRow.top_clicked_product_3_conversion_share as string | null) ?? null },
     ];
   }
 
