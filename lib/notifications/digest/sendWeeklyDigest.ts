@@ -98,7 +98,11 @@ export async function sendWeeklyDigest(opts: {
 
   // 5. Fan out in chunks.
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM ?? 'onboarding@resend.dev';
+  // Fallback MUST be the verified production domain, never resend.dev:
+  // Resend's sandbox address delivers only to the account owner's inbox
+  // and silently fails everyone else (how beta users missed every digest
+  // until 2026-08-12 — Vercel lacked RESEND_FROM while Railway had it).
+  const from = process.env.RESEND_FROM ?? 'KeywordQuarry <notifications@keywordquarry.com>';
   const appUrl = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
 
   let sent = 0;

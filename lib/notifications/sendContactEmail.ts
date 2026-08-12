@@ -12,7 +12,7 @@ import type { ContactInput } from '@/lib/contact/validate';
 
 export async function sendContactEmail(input: ContactInput): Promise<{ sent: boolean; reason?: string }> {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM ?? 'onboarding@resend.dev';
+  const from = process.env.RESEND_FROM ?? 'KeywordQuarry <notifications@keywordquarry.com>';
   if (!apiKey) {
     console.warn('[sendContactEmail] RESEND_API_KEY not set — cannot deliver contact form.');
     return { sent: false, reason: 'email not configured' };

@@ -21,7 +21,7 @@ export interface SendMonthlySfrEmailInput {
 
 export async function sendMonthlySfrEmail(input: SendMonthlySfrEmailInput): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM ?? 'onboarding@resend.dev';
+  const from = process.env.RESEND_FROM ?? 'KeywordQuarry <notifications@keywordquarry.com>';
   const appUrl = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
 
   if (!apiKey) {

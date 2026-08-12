@@ -66,7 +66,7 @@ export async function sendAbuseDigest(opts?: {
 
   // 4. Send (fail-soft without an API key — local dev).
   const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM ?? 'onboarding@resend.dev';
+  const from = process.env.RESEND_FROM ?? 'KeywordQuarry <notifications@keywordquarry.com>';
   if (!apiKey) {
     console.warn(`[abuse-digest] RESEND_API_KEY not set — skipping send for ${day}.`);
     return { ...base, skipped: 'not_configured', recipients: recipients.length, flags: flags.length, activeUsers: stats.activeUsers.length };
