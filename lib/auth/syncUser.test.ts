@@ -32,7 +32,8 @@ describe('syncUserFromClerk', () => {
       name: 'Test User',
     });
 
-    expect(result.clerkUserId).toBe('user_123');
+    expect(result.user.clerkUserId).toBe('user_123');
+    expect(result.created).toBe(true);
     expect(mockDb.insert).toHaveBeenCalled();
   });
 
@@ -59,7 +60,8 @@ describe('syncUserFromClerk', () => {
       name: 'Updated',
     });
 
-    expect(result.email).toBe('new@example.com');
+    expect(result.user.email).toBe('new@example.com');
+    expect(result.created).toBe(false);
     expect(mockDb.update).toHaveBeenCalled();
   });
 });

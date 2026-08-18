@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockSyncUser } = vi.hoisted(() => ({
-  mockSyncUser: vi.fn().mockResolvedValue({ id: 'uuid', clerkUserId: 'user_123' }),
+const { mockSyncUser, mockSendWelcome } = vi.hoisted(() => ({
+  mockSyncUser: vi.fn().mockResolvedValue({
+    user: { id: 'uuid', clerkUserId: 'user_123', email: 'test@x.com', name: 'Test User' },
+    created: true,
+  }),
+  mockSendWelcome: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock('svix', () => ({
@@ -16,6 +20,10 @@ vi.mock('svix', () => ({
 
 vi.mock('@/lib/auth/syncUser', () => ({
   syncUserFromClerk: mockSyncUser,
+}));
+
+vi.mock('@/lib/notifications/sendWelcomeEmail', () => ({
+  sendWelcomeEmail: mockSendWelcome,
 }));
 
 vi.mock('@/lib/env', () => ({
@@ -73,6 +81,72 @@ describe('POST /api/webhooks/clerk', () => {
       email: 'test@x.com',
       name: 'Test User',
     });
+  });
+
+  it('sends the welcome email exactly on first creation', async () => {
+    const req = makeRequest({
+      type: 'user.created',
+      data: {
+        id: 'user_123',
+        email_addresses: [{ id: 'a', email_address: 'test@x.com' }],
+        primary_email_address_id: 'a',
+        first_name: 'Test',
+        last_name: 'User',
+      },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(mockSendWelcome).toHaveBeenCalledWith({ to: 'test@x.com', name: 'Test User' });
+  });
+
+  it('does not send the welcome email on a webhook retry (row already existed)', async () => {
+    mockSyncUser.mockResolvedValueOnce({
+      user: { id: 'uuid', clerkUserId: 'user_123', email: 'test@x.com', name: 'Test User' },
+      created: false,
+    });
+    const req = makeRequest({
+      type: 'user.created',
+      data: {
+        id: 'user_123',
+        email_addresses: [{ id: 'a', email_address: 'test@x.com' }],
+        primary_email_address_id: 'a',
+      },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(mockSendWelcome).not.toHaveBeenCalled();
+  });
+
+  it('does not send the welcome email on user.updated', async () => {
+    const req = makeRequest({
+      type: 'user.updated',
+      data: {
+        id: 'user_123',
+        email_addresses: [{ id: 'a', email_address: 'test@x.com' }],
+        primary_email_address_id: 'a',
+      },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(mockSendWelcome).not.toHaveBeenCalled();
+  });
+
+  it('skips the welcome email for undeliverable test-domain addresses', async () => {
+    mockSyncUser.mockResolvedValueOnce({
+      user: { id: 'uuid', clerkUserId: 'user_9', email: 'bot@example.com', name: null },
+      created: true,
+    });
+    const req = makeRequest({
+      type: 'user.created',
+      data: {
+        id: 'user_9',
+        email_addresses: [{ id: 'a', email_address: 'bot@example.com' }],
+        primary_email_address_id: 'a',
+      },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(mockSendWelcome).not.toHaveBeenCalled();
   });
 
   it('rejects requests missing svix headers', async () => {

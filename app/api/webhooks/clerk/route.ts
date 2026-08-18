@@ -1,6 +1,8 @@
 import { Webhook } from 'svix';
 import { env } from '@/lib/env';
 import { syncUserFromClerk } from '@/lib/auth/syncUser';
+import { sendWelcomeEmail } from '@/lib/notifications/sendWelcomeEmail';
+import { isUndeliverableEmail } from '@/lib/notifications/digest/recipients';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -75,11 +77,20 @@ export async function POST(req: Request): Promise<Response> {
         .set({ lastLoginAt: new Date() })
         .where(eq(users.clerkUserId, event.data.user_id));
     } else if (event.type === 'user.created' || event.type === 'user.updated') {
-      await syncUserFromClerk({
+      const { user, created } = await syncUserFromClerk({
         clerkUserId: event.data.id,
         email: extractEmail(event.data),
         name: extractName(event.data),
       });
+      // One-time welcome email, exactly once: only on the genuine first
+      // insert (a webhook retry or user.updated takes the update path and
+      // skips it). Awaited — Vercel may freeze the function after the
+      // response, killing floating promises — but sendWelcomeEmail is
+      // fail-soft by contract, so an email failure can't 500 this webhook
+      // into a Svix retry loop.
+      if (event.type === 'user.created' && created && user.email && !isUndeliverableEmail(user.email)) {
+        await sendWelcomeEmail({ to: user.email, name: user.name ?? null });
+      }
     } else if (event.type === 'user.deleted') {
       // FK cleanup on user delete (verified Batch 4): saved_views,
       // watchlist_items, weekly_digest_sends, custom_categories CASCADE and

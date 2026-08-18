@@ -8,7 +8,18 @@ export interface SyncUserInput {
   name?: string | null;
 }
 
-export async function syncUserFromClerk(input: SyncUserInput): Promise<User> {
+export interface SyncUserResult {
+  user: User;
+  /**
+   * True only when this call inserted the row — i.e. the user's genuine
+   * first creation. Lets the webhook fire exactly-once side effects
+   * (welcome email) that must not repeat on user.updated events or
+   * Clerk webhook retries.
+   */
+  created: boolean;
+}
+
+export async function syncUserFromClerk(input: SyncUserInput): Promise<SyncUserResult> {
   const existing = await db.query.users.findFirst({
     where: eq(users.clerkUserId, input.clerkUserId),
   });
@@ -22,10 +33,10 @@ export async function syncUserFromClerk(input: SyncUserInput): Promise<User> {
       })
       .where(eq(users.clerkUserId, input.clerkUserId))
       .returning();
-    return updated;
+    return { user: updated, created: false };
   }
 
-  const [created] = await db
+  const [inserted] = await db
     .insert(users)
     .values({
       clerkUserId: input.clerkUserId,
@@ -33,5 +44,5 @@ export async function syncUserFromClerk(input: SyncUserInput): Promise<User> {
       name: input.name ?? null,
     })
     .returning();
-  return created;
+  return { user: inserted, created: true };
 }
