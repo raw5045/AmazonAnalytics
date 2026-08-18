@@ -4,8 +4,28 @@ import Link from 'next/link';
 export const metadata: Metadata = {
   title: 'How it works',
   description:
-    'How KeywordQuarry works: SFR data, the top-3-clicked competition lens, estimated volume, fake-volume flags, custom categories, and the watchlist.',
+    'Video tutorials and reference guide: SFR data, the top-3-clicked competition lens, estimated volume, fake-volume flags, custom categories, and the watchlist.',
 };
+
+interface HelpVideo {
+  id: string;
+  title: string;
+  duration: string;
+}
+
+const STEP_1_VIDEOS: HelpVideo[] = [
+  { id: '7T6tAuwzU94', title: 'How the Keyword Explorer works', duration: '1:48' },
+  { id: 'U4Mczif5gBY', title: 'How to use the keyword filter tool', duration: '2:36' },
+  { id: 'FntaTH1RdzE', title: 'Individual keyword pages and the watchlist', duration: '4:23' },
+];
+const STEP_2_VIDEOS: HelpVideo[] = [
+  { id: 'vwMGln3f3XU', title: 'How to use the Category Builder', duration: '3:26' },
+];
+const STEP_3_VIDEOS: HelpVideo[] = [
+  { id: 'cQukMIfK4TI', title: 'Filtering for the least competitive keywords on Amazon', duration: '6:24' },
+  { id: 'c34PfFexVx0', title: 'Filtering for high-demand keywords with a set number of reviews', duration: '8:19' },
+  { id: 'JxNAMz-knvg', title: 'Filtering for keywords exploding in popularity', duration: '7:04' },
+];
 
 export default function HelpPage() {
   return (
@@ -14,9 +34,31 @@ export default function HelpPage() {
         How KeywordQuarry works
       </h1>
       <p className="mt-3 text-gray-600">
-        A quick tour of the data and the three tools — and answers to the most
-        common questions.
+        Seven short videos take you from first login to finding launch-ready
+        keywords — about half an hour end to end.
       </p>
+
+      <VideoStep
+        step="Step 1 — Understand the data and learn your way around"
+        intro="These three videos cover what data is inside KeywordQuarry and how to navigate it — what Search Frequency Rank is, what every column and filter means, and how individual keyword pages and the watchlist work."
+        videos={STEP_1_VIDEOS}
+      />
+      <VideoStep
+        step="Step 2 — Focus on your market"
+        intro="Once you know your way around, narrow every search to your niche: build a custom category from exact leaf categories, or pick a broad department."
+        videos={STEP_2_VIDEOS}
+      />
+      <VideoStep
+        step="Step 3 — Now the fun part: dig for winners"
+        intro="Three proven filtering recipes for finding amazing keywords on Amazon."
+        videos={STEP_3_VIDEOS}
+      />
+
+      <div className="mt-14 border-t border-gray-200 pt-10">
+        <h2 className="text-2xl font-semibold tracking-tight text-gray-900">
+          Quick reference
+        </h2>
+      </div>
 
       <Section title="What is SFR (Search Frequency Rank)?">
         <p>
@@ -59,7 +101,7 @@ export default function HelpPage() {
           SFR is a rank, not a count. KeywordQuarry calibrates rank against
           real search-volume data to estimate monthly searches for every
           keyword, so you can think in units and revenue instead of abstract
-          ranks. Treat estimates as directional (±~30%).
+          ranks. Treat estimates as directional (±~20%).
         </p>
       </Section>
 
@@ -124,6 +166,42 @@ export default function HelpPage() {
         </Link>
       </div>
     </div>
+  );
+}
+
+function VideoStep({
+  step,
+  intro,
+  videos,
+}: {
+  step: string;
+  intro: string;
+  videos: HelpVideo[];
+}) {
+  return (
+    <section className="mt-10">
+      <h2 className="text-xl font-semibold text-gray-900">{step}</h2>
+      <p className="mt-3 text-[15px] leading-relaxed text-gray-600">{intro}</p>
+      <div className="mt-5 space-y-6">
+        {videos.map((v) => (
+          <figure key={v.id} className="rounded-2xl border border-gray-200 bg-gray-50 p-4 shadow-sm sm:p-5">
+            <figcaption className="mb-3 text-lg font-semibold text-gray-900">
+              {v.title} <span className="text-sm font-normal text-gray-500">· {v.duration}</span>
+            </figcaption>
+            <div className="aspect-video overflow-hidden rounded-lg">
+              <iframe
+                className="h-full w-full"
+                src={`https://www.youtube-nocookie.com/embed/${v.id}`}
+                title={v.title}
+                loading="lazy"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                allowFullScreen
+              />
+            </div>
+          </figure>
+        ))}
+      </div>
+    </section>
   );
 }
 
