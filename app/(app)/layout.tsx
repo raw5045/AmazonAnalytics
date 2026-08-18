@@ -5,6 +5,7 @@ import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
 import { watchlistCountForUser } from '@/lib/watchlist/loadServer';
 import { TabNav } from './TabNav';
+import { TutorialsBanner } from './_components/TutorialsBanner';
 import { BrandMark } from '@/app/BrandMark';
 
 /**
@@ -50,6 +51,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <UserButton appearance={{ elements: { avatarBox: 'h-7 w-7' } }} />
         </div>
       </header>
+      <TutorialsBanner />
       <main className="flex-1">{children}</main>
     </div>
   );
