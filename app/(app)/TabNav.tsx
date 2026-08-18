@@ -78,6 +78,11 @@ export function TabNav({ watchlistCountPromise }: { watchlistCountPromise: Promi
       <Link href="/category-builder" className={tabClass(isCategoryBuilder)}>
         Category Builder
       </Link>
+      {/* Lives in the marketing layout (/help) — never matches an app
+          pathname, so it never shows the active underline. Intentional. */}
+      <Link href="/help" className={tabClass(false)}>
+        Tutorials
+      </Link>
     </nav>
   );
 }
