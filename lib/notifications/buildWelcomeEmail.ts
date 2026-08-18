@@ -24,15 +24,15 @@ export function buildWelcomeEmail(i: WelcomeInput): BuiltEmail {
   const subject = 'Welcome to KeywordQuarry — start here';
 
   const text = [
+    'Welcome to KeywordQuarry',
+    '',
     greeting,
     '',
-    'Welcome to KeywordQuarry! You now have millions of Amazon keywords at your fingertips, updated every week.',
-    '',
-    'The fastest way in: seven short tutorials, about 30 minutes end to end.',
+    'You now have millions of Amazon keywords at your fingertips, updated every week. We highly recommend you watch our seven short tutorials which will walk you through the website, along with some of our favorite ways to filter for keywords.',
     '',
     '1. Understand the data and learn your way around (3 videos)',
-    '2. Focus on your market with categories (1 video)',
-    '3. Now the fun part — dig for winners with three filtering recipes (3 videos)',
+    '2. Focus on your market with our category builder (1 video)',
+    '3. Now the fun part — dig for winners with three of our favorite ways to filter (3 videos)',
     '',
     `Watch the tutorials: ${helpUrl}`,
     '',
@@ -48,12 +48,14 @@ export function buildWelcomeEmail(i: WelcomeInput): BuiltEmail {
   <p style="margin:0 0 16px 0;color:#333;font-size:14px;">${escapeHtml(greeting)}</p>
   <p style="margin:0 0 16px 0;color:#333;font-size:14px;">
     You now have millions of Amazon keywords at your fingertips, updated every
-    week. The fastest way in: seven short tutorials, about 30 minutes end to end.
+    week. We highly recommend you watch our seven short tutorials which will
+    walk you through the website, along with some of our favorite ways to
+    filter for keywords.
   </p>
   <ol style="margin:0 0 20px 0;padding-left:20px;color:#333;font-size:14px;line-height:1.7;">
     <li><strong>Understand the data</strong> and learn your way around (3 videos)</li>
-    <li><strong>Focus on your market</strong> with categories (1 video)</li>
-    <li>Now the fun part — <strong>dig for winners</strong> with three filtering recipes (3 videos)</li>
+    <li><strong>Focus on your market</strong> with our category builder (1 video)</li>
+    <li>Now the fun part — <strong>dig for winners</strong> with three of our favorite ways to filter (3 videos)</li>
   </ol>
   <a href="${helpUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:10px 16px;border-radius:6px;font-size:14px;">Watch the tutorials →</a>
   <p style="margin:20px 0 0 0;color:#333;font-size:14px;">
