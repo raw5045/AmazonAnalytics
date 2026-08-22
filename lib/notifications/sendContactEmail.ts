@@ -1,14 +1,19 @@
 /**
- * Email a contact-form submission to all admin users via Resend.
- * Mirrors sendImportEmail's pattern: admin recipients from the DB, fail-soft
- * logging — but RETURNS success/failure so the API route can tell the
- * submitter whether their message actually went through.
+ * Email a contact-form submission to the support inbox via Resend.
+ * Fail-soft logging — but RETURNS success/failure so the API route can tell
+ * the submitter whether their message actually went through.
+ *
+ * Delivers to support@keywordquarry.com (Cloudflare Email Routing forwards
+ * to the owner's inbox) rather than admin users' personal addresses, so
+ * Gmail's "reply from the address the message was sent to" setting makes
+ * every reply go out as support@ — the owner's personal identity never
+ * reaches a user. If more admins need copies later, add forwarding rules
+ * in Cloudflare rather than resurrecting the DB admin lookup here.
  */
 import { Resend } from 'resend';
-import { db } from '@/db/client';
-import { users } from '@/db/schema';
-import { and, eq, isNotNull } from 'drizzle-orm';
 import type { ContactInput } from '@/lib/contact/validate';
+
+const SUPPORT_INBOX = 'support@keywordquarry.com';
 
 export async function sendContactEmail(input: ContactInput): Promise<{ sent: boolean; reason?: string }> {
   const apiKey = process.env.RESEND_API_KEY;
@@ -18,18 +23,7 @@ export async function sendContactEmail(input: ContactInput): Promise<{ sent: boo
     return { sent: false, reason: 'email not configured' };
   }
 
-  let recipients: string[] = [];
-  try {
-    const adminRows = await db
-      .select({ email: users.email })
-      .from(users)
-      .where(and(eq(users.role, 'admin'), isNotNull(users.email)));
-    recipients = adminRows.map((r) => r.email).filter((e): e is string => !!e);
-  } catch (e) {
-    console.error('[sendContactEmail] admin lookup failed:', e);
-    return { sent: false, reason: 'lookup failed' };
-  }
-  if (recipients.length === 0) return { sent: false, reason: 'no admin recipients' };
+  const recipients = [SUPPORT_INBOX];
 
   const subject = `📨 Contact form: ${input.name}`;
   const text = `From: ${input.name} <${input.email}>\n\n${input.message}`;
