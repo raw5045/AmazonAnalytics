@@ -47,7 +47,8 @@ export default function PricingPage() {
 
       <p className="mx-auto mt-8 max-w-md text-sm text-gray-500">
         Paid plans will arrive after beta. Beta users will always get clear
-        notice before anything changes.
+        notice before anything changes, and certain users may be
+        grandfathered in for free use after beta ends.
       </p>
     </div>
   );
