@@ -58,6 +58,9 @@ interface PendingFilters {
   /** Numeric strings; empty = unset. Inclusive avg-reviews range (top-3 ASINs). */
   reviewsMin: string;
   reviewsMax: string;
+  /** Numeric strings; empty = unset. Inclusive word-count range (floors at 1). */
+  wordsMin: string;
+  wordsMax: string;
   jump: JumpKey | '';
   jumpMetric: JumpMetric;
   /** Numeric string; only used when jump === 'custom'. */
@@ -85,6 +88,8 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
     rankWorst: f.rankMax?.toString() ?? '',
     reviewsMin: f.reviewsMin?.toString() ?? '',
     reviewsMax: f.reviewsMax?.toString() ?? '',
+    wordsMin: f.wordsMin?.toString() ?? '',
+    wordsMax: f.wordsMax?.toString() ?? '',
     jump: f.jump ?? '',
     jumpMetric: f.jumpMetric,
     jumpFrom: f.jumpFrom?.toString() ?? '',
@@ -112,6 +117,8 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
   if (p.reviewsMin) params.set('reviews_min', p.reviewsMin);
   if (p.reviewsMax) params.set('reviews_max', p.reviewsMax);
+  if (p.wordsMin) params.set('words_min', p.wordsMin);
+  if (p.wordsMax) params.set('words_max', p.wordsMax);
   if (p.jumpMetric === 'volume') params.set('jump_metric', 'volume');
   if (p.jump) {
     params.set('jump', p.jump);
@@ -333,6 +340,34 @@ export function FilterSidebar({
         </div>
         <p className="text-xs text-gray-500 mt-1">
           Mean review count of the top-3 clicked products. Excludes keywords without review data.
+        </p>
+      </FieldGroup>
+
+      <FieldGroup label="Word count">
+        <div className="flex gap-2">
+          <input
+            type="number"
+            min={1}
+            value={pending.wordsMin}
+            onChange={(e) => set('wordsMin', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Min"
+            className="filter-input flex-1"
+            aria-label="Minimum word count"
+          />
+          <input
+            type="number"
+            min={1}
+            value={pending.wordsMax}
+            onChange={(e) => set('wordsMax', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Max"
+            className="filter-input flex-1"
+            aria-label="Maximum word count"
+          />
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Words in the keyword — try min 3 to hunt long-tail terms.
         </p>
       </FieldGroup>
 
