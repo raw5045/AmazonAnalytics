@@ -315,6 +315,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         top_clicked_leaf_category,
         top_clicked_category_path,
         search_term_normalized,
+        word_count,
         updated_at
       )
       SELECT
@@ -401,6 +402,9 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         -- normalizeForMatch form the GIN trigram index and the regex/LIKE match
         -- run against), already carried into latest_per_term by stageLatestPerTerm.
         l.search_term_normalized,
+        -- Words in the normalized term (spaces+1 — single-spaced upstream).
+        -- Powers the explorer word filter + the 0046 covering index.
+        (length(l.search_term_normalized) - length(replace(l.search_term_normalized, ' ', '')) + 1)::smallint AS word_count,
         NOW()
       FROM latest_per_term l
       LEFT JOIN rank_at_1w r1 ON r1.search_term_id = l.search_term_id
@@ -431,11 +435,18 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     //     scan) and takes only SHARE UPDATE EXCLUSIVE, so it never blocks
     //     explorer readers. Fail-soft: if it errors we still swap and fall
     //     back to autoanalyze.
+    //     0046: upgraded to VACUUM ANALYZE for the covering index's visibility map.
     try {
-      await client.query('ANALYZE keyword_current_summary_stage');
+      // VACUUM (not just ANALYZE): the bulk INSERT leaves every page without
+      // visibility-map bits, and the 0046 covering index's index-only scans
+      // silently degrade to per-row heap checks until VACUUM sets them
+      // (EXPLAIN shows "Heap Fetches: <huge>"). VACUUM ANALYZE does stats +
+      // VM in one pass; it cannot run inside a transaction, which is why
+      // this sits after the COMMIT above. Fail-soft as before.
+      await client.query('VACUUM ANALYZE keyword_current_summary_stage');
     } catch (e) {
       console.warn(
-        '[refreshSummary] ANALYZE of stage table failed; relying on autoanalyze:',
+        '[refreshSummary] VACUUM ANALYZE of stage table failed; relying on autovacuum:',
         (e as Error).message,
       );
     }
