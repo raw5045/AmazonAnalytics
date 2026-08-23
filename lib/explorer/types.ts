@@ -57,6 +57,14 @@ export interface ExplorerFilters {
    */
   reviewsMin: number | null;
   reviewsMax: number | null;
+  /**
+   * Inclusive word-count bounds on the keyword's normalized text
+   * (space-separated tokens; hyphenated terms count as one word).
+   * 1–1 = single-word keywords only; min 5 alone = five+ words.
+   * Floors at 1 — zero is meaningless (every keyword has ≥1 word).
+   */
+  wordsMin: number | null;
+  wordsMax: number | null;
   jump: JumpKey | null;
   /** Which metric the Movement jump compares: rank columns or volume columns. */
   jumpMetric: 'rank' | 'volume';

@@ -100,3 +100,18 @@ describe('avg-reviews filter round-trip', () => {
     expect(legacy.reviewsMax).toBeNull();
   });
 });
+
+describe('word-count filter round-trip', () => {
+  it('normalizeFilters preserves word bounds through the URL-param round-trip', () => {
+    const out = normalizeFilters({ ...EXPLORER_DEFAULTS, wordsMin: 3, wordsMax: 5 });
+    expect(out.wordsMin).toBe(3);
+    expect(out.wordsMax).toBe(5);
+  });
+
+  it('normalizeFiltersBlob reads stored bounds and defaults legacy blobs to null', () => {
+    expect(normalizeFiltersBlob({ wordsMin: 2 }).wordsMin).toBe(2);
+    const legacy = normalizeFiltersBlob({ window: '4w' });
+    expect(legacy.wordsMin).toBeNull();
+    expect(legacy.wordsMax).toBeNull();
+  });
+});

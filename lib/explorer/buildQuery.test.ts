@@ -401,6 +401,8 @@ describe('buildExplorerQuery', () => {
         rankMax: 1000,
         reviewsMin: null,
         reviewsMax: null,
+        wordsMin: null,
+        wordsMax: null,
         page: 2,
       };
       const { args, countArgs } = buildExplorerQuery(filters);
@@ -595,5 +597,51 @@ describe('buildExplorerQuery', () => {
         `estimated_monthly_volume_current IS NOT NULL AND (${rankCol} IS NULL OR ${volCol} IS NOT NULL)`,
       );
     });
+  });
+});
+
+describe('word-count range filter', () => {
+  const EXPR = "(length(kcs.search_term_normalized) - length(replace(kcs.search_term_normalized, ' ', '')) + 1)";
+
+  it('pushes both bounds into rows and count SQL with the exact expression', () => {
+    const { sql, countSql, args, countArgs } = buildExplorerQuery({ ...baseFilters, wordsMin: 3, wordsMax: 5 });
+    expect(norm(sql)).toContain(`${EXPR} >= $`);
+    expect(norm(sql)).toContain(`${EXPR} <= $`);
+    expect(norm(countSql)).toContain(`${EXPR} >= $`);
+    expect(norm(countSql)).toContain(`${EXPR} <= $`);
+    expect(args).toContain(3);
+    expect(args).toContain(5);
+    expect(countArgs).toContain(3);
+    expect(countArgs).toContain(5);
+  });
+
+  it('owner example: 1-1 emits both bounds (exactly one word)', () => {
+    const { sql, countArgs } = buildExplorerQuery({ ...baseFilters, wordsMin: 1, wordsMax: 1 });
+    expect(norm(sql)).toContain(`${EXPR} >= $`);
+    expect(norm(sql)).toContain(`${EXPR} <= $`);
+    expect(countArgs.filter((a) => a === 1)).toHaveLength(2);
+  });
+
+  it('owner example: min 5 alone emits only the lower bound', () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, wordsMin: 5 });
+    expect(norm(sql)).toContain(`${EXPR} >= $`);
+    expect(norm(sql)).not.toContain(`${EXPR} <= $`);
+  });
+
+  it('emits no word-count predicates by default', () => {
+    const { sql, countSql } = buildExplorerQuery(baseFilters);
+    expect(norm(sql)).not.toContain('replace(kcs.search_term_normalized');
+    expect(norm(countSql)).not.toContain('replace(kcs.search_term_normalized');
+  });
+
+  it('applies on the q path too', () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, q: 'magnesium', wordsMin: 3 });
+    expect(norm(sql)).toContain(`${EXPR} >= $`);
+  });
+
+  it('composes with the volume-delta sorts', () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'imp', wordsMin: 3 });
+    expect(norm(sql)).toContain(`${EXPR} >= $`);
+    expect(norm(sql)).toContain('estimated_monthly_volume_current IS NOT NULL');
   });
 });

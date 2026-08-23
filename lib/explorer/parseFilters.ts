@@ -26,6 +26,8 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   rankMax: null,
   reviewsMin: null,
   reviewsMax: null,
+  wordsMin: null,
+  wordsMax: null,
   jump: null,
   jumpMetric: 'rank',
   jumpFrom: null,
@@ -203,6 +205,11 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const reviewsMin = parseNonNegativeInt(getOne(searchParams.reviews_min));
   const reviewsMax = parseNonNegativeInt(getOne(searchParams.reviews_max));
 
+  // parsePositiveInt (not the zero-admitting reviews parser): word count
+  // floors at 1 — every keyword has at least one word.
+  const wordsMin = parsePositiveInt(getOne(searchParams.words_min));
+  const wordsMax = parsePositiveInt(getOne(searchParams.words_max));
+
   const severities = parseSeverities(getOne(searchParams.severity));
   const titleSlots = parseTitleSlots(getOne(searchParams.titles));
 
@@ -221,6 +228,8 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     rankMax,
     reviewsMin,
     reviewsMax,
+    wordsMin,
+    wordsMax,
     jump,
     jumpMetric,
     jumpFrom: jump === 'custom' ? jumpFrom : null,

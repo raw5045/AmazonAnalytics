@@ -90,3 +90,20 @@ describe('avg-reviews filter blocks precomputed totals', () => {
     expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], reviewsMax: 500 })).toBe(false);
   });
 });
+
+describe('word-count filter blocks precomputed totals', () => {
+  it('canUseDefaultTotal is false when either word bound is set', () => {
+    expect(canUseDefaultTotal({ ...baseFilters, wordsMin: 3 })).toBe(false);
+    expect(canUseDefaultTotal({ ...baseFilters, wordsMax: 1 })).toBe(false);
+  });
+
+  it('canUseCategoryFacet is false when either word bound is set', () => {
+    expect(canUseCategoryFacet({ ...baseFilters, category: 'Beauty', wordsMin: 3 })).toBe(false);
+    expect(canUseCategoryFacet({ ...baseFilters, category: 'Beauty', wordsMax: 2 })).toBe(false);
+  });
+
+  it('canUseLeafCategoryFacet is false when either word bound is set', () => {
+    expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], wordsMin: 3 })).toBe(false);
+    expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], wordsMax: 2 })).toBe(false);
+  });
+});

@@ -20,6 +20,8 @@ describe('parseExplorerFilters', () => {
       q: 'wireless',
       rank_min: '1',
       rank_max: '1000',
+      words_min: '3',
+      words_max: '5',
       reviews_min: '250',
       reviews_max: '900',
       jump: '500k_to_100k',
@@ -38,6 +40,8 @@ describe('parseExplorerFilters', () => {
       qMode: 'word',
       rankMin: 1,
       rankMax: 1000,
+      wordsMin: 3,
+      wordsMax: 5,
       reviewsMin: 250,
       reviewsMax: 900,
       jump: '500k_to_100k',
@@ -265,5 +269,27 @@ describe('parseExplorerFilters — avg-reviews range', () => {
     const bad = parseExplorerFilters({ reviews_min: '-3', reviews_max: 'abc' });
     expect(bad.reviewsMin).toBeNull();
     expect(bad.reviewsMax).toBeNull();
+  });
+});
+
+describe('parseExplorerFilters — word-count range', () => {
+  it('parses words_min and words_max', () => {
+    const f = parseExplorerFilters({ words_min: '3', words_max: '5' });
+    expect(f.wordsMin).toBe(3);
+    expect(f.wordsMax).toBe(5);
+  });
+
+  it('accepts the exactly-one-word form (owner example: 1–1)', () => {
+    const f = parseExplorerFilters({ words_min: '1', words_max: '1' });
+    expect(f.wordsMin).toBe(1);
+    expect(f.wordsMax).toBe(1);
+  });
+
+  it('defaults to null and rejects zero/garbage (floors at 1)', () => {
+    expect(parseExplorerFilters({}).wordsMin).toBeNull();
+    expect(parseExplorerFilters({}).wordsMax).toBeNull();
+    const bad = parseExplorerFilters({ words_min: '0', words_max: 'abc' });
+    expect(bad.wordsMin).toBeNull();
+    expect(bad.wordsMax).toBeNull();
   });
 });

@@ -81,6 +81,8 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     rankMax: typeof f.rankMax === 'number' ? f.rankMax : null,
     reviewsMin: typeof f.reviewsMin === 'number' ? f.reviewsMin : null,
     reviewsMax: typeof f.reviewsMax === 'number' ? f.reviewsMax : null,
+    wordsMin: typeof f.wordsMin === 'number' ? f.wordsMin : null,
+    wordsMax: typeof f.wordsMax === 'number' ? f.wordsMax : null,
     jump,
     jumpMetric,
     jumpFrom: typeof f.jumpFrom === 'number' ? f.jumpFrom : null,
@@ -112,6 +114,8 @@ function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
   if (typeof f.rankMax === 'number') p.rank_max = String(f.rankMax);
   if (typeof f.reviewsMin === 'number') p.reviews_min = String(f.reviewsMin);
   if (typeof f.reviewsMax === 'number') p.reviews_max = String(f.reviewsMax);
+  if (typeof f.wordsMin === 'number') p.words_min = String(f.wordsMin);
+  if (typeof f.wordsMax === 'number') p.words_max = String(f.wordsMax);
   if (typeof f.jump === 'string') p.jump = f.jump;
   if (f.jumpMetric === 'volume') p.jump_metric = 'volume';
   if (typeof f.jumpFrom === 'number') p.jump_from = String(f.jumpFrom);

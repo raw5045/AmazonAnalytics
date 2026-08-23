@@ -259,8 +259,21 @@ export function buildExplorerQuery(
 export const COUNT_CAP = 10_000;
 
 /**
+ * Word count of the keyword's normalized text (single-spaced by
+ * normalizeForMatch, so spaces+1 is exact; hyphenated terms count as one
+ * word). One exported string-builder so canonical-string tests pin the
+ * expression exactly once. NULL normalized text yields NULL → the row
+ * drops while a word bound is active (matches the reviews filter's
+ * unknown-≠-match semantics).
+ */
+export function wordCountExpr(alias: 'kcs.' | '' = 'kcs.'): string {
+  const col = `${alias}search_term_normalized`;
+  return `(length(${col}) - length(replace(${col}, ' ', '')) + 1)`;
+}
+
+/**
  * Push every kcs WHERE predicate (current_week_end_date, rank, reviews,
- * jump, category, leaf, severity, title-gap) onto a fresh clause list,
+ * words, jump, category, leaf, severity, title-gap) onto a fresh clause list,
  * binding args via `next` in clause order. The `q` filter is NOT here —
  * the q-path appends its own match on kcs.search_term_normalized; the
  * legacy path has no q clause.
@@ -287,6 +300,12 @@ function pushKcsPredicates(
   }
   if (filters.reviewsMax !== null) {
     where.push(`kcs.avg_reviews <= ${next(filters.reviewsMax)}`);
+  }
+  if (filters.wordsMin !== null) {
+    where.push(`${wordCountExpr('kcs.')} >= ${next(filters.wordsMin)}`);
+  }
+  if (filters.wordsMax !== null) {
+    where.push(`${wordCountExpr('kcs.')} <= ${next(filters.wordsMax)}`);
   }
   if (filters.jump) {
     let from: number | null = null;
