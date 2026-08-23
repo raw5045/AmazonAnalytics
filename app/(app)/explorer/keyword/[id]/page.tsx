@@ -14,6 +14,7 @@
  *      - Variants box (import_duplicate_search_terms single row)
  */
 import { Suspense } from 'react';
+import { Search } from 'lucide-react';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { fetchKeywordHeader } from '@/lib/explorer/fetchKeywordDetail';
@@ -101,6 +102,16 @@ export default async function KeywordDetailPage({
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-semibold tracking-tight">&ldquo;{searchTermRaw}&rdquo;</h1>
               {user && <WatchToggle keywordId={id} initialIsWatched={isWatched} />}
+              <a
+                href={`https://www.amazon.com/s?k=${encodeURIComponent(searchTermRaw)}`}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                title={`Search Amazon for “${searchTermRaw}”`}
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/20 px-3 py-1 text-sm text-slate-300 transition hover:border-white/40 hover:text-white"
+              >
+                <Search className="h-3.5 w-3.5" aria-hidden />
+                Search on Amazon
+              </a>
             </div>
             {showNormalized && (
               <p className="mt-1 text-xs text-slate-400">Normalized: {searchTermNormalized}</p>

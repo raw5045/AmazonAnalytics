@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { Search } from 'lucide-react';
 import type { ExplorerRow, MatchMode, SeverityKey, SortKey, WindowKey } from '@/lib/explorer/types';
 import { SortableHeader } from './SortableHeader';
 import { WatchStar } from '@/app/(app)/_components/WatchStar';
@@ -96,6 +97,9 @@ export function ResultsTable({
                 <span aria-label="Watched">☆</span>
               </th>
             )}
+            <th className="p-2 w-8 text-center" title="Open this keyword's live Amazon search in a new tab">
+              <span className="sr-only">Search on Amazon</span>
+            </th>
             <th className="p-2">Search term</th>
             <SortableHeader
               label="Current rank"
@@ -198,6 +202,21 @@ export function ResultsTable({
                   />
                 </td>
               )}
+              <td className="p-2 text-center">
+                {/* Plain anchor on purpose: middle-click/ctrl+click to stack
+                    tabs, no popup-blocker involvement. Pure string href —
+                    zero per-row cost. */}
+                <a
+                  href={`https://www.amazon.com/s?k=${encodeURIComponent(r.searchTermRaw)}`}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  title={`Search Amazon for “${r.searchTermRaw}”`}
+                  aria-label={`Search Amazon for ${r.searchTermRaw}`}
+                  className="inline-flex align-middle text-gray-400 transition-colors hover:text-blue-600"
+                >
+                  <Search className="h-4 w-4" aria-hidden />
+                </a>
+              </td>
               <td className="p-2 font-medium">
                 <Link
                   href={`/explorer/keyword/${r.searchTermId}${fromParam}`}
