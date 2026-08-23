@@ -129,6 +129,15 @@ export const keywordCurrentSummary = pgTable(
      */
     topClickedCategoryPath: text('top_clicked_category_path'),
 
+    /**
+     * Words in search_term_normalized (spaces+1 — single-spaced by
+     * normalizeForMatch; hyphenated terms count as one). Populated by the
+     * weekly refresh INSERT; backfilled once by scripts/backfillWordCount.ts
+     * (migration 0046). Powers the explorer word-count filter + the
+     * category covering index.
+     */
+    wordCount: smallint('word_count'),
+
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -157,6 +166,8 @@ export const keywordCurrentSummary = pgTable(
     // Volume-delta partial expression indexes for the imp/decline sorts live
     // in raw SQL only (drizzle-kit can't emit expression indexes) — see
     // migration 0044 + volumeDeltaExpr in lib/explorer/buildQuery.ts.
+    // Migration 0046 adds kcs_cat_cover_idx (+ _stage twin) — a covering
+    // index with INCLUDE, raw SQL only (drizzle-kit can't emit INCLUDE).
     leafPathIdx: index('kcs_leaf_path_idx').on(t.currentWeekEndDate, t.topClickedCategoryPath),
     lowestPriceIdx: index('kcs_lowest_price_idx').on(t.currentWeekEndDate, t.lowestPriceCents),
     mostReviewsIdx: index('kcs_most_reviews_idx').on(t.currentWeekEndDate, t.mostReviews),
