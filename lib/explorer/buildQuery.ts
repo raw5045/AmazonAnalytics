@@ -92,6 +92,24 @@ export function sortUsesVolumeDelta(sort: SortKey): boolean {
 }
 
 /**
+ * True when the category-scoped covered path (0046 covering index) can serve
+ * this filter set: leaf/custom category active, and every OTHER active sort
+ * + filter is answerable from the index (keys week/path/rank; includes
+ * severity/avg_reviews/word_count). Anything else → the classic paths.
+ * Deliberately conservative: new filters/sorts default to NOT covered.
+ */
+export function categoryPathIsCovered(filters: ExplorerFilters): boolean {
+  return (
+    filters.leafPaths.length > 0
+    && filters.q === null
+    && filters.jump === null
+    && filters.category === null
+    && filters.titleMatchMode === null
+    && (filters.sort === 'rank' || filters.sort === 'rank_desc')
+  );
+}
+
+/**
  * The kcs display columns common to every path, in row-mapper order, AFTER
  * search_term_id / search_term_raw / current_rank / prior_rank /
  * improvement / volume_prior / volume_delta. Shared so the legacy
@@ -261,14 +279,50 @@ export const COUNT_CAP = 10_000;
 /**
  * Word count of the keyword's normalized text (single-spaced by
  * normalizeForMatch, so spaces+1 is exact; hyphenated terms count as one
- * word). One exported string-builder so canonical-string tests pin the
- * expression exactly once. NULL normalized text yields NULL → the row
- * drops while a word bound is active (matches the reviews filter's
- * unknown-≠-match semantics).
+ * word). NULL normalized text yields NULL.
+ *
+ * Since migration 0046 the explorer's word-count predicate reads the
+ * stored `kcs.word_count` column instead of calling this — there is no
+ * call site below anymore. Stays exported (and canonical-string-tested)
+ * because the weekly refresh INSERT and scripts/backfillWordCount.ts are
+ * its remaining consumers: both hand-write this same expression to
+ * populate that column (identical modulo the row alias and ::smallint
+ * cast), so this function is the one place a formula change gets
+ * pinned, keeping those two copies from silently drifting out of sync.
  */
 export function wordCountExpr(alias: 'kcs.' | '' = 'kcs.'): string {
   const col = `${alias}search_term_normalized`;
   return `(length(${col}) - length(replace(${col}, ' ', '')) + 1)`;
+}
+
+type NextParam = (val: unknown) => string;
+
+/** Severity fragment — null unless the filter narrows below all-3. */
+function severityPredicate(filters: ExplorerFilters, next: NextParam): string | null {
+  if (filters.severities.length === 0 || filters.severities.length >= 3) return null;
+  const params = filters.severities.map((s) => next(s)).join(', ');
+  return filters.severities.includes('none')
+    ? `(kcs.fake_volume_severity_current IS NULL OR kcs.fake_volume_severity_current IN (${params}))`
+    : `kcs.fake_volume_severity_current IN (${params})`;
+}
+
+/** rank/reviews/word bound fragments, in fixed clause order; [] when inactive. */
+function rangeBoundPredicates(filters: ExplorerFilters, next: NextParam): string[] {
+  const out: string[] = [];
+  if (filters.rankMin !== null) out.push(`kcs.current_rank >= ${next(filters.rankMin)}`);
+  if (filters.rankMax !== null) out.push(`kcs.current_rank <= ${next(filters.rankMax)}`);
+  if (filters.reviewsMin !== null) out.push(`kcs.avg_reviews >= ${next(filters.reviewsMin)}`);
+  if (filters.reviewsMax !== null) out.push(`kcs.avg_reviews <= ${next(filters.reviewsMax)}`);
+  if (filters.wordsMin !== null) out.push(`kcs.word_count >= ${next(filters.wordsMin)}`);
+  if (filters.wordsMax !== null) out.push(`kcs.word_count <= ${next(filters.wordsMax)}`);
+  return out;
+}
+
+/** leafPaths IN fragment; null when no leaf filter. */
+function leafPathPredicate(filters: ExplorerFilters, next: NextParam): string | null {
+  if (filters.leafPaths.length === 0) return null;
+  const ps = filters.leafPaths.map((c) => next(c)).join(', ');
+  return `kcs.top_clicked_category_path IN (${ps})`;
 }
 
 /**
@@ -281,7 +335,7 @@ export function wordCountExpr(alias: 'kcs.' | '' = 'kcs.'): string {
 function pushKcsPredicates(
   filters: ExplorerFilters,
   currentWeekEndDate: string | undefined,
-  next: (val: unknown) => string,
+  next: NextParam,
 ): string[] {
   const where: string[] = [];
   const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
@@ -289,24 +343,7 @@ function pushKcsPredicates(
   if (currentWeekEndDate) {
     where.push(`kcs.current_week_end_date = ${next(currentWeekEndDate)}::date`);
   }
-  if (filters.rankMin !== null) {
-    where.push(`kcs.current_rank >= ${next(filters.rankMin)}`);
-  }
-  if (filters.rankMax !== null) {
-    where.push(`kcs.current_rank <= ${next(filters.rankMax)}`);
-  }
-  if (filters.reviewsMin !== null) {
-    where.push(`kcs.avg_reviews >= ${next(filters.reviewsMin)}`);
-  }
-  if (filters.reviewsMax !== null) {
-    where.push(`kcs.avg_reviews <= ${next(filters.reviewsMax)}`);
-  }
-  if (filters.wordsMin !== null) {
-    where.push(`${wordCountExpr('kcs.')} >= ${next(filters.wordsMin)}`);
-  }
-  if (filters.wordsMax !== null) {
-    where.push(`${wordCountExpr('kcs.')} <= ${next(filters.wordsMax)}`);
-  }
+  where.push(...rangeBoundPredicates(filters, next));
   if (filters.jump) {
     let from: number | null = null;
     let to: number | null = null;
@@ -335,18 +372,10 @@ function pushKcsPredicates(
   if (filters.category) {
     where.push(`kcs.top_clicked_category_1_current = ${next(filters.category)}`);
   }
-  if (filters.leafPaths.length > 0) {
-    const ps = filters.leafPaths.map((c) => next(c)).join(', ');
-    where.push(`kcs.top_clicked_category_path IN (${ps})`);
-  }
-  if (filters.severities.length > 0 && filters.severities.length < 3) {
-    const params = filters.severities.map((s) => next(s)).join(', ');
-    if (filters.severities.includes('none')) {
-      where.push(`(kcs.fake_volume_severity_current IS NULL OR kcs.fake_volume_severity_current IN (${params}))`);
-    } else {
-      where.push(`kcs.fake_volume_severity_current IN (${params})`);
-    }
-  }
+  const leafPath = leafPathPredicate(filters, next);
+  if (leafPath) where.push(leafPath);
+  const severity = severityPredicate(filters, next);
+  if (severity) where.push(severity);
   if (filters.titleMatchMode && filters.titleSlots.length > 0) {
     const conditions = filters.titleSlots.map((slot) => `NOT ${slotColumn(slot, filters.matchMode)}`);
     const joiner = filters.titleMatchMode === 'all' ? ' AND ' : ' OR ';

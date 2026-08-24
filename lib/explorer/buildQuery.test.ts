@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters, WindowKey } from './types';
 
@@ -605,10 +605,10 @@ describe('word-count range filter', () => {
 
   it('pushes both bounds into rows and count SQL with the exact expression', () => {
     const { sql, countSql, args, countArgs } = buildExplorerQuery({ ...baseFilters, wordsMin: 3, wordsMax: 5 });
-    expect(norm(sql)).toContain(`${EXPR} >= $`);
-    expect(norm(sql)).toContain(`${EXPR} <= $`);
-    expect(norm(countSql)).toContain(`${EXPR} >= $`);
-    expect(norm(countSql)).toContain(`${EXPR} <= $`);
+    expect(norm(sql)).toContain('kcs.word_count >= $');
+    expect(norm(sql)).toContain('kcs.word_count <= $');
+    expect(norm(countSql)).toContain('kcs.word_count >= $');
+    expect(norm(countSql)).toContain('kcs.word_count <= $');
     expect(args).toContain(3);
     expect(args).toContain(5);
     expect(countArgs).toContain(3);
@@ -617,31 +617,53 @@ describe('word-count range filter', () => {
 
   it('owner example: 1-1 emits both bounds (exactly one word)', () => {
     const { sql, countArgs } = buildExplorerQuery({ ...baseFilters, wordsMin: 1, wordsMax: 1 });
-    expect(norm(sql)).toContain(`${EXPR} >= $`);
-    expect(norm(sql)).toContain(`${EXPR} <= $`);
+    expect(norm(sql)).toContain('kcs.word_count >= $');
+    expect(norm(sql)).toContain('kcs.word_count <= $');
     expect(countArgs.filter((a) => a === 1)).toHaveLength(2);
   });
 
   it('owner example: min 5 alone emits only the lower bound', () => {
     const { sql } = buildExplorerQuery({ ...baseFilters, wordsMin: 5 });
-    expect(norm(sql)).toContain(`${EXPR} >= $`);
-    expect(norm(sql)).not.toContain(`${EXPR} <= $`);
+    expect(norm(sql)).toContain('kcs.word_count >= $');
+    expect(norm(sql)).not.toContain('kcs.word_count <= $');
   });
 
   it('emits no word-count predicates by default', () => {
     const { sql, countSql } = buildExplorerQuery(baseFilters);
-    expect(norm(sql)).not.toContain('replace(kcs.search_term_normalized');
-    expect(norm(countSql)).not.toContain('replace(kcs.search_term_normalized');
+    expect(norm(sql)).not.toContain('kcs.word_count');
+    expect(norm(countSql)).not.toContain('kcs.word_count');
   });
 
   it('applies on the q path too', () => {
     const { sql } = buildExplorerQuery({ ...baseFilters, q: 'magnesium', wordsMin: 3 });
-    expect(norm(sql)).toContain(`${EXPR} >= $`);
+    expect(norm(sql)).toContain('kcs.word_count >= $');
   });
 
   it('composes with the volume-delta sorts', () => {
     const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'imp', wordsMin: 3 });
-    expect(norm(sql)).toContain(`${EXPR} >= $`);
+    expect(norm(sql)).toContain('kcs.word_count >= $');
     expect(norm(sql)).toContain('estimated_monthly_volume_current IS NOT NULL');
+  });
+
+  it('wordCountExpr stays byte-stable (refresh INSERT + backfill depend on it)', () => {
+    expect(wordCountExpr('kcs.')).toBe(EXPR);
+    expect(wordCountExpr('')).toBe(EXPR.replaceAll('kcs.', ''));
+  });
+});
+
+describe('categoryPathIsCovered', () => {
+  const withLeaf = { ...baseFilters, leafPaths: ['Health & Household › X'] };
+  it('covered: rank sorts with severity/rank/reviews/word filters', () => {
+    expect(categoryPathIsCovered(withLeaf)).toBe(true);
+    expect(categoryPathIsCovered({ ...withLeaf, sort: 'rank_desc', rankMax: 1000, reviewsMax: 500, wordsMin: 3 })).toBe(true);
+  });
+  it('not covered: q, jumps, title filter, non-rank sorts, no leafPaths', () => {
+    expect(categoryPathIsCovered(baseFilters)).toBe(false);
+    expect(categoryPathIsCovered({ ...withLeaf, q: 'abc' })).toBe(false);
+    expect(categoryPathIsCovered({ ...withLeaf, jump: '100k_to_50k' })).toBe(false);
+    expect(categoryPathIsCovered({ ...withLeaf, titleMatchMode: 'any' })).toBe(false);
+    expect(categoryPathIsCovered({ ...withLeaf, sort: 'imp' })).toBe(false);
+    expect(categoryPathIsCovered({ ...withLeaf, sort: 'avg_reviews_desc' })).toBe(false);
+    expect(categoryPathIsCovered({ ...withLeaf, category: 'Health & Household' })).toBe(false);
   });
 });
