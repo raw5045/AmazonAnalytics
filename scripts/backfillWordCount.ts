@@ -83,8 +83,13 @@ async function main() {
              AND k.search_term_normalized IS NOT NULL
            RETURNING 1
          )
-         SELECT MAX(b.search_term_id)::text AS last, (SELECT COUNT(*)::int FROM upd) AS updated
-         FROM batch b`,
+         SELECT
+           -- Postgres has no MAX(uuid) aggregate (42883) — take the window's
+           -- top id via ORDER BY DESC LIMIT 1 instead. A bare SELECT with no
+           -- FROM always yields exactly one row, with last = NULL on an
+           -- empty window (the loop's termination signal).
+           (SELECT b.search_term_id FROM batch b ORDER BY b.search_term_id DESC LIMIT 1)::text AS last,
+           (SELECT COUNT(*)::int FROM upd) AS updated`,
         [lastId, BATCH],
       );
       const { last, updated } = result.rows[0];
