@@ -667,3 +667,62 @@ describe('categoryPathIsCovered', () => {
     expect(categoryPathIsCovered({ ...withLeaf, category: 'Health & Household' })).toBe(false);
   });
 });
+
+describe('covered category path (0046 covering index)', () => {
+  const leaf = { ...baseFilters, leafPaths: ['Health & Household › X', 'Health & Household › Y'] };
+
+  it('emits the two-stage shape: index-only inner, PK-join outer', () => {
+    const { sql, countSql, args, countArgs } = buildExplorerQuery({ ...leaf, reviewsMax: 500, wordsMin: 3 }, '2026-08-15');
+    const n = norm(sql);
+    expect(n).toContain('FROM ( SELECT kcs.search_term_id, kcs.current_rank FROM keyword_current_summary kcs');
+    expect(n).toContain('kcs.top_clicked_category_path IN ($2, $3)');
+    expect(n).toContain('kcs.avg_reviews <= $');
+    expect(n).toContain('kcs.word_count >= $');
+    expect(n).toContain(') i JOIN keyword_current_summary kcs ON kcs.search_term_id = i.search_term_id');
+    expect(n).toContain('JOIN search_terms st ON st.id = kcs.search_term_id');
+    expect(n).toMatch(/ORDER BY kcs\.current_rank ASC[\s\S]*ORDER BY kcs\.current_rank ASC/); // inner + outer
+    expect(norm(countSql)).toContain('SELECT 1 FROM keyword_current_summary kcs');
+    expect(norm(countSql)).not.toContain('JOIN'); // count = inner where only
+    expect(countArgs.length).toBeLessThan(args.length); // prefix invariant
+  });
+
+  it('inner selects ONLY covered columns (index-only requirement)', () => {
+    const { sql } = buildExplorerQuery(leaf, '2026-08-15');
+    const n = norm(sql);
+    // Isolate the derived-table subquery itself — between "FROM (" and the
+    // closing ") i JOIN" — not the outer display SELECT, which legitimately
+    // carries the full column set for the ~perPage rows joined back by PK.
+    // (The outer SELECT necessarily precedes "FROM (" in any valid SQL, so
+    // splitting on ") i JOIN" and taking everything before it, as the outer
+    // shape-check above does, would include the outer column list too.)
+    const inner = n.slice(n.indexOf('FROM (') + 'FROM ('.length, n.indexOf(') i JOIN'));
+    for (const col of ['top_clicked_product_1_title_current', 'estimated_monthly_volume_current', 'improvement_1w']) {
+      expect(inner).not.toContain(col);
+    }
+  });
+
+  it('rank_desc flips both ORDER BYs', () => {
+    const { sql } = buildExplorerQuery({ ...leaf, sort: 'rank_desc' }, '2026-08-15');
+    expect(norm(sql)).toMatch(/ORDER BY kcs\.current_rank DESC[\s\S]*ORDER BY kcs\.current_rank DESC/);
+  });
+
+  it('non-covered combos fall back to the classic shapes unchanged', () => {
+    for (const f of [
+      { ...leaf, sort: 'imp' as const },
+      { ...leaf, q: 'magnesium' },
+      { ...leaf, jump: '100k_to_50k' as const },
+      { ...baseFilters },
+    ]) {
+      const { sql } = buildExplorerQuery(f, '2026-08-15');
+      expect(norm(sql)).not.toContain(') i JOIN keyword_current_summary');
+    }
+  });
+
+  it('N+1 limit + offset ride the inner query', () => {
+    const { sql, args } = buildExplorerQuery({ ...leaf, page: 3, perPage: 100 }, '2026-08-15');
+    const inner = norm(sql).split(') i JOIN')[0];
+    expect(inner).toMatch(/LIMIT \$\d+ OFFSET \$\d+/);
+    expect(args).toContain(101); // perPage + 1
+    expect(args).toContain(200); // (page-1)*perPage
+  });
+});

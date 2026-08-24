@@ -137,6 +137,20 @@ const KCS_DISPLAY_COLS = [
   'top_clicked_leaf_category',
 ] as const;
 
+/** The full display select (legacy + covered outer): st raw + kcs columns. */
+function kcsSelectFor(priorRankCol: string, improvementCol: string, window: WindowKey): string {
+  return `
+      kcs.search_term_id,
+      st.search_term_raw,
+      kcs.current_rank,
+      kcs.${priorRankCol} AS prior_rank,
+      kcs.${improvementCol} AS improvement,
+      ${volumePriorExpr(window, 'kcs.')} AS volume_prior,
+      ${volumeDeltaExpr(window, 'kcs.')} AS volume_delta,
+      ${KCS_DISPLAY_COLS.map((c) => `kcs.${c}`).join(',\n      ')}
+  `.trim();
+}
+
 export function buildExplorerQuery(
   filters: ExplorerFilters,
   /**
@@ -155,6 +169,57 @@ export function buildExplorerQuery(
   const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[filters.window];
   const orderBy = buildOrderBy(filters.sort, filters.matchMode, filters.window);
+
+  // ---- covered category path (0046): category-scoped + fully-covered
+  //      filter/sort set. The inner subquery is answerable entirely from
+  //      kcs_cat_cover_idx (index-only: filter + sort + page over ≤ the
+  //      category's entries), so cold performance ≈ warm. The outer joins
+  //      kcs back by PK for the ~perPage display rows only, then
+  //      search_terms for raw text. Counts run over the inner WHERE.
+  if (categoryPathIsCovered(filters)) {
+    const where: string[] = [];
+    if (currentWeekEndDate) {
+      where.push(`kcs.current_week_end_date = ${next(currentWeekEndDate)}::date`);
+    }
+    const leafP = leafPathPredicate(filters, next);
+    if (leafP) where.push(leafP);
+    where.push(...rangeBoundPredicates(filters, next));
+    const sevP = severityPredicate(filters, next);
+    if (sevP) where.push(sevP);
+    const whereClause = `WHERE ${where.join('\n        AND ')}`;
+
+    const dir = filters.sort === 'rank_desc' ? 'DESC' : 'ASC';
+    const countArgs = [...args];
+    const limitParam = next(filters.perPage + 1);
+    const offsetParam = next((filters.page - 1) * filters.perPage);
+
+    const sql = `
+    SELECT
+      ${kcsSelectFor(priorRankCol, improvementCol, filters.window)}
+    FROM (
+      SELECT kcs.search_term_id, kcs.current_rank
+      FROM keyword_current_summary kcs
+      ${whereClause}
+      ORDER BY kcs.current_rank ${dir}
+      LIMIT ${limitParam} OFFSET ${offsetParam}
+    ) i
+    JOIN keyword_current_summary kcs ON kcs.search_term_id = i.search_term_id
+    JOIN search_terms st ON st.id = kcs.search_term_id
+    ORDER BY kcs.current_rank ${dir}
+  `.trim();
+
+    const countSql = `
+    SELECT COUNT(*)::int AS total
+    FROM (
+      SELECT 1
+      FROM keyword_current_summary kcs
+      ${whereClause}
+      LIMIT ${COUNT_CAP + 1}
+    ) sub
+  `.trim();
+
+    return { sql, args, countSql, countArgs };
+  }
 
   // ---- q path: single-table whole-word / broad match on the denormalized
   //      kcs.search_term_normalized (current-week-only, no cap). The inner
@@ -220,16 +285,7 @@ export function buildExplorerQuery(
   }
 
   // ---- legacy path (q is null): kcs joined to search_terms for raw text ----
-  const kcsSelect = `
-      kcs.search_term_id,
-      st.search_term_raw,
-      kcs.current_rank,
-      kcs.${priorRankCol} AS prior_rank,
-      kcs.${improvementCol} AS improvement,
-      ${volumePriorExpr(filters.window, 'kcs.')} AS volume_prior,
-      ${volumeDeltaExpr(filters.window, 'kcs.')} AS volume_delta,
-      ${KCS_DISPLAY_COLS.map((c) => `kcs.${c}`).join(',\n      ')}
-  `.trim();
+  const kcsSelect = kcsSelectFor(priorRankCol, improvementCol, filters.window);
 
   const where = pushKcsPredicates(filters, currentWeekEndDate, next);
   const whereClause = where.length > 0 ? `WHERE ${where.join('\n      AND ')}` : '';
