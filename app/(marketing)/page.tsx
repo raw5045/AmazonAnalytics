@@ -291,10 +291,15 @@ export default async function HomePage() {
         </div>
       </section>
 
-      {/* ================= Founder quote (tinted band) ================= */}
+      {/* ================= Founder quote (tinted band) =================
+          Owner-authored copy (Homepage Founder Section.md, 2026-08-31) —
+          edit the words there first, then mirror here. */}
       <section className="bg-slate-50">
         <div className="mx-auto max-w-4xl px-4 py-16 sm:px-6">
-          <div className="relative rounded-3xl bg-white px-8 py-10 shadow-xl shadow-slate-200 sm:px-12">
+          <h2 className="text-center text-3xl font-bold tracking-tight text-gray-900">
+            Built by a proven Amazon operator
+          </h2>
+          <div className="relative mt-10 rounded-3xl bg-white px-8 py-10 shadow-xl shadow-slate-200 sm:px-12">
             <span
               aria-hidden
               className="absolute -top-5 left-8 font-serif text-7xl leading-none text-amber-400"
@@ -302,19 +307,35 @@ export default async function HomePage() {
               &ldquo;
             </span>
             <p className="text-lg leading-relaxed text-gray-800 sm:text-xl">
-              Built by an Amazon operator who spent 12+ years scaling a brand to{' '}
-              <span className="font-semibold text-gray-900">$75M+ in Amazon sales</span>{' '}
-              — with keyword research as the growth engine. Not theory from a
-              software team: the exact methods, in a tool.
+              I co-founded Double Wood Supplements and led its Amazon channel
+              for more than a decade. Keyword-first product research was the
+              foundation of our growth, so I built KeywordQuarry to make that
+              process faster, more systematic, and easier for other Amazon
+              sellers.
             </p>
-            <div className="mt-6 flex items-center gap-3">
-              <span className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
-                <Trophy className="h-5 w-5 text-amber-600" aria-hidden />
-              </span>
-              <p className="text-sm font-medium text-gray-500">
-                Founder, KeywordQuarry
+            <div className="mt-6">
+              <p className="text-base font-semibold text-gray-900">Reese Wood</p>
+              <p className="text-sm text-gray-500">
+                Founder, KeywordQuarry · Co-founder, Double Wood Supplements
               </p>
             </div>
+            <div className="mt-6 flex items-center gap-3 border-t border-gray-100 pt-6">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100">
+                <Trophy className="h-5 w-5 text-amber-600" aria-hidden />
+              </span>
+              <p className="text-sm font-semibold text-gray-700">
+                Double Wood appeared on the Inc. 5000 for seven consecutive
+                years, 2019–2025.
+              </p>
+            </div>
+            <p className="mt-6">
+              <Link
+                href="/about"
+                className="text-sm font-semibold text-blue-700 hover:text-blue-800"
+              >
+                Read Reese&apos;s story →
+              </Link>
+            </p>
           </div>
         </div>
       </section>
