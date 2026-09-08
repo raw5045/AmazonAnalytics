@@ -1,12 +1,10 @@
 /**
- * Terms of Service — complete launch draft (2026-08-21), NOT legal advice.
+ * Terms of Service — NOT legal advice.
  *
- * Drafted for beta launch as an individual operator (name + DBA). Three
- * identity slots remain as <Placeholder>: operator legal name, governing-law
- * state, and mailing address (virtual mailbox pending). Everything else is
- * final draft copy reviewed by the owner. A professional/counsel review is
- * still recommended before any paid plans launch; swap the operator name to
- * the LLC when one is formed.
+ * Operator: Woodforge Labs LLC (Pennsylvania), effective 2026-09-08. One
+ * slot remains as <Placeholder>: the mailing address (awaiting the complete
+ * street/city/ZIP from the owner). A professional/counsel review is still
+ * recommended before any paid plans launch.
  */
 import type { Metadata } from 'next';
 import Link from 'next/link';
@@ -37,13 +35,12 @@ export default function TermsPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-14 sm:px-6">
       <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Terms of Service</h1>
-      <p className="mt-2 text-sm text-gray-500">Last updated: August 21, 2026</p>
+      <p className="mt-2 text-sm text-gray-500">Last updated: September 8, 2026</p>
 
       <Section n={1} title="Acceptance of terms">
         <p>
-          KeywordQuarry (&quot;the service&quot;) is operated by{' '}
-          <Placeholder>OPERATOR LEGAL NAME</Placeholder>, doing business as
-          KeywordQuarry (&quot;we&quot;, &quot;us&quot;). By accessing or
+          KeywordQuarry (&quot;the service&quot;) is operated by Woodforge
+          Labs LLC (&quot;we&quot;, &quot;us&quot;). By accessing or
           using KeywordQuarry, you agree to be bound by these terms. If you
           don&apos;t agree to them, please don&apos;t use the service.
         </p>
@@ -169,9 +166,8 @@ export default function TermsPage() {
 
       <Section n={12} title="Governing law">
         <p>
-          These terms are governed by the laws of the State of{' '}
-          <Placeholder>STATE</Placeholder>, without regard to
-          conflict-of-law principles.
+          These terms are governed by the laws of the Commonwealth of
+          Pennsylvania, without regard to conflict-of-law principles.
         </p>
       </Section>
 

@@ -1,9 +1,9 @@
 /**
- * Privacy Policy — complete launch draft (2026-08-21), NOT legal advice.
+ * Privacy Policy — NOT legal advice.
  *
- * Drafted for beta launch as an individual operator (name + DBA). Two
- * identity slots remain as <Placeholder>: operator legal name and mailing
- * address (virtual mailbox pending). Every system claim in here is accurate
+ * Controller: Woodforge Labs LLC (Pennsylvania), effective 2026-09-08. One
+ * slot remains as <Placeholder>: the mailing address (awaiting the complete
+ * street/city/ZIP from the owner). Every system claim in here is accurate
  * to the stack as built: Clerk holds all credentials (Google sign-in users
  * have no password anywhere), we store emails/names/in-app data/usage
  * counters, essential cookies only, processors listed exhaustively. Keep
@@ -38,7 +38,7 @@ export default function PrivacyPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-14 sm:px-6">
       <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Privacy Policy</h1>
-      <p className="mt-2 text-sm text-gray-500">Last updated: August 21, 2026</p>
+      <p className="mt-2 text-sm text-gray-500">Last updated: September 8, 2026</p>
 
       <Section n={1} title="What we collect">
         <p>
@@ -171,9 +171,8 @@ export default function PrivacyPage() {
 
       <Section n={11} title="Controller and contact">
         <p>
-          The data controller for KeywordQuarry is{' '}
-          <Placeholder>OPERATOR LEGAL NAME</Placeholder>, doing business as
-          KeywordQuarry, <Placeholder>MAILING ADDRESS</Placeholder>. Reach
+          The data controller for KeywordQuarry is Woodforge Labs LLC,{' '}
+          <Placeholder>MAILING ADDRESS</Placeholder>. Reach
           us any time at{' '}
           <a href="mailto:support@keywordquarry.com" className="text-blue-700 underline">
             support@keywordquarry.com
