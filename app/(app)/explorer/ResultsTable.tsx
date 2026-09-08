@@ -218,8 +218,16 @@ export function ResultsTable({
                 </a>
               </td>
               <td className="p-2 font-medium">
+                {/* New tab by default (beta-user request): research is
+                    comparative — open many keyword pages without losing the
+                    sort/filter/page state here. Same rule as the Amazon
+                    magnifier: clicking in a row opens elsewhere, the list
+                    stays put. */}
                 <Link
                   href={`/explorer/keyword/${r.searchTermId}${fromParam}`}
+                  target="_blank"
+                  rel="noopener"
+                  title="Opens the keyword's detail page in a new tab"
                   className="text-blue-700 hover:underline"
                 >
                   {r.searchTermRaw}
