@@ -1,4 +1,5 @@
 // lib/notifications/buildWelcomeEmail.ts
+import { POSTAL_ADDRESS_LINE } from './postalAddress';
 /**
  * Pure builder for the one-time welcome email sent at first signup
  * (fired from the Clerk user.created webhook when the app row is newly
@@ -40,6 +41,7 @@ export function buildWelcomeEmail(i: WelcomeInput): BuiltEmail {
     '',
     '—',
     'You received this one-time email because you created a KeywordQuarry account.',
+    POSTAL_ADDRESS_LINE,
   ].join('\n');
 
   const html = `
@@ -64,7 +66,8 @@ export function buildWelcomeEmail(i: WelcomeInput): BuiltEmail {
   </p>
   <hr style="margin:28px 0 12px 0;border:none;border-top:1px solid #e5e7eb;">
   <p style="margin:0;color:#9ca3af;font-size:12px;">
-    You received this one-time email because you created a KeywordQuarry account.
+    You received this one-time email because you created a KeywordQuarry account.<br>
+    ${escapeHtml(POSTAL_ADDRESS_LINE)}
   </p>
 </div>`.trim();
 

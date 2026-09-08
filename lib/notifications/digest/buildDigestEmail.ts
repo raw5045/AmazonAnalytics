@@ -9,6 +9,7 @@
  * See docs/superpowers/specs/2026-05-31-weekly-digest-email-design.md §7.
  */
 import type { BuiltEmail, DigestKeywordRow } from './types';
+import { POSTAL_ADDRESS_LINE } from '../postalAddress';
 
 interface CommonInput {
   weekEndDate: string;
@@ -42,6 +43,7 @@ function buildBroadcast(i: BroadcastInput): BuiltEmail {
     '—',
     `You're receiving this weekly digest because you have an account.`,
     `Unsubscribe: ${i.unsubscribeUrl}`,
+    POSTAL_ADDRESS_LINE,
   ].join('\n');
 
   const html = shell(
@@ -82,6 +84,7 @@ function buildWatchlist(i: WatchlistInput): BuiltEmail {
     '—',
     `You're receiving this because you watch keywords on Amazon Analytics.`,
     `Unsubscribe: ${i.unsubscribeUrl}`,
+    POSTAL_ADDRESS_LINE,
   ].join('\n');
 
   const tableRows = i.rows.map((r) => rowHtml(r, i.appUrl)).join('');
@@ -175,7 +178,8 @@ function shell(bodyHtml: string, unsubscribeUrl: string, footerReason: string): 
   <hr style="margin:28px 0 12px 0;border:none;border-top:1px solid #e5e7eb;">
   <p style="margin:0;color:#9ca3af;font-size:12px;">
     ${escapeHtml(footerReason)}<br>
-    <a href="${unsubscribeUrl}" style="color:#9ca3af;text-decoration:underline;">Unsubscribe</a>
+    <a href="${unsubscribeUrl}" style="color:#9ca3af;text-decoration:underline;">Unsubscribe</a><br>
+    ${escapeHtml(POSTAL_ADDRESS_LINE)}
   </p>
 </div>`.trim();
 }

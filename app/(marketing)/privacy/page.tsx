@@ -1,9 +1,9 @@
 /**
  * Privacy Policy — NOT legal advice.
  *
- * Controller: Woodforge Labs LLC (Pennsylvania), effective 2026-09-08. One
- * slot remains as <Placeholder>: the mailing address (awaiting the complete
- * street/city/ZIP from the owner). Every system claim in here is accurate
+ * Controller: Woodforge Labs LLC (Pennsylvania), effective 2026-09-08. All
+ * identity data is final ("Westchester Pike" spelling is per the owner's
+ * virtual-mailbox provider — deliberate). Every system claim in here is accurate
  * to the stack as built: Clerk holds all credentials (Google sign-in users
  * have no password anywhere), we store emails/names/in-app data/usage
  * counters, essential cookies only, processors listed exhaustively. Keep
@@ -16,14 +16,6 @@ export const metadata: Metadata = {
   title: 'Privacy Policy',
   description: 'How KeywordQuarry collects, uses, and protects your data.',
 };
-
-function Placeholder({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded bg-amber-100 px-1 font-mono text-[13px] text-amber-900">
-      [{children}]
-    </span>
-  );
-}
 
 function Section({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
@@ -171,8 +163,8 @@ export default function PrivacyPage() {
 
       <Section n={11} title="Controller and contact">
         <p>
-          The data controller for KeywordQuarry is Woodforge Labs LLC,{' '}
-          <Placeholder>MAILING ADDRESS</Placeholder>. Reach
+          The data controller for KeywordQuarry is Woodforge Labs LLC, 1305
+          Westchester Pike Suite 18, Havertown, PA 19083, United States. Reach
           us any time at{' '}
           <a href="mailto:support@keywordquarry.com" className="text-blue-700 underline">
             support@keywordquarry.com

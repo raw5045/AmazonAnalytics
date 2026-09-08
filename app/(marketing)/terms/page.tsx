@@ -1,10 +1,10 @@
 /**
  * Terms of Service — NOT legal advice.
  *
- * Operator: Woodforge Labs LLC (Pennsylvania), effective 2026-09-08. One
- * slot remains as <Placeholder>: the mailing address (awaiting the complete
- * street/city/ZIP from the owner). A professional/counsel review is still
- * recommended before any paid plans launch.
+ * Operator: Woodforge Labs LLC (Pennsylvania), effective 2026-09-08. All
+ * identity data is final ("Westchester Pike" spelling is per the owner's
+ * virtual-mailbox provider — deliberate). A professional/counsel review is
+ * still recommended before any paid plans launch.
  */
 import type { Metadata } from 'next';
 import Link from 'next/link';
@@ -13,14 +13,6 @@ export const metadata: Metadata = {
   title: 'Terms of Service',
   description: 'The terms that govern your use of KeywordQuarry.',
 };
-
-function Placeholder({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="rounded bg-amber-100 px-1 font-mono text-[13px] text-amber-900">
-      [{children}]
-    </span>
-  );
-}
 
 function Section({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
@@ -179,7 +171,8 @@ export default function TermsPage() {
           </a>{' '}
           or use the{' '}
           <Link href="/contact" className="text-blue-700 underline">contact page</Link>.
-          Postal address: <Placeholder>MAILING ADDRESS</Placeholder>.
+          Postal address: 1305 Westchester Pike Suite 18, Havertown, PA
+          19083, United States.
         </p>
       </Section>
     </div>
