@@ -117,7 +117,8 @@ export default function HelpPage() {
 
       <Section title="Category Builder">
         <p>
-          Every keyword is mapped to its exact leaf category — not just
+          Every keyword in the top 100,000 by search volume is mapped to its
+          exact leaf category — not just
           “Health &amp; Household” but “Magnesium Supplements.” The Category
           Builder lets you combine any leaf categories into custom buckets, so
           the Explorer returns only keywords from the niches you care about.
