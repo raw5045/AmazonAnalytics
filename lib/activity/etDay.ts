@@ -1,8 +1,8 @@
 /**
  * ET (America/New_York) calendar-day helpers for the activity counters and
- * the abuse digest. `Intl` owns the DST rules; `previousEtDay` does pure
- * calendar arithmetic on the resulting Y-M-D (in UTC space) so it is
- * immune to 23h/25h ET days.
+ * the abuse digest. `Intl` owns the DST rules; the day arithmetic is pure
+ * calendar math on the resulting Y-M-D (in UTC space) so it is immune to
+ * 23h/25h ET days.
  */
 const ET_DATE_FMT = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'America/New_York',
@@ -18,9 +18,19 @@ export function etDay(date: Date): string {
 
 /** The ET calendar date one day before `date`'s ET calendar date. */
 export function previousEtDay(date: Date): string {
-  const [y, m, d] = etDay(date).split('-').map(Number);
-  const prev = new Date(Date.UTC(y, m - 1, d) - 24 * 60 * 60 * 1000);
-  const mm = String(prev.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(prev.getUTCDate()).padStart(2, '0');
-  return `${prev.getUTCFullYear()}-${mm}-${dd}`;
+  return addDays(etDay(date), -1);
+}
+
+/**
+ * `day` ('YYYY-MM-DD') shifted by `deltaDays` calendar days, as 'YYYY-MM-DD'.
+ * Pure calendar arithmetic in UTC space (Date.UTC normalizes day overflow and
+ * underflow across month and year ends), so no timezone or DST rule can make
+ * the result anything other than exactly N calendar days away.
+ */
+export function addDays(day: string, deltaDays: number): string {
+  const [y, m, d] = day.split('-').map(Number);
+  const shifted = new Date(Date.UTC(y, m - 1, d + deltaDays));
+  const mm = String(shifted.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(shifted.getUTCDate()).padStart(2, '0');
+  return `${shifted.getUTCFullYear()}-${mm}-${dd}`;
 }

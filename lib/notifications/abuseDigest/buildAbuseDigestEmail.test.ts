@@ -13,6 +13,8 @@ function quietStats(): AbuseDigestStats {
     totalUsers: 2,
     signups: [],
     activeUsers: [],
+    weeklyActiveUsers: { startDay: '2026-07-06', endDay: '2026-07-12', users: [] },
+    monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: [] },
     signIns: { count: 0, emails: [] },
     contact: { submissions: 0, honeypotTrips: 0 },
   };
@@ -125,5 +127,73 @@ describe('buildAbuseDigestEmail', () => {
     const built = buildAbuseDigestEmail(stats, []);
     expect(built.html).not.toContain('<script>');
     expect(built.html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('buildAbuseDigestEmail — active-user windows', () => {
+  function withWindows(): AbuseDigestStats {
+    return {
+      ...quietStats(),
+      activeUsers: [activeUser(1, 1200)],
+      weeklyActiveUsers: {
+        startDay: '2026-07-06',
+        endDay: '2026-07-12',
+        users: [activeUser(1, 4000), activeUser(2, 300), activeUser(3, 12)],
+      },
+      monthlyActiveUsers: {
+        startDay: '2026-06-13',
+        endDay: '2026-07-12',
+        users: [1, 2, 3, 4, 5].map((i) => activeUser(i, 100 * i)),
+      },
+    };
+  }
+
+  it('renders daily, weekly, and monthly sections with counts and date ranges', () => {
+    const built = buildAbuseDigestEmail(withWindows(), []);
+    expect(built.html).toContain('Daily active users (1)');
+    expect(built.html).toContain('Weekly active users (3)');
+    expect(built.html).toContain('Monthly active users (5)');
+    expect(built.html).toContain('Jul 6 – Jul 12');
+    expect(built.html).toContain('Jun 13 – Jul 12');
+    expect(built.html).toContain('4,000');
+    expect(built.text).toContain('Daily active users (1)');
+    expect(built.text).toContain('Weekly active users (3)');
+    expect(built.text).toContain('Monthly active users (5)');
+    expect(built.html).not.toContain('>Active users (');
+  });
+
+  it('keeps the subject line unchanged (no weekly/monthly counts)', () => {
+    const built = buildAbuseDigestEmail(withWindows(), []);
+    expect(built.subject).toBe('KeywordQuarry daily — 0 signups · 1 active · 1,200 reads');
+  });
+
+  it('still renders the weekly and monthly tables on a quiet day', () => {
+    const stats: AbuseDigestStats = {
+      ...quietStats(),
+      weeklyActiveUsers: { startDay: '2026-07-06', endDay: '2026-07-12', users: [activeUser(7, 50)] },
+      monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: [activeUser(7, 50)] },
+    };
+    const built = buildAbuseDigestEmail(stats, []);
+    expect(built.html).toContain('All quiet');
+    expect(built.html).toContain('Weekly active users (1)');
+    expect(built.html).toContain('user7@x.com');
+    expect(built.text).toContain('Monthly active users (1)');
+  });
+
+  it('says so when a window has no activity', () => {
+    const built = buildAbuseDigestEmail(quietStats(), []);
+    expect(built.html).toContain('Weekly active users (0)');
+    expect(built.html).toContain('No user activity in this window.');
+  });
+
+  it(`caps each window table at ${ACTIVE_USER_ROW_CAP} rows`, () => {
+    const many = Array.from({ length: ACTIVE_USER_ROW_CAP + 3 }, (_, i) => activeUser(i, 10));
+    const stats: AbuseDigestStats = {
+      ...quietStats(),
+      weeklyActiveUsers: { startDay: '2026-07-06', endDay: '2026-07-12', users: many },
+      monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: many },
+    };
+    const built = buildAbuseDigestEmail(stats, []);
+    expect(built.html.match(/…and 3 more active users/g)).toHaveLength(2);
   });
 });

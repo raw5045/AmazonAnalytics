@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { etDay, previousEtDay } from './etDay';
+import { etDay, previousEtDay, addDays } from './etDay';
 
 describe('etDay', () => {
   it('returns the ET calendar date for a UTC instant that is still "yesterday" in ET', () => {
@@ -63,5 +63,22 @@ describe('previousEtDay', () => {
     // 2026-11-02T04:30:00Z = 2026-11-01 23:30 EST → previous ET day is 10-31.
     // (Naive etDay(now - 24h) lands on 11-01 because Nov 1 04:30Z is still EDT.)
     expect(previousEtDay(new Date('2026-11-02T04:30:00Z'))).toBe('2026-10-31');
+  });
+});
+
+describe('addDays', () => {
+  it('shifts a YYYY-MM-DD day by a number of calendar days', () => {
+    expect(addDays('2026-09-15', -6)).toBe('2026-09-09');
+    expect(addDays('2026-09-15', -29)).toBe('2026-08-17');
+    expect(addDays('2026-09-15', 1)).toBe('2026-09-16');
+  });
+  it('crosses month and year boundaries and handles leap days', () => {
+    expect(addDays('2026-03-01', -1)).toBe('2026-02-28');
+    expect(addDays('2028-03-01', -1)).toBe('2028-02-29');
+    expect(addDays('2026-01-01', -1)).toBe('2025-12-31');
+    expect(addDays('2026-12-31', 1)).toBe('2027-01-01');
+  });
+  it('returns the same day for a zero shift', () => {
+    expect(addDays('2026-09-15', 0)).toBe('2026-09-15');
   });
 });

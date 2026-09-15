@@ -8,6 +8,8 @@ function quietStats(): AbuseDigestStats {
     totalUsers: 2,
     signups: [],
     activeUsers: [],
+    weeklyActiveUsers: { startDay: '2026-07-06', endDay: '2026-07-12', users: [] },
+    monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: [] },
     signIns: { count: 0, emails: [] },
     contact: { submissions: 0, honeypotTrips: 0 },
   };

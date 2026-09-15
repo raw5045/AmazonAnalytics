@@ -1,6 +1,7 @@
 // lib/notifications/abuseDigest/types.ts
 // Shared shapes for the daily admin abuse-digest. See
-// docs/superpowers/specs/2026-07-13-abuse-digest-design.md.
+// docs/superpowers/specs/2026-07-13-abuse-digest-design.md and, for the
+// weekly/monthly windows, 2026-09-15-digest-active-user-windows-design.md.
 
 export interface SignupRow {
   email: string;
@@ -20,13 +21,27 @@ export interface PerUserActivity {
   customCategoriesCreated: number;
 }
 
+/** Per-user activity over a trailing window of ET days (inclusive bounds). */
+export interface ActiveUsersWindow {
+  /** First ET day in the window, YYYY-MM-DD. */
+  startDay: string;
+  /** Last ET day in the window (the digest day), YYYY-MM-DD. */
+  endDay: string;
+  /** One row per user active anywhere in the window, sorted by reads desc. */
+  users: PerUserActivity[];
+}
+
 export interface AbuseDigestStats {
   /** ET calendar day this digest covers, YYYY-MM-DD */
   day: string;
   totalUsers: number;
   signups: SignupRow[];
-  /** One row per active user, sorted by reads (queries + detail views) desc. */
+  /** One row per active user on `day`, sorted by reads (queries + detail views) desc. */
   activeUsers: PerUserActivity[];
+  /** Trailing 7 ET days ending on `day` (same columns, counters summed across the window). */
+  weeklyActiveUsers: ActiveUsersWindow;
+  /** Trailing 30 ET days ending on `day`. */
+  monthlyActiveUsers: ActiveUsersWindow;
   signIns: { count: number; emails: string[] };
   contact: { submissions: number; honeypotTrips: number };
 }
