@@ -15,7 +15,7 @@ import { userActivityDaily, appActivityDaily } from '@/db/schema';
 import { etDay } from './etDay';
 
 export type UserActivityMetric = 'explorer_query' | 'detail_view';
-export type AppActivityMetric = 'contact_submission' | 'contact_honeypot';
+export type AppActivityMetric = 'contact_submission' | 'contact_honeypot' | 'feedback_submission';
 
 export async function bumpUserActivity(userId: string, metric: UserActivityMetric): Promise<void> {
   try {
