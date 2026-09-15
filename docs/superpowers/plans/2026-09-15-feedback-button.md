@@ -126,7 +126,7 @@ export function normalizePage(raw: unknown): string | null {
   const p = raw.trim();
   if (p.length === 0 || p.length > PAGE_MAX) return null;
   if (!p.startsWith('/') || p.startsWith('//')) return null;
-  if (/[\s\p{Cc}]/u.test(p)) return null;
+  if (/[\s\p{Cc}\p{Cf}]/u.test(p)) return null;
   return p;
 }
 ```

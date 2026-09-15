@@ -25,6 +25,9 @@ describe('FeedbackButton', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Feedback' }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText('Send feedback')).toBeInTheDocument();
+    const describedBy = screen.getByRole('dialog').getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/We read every message/);
   });
 
   it('posts the trimmed message plus the current page, then shows the thanks state', async () => {
@@ -67,6 +70,51 @@ describe('FeedbackButton', () => {
     expect((screen.getByLabelText('Your feedback') as HTMLTextAreaElement).value).toBe(
       'Something worth keeping around.',
     );
+  });
+
+  it('cannot be dismissed while sending, and the controls are disabled', () => {
+    fetchMock.mockReturnValueOnce(new Promise(() => {}));
+    render(<FeedbackButton />);
+    fireEvent.click(screen.getByRole('button', { name: 'Feedback' }));
+    fireEvent.change(screen.getByLabelText('Your feedback'), {
+      target: { value: 'A message that is long enough.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(screen.getByRole('button', { name: 'Sending…' })).toBeDisabled();
+    expect(screen.getByLabelText('Your feedback')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('closes on a backdrop click and returns focus to the header button', () => {
+    render(<FeedbackButton />);
+    const trigger = screen.getByRole('button', { name: 'Feedback' });
+    fireEvent.click(trigger);
+    const backdrop = screen.getByRole('dialog').parentElement!;
+    fireEvent.mouseDown(backdrop);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('keeps the draft across Cancel and clears it only after a successful send', async () => {
+    render(<FeedbackButton />);
+    fireEvent.click(screen.getByRole('button', { name: 'Feedback' }));
+    fireEvent.change(screen.getByLabelText('Your feedback'), {
+      target: { value: 'Draft that survives Cancel.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Feedback' }));
+    expect((screen.getByLabelText('Your feedback') as HTMLTextAreaElement).value).toBe(
+      'Draft that survives Cancel.',
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('Thanks — got it.');
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Feedback' }));
+    expect((screen.getByLabelText('Your feedback') as HTMLTextAreaElement).value).toBe('');
   });
 
   it('closes on Escape and returns focus to the header button', () => {

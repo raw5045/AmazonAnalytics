@@ -29,6 +29,13 @@ describe('buildFeedbackEmail', () => {
     expect(e.text).toContain('Page: https://keywordquarry.com/explorer?title_match=any');
     expect(e.html).toContain('<a href="https://keywordquarry.com/explorer?title_match=any"');
   });
+  it('escapes ampersands and quotes inside the href so the attribute cannot break', () => {
+    const amp = buildFeedbackEmail({ ...base, page: '/explorer?rank_max=100&words_min=3' });
+    expect(amp.html).toContain('href="https://keywordquarry.com/explorer?rank_max=100&amp;words_min=3"');
+    const quoted = buildFeedbackEmail({ ...base, page: '/explorer?q="x"' });
+    expect(quoted.html).toContain('href="https://keywordquarry.com/explorer?q=&quot;x&quot;"');
+    expect(quoted.html).not.toContain('?q="x"');
+  });
   it('says the page was not captured when null', () => {
     const e = buildFeedbackEmail({ ...base, page: null });
     expect(e.text).toContain('Page: (not captured)');

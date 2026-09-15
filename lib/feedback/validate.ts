@@ -27,7 +27,8 @@ export function validateFeedback(
 
 /**
  * Accept only an in-app relative path ("/explorer?rank_max=100"): exactly one
- * leading "/", no whitespace or control characters, and short. Rejects
+ * leading "/", no whitespace, control, or format characters (zero-width,
+ * bidi overrides — display-only risk in the email link text), and short. Rejects
  * absolute URLs and protocol-relative "//host" forms — the email renders this
  * after the app's own base URL, so it must never point anywhere else.
  */
@@ -36,6 +37,6 @@ export function normalizePage(raw: unknown): string | null {
   const p = raw.trim();
   if (p.length === 0 || p.length > PAGE_MAX) return null;
   if (!p.startsWith('/') || p.startsWith('//')) return null;
-  if (/[\s\p{Cc}]/u.test(p)) return null;
+  if (/[\s\p{Cc}\p{Cf}]/u.test(p)) return null;
   return p;
 }

@@ -44,7 +44,14 @@ describe('normalizePage', () => {
   });
   it('rejects paths with embedded whitespace or control characters', () => {
     expect(normalizePage('/explorer?q=a b')).toBeNull();
+    // Control characters that \s does NOT match (NUL, ESC) — exercises \p{Cc}.
+    expect(normalizePage(`/explorer?q=a${String.fromCodePoint(0)}b`)).toBeNull();
+    expect(normalizePage(`/explorer?q=a${String.fromCodePoint(0x1b)}b`)).toBeNull();
     expect(normalizePage('/explorer\n?x=1')).toBeNull();
+  });
+  it('rejects paths with format characters (zero-width space, bidi override)', () => {
+    expect(normalizePage(`/explorer?q=a${String.fromCodePoint(0x200b)}b`)).toBeNull();
+    expect(normalizePage(`/explorer?q=a${String.fromCodePoint(0x202e)}b`)).toBeNull();
   });
   it('rejects non-strings, empty strings, and paths over 2,000 characters', () => {
     expect(normalizePage(undefined)).toBeNull();

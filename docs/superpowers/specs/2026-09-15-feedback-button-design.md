@@ -47,7 +47,7 @@ Rules:
   `message must be 10–5,000 characters`.
 - `page`: optional. Accepted only if it is a string, starts with a single `/`
   (rejects `//host` protocol-relative forms and absolute URLs), contains no
-  whitespace or control characters, and is ≤ 2,000 chars. Anything else
+  whitespace, control, or format characters, and is ≤ 2,000 chars. Anything else
   becomes `null` rather than an error — page context is a nicety, never a
   reason to lose a message.
 

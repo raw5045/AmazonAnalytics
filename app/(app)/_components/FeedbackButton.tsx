@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { MESSAGE_MAX, MESSAGE_MIN } from '@/lib/feedback/validate';
 
 /**
  * "Feedback" link in the app header → one-box modal → POST /api/feedback.
@@ -16,8 +17,8 @@ import { createPortal } from 'react-dom';
  */
 type Status = 'idle' | 'sending' | 'sent' | 'error';
 
-const MESSAGE_MIN = 10;
-const MESSAGE_MAX = 5000;
+/** Every exit is disabled while sending, so a hung request must time out rather than lock the dialog. */
+const FETCH_TIMEOUT_MS = 15_000;
 
 export function FeedbackButton() {
   const [open, setOpen] = useState(false);
@@ -26,6 +27,7 @@ export function FeedbackButton() {
   const [error, setError] = useState<string | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const titleId = useId();
+  const descId = useId();
 
   const close = useCallback(() => {
     if (status === 'sending') return;
@@ -59,6 +61,7 @@ export function FeedbackButton() {
       const res = await fetch('/api/feedback', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        signal: typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(FETCH_TIMEOUT_MS) : undefined,
         body: JSON.stringify({
           message: trimmed,
           page: window.location.pathname + window.location.search,
@@ -99,6 +102,7 @@ export function FeedbackButton() {
               role="dialog"
               aria-modal="true"
               aria-labelledby={titleId}
+              aria-describedby={descId}
               className="w-full max-w-md rounded-xl bg-white p-6 text-left shadow-xl"
             >
               {status === 'sent' ? (
@@ -106,7 +110,7 @@ export function FeedbackButton() {
                   <h2 id={titleId} className="text-lg font-semibold text-gray-900">
                     Thanks — got it.
                   </h2>
-                  <p className="mt-2 text-sm text-gray-600">We&apos;ll reply by email if needed.</p>
+                  <p id={descId} className="mt-2 text-sm text-gray-600">We&apos;ll reply by email if needed.</p>
                   <div className="mt-5 flex justify-end">
                     <button
                       type="button"
@@ -122,7 +126,7 @@ export function FeedbackButton() {
                   <h2 id={titleId} className="text-lg font-semibold text-gray-900">
                     Send feedback
                   </h2>
-                  <p className="mt-1 text-sm text-gray-600">
+                  <p id={descId} className="mt-1 text-sm text-gray-600">
                     What&apos;s confusing, missing, or would make KeywordQuarry more useful? We read
                     every message.
                   </p>
