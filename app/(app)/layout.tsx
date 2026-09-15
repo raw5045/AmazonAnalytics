@@ -6,6 +6,7 @@ import { AuthError } from '@/lib/auth/requireAdmin';
 import { watchlistCountForUser } from '@/lib/watchlist/loadServer';
 import { TabNav } from './TabNav';
 import { TutorialsBanner } from './_components/TutorialsBanner';
+import { FeedbackButton } from './_components/FeedbackButton';
 import { BrandMark } from '@/app/BrandMark';
 
 /**
@@ -45,6 +46,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           {user.role === 'admin' && (
             <Link href="/admin" className="text-sky-300 hover:text-sky-200">Admin</Link>
           )}
+          {/* One-box feedback modal → support@ with the account email as
+              reply-to and the current page attached (2026-09-15 spec). */}
+          <FeedbackButton />
           {/* Contact-a-human path (form → support@ loop); learning lives in
               the Tutorials tab — deliberately distinct jobs. */}
           <Link href="/contact" className="text-slate-300 hover:text-white">Support</Link>
