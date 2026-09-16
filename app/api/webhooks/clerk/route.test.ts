@@ -117,7 +117,11 @@ describe('POST /api/webhooks/clerk', () => {
     expect(mockSendWelcome).not.toHaveBeenCalled();
   });
 
-  it('does not send the welcome email on user.updated', async () => {
+  it('does not send the welcome email on user.updated when the row already existed', async () => {
+    mockSyncUser.mockResolvedValueOnce({
+      user: { id: 'uuid', clerkUserId: 'user_123', email: 'test@x.com', name: 'Test User' },
+      created: false,
+    });
     const req = makeRequest({
       type: 'user.updated',
       data: {
@@ -129,6 +133,20 @@ describe('POST /api/webhooks/clerk', () => {
     const res = await POST(req);
     expect(res.status).toBe(200);
     expect(mockSendWelcome).not.toHaveBeenCalled();
+  });
+
+  it('welcomes on user.updated if that is the first time the row is created (insert gates the email, not the event type)', async () => {
+    const req = makeRequest({
+      type: 'user.updated',
+      data: {
+        id: 'user_123',
+        email_addresses: [{ id: 'a', email_address: 'test@x.com' }],
+        primary_email_address_id: 'a',
+      },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(mockSendWelcome).toHaveBeenCalledTimes(1);
   });
 
   it('skips the welcome email for undeliverable test-domain addresses', async () => {
