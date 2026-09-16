@@ -1,15 +1,9 @@
 import { getCurrentUser } from './getCurrentUser';
 import type { User } from '@/db/schema';
+import { AuthError } from './AuthError';
 
-export class AuthError extends Error {
-  constructor(
-    public code: 'UNAUTHENTICATED' | 'FORBIDDEN',
-    message: string,
-  ) {
-    super(message);
-    this.name = 'AuthError';
-  }
-}
+// Re-exported for existing call sites; the class itself lives in ./AuthError.
+export { AuthError };
 
 export async function requireAdmin(): Promise<User> {
   const user = await getCurrentUser();

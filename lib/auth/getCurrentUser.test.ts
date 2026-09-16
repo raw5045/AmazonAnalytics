@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { mockAuth, mockCurrentUser, mockFindFirst, mockProvision } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
@@ -8,15 +8,28 @@ const { mockAuth, mockCurrentUser, mockFindFirst, mockProvision } = vi.hoisted((
 }));
 
 vi.mock('@clerk/nextjs/server', () => ({ auth: mockAuth, currentUser: mockCurrentUser }));
+vi.mock('@clerk/nextjs/errors', () => ({
+  isClerkAPIResponseError: (e: unknown) => !!e && typeof e === 'object' && 'clerkError' in e,
+}));
 vi.mock('@/db/client', () => ({ db: { query: { users: { findFirst: mockFindFirst } } } }));
 vi.mock('./provisionUser', () => ({ provisionUser: mockProvision }));
 
 import { getCurrentUser } from './getCurrentUser';
+import { AuthError } from './AuthError';
+
+const clerkError = (status: number) => Object.assign(new Error(`clerk ${status}`), { clerkError: true, status });
 
 describe('getCurrentUser', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  let error: ReturnType<typeof vi.spyOn>;
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    warn.mockRestore();
+    error.mockRestore();
   });
 
   it('returns null with no Clerk session and never touches the database', async () => {
@@ -34,7 +47,7 @@ describe('getCurrentUser', () => {
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
-  it('provisions the row on the spot when Clerk has a session but the webhook has not landed', async () => {
+  it('provisions the row on the spot (welcome deferred past the response) when Clerk has a session but no row exists', async () => {
     mockAuth.mockResolvedValueOnce({ userId: 'user_1' });
     mockFindFirst.mockResolvedValueOnce(undefined);
     mockCurrentUser.mockResolvedValueOnce({
@@ -49,7 +62,10 @@ describe('getCurrentUser', () => {
       created: true,
     });
     const u = await getCurrentUser();
-    expect(mockProvision).toHaveBeenCalledWith({ clerkUserId: 'user_1', email: 'jane@shop.co', name: 'Jane Doe' });
+    expect(mockProvision).toHaveBeenCalledWith(
+      { clerkUserId: 'user_1', email: 'jane@shop.co', name: 'Jane Doe' },
+      { welcome: 'after' },
+    );
     expect(u).toEqual({ id: 'u1', clerkUserId: 'user_1', email: 'jane@shop.co' });
   });
 
@@ -65,22 +81,43 @@ describe('getCurrentUser', () => {
     });
     mockProvision.mockResolvedValueOnce({ user: { id: 'u2' }, created: true });
     await getCurrentUser();
-    expect(mockProvision).toHaveBeenCalledWith({ clerkUserId: 'user_2', email: 'only@shop.co', name: null });
+    expect(mockProvision).toHaveBeenCalledWith(
+      { clerkUserId: 'user_2', email: 'only@shop.co', name: null },
+      { welcome: 'after' },
+    );
   });
 
-  it('returns null when Clerk no longer knows the user', async () => {
+  it('throws UNPROVISIONABLE (not a bounce to /sign-in) when Clerk answers 404 for the session user', async () => {
     mockAuth.mockResolvedValueOnce({ userId: 'user_gone' });
     mockFindFirst.mockResolvedValueOnce(undefined);
-    mockCurrentUser.mockResolvedValueOnce(null);
-    expect(await getCurrentUser()).toBeNull();
+    mockCurrentUser.mockRejectedValueOnce(clerkError(404));
+    await expect(getCurrentUser()).rejects.toMatchObject({ name: 'AuthError', code: 'UNPROVISIONABLE' });
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
-  it('returns null rather than provisioning when the Clerk user has no email address at all', async () => {
+  it('surfaces other Clerk API failures instead of silently signing the member out', async () => {
+    mockAuth.mockResolvedValueOnce({ userId: 'user_1' });
+    mockFindFirst.mockResolvedValueOnce(undefined);
+    const err = clerkError(503);
+    mockCurrentUser.mockRejectedValueOnce(err);
+    await expect(getCurrentUser()).rejects.toBe(err);
+    expect(error).toHaveBeenCalled();
+    expect(mockProvision).not.toHaveBeenCalled();
+  });
+
+  it('throws UNPROVISIONABLE rather than provisioning when the Clerk user has no email address', async () => {
     mockAuth.mockResolvedValueOnce({ userId: 'user_3' });
     mockFindFirst.mockResolvedValueOnce(undefined);
-    mockCurrentUser.mockResolvedValueOnce({ id: 'user_3', firstName: null, lastName: null, primaryEmailAddress: null, emailAddresses: [] });
-    expect(await getCurrentUser()).toBeNull();
+    mockCurrentUser.mockResolvedValueOnce({
+      id: 'user_3',
+      firstName: null,
+      lastName: null,
+      primaryEmailAddress: null,
+      emailAddresses: [],
+    });
+    const p = getCurrentUser();
+    await expect(p).rejects.toBeInstanceOf(AuthError);
+    await expect(p).rejects.toMatchObject({ code: 'UNPROVISIONABLE' });
     expect(mockProvision).not.toHaveBeenCalled();
   });
 });

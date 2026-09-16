@@ -149,6 +149,19 @@ describe('POST /api/webhooks/clerk', () => {
     expect(mockSendWelcome).toHaveBeenCalledTimes(1);
   });
 
+  it('acknowledges with 200 and provisions nothing when the Clerk user carries no email address', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const req = makeRequest({
+      type: 'user.created',
+      data: { id: 'user_noemail', email_addresses: [], primary_email_address_id: '' },
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    expect(mockSyncUser).not.toHaveBeenCalled();
+    expect(mockSendWelcome).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('skips the welcome email for undeliverable test-domain addresses', async () => {
     mockSyncUser.mockResolvedValueOnce({
       user: { id: 'uuid', clerkUserId: 'user_9', email: 'bot@example.com', name: null },

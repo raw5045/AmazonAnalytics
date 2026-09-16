@@ -2,12 +2,13 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { UserButton } from '@clerk/nextjs';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
-import { AuthError } from '@/lib/auth/requireAdmin';
+import { AuthError } from '@/lib/auth/AuthError';
 import { watchlistCountForUser } from '@/lib/watchlist/loadServer';
 import { TabNav } from './TabNav';
 import { TutorialsBanner } from './_components/TutorialsBanner';
 import { FeedbackButton } from './_components/FeedbackButton';
 import { BrandMark } from '@/app/BrandMark';
+import { AccountProblem } from '@/app/AccountProblem';
 
 /**
  * Layout shared by /explorer/* and /watchlist/*.
@@ -21,7 +22,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   try {
     user = await requireAuthenticatedUser();
   } catch (e) {
-    if (e instanceof AuthError) redirect('/sign-in');
+    if (e instanceof AuthError) {
+      // A signed-in session with no resolvable app user must NOT go to
+      // /sign-in — Clerk's widget bounces signed-in visitors back, and the
+      // redirect loop that produced (2026-09-16) is exactly what this guards.
+      if (e.code === 'UNPROVISIONABLE') return <AccountProblem message={e.message} />;
+      redirect('/sign-in');
+    }
     throw e;
   }
 

@@ -1,9 +1,10 @@
-import { eq, getTableColumns, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { users, type User } from '@/db/schema';
 
 export interface SyncUserInput {
   clerkUserId: string;
+  /** Primary email, else the first one — both callers (webhook, on-demand) pick the same way. */
   email: string;
   name?: string | null;
 }
@@ -18,6 +19,33 @@ export interface SyncUserResult {
    */
   created: boolean;
 }
+
+/** Injectable Clerk lookup so the conflict path is testable without Clerk. */
+export interface SyncDeps {
+  /**
+   * The current primary (else first) email of a Clerk user, or null when Clerk
+   * has no such user (404). Any other failure throws.
+   */
+  lookupClerkUser: (clerkUserId: string) => Promise<{ email: string | null } | null>;
+}
+
+export const defaultSyncDeps: SyncDeps = {
+  async lookupClerkUser(clerkUserId) {
+    // Dynamic imports keep Clerk's server bundle out of module graphs that
+    // never reach this path (the Railway worker, unit tests).
+    const [{ clerkClient }, { isClerkAPIResponseError }] = await Promise.all([
+      import('@clerk/nextjs/server'),
+      import('@clerk/nextjs/errors'),
+    ]);
+    try {
+      const u = await (await clerkClient()).users.getUser(clerkUserId);
+      return { email: u.primaryEmailAddress?.emailAddress ?? u.emailAddresses[0]?.emailAddress ?? null };
+    } catch (e) {
+      if (isClerkAPIResponseError(e) && e.status === 404) return null;
+      throw e;
+    }
+  },
+};
 
 /**
  * Upsert the app user row for a Clerk user, atomically, and report whether
@@ -34,45 +62,99 @@ export interface SyncUserResult {
  * signed in, and the session.created webhook that would otherwise stamp it
  * can arrive before the row exists (it silently no-ops on unknown ids).
  */
-export async function syncUserFromClerk(input: SyncUserInput): Promise<SyncUserResult> {
+export async function syncUserFromClerk(
+  input: SyncUserInput,
+  deps: SyncDeps = defaultSyncDeps,
+): Promise<SyncUserResult> {
+  if (!input.email) throw new Error('syncUserFromClerk: email is required');
   try {
-    const [row] = await db
-      .insert(users)
-      .values({
-        clerkUserId: input.clerkUserId,
-        email: input.email,
-        name: input.name ?? null,
-        lastLoginAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: users.clerkUserId,
-        set: { email: sql`excluded.email`, name: sql`coalesce(excluded.name, ${users.name})` },
-      })
-      .returning({ ...getTableColumns(users), created: sql<boolean>`(xmax = 0)`.as('created') });
-    const { created, ...user } = row;
-    return { user, created };
+    return await upsert(input);
   } catch (e) {
     if (!isEmailUniqueViolation(e)) throw e;
-    // A row already holds this email under a different clerk_user_id. Clerk
-    // enforces unique emails across its users, so that Clerk id is dead (the
-    // Clerk user was deleted before our user.deleted webhook could clean up)
-    // and the row is orphaned. Re-link it to the live Clerk id instead of
-    // failing every insert forever — which, from the member's side, was an
-    // endless /sign-in ↔ /explorer loop. They keep their watchlist, saved
-    // views, and custom categories.
+    return await resolveEmailConflict(input, deps, e);
+  }
+}
+
+async function upsert(input: SyncUserInput): Promise<SyncUserResult> {
+  const [row] = await db
+    .insert(users)
+    .values({
+      clerkUserId: input.clerkUserId,
+      email: input.email,
+      name: input.name ?? null,
+      lastLoginAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: users.clerkUserId,
+      set: { email: sql`excluded.email`, name: sql`coalesce(excluded.name, ${users.name})` },
+    })
+    .returning({ ...getTableColumns(users), created: sql<boolean>`(xmax = 0)`.as('created') });
+  const { created, ...user } = row;
+  return { user, created };
+}
+
+/**
+ * Another row holds this email under a different clerk_user_id. Two honest
+ * explanations, told apart by asking Clerk about the OLD id:
+ *
+ *   - Clerk has no such user (404): the old account was deleted and our
+ *     user.deleted webhook never cleaned up → the row is orphaned. Re-link it
+ *     to the live Clerk id — the member keeps their watchlist, saved views and
+ *     custom categories — but never their role: privilege must not travel.
+ *   - Clerk still has the user, now under a different address: they changed
+ *     email and we missed user.updated. Refresh our copy of THEIR email so the
+ *     address frees up, then retry the insert once for the newcomer.
+ *   - Anything else (Clerk says the old user still holds this address, the
+ *     lookup fails, no row found): rethrow the original error — the caller
+ *     retries later (Svix for the webhook, the next page load on demand).
+ *
+ * Without the Clerk check, "the address is free in Clerk" would be misread
+ * as "the old id is dead", and a newcomer signing up with someone's OLD
+ * address could inherit that person's account.
+ */
+async function resolveEmailConflict(
+  input: SyncUserInput,
+  deps: SyncDeps,
+  original: unknown,
+): Promise<SyncUserResult> {
+  const stale = await db.query.users.findFirst({ where: eq(users.email, input.email) });
+  if (!stale || stale.clerkUserId === input.clerkUserId) throw original;
+
+  let clerkView: { email: string | null } | null;
+  try {
+    clerkView = await deps.lookupClerkUser(stale.clerkUserId);
+  } catch (e) {
+    console.error(`[syncUser] Clerk lookup failed for ${stale.clerkUserId} while resolving an email conflict:`, e);
+    throw original;
+  }
+
+  if (clerkView === null) {
     const [relinked] = await db
       .update(users)
-      .set(
-        input.name
-          ? { clerkUserId: input.clerkUserId, name: input.name, lastLoginAt: new Date() }
-          : { clerkUserId: input.clerkUserId, lastLoginAt: new Date() },
-      )
-      .where(eq(users.email, input.email))
+      .set({
+        clerkUserId: input.clerkUserId,
+        role: 'standard_user',
+        lastLoginAt: new Date(),
+        ...(input.name ? { name: input.name } : {}),
+      })
+      .where(and(eq(users.id, stale.id), eq(users.clerkUserId, stale.clerkUserId)))
       .returning();
-    if (!relinked) throw e;
-    console.warn(`[syncUser] re-linked orphaned users row for ${input.email} to ${input.clerkUserId}`);
+    if (!relinked) throw original;
+    console.warn(
+      `[syncUser] re-linked orphaned users row ${stale.id} from dead Clerk id ${stale.clerkUserId} to ${input.clerkUserId}`,
+    );
     return { user: relinked, created: false };
   }
+
+  if (clerkView.email && clerkView.email !== input.email) {
+    await db.update(users).set({ email: clerkView.email }).where(eq(users.id, stale.id)).returning();
+    console.warn(
+      `[syncUser] refreshed stale email on users row ${stale.id} (Clerk id ${stale.clerkUserId}); retrying insert for ${input.clerkUserId}`,
+    );
+    return await upsert(input);
+  }
+
+  throw original;
 }
 
 /**

@@ -74,7 +74,10 @@ export async function loadAbuseDigestData(day: string): Promise<AbuseDigestStats
   const weeklyActiveUsers = await loadWindow(addDays(day, -(WEEKLY_WINDOW_DAYS - 1)), day);
   const monthlyActiveUsers = await loadWindow(addDays(day, -(MONTHLY_WINDOW_DAYS - 1)), day);
 
-  // 3. Sign-ins (supplementary; latest-stamp only — see spec).
+  // 3. Sign-ins (supplementary; latest-stamp only — see spec). Since
+  //    2026-09-16 syncUserFromClerk also stamps last_login_at when it creates
+  //    a row (signup = sign-in), so a member's signup day always counts even
+  //    when the session.created webhook beat the row.
   const signInRows = await db
     .select({ email: users.email })
     .from(users)

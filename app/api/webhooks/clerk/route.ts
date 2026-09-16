@@ -78,11 +78,16 @@ export async function POST(req: Request): Promise<Response> {
       // provisionUser = atomic upsert + one-time welcome email, exactly once
       // across this webhook, its Svix retries, and getCurrentUser's on-demand
       // provisioning (whichever call inserts the row sends the email).
-      await provisionUser({
-        clerkUserId: event.data.id,
-        email: extractEmail(event.data),
-        name: extractName(event.data),
-      });
+      const email = extractEmail(event.data);
+      if (!email) {
+        // Nothing to provision without an address, and a Svix retry can't
+        // change that — acknowledge with 200 rather than 500 into a day of
+        // retries. (An empty email must also never reach the upsert: it would
+        // collide on the unique email index with every other address-less user.)
+        console.warn(`[clerk webhook] ${event.type} for ${event.data.id} carries no email address — skipped`);
+        return new Response('ok (no email)', { status: 200 });
+      }
+      await provisionUser({ clerkUserId: event.data.id, email, name: extractName(event.data) });
     } else if (event.type === 'user.deleted') {
       // FK cleanup on user delete (verified Batch 4): saved_views,
       // watchlist_items, weekly_digest_sends, custom_categories CASCADE and
