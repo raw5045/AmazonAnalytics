@@ -47,6 +47,25 @@ describe('filtersToQueryString', () => {
     expect(reparsed).toEqual(filters);
   });
 
+  it('round-trips a custom volume jump and a category-only filter set', () => {
+    const custom: ExplorerFilters = {
+      ...filters,
+      q: null,
+      qMode: 'word',
+      jump: 'custom',
+      jumpMetric: 'volume',
+      jumpFrom: 30_000,
+      jumpTo: 100_000,
+      leafPaths: [],
+      customCategoryIds: [],
+    };
+    expect(parseExplorerFilters(searchParamsToLike(new URLSearchParams(filtersToQueryString(custom))))).toEqual(custom);
+    const categoryOnly = parseExplorerFilters({ category: 'Beauty' });
+    expect(
+      parseExplorerFilters(searchParamsToLike(new URLSearchParams(filtersToQueryString(categoryOnly)))),
+    ).toEqual(categoryOnly);
+  });
+
   it('produces no pagination keys', () => {
     const qs = filtersToQueryString({ ...filters, page: 7, perPage: 50 });
     const params = new URLSearchParams(qs);

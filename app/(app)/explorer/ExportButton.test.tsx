@@ -34,12 +34,21 @@ describe('ExportButton', () => {
         'content-disposition': 'attachment; filename="keywordquarry-keywords-2026-09-12.csv"',
       }),
     );
-    render(<ExportButton query="rank_max=100&sort=imp" />);
-    fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
-    await screen.findByText(/Downloaded 1,234 rows/);
-    expect(fetchMock).toHaveBeenCalledWith('/api/explorer/export?rank_max=100&sort=imp', expect.anything());
-    expect(clickSpy).toHaveBeenCalledTimes(1);
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(<ExportButton query="rank_max=100&sort=imp" />);
+      fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
+      await screen.findByText(/Downloaded 1,234 rows/);
+      expect(fetchMock).toHaveBeenCalledWith('/api/explorer/export?rank_max=100&sort=imp', expect.anything());
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('status')).toHaveTextContent(/Downloaded 1,234 rows/); // announced to screen readers
+      // The blob URL is revoked only after the browser has had time to start the download.
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(10_000);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:mock');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('says so when the export was cut at the cap', async () => {
@@ -72,6 +81,8 @@ describe('ExportButton', () => {
     fetchMock.mockReturnValueOnce(new Promise(() => {}));
     render(<ExportButton query="rank_max=100" />);
     fireEvent.click(screen.getByRole('button', { name: /export csv/i }));
-    expect(screen.getByRole('button', { name: /exporting/i })).toBeDisabled();
+    const button = screen.getByRole('button', { name: /exporting/i });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('aria-busy', 'true');
   });
 });

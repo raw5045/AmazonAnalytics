@@ -14,13 +14,24 @@ import { expandCustomCategories } from '@/lib/customCategories/expand';
 import { countUserActivityToday } from '@/lib/activity/readToday';
 import { bumpUserActivity } from '@/lib/activity/bump';
 import { etDay } from '@/lib/activity/etDay';
-import { buildExplorerCsv, EXPORT_ROW_CAP, EXPORTS_PER_DAY } from '@/lib/explorer/export/buildCsv';
+import { csvHeaderLine, csvRowLine, EXPORT_ROW_CAP, EXPORTS_PER_DAY } from '@/lib/explorer/export/buildCsv';
 import { searchParamsToLike } from '@/lib/explorer/export/query';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120; // same ceiling as the explorer page
 
+/** Rows per streamed chunk — keeps the response a stream (no 4.5 MB buffered-response limit). */
+const STREAM_CHUNK_ROWS = 500;
+
 export async function GET(req: Request) {
+  // A GET with a side effect (quota) behind a cookie: refuse cross-site
+  // fetches/navigations outright so another site can't burn a member's
+  // daily exports. Same-origin and direct navigations ('none') pass.
+  const site = req.headers.get('sec-fetch-site');
+  if (site && site !== 'same-origin' && site !== 'none') {
+    return NextResponse.json({ error: 'Cross-site export requests are not allowed.' }, { status: 403 });
+  }
+
   let user;
   try {
     user = await requireAuthenticatedUser();
@@ -31,9 +42,9 @@ export async function GET(req: Request) {
     throw e;
   }
 
-  // Soft daily cap on the fire-and-forget counter (two simultaneous exports
-  // at 9/10 may both pass — accepted; the cap exists to make bulk extraction
-  // impractical, not to be a ledger).
+  // Soft daily cap: read-then-run, so two simultaneous exports at 9/10 may
+  // both pass — accepted; the cap exists to make bulk extraction impractical,
+  // not to be a ledger.
   const usedToday = await countUserActivityToday(user.id, 'explorer_export');
   if (usedToday >= EXPORTS_PER_DAY) {
     return NextResponse.json(
@@ -59,17 +70,45 @@ export async function GET(req: Request) {
     );
   }
 
-  const appUrl = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
-  const csv = buildExplorerCsv(result.rows, { window: filters.window, matchMode: filters.matchMode, appUrl });
-  const week = result.currentWeekEndDate ?? etDay(new Date());
-  void bumpUserActivity(user.id, 'explorer_export'); // abuse-digest counter + daily cap (fire-and-forget)
+  // Truncation: the N+1 probe on the covered/legacy paths, OR a capped count
+  // on the search-term path (there `hasNext` is derived from a total already
+  // clamped to 10,000, so at perPage = 10,000 it reads false exactly when the
+  // real count is larger).
+  const truncated = result.hasNext || (result.rows.length >= EXPORT_ROW_CAP && result.totalIsCapped);
+
+  // The counter IS the cap's enforcement, so it is awaited (fail-soft by
+  // contract, so it cannot fail the request). An empty export costs nothing.
+  if (result.rows.length > 0) await bumpUserActivity(user.id, 'explorer_export');
+
+  const opts = {
+    window: filters.window,
+    matchMode: filters.matchMode,
+    appUrl: process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com',
+  };
+  const meta = result.currentWeekEndDate;
+  const week = meta && /^\d{4}-\d{2}-\d{2}$/.test(meta) ? meta : etDay(new Date());
+
+  const encoder = new TextEncoder();
+  const rows = result.rows;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(csvHeaderLine(opts)));
+      for (let i = 0; i < rows.length; i += STREAM_CHUNK_ROWS) {
+        controller.enqueue(
+          encoder.encode(rows.slice(i, i + STREAM_CHUNK_ROWS).map((r) => csvRowLine(r, opts)).join('')),
+        );
+      }
+      controller.close();
+    },
+  });
 
   const headers: Record<string, string> = {
     'content-type': 'text/csv; charset=utf-8',
     'content-disposition': `attachment; filename="keywordquarry-keywords-${week}.csv"`,
     'cache-control': 'no-store',
-    'x-export-rows': String(result.rows.length),
+    'x-content-type-options': 'nosniff',
+    'x-export-rows': String(rows.length),
   };
-  if (result.hasNext) headers['x-export-truncated'] = 'true';
-  return new Response(csv, { status: 200, headers });
+  if (truncated) headers['x-export-truncated'] = 'true';
+  return new Response(body, { status: 200, headers });
 }

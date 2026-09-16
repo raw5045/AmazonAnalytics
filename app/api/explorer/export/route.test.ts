@@ -60,7 +60,8 @@ function queryResult(over: Record<string, unknown> = {}) {
   };
 }
 
-const req = (qs: string) => new Request(`http://localhost/api/explorer/export?${qs}`);
+const req = (qs: string, headers: Record<string, string> = {}) =>
+  new Request(`http://localhost/api/explorer/export?${qs}`, { headers });
 
 describe('GET /api/explorer/export', () => {
   beforeEach(() => {
@@ -87,7 +88,7 @@ describe('GET /api/explorer/export', () => {
     expect(mockBump).not.toHaveBeenCalled();
   });
 
-  it('streams a CSV download of the filtered rows and counts the export', async () => {
+  it('returns a CSV download of the filtered rows and counts the export', async () => {
     const res = await GET(req('rank_max=100&sort=imp&window=4w'));
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toMatch(/^text\/csv/);
@@ -97,6 +98,7 @@ describe('GET /api/explorer/export', () => {
     expect(res.headers.get('x-export-rows')).toBe('2');
     expect(res.headers.get('x-export-truncated')).toBeNull();
     expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     // text() strips a leading BOM by spec; check the wire bytes (what the browser saves).
     const bytes = new Uint8Array(await res.arrayBuffer());
     expect([bytes[0], bytes[1], bytes[2]]).toEqual([0xef, 0xbb, 0xbf]);
@@ -127,6 +129,35 @@ describe('GET /api/explorer/export', () => {
     const res = await GET(req('rank_max=100'));
     expect(res.status).toBe(200);
     expect(res.headers.get('x-export-truncated')).toBe('true');
+  });
+
+  it('flags truncation on the search-term path, where hasNext is derived from the capped count', async () => {
+    const rows = Array.from({ length: 10_000 }, (_, i) => ({ ...explorerRow, searchTermRaw: `kw ${i}` }));
+    mockRun.mockResolvedValueOnce(queryResult({ rows, hasNext: false, total: 10_000, totalIsCapped: true }));
+    const res = await GET(req('q=vitamin'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-export-rows')).toBe('10000');
+    expect(res.headers.get('x-export-truncated')).toBe('true');
+  });
+
+  it('does not consume the daily quota for an empty export', async () => {
+    mockRun.mockResolvedValueOnce(queryResult({ rows: [] }));
+    const res = await GET(req('rank_max=1'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('x-export-rows')).toBe('0');
+    expect(mockBump).not.toHaveBeenCalled();
+  });
+
+  it('rejects cross-site requests before doing any work (quota cannot be burned from another site)', async () => {
+    const res = await GET(req('rank_max=100', { 'sec-fetch-site': 'cross-site' }));
+    expect(res.status).toBe(403);
+    expect(mockCountToday).not.toHaveBeenCalled();
+    expect(mockRun).not.toHaveBeenCalled();
+  });
+
+  it('accepts same-origin and navigation (no sec-fetch-site) requests', async () => {
+    expect((await GET(req('rank_max=100', { 'sec-fetch-site': 'same-origin' }))).status).toBe(200);
+    expect((await GET(req('rank_max=100', { 'sec-fetch-site': 'none' }))).status).toBe(200);
   });
 
   it('returns 504 without counting when the broad search timed out', async () => {

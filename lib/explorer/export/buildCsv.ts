@@ -23,14 +23,17 @@ type Cell = string | number | boolean | null | undefined;
 
 /**
  * RFC 4180 escaping plus a spreadsheet formula-injection guard: a string
- * beginning with = + - @ would be evaluated by Excel/Sheets, so it gets a
- * leading apostrophe. Numbers are emitted verbatim (a negative delta is data).
+ * beginning with = + - @ (or a tab / carriage return, per OWASP) would be
+ * evaluated by Excel/Sheets, so it gets a leading apostrophe. The apostrophe
+ * is visible in the spreadsheet for the rare keyword that genuinely starts
+ * with one of those characters — accepted. Numbers are emitted verbatim (a
+ * negative delta is data).
  */
 export function csvEscape(v: Cell): string {
   if (v === null || v === undefined) return '';
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
   if (typeof v === 'number') return String(v);
-  const s = /^[=+\-@]/.test(v) ? `'${v}` : v;
+  const s = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
@@ -66,36 +69,42 @@ export function exportHeader(o: Pick<CsvOptions, 'window' | 'matchMode'>): strin
 // literal escape on purpose.
 const BOM = String.fromCharCode(0xfeff);
 
-/** BOM + header + one CRLF-terminated line per row, columns per exportHeader. */
-export function buildExplorerCsv(rows: ExplorerRow[], o: CsvOptions): string {
+/** BOM + header line (CRLF-terminated) — the first chunk of a streamed export. */
+export function csvHeaderLine(o: Pick<CsvOptions, 'window' | 'matchMode'>): string {
+  return BOM + exportHeader(o).map(csvEscape).join(',') + '\r\n';
+}
+
+/** One CRLF-terminated CSV line for a row, columns per exportHeader. */
+export function csvRowLine(r: ExplorerRow, o: CsvOptions): string {
   const loose = o.matchMode === 'loose';
-  const lines: string[] = [exportHeader(o).map(csvEscape).join(',')];
-  for (const r of rows) {
-    const cells: Cell[] = [
-      r.searchTermRaw,
-      r.currentRank,
-      r.priorRank,
-      r.improvement,
-      r.estimatedMonthlyVolumeCurrent,
-      r.volumePrior,
-      r.volumeDelta,
-      r.avgPriceCents === null ? null : (r.avgPriceCents / 100).toFixed(2),
-      r.avgReviews,
-      r.fakeVolumeSeverity,
-      loose ? r.keywordInTitle1Loose : r.keywordInTitle1,
-      loose ? r.keywordInTitle2Loose : r.keywordInTitle2,
-      loose ? r.keywordInTitle3Loose : r.keywordInTitle3,
-      loose ? r.keywordTitleMatchCountLoose : r.keywordTitleMatchCount,
-      r.topClickedCategory1,
-      r.topClickedLeafCategory,
-      r.topClickedProduct1Asin,
-      r.topClickedProduct1Title,
-      r.topClickedProduct1ClickShare,
-      r.topClickedProduct1ConversionShare,
-      `https://www.amazon.com/s?k=${encodeURIComponent(r.searchTermRaw)}`,
-      `${o.appUrl}/explorer/keyword/${r.searchTermId}`,
-    ];
-    lines.push(cells.map(csvEscape).join(','));
-  }
-  return BOM + lines.join('\r\n') + '\r\n';
+  const cells: Cell[] = [
+    r.searchTermRaw,
+    r.currentRank,
+    r.priorRank,
+    r.improvement,
+    r.estimatedMonthlyVolumeCurrent,
+    r.volumePrior,
+    r.volumeDelta,
+    r.avgPriceCents === null ? null : (r.avgPriceCents / 100).toFixed(2),
+    r.avgReviews,
+    r.fakeVolumeSeverity,
+    loose ? r.keywordInTitle1Loose : r.keywordInTitle1,
+    loose ? r.keywordInTitle2Loose : r.keywordInTitle2,
+    loose ? r.keywordInTitle3Loose : r.keywordInTitle3,
+    loose ? r.keywordTitleMatchCountLoose : r.keywordTitleMatchCount,
+    r.topClickedCategory1,
+    r.topClickedLeafCategory,
+    r.topClickedProduct1Asin,
+    r.topClickedProduct1Title,
+    r.topClickedProduct1ClickShare,
+    r.topClickedProduct1ConversionShare,
+    `https://www.amazon.com/s?k=${encodeURIComponent(r.searchTermRaw)}`,
+    `${o.appUrl}/explorer/keyword/${r.searchTermId}`,
+  ];
+  return cells.map(csvEscape).join(',') + '\r\n';
+}
+
+/** The whole file as one string (tests, small exports); the route streams the same pieces. */
+export function buildExplorerCsv(rows: ExplorerRow[], o: CsvOptions): string {
+  return csvHeaderLine(o) + rows.map((r) => csvRowLine(r, o)).join('');
 }

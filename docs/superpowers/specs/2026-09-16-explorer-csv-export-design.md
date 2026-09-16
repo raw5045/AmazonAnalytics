@@ -24,7 +24,7 @@ not a loop over pages.
 | Availability | Free during beta, like everything else; the counter makes a paid gate easy later |
 | Scope of "results" | Exactly the effective filters of the page (saved view already resolved by the page; custom categories expanded server-side by the route from the user's own categories) |
 | Row order | The page's current sort |
-| Delivery | Buffered response (10k rows ≈ 2 MB) with a download header — no streaming machinery needed at this cap |
+| Delivery | Streamed response (row chunks) with a download header — a full 10k-row file is ~5 MB, past Vercel's 4.5 MB limit for buffered responses |
 
 ## Part 1 — CSV builder (`lib/explorer/export/buildCsv.ts`, pure)
 
@@ -40,7 +40,8 @@ not a loop over pages.
 - Price cents → dollars with two decimals; booleans → yes/no; null → empty.
 - `csvEscape`: RFC 4180 quoting (comma, quote, CR/LF); string values starting
   with `=`, `+`, `-`, `@` get a leading apostrophe (spreadsheet formula
-  injection); numbers are never touched.
+  injection; the apostrophe is visible in the sheet for a genuine keyword
+  starting with one of those — accepted); numbers are never touched.
 - `buildExplorerCsv(rows, opts)` → UTF-8 BOM + header + rows, CRLF line
   endings (Excel-friendly).
 
@@ -72,9 +73,14 @@ row (0 when absent). `UserActivityMetric` gains `'explorer_export'`.
    `Content-Disposition: attachment; filename="keywordquarry-keywords-<week>.csv"`
    (week = the data's `currentWeekEndDate`), `Cache-Control: no-store`,
    `X-Export-Rows: <n>`, and `X-Export-Truncated: true` when the query's N+1
-   probe says more rows exist beyond the cap.
-5. `void bumpUserActivity(user.id, 'explorer_export')` after a successful build
-   (fire-and-forget per the activity contract; the cap is soft by design).
+   probe says more rows exist beyond the cap — or, on the search-term path
+   (where `hasNext` derives from a count already clamped to 10,000), when the
+   export hit the cap and the count was capped.
+5. `await bumpUserActivity(user.id, 'explorer_export')` after a successful build
+   (awaited — it is the cap's enforcement — but fail-soft, so it can never fail
+   the request; skipped for an empty export). The cap stays soft: read-then-run.
+   Cross-site requests (`sec-fetch-site` other than same-origin/none) are
+   refused up front so another site cannot burn a member's quota.
 6. `export const maxDuration = 120` (same as the explorer page); the query
    keeps its existing statement timeouts.
 
@@ -113,8 +119,8 @@ the text version. No new flag: the cap already bounds it.
 
 - Streaming/chunked exports beyond 10k rows; XLSX; scheduled or emailed
   exports; export of detail-page history.
-- A hard (transactional) daily cap — the counter is fire-and-forget by
-  contract, so two simultaneous exports at 9/10 may both succeed.
+- A hard (transactional) daily cap — the check is read-then-run, so two
+  simultaneous exports at 9/10 may both succeed.
 
 ## Ship checklist (owner-gated)
 

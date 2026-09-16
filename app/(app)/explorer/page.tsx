@@ -160,6 +160,10 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
     else pageOneParams.set(k, v);
   }
   const pageOneHref = pageOneParams.toString() ? `/explorer?${pageOneParams.toString()}` : '/explorer';
+  // Effective filters for the CSV export (saved view already resolved; custom
+  // categories expanded by the route from the user's own set). Doubles as the
+  // button's key so a stale "Downloaded N rows" note never survives a filter change.
+  const exportQuery = filtersToQueryString(filters);
 
   return (
     <div className="flex">
@@ -244,9 +248,7 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
                 {filtersAreCustomized(filters) && (
                   <a href="/explorer" className="text-sm underline text-gray-600">Reset filters</a>
                 )}
-                {/* Effective filters (saved view already resolved), custom categories
-                    expanded by the route itself — 2026-09-16 export spec. */}
-                {user && rows.length > 0 && <ExportButton query={filtersToQueryString(filters)} />}
+                {user && rows.length > 0 && <ExportButton key={exportQuery} query={exportQuery} />}
               </div>
             </div>
             <div className="mb-3 flex flex-wrap items-center gap-2">

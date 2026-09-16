@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerCsv, csvEscape, exportHeader, EXPORT_ROW_CAP, EXPORTS_PER_DAY } from './buildCsv';
+import {
+  buildExplorerCsv,
+  csvEscape,
+  csvHeaderLine,
+  csvRowLine,
+  exportHeader,
+  EXPORT_ROW_CAP,
+  EXPORTS_PER_DAY,
+} from './buildCsv';
 import type { ExplorerRow } from '../types';
 
 const row = (o: Partial<ExplorerRow> = {}): ExplorerRow => ({
@@ -47,6 +55,8 @@ describe('csvEscape', () => {
     expect(csvEscape('+1 protein')).toBe("'+1 protein");
     expect(csvEscape('-x')).toBe("'-x");
     expect(csvEscape('@cmd')).toBe("'@cmd");
+    expect(csvEscape('\tx')).toBe("'\tx"); // leading tab/CR are on OWASP's trigger list too
+    expect(csvEscape('\rx')).toBe('"\'\rx"');
     expect(csvEscape(-766)).toBe('-766'); // a negative number is data, not a formula
   });
 
@@ -68,6 +78,13 @@ describe('buildExplorerCsv', () => {
     expect(l).toHaveLength(4); // header + 2 rows + trailing terminator
     expect(l[1].startsWith('magnesium glycinate,1234,2000,766,48210,30000,18210,19.99,4321,none,')).toBe(true);
     expect(l[2].startsWith('zinc,')).toBe(true);
+  });
+
+  it('is exactly the header line followed by the row lines the streaming route emits', () => {
+    const rows = [row(), row({ searchTermRaw: 'zinc' })];
+    expect(buildExplorerCsv(rows, opts)).toBe(csvHeaderLine(opts) + rows.map((r) => csvRowLine(r, opts)).join(''));
+    expect(csvHeaderLine(opts).charCodeAt(0)).toBe(0xfeff);
+    expect(csvRowLine(row(), opts).endsWith('\r\n')).toBe(true);
   });
 
   it('labels window-relative columns with the window and picks strict vs loose title flags by match mode', () => {

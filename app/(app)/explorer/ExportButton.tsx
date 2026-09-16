@@ -7,11 +7,15 @@ import { EXPORT_ROW_CAP } from '@/lib/explorer/export/buildCsv';
  * "Export CSV" for the current explorer results. `query` is the effective
  * filter query string the page computed (saved view already resolved), so
  * the download matches the table exactly. The route caps rows and daily
- * exports; both outcomes are reported inline next to the button.
+ * exports; both outcomes are reported inline next to the button (as a live
+ * region, so screen readers hear them too).
  */
 type Status = 'idle' | 'exporting' | 'done' | 'error';
 
 const FAILED = 'Export failed — please try again.';
+// Firefox/Safari can abort a download whose blob URL is revoked before it
+// starts; give the browser time before releasing the object URL.
+const REVOKE_DELAY_MS = 10_000;
 
 export function ExportButton({ query }: { query: string }) {
   const [status, setStatus] = useState<Status>('idle');
@@ -39,7 +43,7 @@ export function ExportButton({ query }: { query: string }) {
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), REVOKE_DELAY_MS);
       const rows = Number(res.headers.get('x-export-rows') ?? '0');
       const truncated = res.headers.get('x-export-truncated') === 'true';
       setNote(
@@ -60,12 +64,15 @@ export function ExportButton({ query }: { query: string }) {
         type="button"
         onClick={run}
         disabled={status === 'exporting'}
+        aria-busy={status === 'exporting'}
         title={`Download the current results as CSV (up to ${EXPORT_ROW_CAP.toLocaleString()} rows)`}
         className="rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-60"
       >
         {status === 'exporting' ? 'Exporting…' : 'Export CSV'}
       </button>
-      {note && <span className={status === 'error' ? 'text-red-700' : 'text-gray-600'}>{note}</span>}
+      <span role="status" aria-live="polite" className={status === 'error' ? 'text-red-700' : 'text-gray-600'}>
+        {note}
+      </span>
     </span>
   );
 }

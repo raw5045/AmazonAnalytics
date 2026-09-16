@@ -22,7 +22,7 @@ export function searchParamsToLike(params: URLSearchParams): SearchParamsLike {
  * saved view's filters without the route re-resolving saved views.
  */
 export function filtersToQueryString(filters: ExplorerFilters): string {
-  const like = filtersToSearchParams(filters as unknown as Record<string, unknown>);
+  const like = filtersToSearchParams(filters);
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(like)) {
     if (v === undefined) continue;
