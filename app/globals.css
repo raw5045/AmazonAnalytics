@@ -1,6 +1,14 @@
 @import "tailwindcss";
 
+/* KeywordQuarry is a light-only design (white cards, navy header). Declare
+   it explicitly: `color-scheme: light` keeps native form controls, scrollbars
+   and pickers on their light UA styles even when the visitor's OS is in dark
+   mode. The create-next-app dark-mode override that used to live below flipped
+   the body text to near-white under prefers-color-scheme: dark, and Tailwind's
+   reset makes inputs/selects inherit that color — white text in white boxes.
+   Two beta users hit exactly that (2026-09-16). */
 :root {
+  color-scheme: light;
   --background: #ffffff;
   --foreground: #171717;
 }
@@ -10,13 +18,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
