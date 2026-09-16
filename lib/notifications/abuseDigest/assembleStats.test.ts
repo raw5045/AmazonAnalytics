@@ -36,6 +36,7 @@ describe('assemblePerUserActivity', () => {
       watchlistAdds: 3,
       savedViewsCreated: 0,
       customCategoriesCreated: 0,
+      exports: 0,
     });
     // A creations-only user (no counters) still appears as active:
     expect(rows[2].customCategoriesCreated).toBe(1);
@@ -75,3 +76,17 @@ describe('assemblePerUserActivity', () => {
     ).toEqual([]);
   });
 });
+
+describe('assemblePerUserActivity — exports', () => {
+  it('maps the explorer_export counter onto the exports column', () => {
+    const rows = assemblePerUserActivity(
+      [{ userId: 'u1', metric: 'explorer_export', count: 4 }] as CounterRow[],
+      { watchlistAdds: new Map(), savedViewsCreated: new Map(), customCategoriesCreated: new Map() },
+      new Map([['u1', { email: 'a@x.com', name: null }]]),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].exports).toBe(4);
+    expect(rows[0].explorerQueries).toBe(0);
+  });
+});
+

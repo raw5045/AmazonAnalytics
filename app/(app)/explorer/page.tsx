@@ -28,6 +28,8 @@ import { PaginationControls } from './Pagination';
 import { ResultCountDisplay, DeferredResultCount, ResultCountSkeleton, PageOf, DeferredPageOf } from './ResultCount';
 import { PerfStrip } from './PerfStrip';
 import { ChartChunkWarmer } from './ChartChunkWarmer';
+import { ExportButton } from './ExportButton';
+import { filtersToQueryString } from '@/lib/explorer/export/query';
 
 export const metadata: Metadata = {
   title: 'Keyword Explorer',
@@ -238,9 +240,14 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
                   </span>
                 )}
               </div>
-              {filtersAreCustomized(filters) && (
-                <a href="/explorer" className="text-sm underline text-gray-600">Reset filters</a>
-              )}
+              <div className="flex items-center gap-4">
+                {filtersAreCustomized(filters) && (
+                  <a href="/explorer" className="text-sm underline text-gray-600">Reset filters</a>
+                )}
+                {/* Effective filters (saved view already resolved), custom categories
+                    expanded by the route itself — 2026-09-16 export spec. */}
+                {user && rows.length > 0 && <ExportButton query={filtersToQueryString(filters)} />}
+              </div>
             </div>
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <DataWeekChip week={currentWeekEndDate} />

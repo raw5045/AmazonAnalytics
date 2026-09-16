@@ -27,6 +27,7 @@ export interface UserInfo {
 const USER_METRICS = {
   explorerQuery: 'explorer_query',
   detailView: 'detail_view',
+  explorerExport: 'explorer_export',
 } satisfies Record<string, UserActivityMetric>;
 
 /**
@@ -55,6 +56,7 @@ export function assemblePerUserActivity(
         watchlistAdds: 0,
         savedViewsCreated: 0,
         customCategoriesCreated: 0,
+        exports: 0,
       };
       byUser.set(userId, row);
     }
@@ -65,6 +67,7 @@ export function assemblePerUserActivity(
     const row = rowFor(c.userId);
     if (c.metric === USER_METRICS.explorerQuery) row.explorerQueries = c.count;
     else if (c.metric === USER_METRICS.detailView) row.detailViews = c.count;
+    else if (c.metric === USER_METRICS.explorerExport) row.exports = c.count;
     // unknown metrics: row still marks the user active, but no column moves
   }
   for (const [userId, n] of creations.watchlistAdds) rowFor(userId).watchlistAdds = n;

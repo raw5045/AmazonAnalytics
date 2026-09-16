@@ -25,6 +25,7 @@ function userWith(overrides: Partial<PerUserActivity>): PerUserActivity {
     watchlistAdds: 0,
     savedViewsCreated: 0,
     customCategoriesCreated: 0,
+    exports: 0,
     ...overrides,
   };
 }

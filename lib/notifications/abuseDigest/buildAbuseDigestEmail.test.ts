@@ -30,6 +30,7 @@ function activeUser(i: number, reads: number): PerUserActivity {
     watchlistAdds: 0,
     savedViewsCreated: 0,
     customCategoriesCreated: 0,
+    exports: 0,
   };
 }
 
@@ -197,3 +198,17 @@ describe('buildAbuseDigestEmail — active-user windows', () => {
     expect(built.html.match(/…and 3 more active users/g)).toHaveLength(2);
   });
 });
+
+describe('buildAbuseDigestEmail — exports column', () => {
+  it('renders an Exports column in the tables and the count in the text rows', () => {
+    const stats: AbuseDigestStats = {
+      ...quietStats(),
+      activeUsers: [{ ...activeUser(1, 50), exports: 3 }],
+    };
+    const built = buildAbuseDigestEmail(stats, []);
+    expect(built.html).toContain('>Exports</th>');
+    expect(built.html).toContain('<td style="padding:5px 0 5px 8px;text-align:right;">3</td>');
+    expect(built.text).toContain('0 categories, 3 exports');
+  });
+});
+

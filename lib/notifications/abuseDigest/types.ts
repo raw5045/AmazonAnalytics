@@ -19,6 +19,8 @@ export interface PerUserActivity {
   watchlistAdds: number;
   savedViewsCreated: number;
   customCategoriesCreated: number;
+  /** CSV exports (explorer_export counter) — capped at 10/day by the route. */
+  exports: number;
 }
 
 /** Per-user activity over a trailing window of ET days (inclusive bounds). */

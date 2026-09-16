@@ -105,7 +105,7 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
  * URL-param shape that parseExplorerFilters expects. Mirrors what
  * FilterSidebar.pendingToParams does, in reverse.
  */
-function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
+export function filtersToSearchParams(f: Record<string, unknown>): SearchParamsLike {
   const p: SearchParamsLike = {};
   if (typeof f.window === 'string') p.window = f.window;
   if (typeof f.q === 'string' && f.q.length > 0) p.q = f.q;
