@@ -30,8 +30,11 @@ import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
  */
 export function SaveViewButton({
   savedViewsCount,
+  onSaved,
 }: {
   savedViewsCount: number;
+  /** Called with the created view before navigating, so the picker can show it at once. */
+  onSaved?: (view: SavedView) => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -73,7 +76,16 @@ export function SaveViewButton({
       }
       const data = (await res.json()) as { view: SavedView };
       setIsOpen(false);
+      // Hand the view to the toolbar first, so it is already in the list when
+      // the navigation commits and the picker switches to it. push() re-renders
+      // the page segment only; the layout that owns the saved-views list keeps
+      // its stale props until refresh() re-fetches it — without the refresh
+      // the new view stayed missing from the picker until a full reload (owner
+      // report, 2026-09-18). Cost: a save renders the explorer page twice
+      // (navigate + refresh), the same as rename/delete already do.
+      onSaved?.(data.view);
       router.push(`/explorer?view=${data.view.id}`);
+      router.refresh();
     } catch {
       // fetch() itself rejected (offline, DNS failure, connection reset).
       // Without this catch the rejection went unhandled and the modal sat

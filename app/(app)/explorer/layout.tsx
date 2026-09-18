@@ -1,8 +1,7 @@
 import { listSavedViewsForUser } from '@/lib/savedViews/loadServer';
 import type { SavedView } from '@/lib/savedViews/types';
-import { SavedViewsDropdown } from './SavedViewsDropdown';
-import { SaveViewButton } from './SaveViewButton';
 import { SavedViewsBar } from './SavedViewsBar';
+import { SavedViewsControls } from './SavedViewsControls';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 
 /**
@@ -18,10 +17,9 @@ export default async function ExplorerLayout({ children }: { children: React.Rea
   return (
     <>
       <SavedViewsBar>
-        <div className="w-72">
-          <SavedViewsDropdown views={savedViews} />
-        </div>
-        <SaveViewButton savedViewsCount={savedViews.length} />
+        {/* Client-side owner of the list so a just-saved view shows up (and
+            shows as active) immediately, not only after the layout re-fetches. */}
+        <SavedViewsControls views={savedViews} />
       </SavedViewsBar>
       {children}
     </>

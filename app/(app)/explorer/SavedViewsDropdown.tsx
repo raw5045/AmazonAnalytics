@@ -28,12 +28,18 @@ import { NameViewModal } from './NameViewModal';
  * "modified" indicator because the view is no longer "loaded" after
  * editing.
  *
- * Rename + Delete call the saved-views API and refresh the page.
+ * Rename + Delete call the saved-views API and refresh the page. The
+ * optional callbacks let SavedViewsControls keep its just-saved overlay
+ * consistent during the window before that refresh lands.
  */
 export function SavedViewsDropdown({
   views,
+  onDeleted,
+  onRenamed,
 }: {
   views: SavedView[];
+  onDeleted?: (id: string) => void;
+  onRenamed?: (id: string, name: string) => void;
 }) {
   const searchParams = useSearchParams();
   const viewId = searchParams?.get('view') ?? null;
@@ -84,14 +90,13 @@ export function SavedViewsDropdown({
         alert(`Failed to delete: ${body.error ?? res.statusText}`);
         return;
       }
-      // If the deleted view was the active one, drop the ?view= param;
-      // otherwise just refresh so the layout re-fetches savedViews
-      // without the deleted row.
-      if (activeView?.id === view.id) {
-        router.push('/explorer');
-      } else {
-        router.refresh();
-      }
+      onDeleted?.(view.id);
+      // Drop the ?view= tag if the deleted view was the active one, and
+      // ALWAYS refresh: push() alone re-renders the page segment only, so the
+      // layout's list would keep the deleted row as a ghost (same mechanism
+      // as the save bug — caught in its review).
+      if (activeView?.id === view.id) router.push('/explorer');
+      router.refresh();
     } catch {
       // fetch() rejected (network down). deleteView reports via alert(), so
       // keep that channel rather than introducing inline error state here.
@@ -114,6 +119,7 @@ export function SavedViewsDropdown({
         setRenameError(body.error ?? `HTTP ${res.status}`);
         return;
       }
+      onRenamed?.(renamingView.id, newName);
       setRenamingView(null);
       router.refresh();
     } catch {
