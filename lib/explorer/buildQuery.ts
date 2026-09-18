@@ -92,6 +92,53 @@ export function sortUsesVolumeDelta(sort: SortKey): boolean {
 }
 
 /**
+ * True when a rank-ordered sort should be served by walking kcs_est_vol_idx
+ * instead of kcs_rank_idx. Within one snapshot, estimated volume is a
+ * monotone non-increasing function of rank (one fit per refresh; 0
+ * inversions over 2.68M rows verified on prod, 2026-09-18), so ORDER BY
+ * volume with rank as the tie-breaker yields the SAME visible order as
+ * ORDER BY rank.
+ *
+ * The rank walk is instant when the band sits where the walk starts, and
+ * catastrophic when it must first skip every row outside the band:
+ *   - 'rank' (best first) + volMax skips the whole head above the max
+ *     (vol_max=10000 measured 12 s on prod; 242 ms on the volume walk).
+ *   - 'rank_desc' (worst first) + volMin skips the whole tail below the
+ *     min (vol_min=100000 measured 55 s; 2 ms on the volume walk).
+ * The other bound in each direction matches from the first row, so it keeps
+ * the rank walk — the volume walk would instead have to read a whole
+ * equal-volume tie group before emitting. Those groups are the SFR report's
+ * tied tail ranks (70–96k keywords each at the snapshot floor, ~424), so a
+ * volume walk that starts down there costs one group sort (~10 s cold,
+ * ~0.5 s warm). A min of 0 is a no-op bound and stays on the rank walk.
+ *
+ * The volume walk is only taken when the volume bound is the sole
+ * rank-index predicate. A rank-metric jump or a rank bound is an index
+ * condition on kcs_rank_idx (the rank walk never leaves [rankMin, rankMax]
+ * / [1, to]) but only a heap filter on the volume walk — and because rank
+ * and volume are perfectly anti-correlated, an empty or late band would
+ * make the volume walk read to the bottom of the index (~2.6M rows). Those
+ * shapes keep the rank walk, bounded by the user's own rank predicates. A
+ * volume-metric jump is the opposite case: its current-side condition is on
+ * the volume column, so it narrows the volume walk and does not gate it.
+ * The watchlist-only 'added_*' keys fall back to rank ASC on the explorer.
+ */
+export function rankSortUsesVolumeWalk(filters: ExplorerFilters): boolean {
+  const rankJump = filters.jump !== null && filters.jumpMetric !== 'volume';
+  if (rankJump || filters.rankMin !== null || filters.rankMax !== null) return false;
+  switch (filters.sort) {
+    case 'rank':
+    case 'added_asc':
+    case 'added_desc':
+      return filters.volMax !== null;
+    case 'rank_desc':
+      return filters.volMin !== null && filters.volMin > 0;
+    default:
+      return false;
+  }
+}
+
+/**
  * True when the category-scoped covered path (0046 covering index) can serve
  * this filter set: leaf/custom category active, and every OTHER active sort
  * + filter is answerable from the index (keys week/path/rank; includes
@@ -105,6 +152,11 @@ export function categoryPathIsCovered(filters: ExplorerFilters): boolean {
     && filters.jump === null
     && filters.category === null
     && filters.titleMatchMode === null
+    // Volume is neither a key nor an INCLUDE column of the 0046 covering
+    // index — a volume bound would force heap fetches, so it takes the
+    // classic paths (kcs_est_vol_idx / leaf index + heap filter) instead.
+    && filters.volMin === null
+    && filters.volMax === null
     && (filters.sort === 'rank' || filters.sort === 'rank_desc')
   );
 }
@@ -168,7 +220,8 @@ export function buildExplorerQuery(
 
   const priorRankCol = WINDOW_TO_RANK_COLUMN[filters.window];
   const improvementCol = WINDOW_TO_IMPROVEMENT_COLUMN[filters.window];
-  const orderBy = buildOrderBy(filters.sort, filters.matchMode, filters.window);
+  const volumeWalk = rankSortUsesVolumeWalk(filters);
+  const orderBy = buildOrderBy(filters.sort, filters.matchMode, filters.window, volumeWalk);
 
   // ---- covered category path (0046): category-scoped + fully-covered
   //      filter/sort set. The inner subquery is answerable entirely from
@@ -270,7 +323,7 @@ export function buildExplorerQuery(
       LIMIT ${limitParam} OFFSET ${offsetParam}
     ) k
     JOIN search_terms st ON st.id = k.search_term_id
-    ${buildOuterOrderBy(filters.sort, filters.matchMode)}
+    ${buildOuterOrderBy(filters.sort, filters.matchMode, volumeWalk)}
   `.trim();
 
     // Empty-page fallback only (OFFSET past the end → no row carries the
@@ -362,11 +415,13 @@ function severityPredicate(filters: ExplorerFilters, next: NextParam): string | 
     : `kcs.fake_volume_severity_current IN (${params})`;
 }
 
-/** rank/reviews/word bound fragments, in fixed clause order; [] when inactive. */
+/** rank/volume/reviews/word bound fragments, in fixed clause order; [] when inactive. */
 function rangeBoundPredicates(filters: ExplorerFilters, next: NextParam): string[] {
   const out: string[] = [];
   if (filters.rankMin !== null) out.push(`kcs.current_rank >= ${next(filters.rankMin)}`);
   if (filters.rankMax !== null) out.push(`kcs.current_rank <= ${next(filters.rankMax)}`);
+  if (filters.volMin !== null) out.push(`kcs.estimated_monthly_volume_current >= ${next(filters.volMin)}`);
+  if (filters.volMax !== null) out.push(`kcs.estimated_monthly_volume_current <= ${next(filters.volMax)}`);
   if (filters.reviewsMin !== null) out.push(`kcs.avg_reviews >= ${next(filters.reviewsMin)}`);
   if (filters.reviewsMax !== null) out.push(`kcs.avg_reviews <= ${next(filters.reviewsMax)}`);
   if (filters.wordsMin !== null) out.push(`kcs.word_count >= ${next(filters.wordsMin)}`);
@@ -382,7 +437,7 @@ function leafPathPredicate(filters: ExplorerFilters, next: NextParam): string | 
 }
 
 /**
- * Push every kcs WHERE predicate (current_week_end_date, rank, reviews,
+ * Push every kcs WHERE predicate (current_week_end_date, rank, volume, reviews,
  * words, jump, category, leaf, severity, title-gap) onto a fresh clause list,
  * binding args via `next` in clause order. The `q` filter is NOT here —
  * the q-path appends its own match on kcs.search_term_normalized; the
@@ -449,12 +504,20 @@ function buildOrderBy(
   sort: ExplorerFilters['sort'],
   matchMode: MatchMode,
   window: WindowKey,
+  /** See rankSortUsesVolumeWalk — same visible order, volume-index walk. */
+  volumeWalk = false,
 ): string {
   switch (sort) {
     case 'rank':
-      return 'ORDER BY kcs.current_rank ASC';
+      return volumeWalk
+        ? 'ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC'
+        : 'ORDER BY kcs.current_rank ASC';
     case 'rank_desc':
-      return 'ORDER BY kcs.current_rank DESC';
+      return volumeWalk
+        // Backward scan of kcs_est_vol_idx (DESC NULLS LAST, migration 0027) is
+        // ASC NULLS FIRST — the placement follows the index, not SQL defaults.
+        ? 'ORDER BY kcs.estimated_monthly_volume_current ASC NULLS FIRST, kcs.current_rank DESC'
+        : 'ORDER BY kcs.current_rank DESC';
     case 'imp':
       return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} DESC`;
     case 'decline':
@@ -478,7 +541,9 @@ function buildOrderBy(
       // Watchlist-only sort keys — meaningless on the explorer page
       // (no per-user "added" timestamp on the explorer's row set).
       // Fall back to default rank ordering.
-      return 'ORDER BY kcs.current_rank ASC';
+      return volumeWalk
+        ? 'ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC'
+        : 'ORDER BY kcs.current_rank ASC';
   }
 }
 
@@ -488,12 +553,16 @@ function buildOrderBy(
  * the window-specific source columns). Mirrors buildOrderBy so the joined
  * page rows come out in the same order the inner LIMIT picked.
  */
-function buildOuterOrderBy(sort: ExplorerFilters['sort'], matchMode: MatchMode): string {
+function buildOuterOrderBy(sort: ExplorerFilters['sort'], matchMode: MatchMode, volumeWalk = false): string {
   switch (sort) {
     case 'rank':
-      return 'ORDER BY k.current_rank ASC';
+      return volumeWalk
+        ? 'ORDER BY k.estimated_monthly_volume_current DESC NULLS LAST, k.current_rank ASC'
+        : 'ORDER BY k.current_rank ASC';
     case 'rank_desc':
-      return 'ORDER BY k.current_rank DESC';
+      return volumeWalk
+        ? 'ORDER BY k.estimated_monthly_volume_current ASC NULLS FIRST, k.current_rank DESC'
+        : 'ORDER BY k.current_rank DESC';
     case 'imp':
       return 'ORDER BY k.volume_delta DESC';
     case 'decline':
@@ -514,7 +583,9 @@ function buildOuterOrderBy(sort: ExplorerFilters['sort'], matchMode: MatchMode):
       return 'ORDER BY k.avg_reviews DESC NULLS LAST';
     case 'added_asc':
     case 'added_desc':
-      return 'ORDER BY k.current_rank ASC';
+      return volumeWalk
+        ? 'ORDER BY k.estimated_monthly_volume_current DESC NULLS LAST, k.current_rank ASC'
+        : 'ORDER BY k.current_rank ASC';
   }
 }
 

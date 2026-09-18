@@ -24,6 +24,8 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   qMode: 'word',
   rankMin: null,
   rankMax: null,
+  volMin: null,
+  volMax: null,
   reviewsMin: null,
   reviewsMax: null,
   wordsMin: null,
@@ -108,10 +110,19 @@ function parseEnumNullable<T extends string>(
   return (allowed as readonly string[]).includes(value) ? (value as T) : null;
 }
 
-function parsePositiveInt(value: string | undefined): number | null {
+/**
+ * Postgres column ceilings. A bound above its column's range raises 22003
+ * in the query (a 500), so the parser drops it instead — same never-500
+ * contract as any other malformed value. Volume/page bounds are bigint or
+ * OFFSET arithmetic, so they only need the safe-integer check.
+ */
+const INT4_MAX = 2_147_483_647;
+const SMALLINT_MAX = 32_767;
+
+function parsePositiveInt(value: string | undefined, max = Number.MAX_SAFE_INTEGER): number | null {
   if (!value) return null;
   const n = parseInt(value, 10);
-  if (!Number.isFinite(n) || n < 1) return null;
+  if (!Number.isSafeInteger(n) || n < 1 || n > max) return null;
   return n;
 }
 
@@ -119,10 +130,10 @@ function parsePositiveInt(value: string | undefined): number | null {
  * Like parsePositiveInt but admits 0 — used by the avg-reviews bounds,
  * where 0 is meaningful (reviews_max=0 = zero-review niches).
  */
-function parseNonNegativeInt(value: string | undefined): number | null {
+function parseNonNegativeInt(value: string | undefined, max = Number.MAX_SAFE_INTEGER): number | null {
   if (!value) return null;
   const n = parseInt(value, 10);
-  if (!Number.isFinite(n) || n < 0) return null;
+  if (!Number.isSafeInteger(n) || n < 0 || n > max) return null;
   return n;
 }
 
@@ -177,8 +188,8 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const sort = parseEnum(getOne(searchParams.sort), SORT_VALUES, EXPLORER_DEFAULTS.sort);
   let jump = parseEnumNullable(getOne(searchParams.jump), JUMP_VALUES);
   let jumpMetric: JumpMetric = parseEnum(getOne(searchParams.jump_metric), ['rank', 'volume'] as const, 'rank');
-  const jumpFrom = parsePositiveInt(getOne(searchParams.jump_from));
-  const jumpTo = parsePositiveInt(getOne(searchParams.jump_to));
+  const jumpFrom = parsePositiveInt(getOne(searchParams.jump_from), INT4_MAX);
+  const jumpTo = parsePositiveInt(getOne(searchParams.jump_to), INT4_MAX);
   // A preset is self-describing: infer the metric from it (so old/shared URLs
   // with just ?jump=v15k_to_30k work). jump_metric only governs 'custom'.
   if (jump && jump !== 'custom') {
@@ -199,16 +210,22 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
   const q = (getOne(searchParams.q) ?? '').trim();
   const qMode = parseEnum(getOne(searchParams.qmode), ['word', 'broad'] as const, 'word');
 
-  const rankMin = parsePositiveInt(getOne(searchParams.rank_min));
-  const rankMax = parsePositiveInt(getOne(searchParams.rank_max));
+  const rankMin = parsePositiveInt(getOne(searchParams.rank_min), INT4_MAX);
+  const rankMax = parsePositiveInt(getOne(searchParams.rank_max), INT4_MAX);
 
-  const reviewsMin = parseNonNegativeInt(getOne(searchParams.reviews_min));
-  const reviewsMax = parseNonNegativeInt(getOne(searchParams.reviews_max));
+  // Estimated-monthly-volume bounds (spec 2026-09-18). Zero is admitted for
+  // symmetry with the reviews bounds; NULL estimates fall out of the SQL
+  // comparison on their own.
+  const volMin = parseNonNegativeInt(getOne(searchParams.vol_min));
+  const volMax = parseNonNegativeInt(getOne(searchParams.vol_max));
+
+  const reviewsMin = parseNonNegativeInt(getOne(searchParams.reviews_min), INT4_MAX);
+  const reviewsMax = parseNonNegativeInt(getOne(searchParams.reviews_max), INT4_MAX);
 
   // parsePositiveInt (not the zero-admitting reviews parser): word count
   // floors at 1 — every keyword has at least one word.
-  const wordsMin = parsePositiveInt(getOne(searchParams.words_min));
-  const wordsMax = parsePositiveInt(getOne(searchParams.words_max));
+  const wordsMin = parsePositiveInt(getOne(searchParams.words_min), SMALLINT_MAX);
+  const wordsMax = parsePositiveInt(getOne(searchParams.words_max), SMALLINT_MAX);
 
   const severities = parseSeverities(getOne(searchParams.severity));
   const titleSlots = parseTitleSlots(getOne(searchParams.titles));
@@ -226,6 +243,8 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     qMode,
     rankMin,
     rankMax,
+    volMin,
+    volMax,
     reviewsMin,
     reviewsMax,
     wordsMin,

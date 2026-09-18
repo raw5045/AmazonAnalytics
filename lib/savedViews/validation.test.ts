@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeFilters, normalizeFiltersBlob } from './validation';
+import { normalizeFilters, normalizeFiltersBlob, filtersToSearchParams } from './validation';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
 
 describe('normalizeFilters + normalizeFiltersBlob', () => {
@@ -113,5 +113,32 @@ describe('word-count filter round-trip', () => {
     const legacy = normalizeFiltersBlob({ window: '4w' });
     expect(legacy.wordsMin).toBeNull();
     expect(legacy.wordsMax).toBeNull();
+  });
+});
+
+describe('search-volume range round-trip', () => {
+  it('normalizeFilters preserves volume bounds through the URL-param round-trip', () => {
+    const out = normalizeFilters({ ...EXPLORER_DEFAULTS, volMin: 10_000, volMax: 250_000 });
+    expect(out.volMin).toBe(10_000);
+    expect(out.volMax).toBe(250_000);
+  });
+
+  it('round-trips a 0 bound (typeof-number check, not truthiness)', () => {
+    expect(normalizeFilters({ ...EXPLORER_DEFAULTS, volMax: 0 }).volMax).toBe(0);
+  });
+
+  it('normalizeFiltersBlob reads stored bounds and defaults legacy blobs to null', () => {
+    expect(normalizeFiltersBlob({ volMin: 10_000 }).volMin).toBe(10_000);
+    expect(normalizeFiltersBlob({ volMax: 0 }).volMax).toBe(0);
+    const legacy = normalizeFiltersBlob({ window: '4w', rankMax: 1000 });
+    expect(legacy.volMin).toBeNull();
+    expect(legacy.volMax).toBeNull();
+    expect(legacy.rankMax).toBe(1000);
+  });
+
+  it('filtersToSearchParams emits vol_min / vol_max only when set', () => {
+    expect(filtersToSearchParams({ volMin: 10_000, volMax: 0 })).toMatchObject({ vol_min: '10000', vol_max: '0' });
+    expect(filtersToSearchParams({ rankMax: 5 })).not.toHaveProperty('vol_min');
+    expect(filtersToSearchParams({ rankMax: 5 })).not.toHaveProperty('vol_max');
   });
 });

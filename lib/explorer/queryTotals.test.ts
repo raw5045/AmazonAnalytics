@@ -107,3 +107,14 @@ describe('word-count filter blocks precomputed totals', () => {
     expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], wordsMax: 2 })).toBe(false);
   });
 });
+
+describe('search-volume range guards', () => {
+  it('any volume bound disables every precomputed-total shortcut', () => {
+    expect(canUseDefaultTotal({ ...baseFilters, volMin: 10_000 })).toBe(false);
+    expect(canUseDefaultTotal({ ...baseFilters, volMax: 0 })).toBe(false);
+    expect(canUseCategoryFacet({ ...baseFilters, category: 'Beauty', volMin: 10_000 })).toBe(false);
+    expect(canUseCategoryFacet({ ...baseFilters, category: 'Beauty', volMax: 0 })).toBe(false);
+    expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], volMin: 10_000 })).toBe(false);
+    expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], volMax: 0 })).toBe(false);
+  });
+});

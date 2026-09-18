@@ -154,6 +154,8 @@ export async function runExplorerQuery(
     leafCount: filters.leafPaths.length,
     sort: filters.sort,
     rankMax: filters.rankMax,
+    volMin: filters.volMin,
+    volMax: filters.volMax,
     qMode: filters.q ? filters.qMode : null,
   };
   try {

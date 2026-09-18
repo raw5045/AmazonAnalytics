@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered, rankSortUsesVolumeWalk } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters, WindowKey } from './types';
 
@@ -724,5 +724,149 @@ describe('covered category path (0046 covering index)', () => {
     expect(inner).toMatch(/LIMIT \$\d+ OFFSET \$\d+/);
     expect(args).toContain(101); // perPage + 1
     expect(args).toContain(200); // (page-1)*perPage
+  });
+});
+
+describe('search-volume range filter', () => {
+  it('emits inclusive bounds on estimated_monthly_volume_current in rows AND count SQL', () => {
+    const { sql, countSql, args, countArgs } = buildExplorerQuery({ ...baseFilters, volMin: 10_000, volMax: 250_000 });
+    expect(norm(sql)).toContain('kcs.estimated_monthly_volume_current >= $');
+    expect(norm(sql)).toContain('kcs.estimated_monthly_volume_current <= $');
+    expect(norm(countSql)).toContain('kcs.estimated_monthly_volume_current >= $');
+    expect(norm(countSql)).toContain('kcs.estimated_monthly_volume_current <= $');
+    expect(countArgs).toContain(10_000);
+    expect(countArgs).toContain(250_000);
+    expect(args.slice(0, countArgs.length)).toEqual(countArgs);
+  });
+
+  it('emits only the bound that is set', () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, volMin: 10_000 });
+    expect(norm(sql)).toContain('estimated_monthly_volume_current >= $');
+    expect(norm(sql)).not.toContain('estimated_monthly_volume_current <= $');
+  });
+
+  it('treats volMax: 0 as an active bound (not falsy-skipped)', () => {
+    const { sql, countArgs } = buildExplorerQuery({ ...baseFilters, volMax: 0 });
+    expect(norm(sql)).toContain('estimated_monthly_volume_current <= $');
+    expect(countArgs).toContain(0);
+  });
+
+  it('is absent by default', () => {
+    const { sql, countSql } = buildExplorerQuery(baseFilters);
+    expect(norm(sql)).not.toContain('estimated_monthly_volume_current >=');
+    expect(norm(sql)).not.toContain('estimated_monthly_volume_current <=');
+    expect(norm(countSql)).not.toContain('estimated_monthly_volume_current >=');
+  });
+
+  it('applies on the q (text-search) path too', () => {
+    const { sql, countSql } = buildExplorerQuery({ ...baseFilters, q: 'magnesium', volMin: 10_000 });
+    expect(norm(sql)).toContain('estimated_monthly_volume_current >= $');
+    expect(norm(countSql)).toContain('estimated_monthly_volume_current >= $');
+  });
+
+  it('composes with the rank bounds and the volume-delta sorts', () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'imp', rankMax: 50_000, volMin: 10_000 });
+    expect(norm(sql)).toContain('kcs.current_rank <= $');
+    expect(norm(sql)).toContain('estimated_monthly_volume_current >= $');
+    expect(norm(sql)).toContain('estimated_monthly_volume_current IS NOT NULL');
+  });
+
+  it('routes a category-scoped query with a volume bound OFF the covered path', () => {
+    const leaf = { ...baseFilters, leafPaths: ['Health & Household › X'] };
+    expect(categoryPathIsCovered(leaf)).toBe(true);
+    expect(categoryPathIsCovered({ ...leaf, volMin: 10_000 })).toBe(false);
+    expect(categoryPathIsCovered({ ...leaf, volMax: 0 })).toBe(false);
+    const { sql } = buildExplorerQuery({ ...leaf, volMin: 10_000 }, '2026-08-15');
+    expect(norm(sql)).not.toContain(') i JOIN keyword_current_summary kcs');
+    expect(norm(sql)).toContain('estimated_monthly_volume_current >= $');
+  });
+});
+
+describe('rank sorts with a volume bound take the volume-ordered walk', () => {
+  it("'rank' + volMax orders by volume DESC then rank ASC (same visible order; planner range-scans kcs_est_vol_idx)", () => {
+    const { sql, countSql } = buildExplorerQuery({ ...baseFilters, volMax: 10_000 });
+    expect(norm(sql)).toContain('ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC');
+    expect(norm(sql)).not.toContain('ORDER BY kcs.current_rank ASC');
+    expect(norm(countSql)).not.toContain('ORDER BY');
+  });
+
+  it("'rank_desc' + volMin orders by volume ASC NULLS FIRST (the index mirror) then rank DESC", () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'rank_desc', volMin: 100_000 });
+    expect(norm(sql)).toContain('ORDER BY kcs.estimated_monthly_volume_current ASC NULLS FIRST, kcs.current_rank DESC');
+    expect(norm(sql)).not.toContain('ORDER BY kcs.current_rank DESC');
+    const q = buildExplorerQuery({ ...baseFilters, q: 'lamp', sort: 'rank_desc', volMin: 100_000 });
+    expect(norm(q.sql)).toContain('ORDER BY kcs.estimated_monthly_volume_current ASC NULLS FIRST, kcs.current_rank DESC');
+    expect(norm(q.sql)).toContain('ORDER BY k.estimated_monthly_volume_current ASC NULLS FIRST, k.current_rank DESC');
+  });
+
+  it('keeps the plain rank walk for the bound that matches from the first row', () => {
+    // best-first + a MIN bound: the head already satisfies it
+    const bestMin = norm(buildExplorerQuery({ ...baseFilters, volMin: 10_000 }).sql);
+    expect(bestMin).toContain('ORDER BY kcs.current_rank ASC');
+    expect(bestMin).not.toContain('NULLS LAST, kcs.current_rank');
+    // worst-first + a MAX bound: the tail already satisfies it
+    const worstMax = norm(buildExplorerQuery({ ...baseFilters, sort: 'rank_desc', volMax: 10_000 }).sql);
+    expect(worstMax).toContain('ORDER BY kcs.current_rank DESC');
+    expect(worstMax).not.toContain('NULLS FIRST');
+    const worstMaxQ = norm(buildExplorerQuery({ ...baseFilters, q: 'lamp', sort: 'rank_desc', volMax: 10_000 }).sql);
+    expect(worstMaxQ).toContain('ORDER BY k.current_rank DESC');
+  });
+
+  it('rankSortUsesVolumeWalk truth table', () => {
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, volMin: 1 })).toBe(false);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, volMax: 1 })).toBe(true);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, volMin: 1, volMax: 5 })).toBe(true);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'rank_desc', volMin: 1 })).toBe(true);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'rank_desc', volMax: 1 })).toBe(false);
+    // vol_min=0 is a no-op bound: the worst-rank walk matches from its first row.
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'rank_desc', volMin: 0 })).toBe(false);
+    expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'rank_desc', volMin: 0 }).sql)).toContain('ORDER BY kcs.current_rank DESC');
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'rank_desc', volMin: 1, volMax: 5 })).toBe(true);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'rank_desc' })).toBe(false);
+  });
+
+  it('stays on the rank walk when a jump or a rank bound is active (those bound kcs_rank_idx, not the volume index)', () => {
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, volMax: 10_000, jump: '500k_to_100k' })).toBe(false);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, volMax: 10_000, rankMax: 1000 })).toBe(false);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, volMax: 10_000, rankMin: 5 })).toBe(false);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'rank_desc', volMin: 100_000, jump: 'custom', jumpFrom: 50_000, jumpTo: 10_000 })).toBe(false);
+    // A volume-metric jump bounds the VOLUME index, so it narrows the volume walk instead of gating it.
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, volMax: 20_000, jump: 'v5k_to_15k', jumpMetric: 'volume' })).toBe(true);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'rank_desc', volMin: 1000, jump: 'v30k_to_100k', jumpMetric: 'volume' })).toBe(true);
+    const volJumpSql = norm(buildExplorerQuery({ ...baseFilters, volMax: 20_000, jump: 'v5k_to_15k', jumpMetric: 'volume' }).sql);
+    expect(volJumpSql).toContain('kcs.estimated_monthly_volume_current > $');
+    expect(volJumpSql).toContain('ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC');
+    const jumpSql = norm(buildExplorerQuery({ ...baseFilters, volMax: 10_000, jump: '500k_to_100k' }).sql);
+    expect(jumpSql).toContain('kcs.current_rank < $');
+    expect(jumpSql).toContain('estimated_monthly_volume_current <= $');
+    expect(jumpSql).toContain('ORDER BY kcs.current_rank ASC');
+    expect(jumpSql).not.toContain('NULLS LAST, kcs.current_rank');
+  });
+
+  it("'added_*' + volMax rewrites the q-path outer ORDER BY too", () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, q: 'lamp', sort: 'added_desc', volMax: 5 });
+    expect(norm(sql)).toContain('ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC');
+    expect(norm(sql)).toContain('ORDER BY k.estimated_monthly_volume_current DESC NULLS LAST, k.current_rank ASC');
+  });
+
+  it('rewrites both the inner and the outer ORDER BY on the q path', () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, q: 'lamp', volMax: 10_000 });
+    expect(norm(sql)).toContain('ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC');
+    expect(norm(sql)).toContain('ORDER BY k.estimated_monthly_volume_current DESC NULLS LAST, k.current_rank ASC');
+  });
+
+  it('leaves rank sorts alone without a volume bound, and non-rank sorts alone with one', () => {
+    const plain = norm(buildExplorerQuery(baseFilters).sql);
+    expect(plain).toContain('ORDER BY kcs.current_rank ASC');
+    expect(plain).not.toContain('NULLS LAST, kcs.current_rank');
+    expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_asc', volMax: 10_000 }).sql)).toContain('ORDER BY kcs.avg_reviews ASC NULLS LAST');
+    expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'imp', volMax: 10_000 }).sql)).toMatch(/ORDER BY \(kcs\.estimated_monthly_volume_current - CASE/);
+  });
+
+  it('covers the watchlist-only sort keys that fall back to rank order on the explorer', () => {
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'added_asc', volMax: 5 })).toBe(true);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'added_asc' })).toBe(false);
+    expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'title_gap', volMax: 5 })).toBe(false);
+    expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'added_desc', volMax: 5 }).sql)).toContain('ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC');
   });
 });

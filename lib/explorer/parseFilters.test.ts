@@ -20,6 +20,8 @@ describe('parseExplorerFilters', () => {
       q: 'wireless',
       rank_min: '1',
       rank_max: '1000',
+      vol_min: '10000',
+      vol_max: '250000',
       words_min: '3',
       words_max: '5',
       reviews_min: '250',
@@ -40,6 +42,8 @@ describe('parseExplorerFilters', () => {
       qMode: 'word',
       rankMin: 1,
       rankMax: 1000,
+      volMin: 10000,
+      volMax: 250000,
       wordsMin: 3,
       wordsMax: 5,
       reviewsMin: 250,
@@ -291,5 +295,51 @@ describe('parseExplorerFilters — word-count range', () => {
     const bad = parseExplorerFilters({ words_min: '0', words_max: 'abc' });
     expect(bad.wordsMin).toBeNull();
     expect(bad.wordsMax).toBeNull();
+  });
+});
+
+describe('search-volume range params', () => {
+  it('parses vol_min and vol_max', () => {
+    const f = parseExplorerFilters({ vol_min: '10000', vol_max: '250000' });
+    expect(f.volMin).toBe(10000);
+    expect(f.volMax).toBe(250000);
+  });
+
+  it('accepts 0 as a bound', () => {
+    expect(parseExplorerFilters({ vol_max: '0' }).volMax).toBe(0);
+    expect(parseExplorerFilters({ vol_min: '0' }).volMin).toBe(0);
+  });
+
+  it('defaults to null and drops garbage', () => {
+    expect(parseExplorerFilters({}).volMin).toBeNull();
+    expect(parseExplorerFilters({}).volMax).toBeNull();
+    const bad = parseExplorerFilters({ vol_min: '-5', vol_max: 'lots' });
+    expect(bad.volMin).toBeNull();
+    expect(bad.volMax).toBeNull();
+  });
+
+  it('is independent from the rank bounds', () => {
+    const f = parseExplorerFilters({ rank_max: '1000', vol_min: '10000' });
+    expect(f.rankMax).toBe(1000);
+    expect(f.volMin).toBe(10000);
+  });
+
+  it('rejects integers beyond the safe range (they would overflow the column and 500)', () => {
+    const huge = '99999999999999999999';
+    expect(parseExplorerFilters({ vol_min: huge }).volMin).toBeNull();
+    expect(parseExplorerFilters({ rank_max: huge }).rankMax).toBeNull();
+    expect(parseExplorerFilters({ reviews_max: huge }).reviewsMax).toBeNull();
+    expect(parseExplorerFilters({ vol_max: String(Number.MAX_SAFE_INTEGER) }).volMax).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('clamps each bound at its column ceiling (int4 rank/reviews/jump, smallint words, bigint volume)', () => {
+    expect(parseExplorerFilters({ rank_max: '2147483648' }).rankMax).toBeNull();
+    expect(parseExplorerFilters({ rank_max: '2147483647' }).rankMax).toBe(2147483647);
+    expect(parseExplorerFilters({ reviews_max: '2147483648' }).reviewsMax).toBeNull();
+    expect(parseExplorerFilters({ words_max: '32768' }).wordsMax).toBeNull();
+    expect(parseExplorerFilters({ words_max: '32767' }).wordsMax).toBe(32767);
+    expect(parseExplorerFilters({ jump: 'custom', jump_from: '2147483648', jump_to: '10' }).jump).toBeNull();
+    expect(parseExplorerFilters({ jump: 'custom', jump_from: '2147483647', jump_to: '10' }).jumpFrom).toBe(2147483647);
+    expect(parseExplorerFilters({ vol_max: '2147483648' }).volMax).toBe(2147483648);
   });
 });

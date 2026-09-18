@@ -55,6 +55,15 @@ interface PendingFilters {
   qMode: 'word' | 'broad';
   rankBest: string;
   rankWorst: string;
+  /**
+   * Which pair the range card edits — Rank (rankBest/rankWorst) or Volume
+   * (volMin/volMax). Presentational only: never serialized. Switching
+   * clears the other pair, so the URL only ever carries one of them.
+   */
+  rangeMetric: 'rank' | 'volume';
+  /** Numeric strings; empty = unset. Inclusive estimated-monthly-volume range. */
+  volMin: string;
+  volMax: string;
   /** Numeric strings; empty = unset. Inclusive avg-reviews range (top-3 ASINs). */
   reviewsMin: string;
   reviewsMax: string;
@@ -79,13 +88,16 @@ interface PendingFilters {
   sort: SortKey;
 }
 
-function filtersToPending(f: ExplorerFilters): PendingFilters {
+export function filtersToPending(f: ExplorerFilters): PendingFilters {
   return {
     window: f.window,
     q: f.q ?? '',
     qMode: f.qMode,
     rankBest: f.rankMin?.toString() ?? '',
     rankWorst: f.rankMax?.toString() ?? '',
+    rangeMetric: f.volMin !== null || f.volMax !== null ? 'volume' : 'rank',
+    volMin: f.volMin?.toString() ?? '',
+    volMax: f.volMax?.toString() ?? '',
     reviewsMin: f.reviewsMin?.toString() ?? '',
     reviewsMax: f.reviewsMax?.toString() ?? '',
     wordsMin: f.wordsMin?.toString() ?? '',
@@ -106,7 +118,7 @@ function filtersToPending(f: ExplorerFilters): PendingFilters {
   };
 }
 
-function pendingToParams(p: PendingFilters): URLSearchParams {
+export function pendingToParams(p: PendingFilters): URLSearchParams {
   const params = new URLSearchParams();
   if (p.window !== EXPLORER_DEFAULTS.window) params.set('window', p.window);
   if (p.sort !== EXPLORER_DEFAULTS.sort) params.set('sort', p.sort);
@@ -115,6 +127,8 @@ function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.q.trim().length >= 3 && p.qMode === 'broad') params.set('qmode', 'broad');
   if (p.rankBest) params.set('rank_min', p.rankBest);
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
+  if (p.volMin) params.set('vol_min', p.volMin);
+  if (p.volMax) params.set('vol_max', p.volMax);
   if (p.reviewsMin) params.set('reviews_min', p.reviewsMin);
   if (p.reviewsMax) params.set('reviews_max', p.reviewsMax);
   if (p.wordsMin) params.set('words_min', p.wordsMin);
@@ -188,7 +202,10 @@ export function FilterSidebar({
     });
   };
 
-  const dirty = JSON.stringify(filtersToPending(filters)) !== JSON.stringify(pending);
+  // rangeMetric is presentational (it never reaches the URL), so a bare
+  // Rank | Volume switch must not light up Apply.
+  const signature = (p: PendingFilters) => JSON.stringify({ ...p, rangeMetric: undefined });
+  const dirty = signature(filtersToPending(filters)) !== signature(pending);
 
   const set = <K extends keyof PendingFilters>(key: K, value: PendingFilters[K]) => {
     setPending((p) => ({ ...p, [key]: value }));
@@ -289,30 +306,96 @@ export function FilterSidebar({
         )}
       </FieldGroup>
 
-      <FieldGroup label="Rank range (1 = best)">
-        <div className="flex gap-2">
-          <input
-            type="number"
-            min={1}
-            value={pending.rankBest}
-            onChange={(e) => set('rankBest', e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && apply()}
-            placeholder="Best (1)"
-            className="filter-input flex-1"
-            aria-label="Best rank"
-          />
-          <input
-            type="number"
-            min={1}
-            value={pending.rankWorst}
-            onChange={(e) => set('rankWorst', e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && apply()}
-            placeholder="Worst (e.g. 10000)"
-            className="filter-input flex-1"
-            aria-label="Worst rank"
-          />
+      <FieldGroup label={pending.rangeMetric === 'rank' ? 'Rank range (1 = best)' : 'Search volume range (est. monthly)'}>
+        {/* Rank | Volume — same pattern as the Movement metric toggle. Switching
+            clears the other pair so a number is never reinterpreted on the
+            other scale (spec 2026-09-18). */}
+        <div
+          role="group"
+          aria-label="Range metric"
+          className="mb-2 flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium"
+        >
+          <button
+            type="button"
+            aria-pressed={pending.rangeMetric === 'rank'}
+            onClick={() => setPending((p) => ({ ...p, rangeMetric: 'rank', volMin: '', volMax: '' }))}
+            className={`flex-1 px-2 py-1 ${
+              pending.rangeMetric === 'rank'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
+            }`}
+          >
+            Rank
+          </button>
+          <button
+            type="button"
+            aria-pressed={pending.rangeMetric === 'volume'}
+            onClick={() => setPending((p) => ({ ...p, rangeMetric: 'volume', rankBest: '', rankWorst: '' }))}
+            className={`flex-1 border-l border-slate-300 px-2 py-1 ${
+              pending.rangeMetric === 'volume'
+                ? 'bg-[#0B1E3A] text-white'
+                : 'bg-white text-gray-700 hover:bg-slate-50'
+            }`}
+          >
+            Volume
+          </button>
         </div>
-        <p className="text-xs text-gray-500 mt-1">Lower number = more searches. e.g. Best 1, Worst 10000 = top-10k.</p>
+
+        {pending.rangeMetric === 'rank' ? (
+          <>
+            <div key="rank" className="flex gap-2">
+              <input
+                type="number"
+                min={1}
+                value={pending.rankBest}
+                onChange={(e) => set('rankBest', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && apply()}
+                placeholder="Best (1)"
+                className="filter-input flex-1"
+                aria-label="Best rank"
+              />
+              <input
+                type="number"
+                min={1}
+                value={pending.rankWorst}
+                onChange={(e) => set('rankWorst', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && apply()}
+                placeholder="Worst (e.g. 10000)"
+                className="filter-input flex-1"
+                aria-label="Worst rank"
+              />
+            </div>
+            <p className="text-xs text-gray-500 mt-1">Lower number = more searches. e.g. Best 1, Worst 10000 = top-10k.</p>
+          </>
+        ) : (
+          <>
+            <div key="volume" className="flex gap-2">
+              <input
+                type="number"
+                min={0}
+                value={pending.volMin}
+                onChange={(e) => set('volMin', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && apply()}
+                placeholder="Min (e.g. 10000)"
+                className="filter-input flex-1"
+                aria-label="Minimum search volume"
+              />
+              <input
+                type="number"
+                min={0}
+                value={pending.volMax}
+                onChange={(e) => set('volMax', e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && apply()}
+                placeholder="Max"
+                className="filter-input flex-1"
+                aria-label="Maximum search volume"
+              />
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Estimated monthly searches at the current week. Excludes keywords without an estimate.
+            </p>
+          </>
+        )}
       </FieldGroup>
 
       <FieldGroup label="Avg reviews (top-3)">
@@ -376,9 +459,14 @@ export function FilterSidebar({
         <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Movement</p>
 
         {/* Metric toggle */}
-        <div className="flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium">
+        <div
+          role="group"
+          aria-label="Movement metric"
+          className="flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium"
+        >
           <button
             type="button"
+            aria-pressed={pending.jumpMetric === 'rank'}
             onClick={() => setPending((p) => ({ ...p, jumpMetric: 'rank', jump: '', jumpFrom: '', jumpTo: '' }))}
             className={`flex-1 px-2 py-1 ${
               pending.jumpMetric === 'rank'
@@ -390,6 +478,7 @@ export function FilterSidebar({
           </button>
           <button
             type="button"
+            aria-pressed={pending.jumpMetric === 'volume'}
             onClick={() => setPending((p) => ({ ...p, jumpMetric: 'volume', jump: '', jumpFrom: '', jumpTo: '' }))}
             className={`flex-1 border-l border-slate-300 px-2 py-1 ${
               pending.jumpMetric === 'volume'

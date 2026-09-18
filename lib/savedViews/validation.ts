@@ -79,6 +79,8 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     qMode: f.qMode === 'broad' ? 'broad' : 'word',
     rankMin: typeof f.rankMin === 'number' ? f.rankMin : null,
     rankMax: typeof f.rankMax === 'number' ? f.rankMax : null,
+    volMin: typeof f.volMin === 'number' ? f.volMin : null,
+    volMax: typeof f.volMax === 'number' ? f.volMax : null,
     reviewsMin: typeof f.reviewsMin === 'number' ? f.reviewsMin : null,
     reviewsMax: typeof f.reviewsMax === 'number' ? f.reviewsMax : null,
     wordsMin: typeof f.wordsMin === 'number' ? f.wordsMin : null,
@@ -112,6 +114,8 @@ export function filtersToSearchParams(f: Partial<ExplorerFilters> | Record<strin
   if (f.qMode === 'broad') p.qmode = 'broad';
   if (typeof f.rankMin === 'number') p.rank_min = String(f.rankMin);
   if (typeof f.rankMax === 'number') p.rank_max = String(f.rankMax);
+  if (typeof f.volMin === 'number') p.vol_min = String(f.volMin);
+  if (typeof f.volMax === 'number') p.vol_max = String(f.volMax);
   if (typeof f.reviewsMin === 'number') p.reviews_min = String(f.reviewsMin);
   if (typeof f.reviewsMax === 'number') p.reviews_max = String(f.reviewsMax);
   if (typeof f.wordsMin === 'number') p.words_min = String(f.wordsMin);

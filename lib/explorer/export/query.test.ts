@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { searchParamsToLike, filtersToQueryString } from './query';
-import { parseExplorerFilters } from '../parseFilters';
+import { parseExplorerFilters, EXPLORER_DEFAULTS } from '../parseFilters';
 import type { ExplorerFilters } from '../types';
 
 describe('searchParamsToLike', () => {
@@ -21,6 +21,8 @@ describe('filtersToQueryString', () => {
     qMode: 'broad',
     rankMin: 10,
     rankMax: 5000,
+    volMin: null,
+    volMax: 250000,
     reviewsMin: null,
     reviewsMax: 500,
     wordsMin: 2,
@@ -71,5 +73,15 @@ describe('filtersToQueryString', () => {
     const params = new URLSearchParams(qs);
     expect(params.has('page')).toBe(false);
     expect(params.has('per_page')).toBe(false);
+  });
+});
+
+describe('search-volume range in the export query string', () => {
+  it('round-trips volume bounds, including a 0 max', () => {
+    const withVol: ExplorerFilters = { ...EXPLORER_DEFAULTS, volMin: 10_000, volMax: 0 };
+    const qs = filtersToQueryString(withVol);
+    expect(qs).toContain('vol_min=10000');
+    expect(qs).toContain('vol_max=0');
+    expect(parseExplorerFilters(searchParamsToLike(new URLSearchParams(qs)))).toEqual(withVol);
   });
 });

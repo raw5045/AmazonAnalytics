@@ -50,6 +50,16 @@ export interface ExplorerFilters {
   rankMin: number | null;
   rankMax: number | null;
   /**
+   * Inclusive bounds on estimated_monthly_volume_current — the fit-derived
+   * estimate at the current week (spec 2026-09-18). When either bound is
+   * set, rows with a NULL estimate (no calibration fit at refresh) are
+   * excluded — unknown ≠ low. Independent from rankMin/rankMax: the sidebar
+   * shows both pairs on one card behind a Rank | Volume toggle, and
+   * switching metric clears the other pair.
+   */
+  volMin: number | null;
+  volMax: number | null;
+  /**
    * Inclusive avg-reviews bounds over the top-3 clicked ASINs
    * (kcs.avg_reviews). When either bound is set, rows with NULL
    * avg_reviews (unenriched top-3) are excluded — unknown ≠ low.

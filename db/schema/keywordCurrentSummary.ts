@@ -157,7 +157,11 @@ export const keywordCurrentSummary = pgTable(
     jump13wIdx: index('kcs_jump_13w_idx').on(t.rank13wAgo, t.currentRank),
     jump26wIdx: index('kcs_jump_26w_idx').on(t.rank26wAgo, t.currentRank),
     jump52wIdx: index('kcs_jump_52w_idx').on(t.rank52wAgo, t.currentRank),
-    estVolIdx: index('kcs_est_vol_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolumeCurrent),
+    // Physical direction matters: migrations 0027/0041 create this index (and
+    // its _stage twin) DESC NULLS LAST, and lib/explorer/buildQuery.ts's
+    // volume-ordered walk (rankSortUsesVolumeWalk / buildOrderBy) mirrors
+    // that exact ordering so the planner can range-scan it. Keep them in sync.
+    estVolIdx: index('kcs_est_vol_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolumeCurrent.desc().nullsLast()),
     estVol4wIdx: index('kcs_est_vol_4w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume4wAgo),
     estVol13wIdx: index('kcs_est_vol_13w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume13wAgo),
     estVol26wIdx: index('kcs_est_vol_26w_idx').on(t.currentWeekEndDate, t.estimatedMonthlyVolume26wAgo),
