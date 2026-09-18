@@ -80,6 +80,54 @@ describe('SavedViewsControls', () => {
     expect(within(list).getByText('✓')).toBeInTheDocument();
   });
 
+  it('marks the saved view active BEFORE its navigation commits (URL still without the id)', async () => {
+    nav.push.mockImplementationOnce(() => {}); // the page fetch is still in flight
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView() }));
+    render(<SavedViewsControls views={[]} />);
+    await saveThroughModal('Lamps under 500');
+    expect(nav.state.params.get('view')).toBeNull();
+    expect(screen.getByTitle('Currently loaded: Lamps under 500')).toBeInTheDocument();
+  });
+
+  it('reads as active from a filtered URL and from a loaded view until the URL moves', async () => {
+    nav.state.params = new URLSearchParams('vol_min=10000');
+    nav.push.mockImplementationOnce(() => {});
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView() }));
+    const first = render(<SavedViewsControls views={[]} />);
+    await saveThroughModal('Lamps under 500');
+    expect(screen.getByTitle('Currently loaded: Lamps under 500')).toBeInTheDocument();
+    first.unmount();
+
+    const other = savedView({ id: '22222222-1111-4111-8111-111111111111', name: 'Other view' });
+    nav.state.params = new URLSearchParams(`view=${other.id}`);
+    nav.push.mockImplementationOnce(() => {});
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView({ id: '44444444-1111-4111-8111-111111111111', name: 'Newest' }) }));
+    render(<SavedViewsControls views={[other]} />);
+    await saveThroughModal('Newest');
+    expect(screen.getByTitle('Currently loaded: Newest')).toBeInTheDocument();
+  });
+
+  it('ends the active bridge once the URL moves, and it does not come back on returning to that URL', async () => {
+    nav.push.mockImplementationOnce(() => {});
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView() }));
+    const { rerender } = render(<SavedViewsControls views={[]} />);
+    await saveThroughModal('Lamps under 500');
+    expect(screen.getByTitle('Currently loaded: Lamps under 500')).toBeInTheDocument();
+
+    // The user applies filters (URL gains params, no view tag): URL-truth wins.
+    nav.state.params = new URLSearchParams('vol_min=5000');
+    rerender(<SavedViewsControls views={[]} />);
+    expect(screen.getByTitle('Pick a saved view')).toBeInTheDocument();
+
+    // Back to the exact URL of the save (e.g. Reset filters): still not active.
+    nav.state.params = new URLSearchParams();
+    rerender(<SavedViewsControls views={[]} />);
+    expect(screen.getByTitle('Pick a saved view')).toBeInTheDocument();
+    // ...but the view itself is still listed (the overlay outlives the bridge).
+    fireEvent.click(screen.getByTitle('Pick a saved view'));
+    expect(within(screen.getByRole('listbox')).getByText('Lamps under 500')).toBeInTheDocument();
+  });
+
   it('keeps a single entry once the layout catches up with the same view', async () => {
     const view = savedView();
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { view }));
@@ -181,6 +229,33 @@ describe('SavedViewsControls', () => {
 
     expect(screen.getByTitle('Currently loaded: Lamps v2')).toBeInTheDocument();
     expect(nav.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("saves the LOADED view's filters when the URL is the bookmark form, never the defaults", async () => {
+    const loaded = savedView({
+      id: '33333333-1111-4111-8111-111111111111',
+      name: 'Loaded',
+      filters: { ...EXPLORER_DEFAULTS, volMin: 25_000, reviewsMax: 250 },
+    });
+    nav.state.params = new URLSearchParams(`view=${loaded.id}`);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView({ name: 'Copy', filters: loaded.filters }) }));
+    render(<SavedViewsControls views={[loaded]} />);
+    await saveThroughModal('Copy');
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.filters.volMin).toBe(25_000);
+    expect(body.filters.reviewsMax).toBe(250);
+  });
+
+  it('keeps the URL as the source when it carries filters, preserving repeated leaf params', async () => {
+    nav.state.params = new URLSearchParams('leaf=Home+%E2%80%BA+Lamps&leaf=Home+%E2%80%BA+Bulbs&vol_min=10000');
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView() }));
+    render(<SavedViewsControls views={[]} />);
+    await saveThroughModal('Lamps under 500');
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.filters.leafPaths).toEqual(['Home › Lamps', 'Home › Bulbs']);
+    expect(body.filters.volMin).toBe(10_000);
   });
 
   it('counts the optimistic view toward the per-user limit', async () => {

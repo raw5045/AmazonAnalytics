@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { parseExplorerFilters, type SearchParamsLike } from '@/lib/explorer/parseFilters';
+import { parseExplorerFilters } from '@/lib/explorer/parseFilters';
+import { searchParamsToLike } from '@/lib/explorer/export/query';
 import type { SavedView } from '@/lib/savedViews/types';
 import { NameViewModal } from './NameViewModal';
 import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
@@ -30,9 +31,12 @@ import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
  */
 export function SaveViewButton({
   savedViewsCount,
+  views = [],
   onSaved,
 }: {
   savedViewsCount: number;
+  /** The picker's list (server list + just-saved overlay), to resolve a loaded view's filters. */
+  views?: SavedView[];
   /** Called with the created view before navigating, so the picker can show it at once. */
   onSaved?: (view: SavedView) => void;
 }) {
@@ -47,12 +51,23 @@ export function SaveViewButton({
   // using the same parser the server uses, so what we save exactly
   // matches what's currently rendered.
   const filters = useMemo(() => {
-    const sp: SearchParamsLike = {};
-    searchParams?.forEach((value, key) => {
-      sp[key] = value;
-    });
+    // Repeated keys (`leaf=A&leaf=B`) must stay arrays — collapsing them to
+    // the last value silently saved a single leaf category.
+    const sp = searchParamsToLike(new URLSearchParams(searchParams?.toString() ?? ''));
+    // Bookmark form (`?view=<id>`, no filter params): the applied filters are
+    // the loaded view's stored ones. The URL carries none, so parsing it saved
+    // the DEFAULTS — every "wiped" view of 2026-09-18 was saved while another
+    // view was loaded. Mirrors the page's own resolution (activeView &&
+    // !urlHasFilters); the hybrid shape `?view=<id>&<filters>` keeps URL-wins.
+    // First value wins for a repeated `view`, as the page's getOne does.
+    const viewId = Array.isArray(sp.view) ? sp.view[0] : sp.view ?? null;
+    const urlHasFilters = Object.keys(sp).some((k) => k !== 'view' && k !== 'page' && k !== 'per_page');
+    if (viewId && !urlHasFilters) {
+      const loaded = views.find((v) => v.id === viewId);
+      if (loaded) return loaded.filters;
+    }
     return parseExplorerFilters(sp);
-  }, [searchParams]);
+  }, [searchParams, views]);
 
   // Only show on the main explorer page — saving from the keyword
   // detail page would persist empty/default filters.

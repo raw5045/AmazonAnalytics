@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import type { SavedView } from '@/lib/savedViews/types';
 import { SavedViewsDropdown } from './SavedViewsDropdown';
 import { SaveViewButton } from './SaveViewButton';
@@ -36,25 +37,55 @@ interface OverlayEntry {
   view: SavedView;
   /** Server-list membership (ids, newest first) when this view was saved. */
   membership: string;
+  /** The URL's search string when this view was saved. */
+  search: string;
+  /**
+   * While true, this view reads as active as long as the URL has not moved
+   * since the save (its own navigation is a page fetch away). Turned off for
+   * good the first time the URL differs, so it cannot come back on a later
+   * visit to the same URL.
+   */
+  bridge: boolean;
 }
 
 export function SavedViewsControls({ views: serverViews }: { views: SavedView[] }) {
   const membership = serverViews.map((v) => v.id).join(',');
   const [justSaved, setJustSaved] = useState<OverlayEntry[]>([]);
+  const searchParams = useSearchParams();
+  const currentSearch = searchParams?.toString() ?? '';
 
-  const views = useMemo(() => {
+  // React's "adjust state when a prop changes" pattern: the first render in
+  // which the URL differs from where a save happened ends that save's
+  // active bridge for good (see OverlayEntry.bridge). The predicate is its
+  // own change detector — false again right after the update — so this
+  // cannot loop, and a save stamped with a stale URL mid-fetch is ended on
+  // the very next render rather than lingering.
+  if (justSaved.some((o) => o.bridge && o.search !== currentSearch)) {
+    setJustSaved((prev) => prev.map((o) => (o.bridge && o.search !== currentSearch ? { ...o, bridge: false } : o)));
+  }
+
+  const { views, newest } = useMemo(() => {
     const known = new Set(serverViews.map((v) => v.id));
-    const overlaid = justSaved
-      .filter((o) => o.membership === membership && !known.has(o.view.id))
-      .map((o) => o.view);
-    return [...overlaid, ...serverViews];
+    const live = justSaved.filter((o) => o.membership === membership && !known.has(o.view.id));
+    return { views: [...live.map((o) => o.view), ...serverViews], newest: live[0] ?? null };
   }, [justSaved, serverViews, membership]);
+
+  // The picker normally derives "active" from `?view=<id>` in the URL, which
+  // only updates once the post-save navigation commits (a page fetch away).
+  // Until the URL moves, the newest just-saved view IS what the page shows
+  // (its filters were the applied ones), so it reads as active from any save
+  // origin: filtered URL, loaded view, or bare /explorer. Any Apply, pick,
+  // or navigation changes the URL and wins.
+  const activeIdOverride = newest && newest.bridge && newest.search === currentSearch ? newest.view.id : null;
 
   const onSaved = useCallback(
     (view: SavedView) => {
-      setJustSaved((prev) => [{ view, membership }, ...prev.filter((o) => o.view.id !== view.id)]);
+      setJustSaved((prev) => [
+        { view, membership, search: currentSearch, bridge: true },
+        ...prev.filter((o) => o.view.id !== view.id),
+      ]);
     },
-    [membership],
+    [membership, currentSearch],
   );
   const onDeleted = useCallback((id: string) => {
     setJustSaved((prev) => prev.filter((o) => o.view.id !== id));
@@ -66,9 +97,9 @@ export function SavedViewsControls({ views: serverViews }: { views: SavedView[] 
   return (
     <>
       <div className="w-72">
-        <SavedViewsDropdown views={views} onDeleted={onDeleted} onRenamed={onRenamed} />
+        <SavedViewsDropdown views={views} activeIdOverride={activeIdOverride} onDeleted={onDeleted} onRenamed={onRenamed} />
       </div>
-      <SaveViewButton savedViewsCount={views.length} onSaved={onSaved} />
+      <SaveViewButton savedViewsCount={views.length} views={views} onSaved={onSaved} />
     </>
   );
 }

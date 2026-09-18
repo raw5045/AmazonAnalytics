@@ -34,15 +34,18 @@ import { NameViewModal } from './NameViewModal';
  */
 export function SavedViewsDropdown({
   views,
+  activeIdOverride = null,
   onDeleted,
   onRenamed,
 }: {
   views: SavedView[];
+  /** Treat this id as active regardless of the URL (a just-saved view, before its navigation commits). */
+  activeIdOverride?: string | null;
   onDeleted?: (id: string) => void;
   onRenamed?: (id: string, name: string) => void;
 }) {
   const searchParams = useSearchParams();
-  const viewId = searchParams?.get('view') ?? null;
+  const viewId = activeIdOverride ?? searchParams?.get('view') ?? null;
   const activeView = useMemo(
     () => (viewId ? views.find((v) => v.id === viewId) ?? null : null),
     [viewId, views],
