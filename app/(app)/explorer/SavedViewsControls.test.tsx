@@ -265,6 +265,16 @@ describe('SavedViewsControls', () => {
     expect(screen.getByRole('button', { name: 'Save view' })).toBeEnabled();
 
     await saveThroughModal('Lamps under 500');
-    expect(screen.getByRole('button', { name: 'Save view' })).toBeDisabled();
+    const button = screen.getByRole('button', { name: 'Save view' });
+    expect(button).toBeDisabled();
+    // A visible note, not just the hover tooltip, tells the user why Save is off.
+    const note = screen.getByText('5 of 5 views saved — delete one to save another.');
+    expect(button).toHaveAttribute('aria-describedby', note.id);
+  });
+
+  it('shows no cap note below the limit', () => {
+    render(<SavedViewsControls views={[savedView()]} />);
+    expect(screen.queryByText(/views saved/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Save view' })).toBeEnabled();
   });
 });

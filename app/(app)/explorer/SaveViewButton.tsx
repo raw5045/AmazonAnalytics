@@ -117,6 +117,14 @@ export function SaveViewButton({
 
   return (
     <>
+      {/* At the cap the button is disabled; say why in plain sight (the hover
+          tooltip alone went unnoticed — owner hit the cap while testing,
+          2026-09-18). */}
+      {atLimit && (
+        <span id="save-view-cap-note" className="text-xs text-amber-700">
+          {savedViewsCount} of {MAX_VIEWS_PER_USER} views saved — delete one to save another.
+        </span>
+      )}
       <button
         type="button"
         onClick={() => {
@@ -124,6 +132,7 @@ export function SaveViewButton({
           setIsOpen(true);
         }}
         disabled={atLimit}
+        aria-describedby={atLimit ? 'save-view-cap-note' : undefined}
         className="whitespace-nowrap rounded-full bg-amber-300 px-4 py-1.5 text-sm font-semibold text-[#0B1E3A] hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-50"
         title={tooltip}
       >
