@@ -14,6 +14,12 @@ const serverSchema = z.object({
   RESEND_API_KEY: z.string().min(1).optional(),
   RESEND_FROM: z.string().min(1).optional(),
   APP_PUBLIC_URL: z.string().url(),
+  // MCP endpoint (/api/mcp) for external AI clients. All optional and dark by
+  // default; interpreted (with safe fallbacks) by lib/mcp/config.ts.
+  MCP_ENABLED: z.string().optional(),
+  MCP_AUDIENCE: z.string().optional(),
+  MCP_ALLOWED_CLIENT_IDS: z.string().optional(),
+  MCP_RESOURCE_URL: z.string().optional(),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
