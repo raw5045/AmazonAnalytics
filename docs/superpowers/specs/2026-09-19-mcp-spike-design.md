@@ -221,7 +221,7 @@ discovery documents remain harmless public JSON. No data to clean up.
 | Step | Outcome |
 |---|---|
 | Implementation | `lib/mcp/{config,verifyMcpToken,handler,discovery,datasetWeek}.ts`, `lib/mcp/tools/whoami.ts`, `app/api/mcp/route.ts`, three `app/.well-known/**/route.ts`; 53 unit tests incl. an in-process `@modelcontextprotocol/client` handshake + `whoami` call |
-| Deploy (dark) | pending |
+| Deploy (dark) | `4403aef` pushed 2026-09-19 12:42, Vercel + Railway green 12:44. Verified live: `/.well-known/oauth-protected-resource/api/mcp` serves the document (resource, Clerk issuer, scope); `POST /api/mcp` answers 404 with `MCP_ENABLED` unset |
 | Clerk scope + OAuth apps (§5 steps 1–3) | pending |
 | Vercel env (§5 step 4) | pending |
 | claude.ai connect + `whoami` | pending — record registration mode, redirect URI, token format, `auth()` fields, latency |
