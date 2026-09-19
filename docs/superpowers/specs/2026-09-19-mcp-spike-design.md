@@ -222,8 +222,8 @@ discovery documents remain harmless public JSON. No data to clean up.
 |---|---|
 | Implementation | `lib/mcp/{config,verifyMcpToken,handler,discovery,datasetWeek}.ts`, `lib/mcp/tools/whoami.ts`, `app/api/mcp/route.ts`, three `app/.well-known/**/route.ts`; 53 unit tests incl. an in-process `@modelcontextprotocol/client` handshake + `whoami` call |
 | Deploy (dark) | `4403aef` pushed 2026-09-19 12:42, Vercel + Railway green 12:44. Verified live: `/.well-known/oauth-protected-resource/api/mcp` serves the document (resource, Clerk issuer, scope); `POST /api/mcp` answers 404 with `MCP_ENABLED` unset |
-| Clerk scope + OAuth apps (§5 steps 1–3) | pending |
-| Vercel env (§5 step 4) | pending |
-| claude.ai connect + `whoami` | pending — record registration mode, redirect URI, token format, `auth()` fields, latency |
-| ChatGPT connect + `whoami` | pending — same |
+| Clerk scope + OAuth apps (§5 steps 1–3) | done by owner 2026-09-19 (scope `keywordquarry:research:read` accepted with the colon; two apps, Claude + ChatGPT) |
+| Vercel env (§5 step 4) | `MCP_ENABLED=1`, `MCP_AUDIENCE=admin` live 2026-09-19; verified from outside: `POST /api/mcp` without a token → `401` with `WWW-Authenticate: Bearer error="invalid_token", scope="keywordquarry:research:read", resource_metadata="https://keywordquarry.com/.well-known/oauth-protected-resource/api/mcp"`; the AS proxy answers in ~0.6 s cold; both PRM paths 200. `MCP_ALLOWED_CLIENT_IDS` still unset (pinning next) |
+| claude.ai connect + `whoami` | SUCCESS 2026-09-19 (owner): custom connector with the pre-registered Clerk client id + secret (no DCR), callback `https://claude.ai/api/mcp/auth_callback`, Clerk consent screen, `whoami` returned the correct account + dataset week. Token format: Clerk default (JWT) unless the owner changed the app setting. Client id / latency: to be read from the `[mcp auth]` log lines |
+| ChatGPT connect + `whoami` | SUCCESS 2026-09-19 (owner): developer-mode app, Registration method "User-Defined OAuth Client" with the Clerk client id + secret (no DCR/CIMD), `whoami` correct. Callback URL used: to confirm (expected the stable `connector_platform_oauth_redirect`, since Clerk advertises RFC 9207). Clerk tolerated ChatGPT's RFC 8707 `resource=` parameter (the flow completed) |
 | Standard user under `MCP_AUDIENCE=admin` | pending (expect `403 access_denied`; the client should show the message rather than re-prompt for consent) |
