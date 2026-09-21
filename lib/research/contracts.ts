@@ -14,23 +14,21 @@ export type PresetId = (typeof PRESET_IDS)[number];
 const safeInt = z.int();
 
 /**
- * Bound-count and floor-vs-implied-range issues for one gt/gte/lt/lte range, given a
- * domain floor (or null for none). `floor` seeds the implicit lower bound when neither
- * gt nor gte is given, so e.g. `{ lt: 1 }` against floor 1 is recognized as empty.
- * Shared by integerRange (its own field-level floor) and movementSchema's superRefine
- * (the metric-scoped floor for prior/current, which anyRange can't know statically).
+ * The floor-vs-implied-range emptiness message for one gt/gte/lt/lte range, given a domain
+ * floor (or null for none), or null when the range isn't empty. `floor` seeds the implicit
+ * lower bound when neither gt nor gte is given, so e.g. `{ lt: 1 }` against floor 1 is
+ * recognized as empty. Shared by integerRange (its own field-level floor) and
+ * movementSchema's superRefine (the metric-scoped floor for prior/current, which anyRange
+ * can't know statically). Bound-COUNT issues (missing / duplicate bounds) are deliberately
+ * NOT part of this: they live in integerRange alone, since anyRange's own superRefine
+ * already runs them for prior/current before movementSchema's domain check ever sees the
+ * parsed value — rerunning them there would double-report the same issue.
  */
-function rangeFloorIssues(range: { gt?: number; gte?: number; lt?: number; lte?: number }, floor: number | null): string[] {
-  const issues: string[] = [];
-  const lowers = [range.gt, range.gte].filter((v) => v !== undefined).length;
-  const uppers = [range.lt, range.lte].filter((v) => v !== undefined).length;
-  if (lowers + uppers === 0) issues.push('a range needs at least one bound (gt, gte, lt, lte); use null for no range');
-  if (lowers > 1) issues.push('use only one of gt / gte');
-  if (uppers > 1) issues.push('use only one of lt / lte');
+function emptyRangeIssue(range: { gt?: number; gte?: number; lt?: number; lte?: number }, floor: number | null): string | null {
   const lo = range.gte !== undefined ? range.gte : range.gt !== undefined ? range.gt + 1 : floor;
   const hi = range.lte !== undefined ? range.lte : range.lt !== undefined ? range.lt - 1 : null;
-  if (lo !== null && hi !== null && lo > hi) issues.push('the range contains no integer');
-  return issues;
+  if (lo !== null && hi !== null && lo > hi) return 'the range contains no integer';
+  return null;
 }
 
 /** gt/gte/lt/lte with at least one bound, at most one per side, and at least one legal integer inside. */
@@ -39,7 +37,13 @@ function integerRange(min: number | null) {
   return z
     .strictObject({ gt: bound.optional(), gte: bound.optional(), lt: bound.optional(), lte: bound.optional() })
     .superRefine((r, ctx) => {
-      for (const message of rangeFloorIssues(r, min)) ctx.addIssue({ code: 'custom', message });
+      const lowers = [r.gt, r.gte].filter((v) => v !== undefined).length;
+      const uppers = [r.lt, r.lte].filter((v) => v !== undefined).length;
+      if (lowers + uppers === 0) ctx.addIssue({ code: 'custom', message: 'a range needs at least one bound (gt, gte, lt, lte); use null for no range' });
+      if (lowers > 1) ctx.addIssue({ code: 'custom', message: 'use only one of gt / gte' });
+      if (uppers > 1) ctx.addIssue({ code: 'custom', message: 'use only one of lt / lte' });
+      const empty = emptyRangeIssue(r, min);
+      if (empty) ctx.addIssue({ code: 'custom', message: empty });
     });
 }
 export const nonNegativeRange = integerRange(0);
@@ -90,14 +94,17 @@ export const movementSchema = z
     }
     // Domain floor (parent design §8.1): volume ranges are >= 0, rank ranges are >= 1;
     // only delta may be negative. anyRange can't enforce this statically since the floor
-    // depends on the sibling `metric` field, so it's re-checked here per bound and via
-    // the same floor-aware emptiness rule integerRange uses.
+    // depends on the sibling `metric` field, so the floor/emptiness half of the check is
+    // re-run here with the metric-scoped floor. The bound-count checks are NOT repeated
+    // here — anyRange's own superRefine already ran them for this same parsed value, so
+    // redoing them would report each one twice.
     const floor = m.metric === 'volume' ? 0 : 1;
     const checkDomain = (key: 'prior' | 'current', range: typeof m.prior) => {
       if (!range) return;
       const outOfDomain = [range.gt, range.gte, range.lt, range.lte].some((b) => b !== undefined && b < floor);
       if (outOfDomain) ctx.addIssue({ code: 'custom', message: `${key} bounds must be >= ${floor} for metric=${m.metric}`, path: [key] });
-      for (const message of rangeFloorIssues(range, floor)) ctx.addIssue({ code: 'custom', message, path: [key] });
+      const empty = emptyRangeIssue(range, floor);
+      if (empty) ctx.addIssue({ code: 'custom', message: empty, path: [key] });
     };
     checkDomain('prior', m.prior);
     checkDomain('current', m.current);

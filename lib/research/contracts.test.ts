@@ -113,7 +113,7 @@ describe('parseSearchInput', () => {
       throw new Error('expected rejection');
     } catch (e) {
       const err = e as ResearchError;
-      expect(err.details).toEqual([{ path: 'filters.titleGap.slots.0', message: 'Invalid option: expected one of 1|2|3' }]);
+      expect(err.details).toEqual([{ path: 'filters.titleGap.slots.0', message: expect.stringContaining('1|2|3') }]);
     }
   });
 
@@ -142,6 +142,19 @@ describe('parseSearchInput', () => {
       filters: { movement: { window: '4w', metric: 'volume', baseline: 'include_not_observed', prior: { lt: 5000 } } },
     });
     expect(okVolume.kind).toBe('new');
+  });
+
+  it('does not duplicate bound-count issues for a movement range (anyRange already reports those once)', () => {
+    for (const prior of [{}, { gt: 1, gte: 2 }]) {
+      try {
+        parseSearchInput({ ...base, filters: { movement: { window: '4w', metric: 'volume', prior } } });
+        throw new Error(`expected rejection at filters.movement.prior for prior=${JSON.stringify(prior)}`);
+      } catch (e) {
+        expect(e).toBeInstanceOf(ResearchError);
+        const err = e as ResearchError;
+        expect(err.details!.filter((d) => d.path === 'filters.movement.prior')).toHaveLength(1);
+      }
+    }
   });
 
   it('rejects a comparisonWindow that disagrees with movement.window, accepts an explicit null, and firstSeenWeek sorts', () => {
