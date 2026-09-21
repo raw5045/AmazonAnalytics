@@ -9,6 +9,50 @@ import { escapeLike } from '@/lib/explorer/matchPattern';
 import type { CategoryCandidate, Filters, ResolvedScope } from './contracts';
 import { ResearchError } from './errors';
 
+/**
+ * Category catalog, candidate ranking, and scope expansion for the research MCP tools
+ * (`resolve_categories` / `search_keywords`'s `filters.categories`).
+ *
+ * Contracts:
+ * - The catalog IS the current snapshot's leaf category facets
+ *   (`keyword_current_summary_leaf_category_facets`) plus every parent prefix implied by
+ *   those leaf paths — exactly the searchable population, so no separate
+ *   `asin_weekly_data` tree walk is needed and no resolved path can ever match zero rows.
+ * - An empty `categories.selections` + empty `categories.leafPaths` means NO category
+ *   scope (search every category) — never a failed lookup. Only a *non-empty* reference
+ *   that fails to resolve is an error.
+ * - Every unresolvable reference — an unknown taxonomy path, a parent path given without
+ *   `includeDescendants`, an unknown/foreign/empty custom category id, or a custom
+ *   category whose stored paths are all absent from the current catalog — throws
+ *   `CATEGORY_NOT_AVAILABLE`. Never a silent skip: a silently dropped reference would
+ *   quietly narrow the caller's search without telling them.
+ * - A custom category's stored `leaf_paths` are intersected with the catalog's *terminal*
+ *   paths before expansion. The weekly snapshot rotates independently of when a custom
+ *   category was saved, so a stored path with no current facet row matches nothing in the
+ *   downstream `top_clicked_category_path IN (...)` filter anyway — intersecting first
+ *   keeps `expandedLeafCount`, the leaf cap, the preview, and the SQL IN-list all counting
+ *   real, live leaves instead of stale ones.
+ * - Every ordering in this module (catalog `entries`, ranking ties, the expanded `leaves`
+ *   set and therefore `leafSetHash`) uses plain code-unit comparison, never
+ *   `String.prototype.localeCompare`: localeCompare's default collation treats
+ *   canonically-equivalent strings (e.g. the NFC and NFD forms of the same visual text) as
+ *   equal, which would make ordering depend on the host's ICU data instead of being a
+ *   pure, deterministic function of the input paths.
+ */
+
+/**
+ * Plain code-unit ordering (`a < b ? -1 : a > b ? 1 : 0`) — see the module docstring above
+ * for why this replaces `localeCompare` everywhere in this file.
+ */
+function compareCodeUnits(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/** Hex characters kept from the sha256 leaf-set hash (64 → 16 = 8 bytes: plenty to catch an accidental cross-request scope mismatch without bloating the response). */
+const LEAF_SET_HASH_HEX = 16;
+/** Leaf paths shown inline in `ResolvedScope.previewPaths` before a caller must page/expand for the rest. */
+const PREVIEW_PATHS = 20;
+
 export interface CatalogEntry {
   path: string;
   /** A facet row exists for this exact path (keywords are filed directly under it). */
@@ -19,9 +63,16 @@ export interface CatalogEntry {
 }
 export interface CategoryCatalog {
   snapshotVersion: string;
-  /** Sorted by path. */
-  entries: CatalogEntry[];
-  byPath: Map<string, CatalogEntry>;
+  /**
+   * Sorted by path (code-unit order — see the module docstring). This array, and every
+   * entry in it, is frozen: the object is shared by every caller of the cached loader
+   * (`loadCategoryCatalog`'s 60 s TTL cache hands the SAME instance to every concurrent
+   * caller), so mutating it would corrupt every other in-flight request. Build a new
+   * object instead of writing through these references.
+   */
+  entries: ReadonlyArray<Readonly<CatalogEntry>>;
+  /** Same shared, frozen-entry objects as `entries`, indexed by path for O(1) lookup. */
+  byPath: ReadonlyMap<string, Readonly<CatalogEntry>>;
 }
 
 /** Pure: facet leaves → leaves + every parent prefix. */
@@ -41,11 +92,27 @@ export function buildCategoryCatalog(snapshotVersion: string, facets: Array<{ ca
       byPath.set(path, entry);
     }
   }
-  const entries = [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+  // Freeze AFTER every mutation above is done. `entries`' elements are the SAME objects
+  // held by `byPath` (not copies), so freezing them here also freezes what byPath.get()
+  // returns — one pass covers both, per the frozen-catalog contract on CategoryCatalog.
+  const entries: ReadonlyArray<Readonly<CatalogEntry>> = Object.freeze(
+    [...byPath.values()].sort((a, b) => compareCodeUnits(a.path, b.path)).map((e) => Object.freeze(e)),
+  );
   return { snapshotVersion, entries, byPath };
 }
 
 const notAvailable = () => new ResearchError('CATEGORY_NOT_AVAILABLE', 'That category is not available in the current dataset. Resolve categories again and pick from the returned candidates.');
+
+/**
+ * Same error as `notAvailable()`, additionally pinpointing which `filters.categories.selections[i]`
+ * / `filters.categories.leafPaths[i]` in the request was the offending one (`details`). The
+ * top-level `.message` stays the same fixed, generic text for every custom-id case — never the id
+ * itself — so an unknown, foreign, or empty custom category id remain indistinguishable (Q08).
+ */
+const notAvailableAt = (path: string) =>
+  new ResearchError('CATEGORY_NOT_AVAILABLE', 'That category is not available in the current dataset. Resolve categories again and pick from the returned candidates.', {
+    details: [{ path, message: 'not_available' }],
+  });
 
 function lastSegment(path: string): string {
   return path.slice(path.lastIndexOf(PATH_SEP) < 0 ? 0 : path.lastIndexOf(PATH_SEP) + PATH_SEP.length);
@@ -79,12 +146,24 @@ export function toTaxonomyCandidate(entry: CatalogEntry): CategoryCandidate {
   };
 }
 
-/** Pure, deterministic candidate ranking with offset paging. An unknown parentPath is CATEGORY_NOT_AVAILABLE. */
+/**
+ * Pure, deterministic candidate ranking with offset paging. An unknown parentPath is
+ * CATEGORY_NOT_AVAILABLE. An empty query is only meaningful when browsing a given
+ * parentPath (parent §10 forbids a full-taxonomy dump); resolveCategoriesInputSchema
+ * already guards this at the API boundary, but this pure function enforces it too so no
+ * other caller can bypass it.
+ */
 export function rankCandidates(
   catalog: CategoryCatalog,
   opts: { query: string; parentPath: string | null; offset: number; limit: number },
 ): { candidates: CategoryCandidate[]; total: number } {
-  const q = opts.query.trim().toLowerCase();
+  const trimmed = opts.query.trim();
+  if (trimmed === '' && opts.parentPath === null) {
+    throw new ResearchError('INVALID_FILTERS', 'an empty query is allowed only when browsing a parentPath', {
+      details: [{ path: 'query', message: 'empty' }],
+    });
+  }
+  const q = trimmed.toLowerCase();
   let pool = catalog.entries;
   if (opts.parentPath !== null) {
     if (!catalog.byPath.has(opts.parentPath)) throw notAvailable();
@@ -96,14 +175,18 @@ export function rankCandidates(
     const score = scoreEntry(entry, q);
     if (score !== null) scored.push({ entry, score });
   }
-  scored.sort((a, b) => a.score - b.score || a.entry.path.localeCompare(b.entry.path));
+  scored.sort((a, b) => a.score - b.score || compareCodeUnits(a.entry.path, b.entry.path));
   const page = scored.slice(opts.offset, opts.offset + opts.limit);
   return { candidates: page.map((s) => toTaxonomyCandidate(s.entry)), total: scored.length };
 }
 
 export interface CustomRow { id: string; leafPaths: string[] }
 
-/** Pure: validated selections + explicit leaf paths → the deduplicated, sorted leaf set (parent §10). */
+/**
+ * Pure: validated selections + explicit leaf paths → the deduplicated, sorted leaf set
+ * (parent §10). Every reference that fails to resolve throws `CATEGORY_NOT_AVAILABLE`
+ * pinpointing its index in the request (see the module docstring and `notAvailableAt`).
+ */
 export function expandSelections(
   catalog: CategoryCatalog,
   categories: Filters['categories'],
@@ -111,39 +194,60 @@ export function expandSelections(
   maxLeaves: number,
 ): { leaves: string[]; scope: ResolvedScope } {
   const leaves = new Set<string>();
-  for (const sel of categories.selections) {
+  for (let i = 0; i < categories.selections.length; i++) {
+    const sel = categories.selections[i];
+    const selPath = `filters.categories.selections[${i}]`;
     if (sel.kind === 'taxonomy') {
       const entry = catalog.byPath.get(sel.path);
-      if (!entry) throw notAvailable();
+      if (!entry) throw notAvailableAt(selPath);
       if (sel.includeDescendants) {
         if (entry.terminal) leaves.add(sel.path);
         const prefix = sel.path + PATH_SEP;
         for (const e of catalog.entries) if (e.terminal && e.path.startsWith(prefix)) leaves.add(e.path);
       } else {
-        if (!entry.terminal) throw new ResearchError('CATEGORY_NOT_AVAILABLE', `"${sel.path}" is a parent category. Set includeDescendants to true or choose a terminal path.`);
+        if (!entry.terminal) {
+          // The path itself is public catalog data, so (unlike the custom-id cases below)
+          // the message may keep quoting it.
+          throw new ResearchError('CATEGORY_NOT_AVAILABLE', `"${sel.path}" is a parent category. Set includeDescendants to true or choose a terminal path.`, {
+            details: [{ path: selPath, message: 'not_available' }],
+          });
+        }
         leaves.add(sel.path);
       }
     } else {
       const row = customRows.find((r) => r.id === sel.id);
-      if (!row || row.leafPaths.length === 0) throw notAvailable();
-      for (const p of row.leafPaths) leaves.add(p);
+      // Unknown, foreign (loadCustomRows already scopes rows to the caller's own userId, so
+      // a foreign id is simply absent here, same as unknown), and empty (zero stored paths)
+      // are deliberately indistinguishable (Q08): all three throw this same generic error.
+      if (!row || row.leafPaths.length === 0) throw notAvailableAt(selPath);
+      // Live paths only (module docstring): a stored path absent from the current catalog
+      // matches nothing downstream anyway, so intersecting first keeps expandedLeafCount,
+      // the leaf cap, the preview, and the SQL IN-list all counting real leaves.
+      const live = row.leafPaths.filter((p) => catalog.byPath.get(p)?.terminal === true);
+      if (live.length === 0) {
+        throw new ResearchError('CATEGORY_NOT_AVAILABLE', 'None of the paths in that custom category have keywords in the current dataset.', {
+          details: [{ path: selPath, message: 'not_available' }],
+        });
+      }
+      for (const p of live) leaves.add(p);
     }
   }
-  for (const p of categories.leafPaths) {
+  for (let i = 0; i < categories.leafPaths.length; i++) {
+    const p = categories.leafPaths[i];
     const entry = catalog.byPath.get(p);
-    if (!entry || !entry.terminal) throw notAvailable();
+    if (!entry || !entry.terminal) throw notAvailableAt(`filters.categories.leafPaths[${i}]`);
     leaves.add(p);
   }
-  const sorted = [...leaves].sort((a, b) => a.localeCompare(b));
+  const sorted = [...leaves].sort(compareCodeUnits);
   if (sorted.length > maxLeaves) {
     throw new ResearchError('INVALID_FILTERS', `The category scope expands to ${sorted.length} leaf categories; the limit is ${maxLeaves}. Choose a narrower branch.`, {
       details: [{ path: 'filters.categories', message: 'scope_too_large' }],
     });
   }
-  const leafSetHash = sorted.length === 0 ? null : createHash('sha256').update(sorted.join('\n')).digest('hex').slice(0, 16);
+  const leafSetHash = sorted.length === 0 ? null : createHash('sha256').update(sorted.join('\n')).digest('hex').slice(0, LEAF_SET_HASH_HEX);
   return {
     leaves: sorted,
-    scope: { selections: categories.selections, expandedLeafCount: sorted.length, leafSetHash, previewPaths: sorted.slice(0, 20), previewComplete: sorted.length <= 20 },
+    scope: { selections: categories.selections, expandedLeafCount: sorted.length, leafSetHash, previewPaths: sorted.slice(0, PREVIEW_PATHS), previewComplete: sorted.length <= PREVIEW_PATHS },
   };
 }
 

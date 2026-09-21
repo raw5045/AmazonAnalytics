@@ -183,6 +183,7 @@ describe('buildGuide', () => {
     expect(g.catalogVersion).toBe(CATALOG_VERSION);
     // Never the frozen METRIC_DEFINITIONS singleton — same reasoning as the presets/defaultSort checks below.
     expect(g.metrics).not.toBe(METRIC_DEFINITIONS);
+    expect(g.metrics).toEqual(METRIC_DEFINITIONS);
     expect(g.presets.map((p) => p.id)).toEqual(Object.keys(PRESETS));
     expect(g.presets.find((p) => p.id === 'high_demand_v1')?.filters).toEqual({ estimatedMonthlySearches: { gte: 10000 } });
     // Never the frozen PRESETS singleton itself — a caller mutating its own guide response must
