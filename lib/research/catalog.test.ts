@@ -6,7 +6,7 @@ import { describe, it, expect, vi } from 'vitest';
 // only needs the static DEFAULT_LIMITS constant, so an empty env is enough.
 vi.mock('@/lib/env', () => ({ env: {} }));
 import { applyPresets, applyPresetDefinitions, PRESETS, buildGuide, CATALOG_VERSION, type PresetDefinition } from './catalog';
-import { searchRequestSchema, filtersSchema, type PresetId } from './contracts';
+import { searchRequestSchema, filtersSchema, DEFAULT_SORT, type PresetId } from './contracts';
 import { DEFAULT_LIMITS } from './limits';
 
 const req = (over: Record<string, unknown>) => searchRequestSchema.parse({ schemaVersion: 1, ...over });
@@ -47,6 +47,20 @@ describe('applyPresets', () => {
     expect(app.overriddenFields).toContain('sort');
     expect(app.appliedFields).not.toContain('sort');
   });
+  it('an explicit sort that deep-equals the preset sort counts as applied, not overridden', () => {
+    const out = applyPresets(req({ presetIds: ['growing_4w_v1'], sort: { field: 'volumeDelta', direction: 'desc' } }));
+    expect(out.sort).toEqual({ field: 'volumeDelta', direction: 'desc' });
+    const app = out.applications.find((a) => a.presetId === 'growing_4w_v1')!;
+    expect(app.appliedFields).toContain('sort');
+    expect(app.overriddenFields).not.toContain('sort');
+  });
+  it('an explicit comparisonWindow that equals the preset window counts as applied, not overridden', () => {
+    const out = applyPresets(req({ presetIds: ['growing_4w_v1'], comparisonWindow: '4w' }));
+    expect(out.comparisonWindow).toBe('4w');
+    const app = out.applications.find((a) => a.presetId === 'growing_4w_v1')!;
+    expect(app.appliedFields).toContain('comparisonWindow');
+    expect(app.overriddenFields).not.toContain('comparisonWindow');
+  });
   it('rejects a preset that conflicts with an explicit movement of another window', () => {
     expect(() => applyPresets(req({ presetIds: ['growing_4w_v1'], filters: { movement: { window: '13w', metric: 'volume', delta: { gt: 0 } } } }))).toThrow(/growing_4w_v1/);
   });
@@ -81,6 +95,15 @@ describe('applyPresets', () => {
     expect(Object.isFrozen(PRESETS.high_demand_v1.filters)).toBe(true);
     expect(Object.isFrozen(PRESETS.high_demand_v1)).toBe(true);
   });
+  it('never hands out the frozen DEFAULT_SORT singleton: with no preset sort and no explicit sort, the fallback is a fresh, mutable object', () => {
+    const out = applyPresets(req({ presetIds: ['high_demand_v1'] }));
+    expect(out.sort).toEqual(DEFAULT_SORT);
+    expect(out.sort).not.toBe(DEFAULT_SORT);
+    expect(() => {
+      out.sort.direction = 'asc';
+    }).not.toThrow();
+    expect(Object.isFrozen(DEFAULT_SORT)).toBe(true);
+  });
 });
 
 describe('PRESETS catalog invariants', () => {
@@ -88,6 +111,12 @@ describe('PRESETS catalog invariants', () => {
     for (const [id, def] of Object.entries(PRESETS)) {
       const result = filtersSchema.safeParse({ ...def.filters });
       expect(result.success, `${id} filters failed filtersSchema: ${!result.success && JSON.stringify(result.error.issues)}`).toBe(true);
+      // Presets are already normalized: parsing each field in isolation must yield back the
+      // exact same value, with no schema default filling in anything the preset left out.
+      for (const [field, value] of Object.entries(def.filters)) {
+        const single = filtersSchema.safeParse({ [field]: value });
+        expect((single.data as Record<string, unknown> | undefined)?.[field], `${id}.${field} did not round-trip`).toEqual(value);
+      }
     }
   });
   it('preset filter fields are pairwise disjoint, and at most one preset defines sort', () => {
@@ -114,6 +143,18 @@ describe('applyPresetDefinitions (preset-vs-preset conflicts)', () => {
       /Presets high_demand_v1 and low_review_competition_v1 both set estimatedMonthlySearches; use one of them\./,
     );
   });
+  it('rejects a preset-vs-preset conflict even when the caller supplies an explicit value for the contested field', () => {
+    const conflicting: Record<PresetId, PresetDefinition> = {
+      ...PRESETS,
+      low_review_competition_v1: { ...PRESETS.low_review_competition_v1, filters: { estimatedMonthlySearches: { gte: 5000 } } },
+    };
+    expect(() =>
+      applyPresetDefinitions(
+        req({ presetIds: ['high_demand_v1', 'low_review_competition_v1'], filters: { estimatedMonthlySearches: { gte: 7000 } } }),
+        conflicting,
+      ),
+    ).toThrow(/Presets high_demand_v1 and low_review_competition_v1 both set estimatedMonthlySearches; use one of them\./);
+  });
   it('allows two presets that agree on a deep-equal value; both report the field applied', () => {
     const agreeing: Record<PresetId, PresetDefinition> = {
       ...PRESETS,
@@ -132,6 +173,8 @@ describe('buildGuide', () => {
     expect(g.presets.map((p) => p.id)).toEqual(Object.keys(PRESETS));
     expect(g.presets.find((p) => p.id === 'high_demand_v1')?.filters).toEqual({ estimatedMonthlySearches: { gte: 10000 } });
     expect(g.presets.find((p) => p.id === 'growing_4w_v1')?.comparisonWindow).toBe('4w');
+    expect(g.defaultSort).toEqual(DEFAULT_SORT);
+    expect(g.defaultSort).not.toBe(DEFAULT_SORT);
     expect(g.pagination).toMatch(/live/i);
     expect(g.limits.maxRowsPerSearch).toBe(1000);
     expect(g.limits.rowsPerMinute).toBe(DEFAULT_LIMITS.rowsPerMinute);

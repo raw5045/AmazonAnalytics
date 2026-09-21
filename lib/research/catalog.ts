@@ -70,6 +70,8 @@ function presetFieldValue(def: PresetDefinition, field: string): unknown {
  * silently disagreeing on a field would otherwise let iteration order pick a winner with no
  * signal to the caller. Two presets contributing deep-equal values are not a conflict (both
  * simply report the field applied, same as an explicit value that happens to match a preset).
+ * This check runs before the request's own explicit value (if any) for the field is considered,
+ * so an explicit override on the contested field never rescues a preset-vs-preset conflict.
  */
 function noteSetBy(setBy: Map<string, PresetId>, definitions: Record<PresetId, PresetDefinition>, field: string, presetId: PresetId): void {
   const priorId = setBy.get(field);
@@ -164,10 +166,18 @@ export function applyPresetDefinitions(request: SearchRequest, definitions: Reco
     }
   }
 
-  if (presetSortApp) presetSortApp[explicitSort ? 'overriddenFields' : 'appliedFields'].push('sort');
-  if (presetWindowApp) presetWindowApp[explicitWindow ? 'overriddenFields' : 'appliedFields'].push('comparisonWindow');
+  // An explicit sort/window that deep-equals the preset's own value counts as applied, not
+  // overridden — nothing was actually overridden (parent §8.2, Q12). Only a genuinely
+  // different explicit value is a true override.
+  const sortOverridden = explicitSort && !isDeepStrictEqual(request.sort, presetSort);
+  const windowOverridden = explicitWindow && request.comparisonWindow !== presetWindow;
+  if (presetSortApp) presetSortApp[sortOverridden ? 'overriddenFields' : 'appliedFields'].push('sort');
+  if (presetWindowApp) presetWindowApp[windowOverridden ? 'overriddenFields' : 'appliedFields'].push('comparisonWindow');
 
-  const sort: Sort = request.sort ?? presetSort ?? DEFAULT_SORT;
+  // Spread, never hand out the frozen DEFAULT_SORT singleton itself: a caller that mutates
+  // `effectiveSort`/`out.sort` on its own response must never be able to corrupt the shared
+  // fallback every other request relies on.
+  const sort: Sort = request.sort ?? presetSort ?? { ...DEFAULT_SORT };
   const comparisonWindow: Window | undefined = request.comparisonWindow ?? presetWindow ?? undefined;
   const effectiveWindow: Window = comparisonWindow ?? filters.movement?.window ?? '4w';
   if (filters.movement && filters.movement.window !== effectiveWindow) {
@@ -211,6 +221,7 @@ export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' 
     })),
     sorts: SORT_FIELDS,
     windows: WINDOWS,
+    defaultSort: { ...DEFAULT_SORT },
     categoryRules: [
       'Resolve category words with resolve_categories first; pass the returned selection objects to search_keywords.',
       'Several categories combine with OR; every other filter combines with AND.',

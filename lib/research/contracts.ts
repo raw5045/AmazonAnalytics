@@ -391,6 +391,8 @@ export interface GuideResponse {
   presets: Array<{ id: PresetId; description: string; filters: Partial<Filters>; sort?: Sort; comparisonWindow?: Window }>;
   sorts: readonly SortField[];
   windows: readonly Window[];
+  /** The sort the catalog applies when neither the request nor an applied preset supplies one (lib/research/catalog.ts). A fresh copy, never the frozen DEFAULT_SORT singleton. */
+  defaultSort: Sort;
   categoryRules: string[];
   populationRules: string[];
   /** How presets interact with explicit request fields and with each other (parent §8.2). */
