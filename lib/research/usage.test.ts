@@ -27,6 +27,26 @@ describe('reserveResearchRequest', () => {
     execute.mockResolvedValueOnce({ rows: [{ requests: 2, rows: 6050 }] });
     await expect(reserveResearchRequest(args)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
+  it('passes when exactly at the limit — pins > not >=', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ requests: 60, rows: 6000 }] });
+    await expect(reserveResearchRequest(args)).resolves.toEqual({ requests: 60, rows: 6000 });
+  });
+  it('retryAfterSeconds is the seconds left in the minute: 60 right on the boundary, 1 just before the next one', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ requests: 61, rows: 0 }] });
+    await expect(reserveResearchRequest({ ...args, now: new Date('2026-09-21T12:00:00.000Z') })).rejects.toMatchObject({ retryAfterSeconds: 60 });
+    execute.mockResolvedValueOnce({ rows: [{ requests: 61, rows: 0 }] });
+    await expect(reserveResearchRequest({ ...args, now: new Date('2026-09-21T12:00:59.999Z') })).rejects.toMatchObject({ retryAfterSeconds: 1 });
+  });
+  it('a rows: 0 reservation resolves and floors the bound bucket to the minute', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ requests: 4, rows: 150 }] });
+    await expect(reserveResearchRequest({ ...args, rows: 0 })).resolves.toEqual({ requests: 4, rows: 150 });
+    expect(JSON.stringify(execute.mock.calls[0][0])).toContain('2026-09-21T12:00:00.000Z');
+  });
+  it('rejects a negative or non-integer rows before any DB call', async () => {
+    await expect(reserveResearchRequest({ ...args, rows: -1 })).rejects.toThrow(/non-negative safe integer/);
+    await expect(reserveResearchRequest({ ...args, rows: 1.5 })).rejects.toThrow(/non-negative safe integer/);
+    expect(execute).not.toHaveBeenCalled();
+  });
 });
 
 describe('recordMcpActivity', () => {
@@ -37,5 +57,9 @@ describe('recordMcpActivity', () => {
     bumpBy.mockClear();
     recordMcpActivity('u1', 0);
     expect(bumpBy).toHaveBeenCalledTimes(1);
+  });
+  it('is fire-and-forget: returns undefined synchronously, not a Promise', () => {
+    const result = recordMcpActivity('u1', 1);
+    expect(result).toBeUndefined();
   });
 });

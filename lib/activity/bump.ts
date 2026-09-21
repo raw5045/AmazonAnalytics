@@ -36,9 +36,19 @@ export async function bumpUserActivity(userId: string, metric: UserActivityMetri
   }
 }
 
-/** Increment-by-N variant (MCP rows per page); same fire-and-forget contract as bumpUserActivity. */
+/**
+ * Increment-by-N variant (MCP rows per page); same fire-and-forget contract as
+ * bumpUserActivity. A non-integer `by` (NaN, Infinity, a fractional or unsafe value) is a
+ * programmer error — it's warned so it isn't silently lost — and is never written. `by <= 0`
+ * (zero or negative, but a legitimate integer) stays silently ignored: a page that returned
+ * no rows is not a bug.
+ */
 export async function bumpUserActivityBy(userId: string, metric: UserActivityMetric, by: number): Promise<void> {
-  if (!Number.isInteger(by) || by <= 0) return;
+  if (!Number.isSafeInteger(by)) {
+    console.warn(`[activity] bumpUserActivityBy(${metric}) called with a non-integer by=${by}; ignoring`);
+    return;
+  }
+  if (by <= 0) return;
   try {
     await db
       .insert(userActivityDaily)

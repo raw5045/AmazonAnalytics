@@ -16,7 +16,8 @@ CREATE INDEX IF NOT EXISTS research_usage_buckets_start_idx ON research_usage_bu
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS mcp_connections (
   user_id         uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-  status          varchar(16) NOT NULL DEFAULT 'enabled',
+  status          varchar(16) NOT NULL DEFAULT 'enabled'
+                    CONSTRAINT mcp_connections_status_check CHECK (status IN ('enabled', 'disconnected')),
   disconnected_at timestamptz,
   reconnected_at  timestamptz,
   last_request_at timestamptz,

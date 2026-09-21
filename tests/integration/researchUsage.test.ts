@@ -18,7 +18,11 @@ describe('research usage buckets (integration, real Postgres)', () => {
     const results = await Promise.allSettled(
       Array.from({ length: 5 }, () => reserveResearchRequest({ userId: userId!, channel: 'mcp', rows: 50, now, limits })),
     );
-    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(3);
+    const fulfilled = results.filter((r): r is PromiseFulfilledResult<{ requests: number; rows: number }> => r.status === 'fulfilled');
+    expect(fulfilled).toHaveLength(3);
+    // Proves the upsert serializes increments (each reservation sees a distinct, gapless
+    // requests count) rather than racing on a read-modify-write that could repeat a count.
+    expect(fulfilled.map((r) => r.value.requests).sort((a, b) => a - b)).toEqual([1, 2, 3]);
     const rejected = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
     expect(rejected).toHaveLength(2);
     for (const r of rejected) expect(r.reason).toMatchObject({ code: 'RATE_LIMITED', retryAfterSeconds: 30 });

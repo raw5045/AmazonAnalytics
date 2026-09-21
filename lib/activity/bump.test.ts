@@ -14,11 +14,21 @@ import { bumpUserActivityBy } from './bump';
 describe('bumpUserActivityBy', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('makes no DB call for by <= 0 or a non-integer', async () => {
+  it('makes no DB call and does not warn for by <= 0 (a legitimate integer)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await bumpUserActivityBy('u1', 'mcp_rows', 0);
     await bumpUserActivityBy('u1', 'mcp_rows', -5);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('makes no DB call but warns for a non-integer by (programmer error)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await bumpUserActivityBy('u1', 'mcp_rows', 1.5);
     expect(mockInsert).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 
   it('inserts/upserts with count = by for a positive integer', async () => {
