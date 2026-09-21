@@ -5,9 +5,13 @@
  * `estimatedMonthlySearches` desc) is compiled as `current_rank ASC` rather
  * than an ORDER BY on the volume column itself — cheaper, and correct only
  * because the stored estimate is guaranteed non-increasing in rank by
- * construction (buildPiecewiseSql in lib/analytics/volumeModel.ts fits one
- * monotone curve per snapshot). If that guarantee is ever violated — a bad
- * calibration fit, a future multi-fit change, a data bug — rank order and
+ * construction: pickFitForWeek selects ONE fit per snapshot, rendered to SQL by
+ * buildPiecewiseSql (lib/analytics/volumeModel.ts), and that curve is monotone
+ * because every segment has β > 0 and segments are continuity-matched at their
+ * breakpoints (withUltraHeadSegment in lib/volumeModel/fitOrchestrator.ts,
+ * chooseBetas in volumeModel.ts). If that guarantee is ever violated — a fit
+ * persisted with β ≤ 0, a hand-edited fit without continuity, a future per-row
+ * or multi-fit change, a data bug — rank order and
  * volume order silently diverge and the research tool returns wrong results
  * without erroring.
  *

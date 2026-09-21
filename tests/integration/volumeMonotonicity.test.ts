@@ -6,9 +6,9 @@
  *
  * Gated by RUN_INTEGRATION=1 (tests/integration/** is excluded from the plain
  * `vitest run` glob otherwise — see vitest.config.ts). Requires DATABASE_URL,
- * loaded from .env.local by tests/integration/setup.ts, which in this repo
- * points at the PRODUCTION database — do not add a beforeAll/afterAll that
- * writes here.
+ * loaded from .env.local by tests/integration/setup.ts, which may point at
+ * the PRODUCTION database — read-only by design; do not add a beforeAll/afterAll
+ * that writes here.
  *
  * Run: cross-env RUN_INTEGRATION=1 pnpm vitest run tests/integration/volumeMonotonicity.test.ts
  */

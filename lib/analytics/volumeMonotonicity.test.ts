@@ -7,11 +7,14 @@ describe('volume monotonicity', () => {
     expect(sql).toContain('lag(estimated_monthly_volume_current) OVER (ORDER BY current_rank, search_term_id)');
     expect(sql).toContain('FROM keyword_current_summary_stage');
     expect(sql).toContain('WHERE prev IS NOT NULL AND v > prev');
+    expect(sql).toContain('WHERE estimated_monthly_volume_current IS NOT NULL');
+    expect(sql).toContain('count(*)::int AS inversions');
   });
 
   it('returns the count', async () => {
     const client = { query: vi.fn(async () => ({ rows: [{ inversions: 3 }] })) };
     expect(await countVolumeInversions(client, 'keyword_current_summary')).toBe(3);
+    expect(client.query).toHaveBeenCalledWith(volumeInversionsSql('keyword_current_summary'));
   });
 
   it('treats an empty result as zero', async () => {
