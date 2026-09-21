@@ -35,6 +35,7 @@ describe('exported Explorer fragments (reused by lib/research/query.ts)', () => 
     b = binder();
     expect(severityPredicate({ severities: ['critical'] }, b.next)).toBe('kcs.fake_volume_severity_current IN ($1)');
     expect(severityPredicate({ severities: ['none', 'warning', 'critical'] }, binder().next)).toBeNull();
+    expect(severityPredicate({ severities: [] }, binder().next)).toBeNull();
   });
 
   it('slotColumn picks the loose or strict in-title flag column', () => {
@@ -43,7 +44,7 @@ describe('exported Explorer fragments (reused by lib/research/query.ts)', () => 
   });
 
   it('window maps name the stored prior-rank and prior-volume columns', () => {
-    expect(WINDOW_TO_RANK_COLUMN['4w']).toBe('rank_4w_ago');
-    expect(WINDOW_TO_VOLUME_COLUMN['13w']).toBe('estimated_monthly_volume_13w_ago');
+    expect(WINDOW_TO_RANK_COLUMN).toEqual({ '1w': 'prior_week_rank', '4w': 'rank_4w_ago', '13w': 'rank_13w_ago', '26w': 'rank_26w_ago', '52w': 'rank_52w_ago' });
+    expect(WINDOW_TO_VOLUME_COLUMN).toEqual({ '1w': 'estimated_monthly_volume_1w_ago', '4w': 'estimated_monthly_volume_4w_ago', '13w': 'estimated_monthly_volume_13w_ago', '26w': 'estimated_monthly_volume_26w_ago', '52w': 'estimated_monthly_volume_52w_ago' });
   });
 });
