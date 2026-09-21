@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResearchError, isResearchError, invalidCursorError, dataUnavailableError, queryTimeoutError, searchExpiredError, keywordNotFoundError } from './errors';
+import { ResearchError, isResearchError, invalidCursorError, dataUnavailableError, poolBusyError, queryTimeoutError, searchExpiredError, keywordNotFoundError } from './errors';
 
 describe('ResearchError', () => {
   it('carries a stable code, a safe message, and retry metadata', () => {
@@ -46,7 +46,7 @@ describe('invalidCursorError', () => {
 });
 
 describe('dataUnavailableError', () => {
-  it('builds the standard DATA_UNAVAILABLE error, defaulting to a 120s retry', () => {
+  it('builds the standard DATA_UNAVAILABLE error, with a fixed 120s retry', () => {
     const e = dataUnavailableError();
     expect(e).toBeInstanceOf(ResearchError);
     expect(e.toInfo()).toStrictEqual({
@@ -56,14 +56,24 @@ describe('dataUnavailableError', () => {
       retryAfterSeconds: 120,
     });
   });
-  it('accepts an override retryAfterSeconds for a distinct cause with its own cadence', () => {
-    const e = dataUnavailableError(5);
+});
+
+describe('poolBusyError', () => {
+  // I2: a pool connect-queue timeout is a distinct cause from a missing snapshot (dataset is
+  // fine, every pooled connection is just busy) — its own message and a short 5s retry, never
+  // dataUnavailableError's "dataset is being refreshed" wording, which would misstate the cause.
+  it('builds a DATA_UNAVAILABLE error with its own pool-busy message and a 5s retry', () => {
+    const e = poolBusyError();
+    expect(e).toBeInstanceOf(ResearchError);
     expect(e.toInfo()).toStrictEqual({
       code: 'DATA_UNAVAILABLE',
-      message: 'The keyword dataset is being refreshed; try again in a few minutes.',
+      message: 'KeywordQuarry is busy right now; try again in a few seconds.',
       retryable: true,
       retryAfterSeconds: 5,
     });
+  });
+  it('never shares dataUnavailableError\'s message, so the two causes stay distinguishable', () => {
+    expect(poolBusyError().message).not.toBe(dataUnavailableError().message);
   });
 });
 

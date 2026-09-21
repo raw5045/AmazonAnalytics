@@ -51,6 +51,9 @@ describe('runSearch', () => {
     const out = await runSearch(p.pool, 10_000, compile, { expectedSnapshot: null });
     expect(compile).toHaveBeenCalledWith(expect.objectContaining({ currentWeekEndDate: '2026-09-12', snapshotVersion: 'snap-a' }));
     expect(out.rows).toEqual([{ search_term_id: 'a' }]);
+    // M2: runSearch returns the exact CompiledSearch it ran (the compile() callback's result),
+    // so the service can count against it directly instead of keeping its own `let compiled`.
+    expect(out.compiled).toBe(compiled);
     expect(p.log[0]).toBe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     expect(p.log.at(-1)).toBe('COMMIT');
   });

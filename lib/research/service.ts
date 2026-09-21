@@ -10,11 +10,11 @@ import { defaultCategoryDeps, rankCandidates, resolveScope, type CategoryDeps } 
 import {
   invalid, keywordDetailsInputSchema, keywordHistoryInputSchema, parseSearchInput, resolveCategoriesInputSchema,
   type Filters, type GuideResponse, type KeywordDetailsResponse, type KeywordHistoryResponse, type Pagination,
-  type ResolveCategoriesResponse, type SearchRequest, type SearchResponse, type Sort, type TotalMatches, type Warning,
+  type ResolveCategoriesResponse, type SearchRequest, type SearchResponse, type SearchRow, type Sort, type TotalMatches, type Warning,
 } from './contracts';
 import { cursorSecret, signCursor, verifyCursor, type CursorPayload } from './cursor';
 import { defaultDetailsDeps, loadKeywordDetails, type DetailsDeps } from './details';
-import { dataUnavailableError, ResearchError } from './errors';
+import { invalidCursorError, poolBusyError, ResearchError } from './errors';
 import { loadKeywordHistory, type HistoryDeps } from './history';
 import { researchLimits, type ResearchLimits } from './limits';
 import { getResearchPool } from './pool';
@@ -107,24 +107,25 @@ function reserveFor(deps: ResearchServiceDeps, actor: ResearchActor, rows: numbe
  * Runs one tool operation and classifies what escapes it (Task 8/15 review): a `ResearchError`
  * is already a safe, client-facing shape and passes through unchanged. `isPoolConnectTimeout`
  * recognizes pg-pool's own connect-queue wait timing out — a plain `Error` with no SQLSTATE,
- * raised when every pooled connection is busy — and turns THAT SPECIFIC failure into a
- * retryable `DATA_UNAVAILABLE` (5s: short, because the pool itself is healthy and the caller
- * just lost the race for a client). Anything else (a raw SQLSTATE, a compile-time guard, a
- * genuinely unexpected error) is rethrown unchanged, on purpose: the MCP tool layer (Task 15)
- * maps an unrecognized error to a generic message without ever echoing `e.message` to a
- * client, so there is no safety reason to reclassify it here too.
+ * raised when every pooled connection is busy — and turns THAT SPECIFIC failure into
+ * `poolBusyError()` (I2: its own message and a short 5s retry — the pool itself is healthy and
+ * the caller just lost the race for a client, so `dataUnavailableError()`'s "dataset is being
+ * refreshed" wording would misstate the cause). Anything else (a raw SQLSTATE, a compile-time
+ * guard, a genuinely unexpected error) is rethrown unchanged, on purpose: the MCP tool layer
+ * (Task 15) maps an unrecognized error to a generic message without ever echoing `e.message` to
+ * a client, so there is no safety reason to reclassify it here too.
  */
 async function guarded<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (e) {
     if (e instanceof ResearchError) throw e;
-    if (isPoolConnectTimeout(e)) throw dataUnavailableError(5);
+    if (isPoolConnectTimeout(e)) throw poolBusyError();
     throw e;
   }
 }
 
-function buildWarnings(args: { filters: Filters; sort: Sort; meta: SnapshotMeta; pagination: Pagination }): Warning[] {
+function buildWarnings(args: { filters: Filters; sort: Sort; meta: SnapshotMeta; pagination: Pagination; pageShortened: boolean }): Warning[] {
   const w: Warning[] = [{ code: 'ESTIMATED_VOLUME', message: 'estimatedMonthlySearches values are estimates derived from rank and calibration, not measured counts.' }];
   // C6 (Task 11 review wording, matching lib/research/details.ts exactly): the flag means the
   // dataset week predates every calibration month, not "extrapolated from an earlier month".
@@ -138,14 +139,44 @@ function buildWarnings(args: { filters: Filters; sort: Sort; meta: SnapshotMeta;
   if (args.filters.averageReviews || args.sort.field === 'averageReviews') w.push({ code: 'PARTIAL_REVIEW_COVERAGE_POSSIBLE', message: 'averageReviews is the stored average over the observed top-three products; some rows may cover fewer than three.' });
   if (args.pagination.nextCursor) w.push({ code: 'LIVE_PAGINATION', message: 'Pages are computed live; continue with {cursor} only. A mid-week product sync can shift review-sorted pages slightly; a weekly refresh expires the cursor.' });
   if (args.pagination.capReason === 'max_rows') w.push({ code: 'RESULTS_CAPPED', message: `Only the first ${args.pagination.offset + args.pagination.returnedCount} matching rows are reachable per search; more matches exist. Narrow the criteria to see them.` });
-  if (args.pagination.capReason === 'payload') w.push({ code: 'PAYLOAD_LIMITED', message: 'This page was shortened to fit the response size limit; the cursor continues from the last row returned.' });
+  // I1: PAYLOAD_LIMITED only when the halving loop below actually cut rows. capReason is
+  // 'payload' in TWO distinct situations — a shortened page (this one) and a cursor too large
+  // to sign with a full, un-shortened page (build()'s cursorTooLarge branch) — and only the
+  // first one actually shortened anything; the second already reports CURSOR_TOO_LARGE and a
+  // null nextCursor, which this warning's "the cursor continues from the last row returned"
+  // clause would otherwise flatly contradict. The clause itself is conditional on nextCursor
+  // too, since a page can be shortened AND still end up with no cursor (RESPONSE_TOO_LARGE's
+  // sign-time failure can follow a halving that already happened).
+  if (args.pageShortened) {
+    w.push({
+      code: 'PAYLOAD_LIMITED',
+      message: args.pagination.nextCursor
+        ? 'This page was shortened to fit the response size limit; the cursor continues from the last row returned.'
+        : 'This page was shortened to fit the response size limit.',
+    });
+  }
   return w;
 }
 
+/**
+ * M9: builds the five research tools over `deps`. Every tool's order of operations is:
+ * validate → cursor verify + owner check (search's continuation path only) → presets → reserve
+ * → resolve scope → run → count → bound the payload → sign the cursor → record activity.
+ * `record` (the daily-digest counters, Task 17) runs only after every earlier step has already
+ * succeeded — never before, and never on a rejected or failed call — so those counters only
+ * ever reflect calls that actually returned a result to the caller.
+ */
 export function createResearchService(deps: ResearchServiceDeps): ResearchService {
   const loadDetails = deps.loadDetails ?? loadKeywordDetails;
   const loadHistory = deps.loadHistory ?? loadKeywordHistory;
 
+  /**
+   * M9: order of operations (see createResearchService's docstring above) — validate → cursor
+   * verify + owner check → presets → reserve → resolve scope → run → count → bound → sign →
+   * record. `record` runs once, at the very end, only after the response is fully built
+   * (including the payload-shrink loop below); any failure before that point propagates without
+   * ever bumping the caller's digest counters.
+   */
   async function search(actor: ResearchActor, input: unknown): Promise<SearchResponse> {
     const parsed = parseSearchInput(input);
     const now = deps.now();
@@ -158,8 +189,11 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     let exp: number;
     if (parsed.kind === 'continuation') {
       const c: CursorPayload = verifyCursor(parsed.cursor, deps.cursorSecret, nowSec);
+      // M1: the standard INVALID_CURSOR error, same as every other bad-cursor case — a foreign
+      // cursor is deliberately indistinguishable from a malformed one, never its own bespoke
+      // "belongs to a different account" message.
       if (c.uid !== actor.localUserId || c.ch !== actor.channel) {
-        throw new ResearchError('INVALID_CURSOR', 'This cursor belongs to a different account or client. Start a new search.');
+        throw invalidCursorError();
       }
       request = c.req; offset = c.off; pageSize = c.ps; expectedSnapshot = c.snap; carriedTotal = c.tm; exp = c.exp;
     } else {
@@ -170,20 +204,36 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     await reserveFor(deps, actor, pageSize);
     const scope = await resolveScope(actor.localUserId, filters.categories, deps.limits.maxExpandedLeaves, deps.categories);
 
-    let compiled: CompiledSearch | null = null;
-    const compile = (meta: SnapshotMeta): CompiledSearch => {
-      compiled = compileSearch({ filters, sort, window: comparisonWindow, leaves: scope.leaves, currentWeekEndDate: meta.currentWeekEndDate, offset, limit: pageSize + 1 });
-      return compiled;
-    };
-    const run = await deps.runSearch(deps.pool, deps.limits.sqlTimeoutMs, compile, { expectedSnapshot });
-    // C2: countMatches now takes { expectedSnapshot } — always the snapshot the search actually
-    // ran against (run.meta.snapshotVersion), even on a first page, so a weekly swap racing
-    // between the search transaction and this separate count transaction is caught as `unknown`
-    // rather than silently counting a different population than the rows just fetched.
-    const totalMatches = carriedTotal ?? (await deps.countMatches(deps.pool, deps.limits.countTimeoutMs, compiled!, { expectedSnapshot: run.meta.snapshotVersion }));
-
+    // M5: reachable/visible must be known before compiling, so the SQL only ever asks for as
+    // many rows as the response could actually show (visible + 1, to detect a next page) —
+    // never a flat pageSize + 1 past the maxRowsPerSearch cap. An offset already beyond the cap
+    // clamps `reachable` to 0 here rather than being rejected outright: that offset is only
+    // ever reachable via a previously-signed cursor (never a request the service itself would
+    // issue past the cap), and since cursors are signed, a client cannot forge one there either
+    // — so clamping to an empty page is deliberate, simpler than a separate guard for a case
+    // the signature already makes non-adversarial.
     const reachable = Math.max(0, deps.limits.maxRowsPerSearch - offset);
     const visible = Math.min(pageSize, reachable);
+    // M2: compile() no longer stashes into a `let compiled` closure — runSearch's own return
+    // (run.compiled) is the exact CompiledSearch it ran, so that's what count uses below.
+    const compile = (meta: SnapshotMeta): CompiledSearch =>
+      compileSearch({ filters, sort, window: comparisonWindow, leaves: scope.leaves, currentWeekEndDate: meta.currentWeekEndDate, offset, limit: visible + 1 });
+    const run = await deps.runSearch(deps.pool, deps.limits.sqlTimeoutMs, compile, { expectedSnapshot });
+    // M4: a second, later now() for provenance.resultCapturedAt, reported separately from the
+    // first `now` above (kept fixed for the cursor's own nowSec/exp math) — this one marks when
+    // the result was actually produced, after the SQL that produced it ran.
+    const resultCapturedAt = deps.now();
+    // S1: page one already proves the total when the page itself came back at or under
+    // pageSize — there is no row beyond it to count, so a whole second transaction would only
+    // confirm what the page already showed. Otherwise, C2: countMatches takes
+    // { expectedSnapshot } — always the snapshot the search actually ran against
+    // (run.meta.snapshotVersion), even on a first page, so a weekly swap racing between the
+    // search transaction and this separate count transaction is caught as `unknown` rather than
+    // silently counting a different population than the rows just fetched.
+    const totalMatches: TotalMatches = carriedTotal ?? (offset === 0 && run.rows.length <= pageSize
+      ? { kind: 'exact', value: run.rows.length }
+      : await deps.countMatches(deps.pool, deps.limits.countTimeoutMs, run.compiled, { expectedSnapshot: run.meta.snapshotVersion }));
+
     const available = Math.min(run.rows.length, visible);
     const moreExist = run.rows.length > visible;
     const rowCtx = { appUrl: deps.appUrl, window: comparisonWindow, includeMovement: filters.movement !== null || sort.field === 'volumeDelta', titleMode: filters.titleGap?.mode ?? null };
@@ -193,7 +243,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     // than once (the payload-shrink loop below), and every attempt describes the SAME request.
     const requestId = randomUUID();
 
-    const build = (rowsOut: typeof rows, reason: Pagination['capReason']): SearchResponse => {
+    const build = (rowsOut: SearchRow[], reason: Pagination['capReason'], pageShortened: boolean): SearchResponse => {
       const returnedCount = rowsOut.length;
       const hasNext = reason !== 'max_rows' && (moreExist || returnedCount < available);
       let nextCursor: string | null = null;
@@ -223,7 +273,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
         capReason: effectiveReason,
         expiresAt: cursorTooLarge ? null : nextCursor ? new Date(exp * 1000).toISOString() : null,
       };
-      const warnings = buildWarnings({ filters, sort, meta: run.meta, pagination });
+      const warnings = buildWarnings({ filters, sort, meta: run.meta, pagination, pageShortened });
       if (cursorTooLarge) {
         warnings.push({ code: 'CURSOR_TOO_LARGE', message: 'The search criteria are too large to page through; select a parent category or a custom category instead of many explicit leaf paths.' });
       }
@@ -237,7 +287,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
         resolvedCategoryScope: scope.scope,
         provenance: {
           datasetWeek: run.meta.currentWeekEndDate, snapshotVersion: run.meta.snapshotVersion, summaryRefreshedAt: run.meta.refreshedAt,
-          resultCapturedAt: now.toISOString(), volumeFitRunId: run.meta.volumeFitRunId, calibrationMonthEndDate: run.meta.calibrationMonthEndDate,
+          resultCapturedAt: resultCapturedAt.toISOString(), volumeFitRunId: run.meta.volumeFitRunId, calibrationMonthEndDate: run.meta.calibrationMonthEndDate,
           volumeIsExtrapolated: run.meta.isExtrapolated, guideVersion: GUIDE_VERSION, queryVersion: QUERY_VERSION,
         },
         rows: rowsOut,
@@ -246,13 +296,13 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       };
     };
 
-    let response = build(rows, capReason);
+    let response = build(rows, capReason, false);
     // Payload bound (parent §9): the largest non-empty ordered prefix that fits; never drop a criterion.
     while (Buffer.byteLength(JSON.stringify(response)) > deps.limits.maxPayloadBytes) {
       if (rows.length <= 1) throw new ResearchError('RESPONSE_TOO_LARGE', 'Even one row does not fit the response size limit. Use fewer category selectors and try again.');
       rows = rows.slice(0, Math.max(1, Math.floor(rows.length / 2)));
       capReason = 'payload';
-      response = build(rows, capReason);
+      response = build(rows, capReason, true);
     }
     deps.record(actor.localUserId, response.rows.length);
     return response;
@@ -280,16 +330,24 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       : await deps.categories.listCustom(actor.localUserId, q.query);
     const candidates = [...taxonomy.candidates, ...custom];
     const nextOffset = offset + q.limit;
-    return {
+    const response: ResolveCategoriesResponse = {
       query: q.query,
       source: q.source,
       parentPath: q.parentPath,
       candidates,
       nextCursor: nextOffset < taxonomy.total ? String(nextOffset) : null,
+      // M6: custom is [] once offset > 0 (above), so this total — and candidates.length —
+      // includes custom rows only on page 0, where it can therefore exceed `limit` by the
+      // custom count. By design: custom categories are never paginated on their own, just
+      // appended once, on the taxonomy's first page.
       totalCandidates: taxonomy.total + custom.length,
       provenance: { datasetWeek: catalog.datasetWeek, snapshotVersion: catalog.snapshotVersion },
       noMatch: candidates.length === 0,
     };
+    // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
+    // (mcp_request counter) must count this the same as search/details/history.
+    deps.record(actor.localUserId, RESERVE_NO_ROWS);
+    return response;
   }
 
   async function details(actor: ResearchActor, input: unknown): Promise<KeywordDetailsResponse> {
@@ -313,7 +371,11 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
   async function guide(actor: ResearchActor): Promise<GuideResponse> {
     await reserveFor(deps, actor, RESERVE_NO_ROWS);
     const meta = await deps.meta();
-    return buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: deps.audience(), limits: deps.limits });
+    const response = buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: deps.audience(), limits: deps.limits });
+    // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
+    // (mcp_request counter) must count this the same as search/details/history.
+    deps.record(actor.localUserId, RESERVE_NO_ROWS);
+    return response;
   }
 
   return {

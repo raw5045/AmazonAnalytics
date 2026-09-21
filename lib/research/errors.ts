@@ -75,16 +75,29 @@ export function invalidCursorError(details?: ReadonlyArray<ResearchFieldIssue>):
 /**
  * The standard DATA_UNAVAILABLE error: the snapshot meta row is missing (the kill switch, or
  * a fresh deploy before the first weekly import). search.ts, history.ts and categories.ts all
- * throw exactly this (with the default 120s retry) so the message and retry metadata live in
- * one place instead of hand-copied literals.
+ * throw exactly this (with its fixed 120s retry — the kill-switch cadence) so the message and
+ * retry metadata live in one place instead of hand-copied literals.
  *
- * `retryAfterSeconds` defaults to 120 (the kill-switch cadence) but accepts an override for a
- * distinct cause with its own, shorter cadence: service.ts's `guarded()` throws
- * `dataUnavailableError(5)` for a pg-pool connect-queue timeout (`isPoolConnectTimeout` in
- * lib/db/tcpPool.ts) — the pool itself is healthy there, so a 5s retry is honest, not 120s.
+ * I2: a distinct cause with its own cadence and wording — a pg-pool connect-queue timeout
+ * (`isPoolConnectTimeout` in lib/db/tcpPool.ts), where the pool itself is healthy and the
+ * caller just lost the race for a client — gets its own factory, `poolBusyError()` below,
+ * rather than an override argument here: "the dataset is being refreshed" would misstate that
+ * cause, so service.ts's `guarded()` calls `poolBusyError()` for it instead of this function.
  */
-export function dataUnavailableError(retryAfterSeconds = 120): ResearchError {
-  return new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds });
+export function dataUnavailableError(): ResearchError {
+  return new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
+}
+
+/**
+ * The standard pool-busy error (I2): service.ts's `guarded()` throws this when
+ * `isPoolConnectTimeout` (lib/db/tcpPool.ts) recognizes a pg-pool connect-queue timeout — a
+ * plain `Error` with no SQLSTATE, raised when every pooled connection is busy. Distinct from
+ * `dataUnavailableError()` above: the dataset itself is fine here, so the message says the
+ * service is busy, not that the dataset is refreshing, and the retry is a short 5s (the caller
+ * just needs to wait for a connection, not for a weekly import) rather than 120s.
+ */
+export function poolBusyError(): ResearchError {
+  return new ResearchError('DATA_UNAVAILABLE', 'KeywordQuarry is busy right now; try again in a few seconds.', { retryable: true, retryAfterSeconds: 5 });
 }
 
 /**

@@ -6,7 +6,8 @@ import { dataUnavailableError, queryTimeoutError, searchExpiredError } from './e
 import type { CompiledSearch, RawSearchRow } from './query';
 import { loadSnapshotMeta, type SnapshotMeta } from './snapshot';
 
-export interface SearchRun { meta: SnapshotMeta; rows: RawSearchRow[] }
+/** M2: `compiled` is the exact CompiledSearch this run used, so a caller (service.ts) can count against it directly instead of keeping its own closure copy. */
+export interface SearchRun { meta: SnapshotMeta; rows: RawSearchRow[]; compiled: CompiledSearch }
 
 /** Meta + one page in a single read-only repeatable-read transaction. */
 export async function runSearch(
@@ -23,7 +24,7 @@ export async function runSearch(
     }
     const compiled = compile(meta);
     const rows = (await client.query(compiled.sql, compiled.args)).rows as RawSearchRow[];
-    return { meta, rows };
+    return { meta, rows, compiled };
   });
   if (out === 'timeout') throw queryTimeoutError(timeoutMs);
   return out;

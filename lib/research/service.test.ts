@@ -9,11 +9,15 @@ import { describe, it, expect, vi } from 'vitest';
 // never touches a real database.
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test', APP_PUBLIC_URL: 'https://keywordquarry.com', CLERK_SECRET_KEY: 'sk_test' } }));
 vi.mock('@/db/client', () => ({ db: {} }));
+// M10: defaultResearchService() (via defaultResearchDeps()) calls getResearchPool() eagerly;
+// stub it so building the default service never constructs a real pg.Pool.
+vi.mock('./pool', () => ({ getResearchPool: () => ({}) }));
 
-import { createResearchService, type ResearchActor, type ResearchServiceDeps } from './service';
+import { createResearchService, defaultResearchService, resetResearchServiceForTests, type ResearchActor, type ResearchServiceDeps } from './service';
 import { buildCategoryCatalog } from './categories';
 import { DEFAULT_LIMITS } from './limits';
 import { signCursor, verifyCursor } from './cursor';
+import { ResearchError, searchExpiredError } from './errors';
 import type { RawSearchRow } from './query';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
@@ -76,7 +80,8 @@ describe('search: a new request', () => {
     expect(countCall[3]).toEqual({ expectedSnapshot: 'snap-a' });
   });
   it('rate limiting stops everything before any scope or query work', async () => {
-    const deps = makeDeps({ reserve: vi.fn(async () => { throw Object.assign(new Error('slow'), { code: 'RATE_LIMITED' }); }) });
+    // M7: a real ResearchError, as reserve() actually throws — not an ad-hoc Error/code shape.
+    const deps = makeDeps({ reserve: vi.fn(async () => { throw new ResearchError('RATE_LIMITED', 'slow', { retryable: true, retryAfterSeconds: 30 }); }) });
     await expect(createResearchService(deps).search(actor, { schemaVersion: 1 })).rejects.toMatchObject({ code: 'RATE_LIMITED' });
     expect(deps.runSearch).not.toHaveBeenCalled();
   });
@@ -88,11 +93,38 @@ describe('search: a new request', () => {
   it('C7: classifies a pool connect-queue timeout as retryable DATA_UNAVAILABLE, and rethrows any other raw error unchanged', async () => {
     const timeoutErr = new Error('timeout exceeded when trying to connect');
     const deps1 = makeDeps({ runSearch: vi.fn(async () => { throw timeoutErr; }) });
-    await expect(createResearchService(deps1).search(actor, { schemaVersion: 1 })).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', retryable: true, retryAfterSeconds: 5 });
+    // I2: poolBusyError()'s own message — never dataUnavailableError's "dataset is being
+    // refreshed" wording, which would misstate a busy pool as a missing snapshot.
+    await expect(createResearchService(deps1).search(actor, { schemaVersion: 1 })).rejects.toMatchObject({
+      code: 'DATA_UNAVAILABLE', retryable: true, retryAfterSeconds: 5, message: 'KeywordQuarry is busy right now; try again in a few seconds.',
+    });
 
     const boom = new Error('boom');
     const deps2 = makeDeps({ runSearch: vi.fn(async () => { throw boom; }) });
     await expect(createResearchService(deps2).search(actor, { schemaVersion: 1 })).rejects.toBe(boom);
+  });
+  it('I4c: an extrapolated volume fit produces EXTRAPOLATED_VOLUME with the details.ts wording, and marks provenance', async () => {
+    const extrapMeta = { ...META, isExtrapolated: true };
+    const deps = makeDeps({ runSearch: vi.fn(async (_pool, _t, compile) => ({ meta: extrapMeta, rows: Array.from({ length: 51 }, (_, i) => raw(i + 1)), compiled: compile(extrapMeta) })) });
+    const res = await createResearchService(deps).search(actor, { schemaVersion: 1 });
+    expect(res.warnings).toContainEqual({
+      code: 'EXTRAPOLATED_VOLUME',
+      message: 'The dataset week predates every calibration month, so this volume estimate applies the earliest calibration fit backward in time; treat it as directional.',
+    });
+    expect(res.provenance.volumeIsExtrapolated).toBe(true);
+  });
+  it('I4d: a SEARCH_EXPIRED thrown by runSearch propagates unchanged, and record is never called', async () => {
+    const err = searchExpiredError('snapshot_changed');
+    const deps = makeDeps({ runSearch: vi.fn(async () => { throw err; }) });
+    await expect(createResearchService(deps).search(actor, { schemaVersion: 1 })).rejects.toBe(err);
+    expect(deps.record).not.toHaveBeenCalled();
+  });
+  it('S1: page one returning fewer rows than the page size proves the total without a count query', async () => {
+    const deps = makeDeps({ runSearch: vi.fn(async (_pool, _t, compile) => ({ meta: META, rows: [raw(1), raw(2), raw(3)], compiled: compile(META) })) });
+    const res = await createResearchService(deps).search(actor, { schemaVersion: 1 });
+    expect(deps.countMatches).not.toHaveBeenCalled();
+    expect(res.pagination.totalMatches).toEqual({ kind: 'exact', value: 3 });
+    expect(res.pagination.returnedCount).toBe(3);
   });
 });
 
@@ -114,6 +146,12 @@ describe('search: continuation and caps', () => {
     const foreign = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 9_999_999_999, uid: 'someone-else', ch: 'mcp', tm: { kind: 'unknown', value: null } }, 'test-secret');
     await expect(createResearchService(deps).search(actor, { cursor: foreign })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
   });
+  it('I4e: an expired cursor is SEARCH_EXPIRED, and never reserves', async () => {
+    const deps = makeDeps();
+    const expired = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 1_000_000_000, uid: 'u1', ch: 'mcp', tm: { kind: 'unknown', value: null } }, 'test-secret');
+    await expect(createResearchService(deps).search(actor, { cursor: expired })).rejects.toMatchObject({ code: 'SEARCH_EXPIRED' });
+    expect(deps.reserve).not.toHaveBeenCalled();
+  });
   it('stops at 1,000 reachable rows with capReason max_rows and no cursor (Q23)', async () => {
     const deps = makeDeps({ limits: { ...DEFAULT_LIMITS, maxRowsPerSearch: 120 } });
     const svc = createResearchService(deps);
@@ -132,6 +170,12 @@ describe('search: continuation and caps', () => {
     expect(res.pagination.capReason).toBe('payload');
     expect(verifyCursor(res.pagination.nextCursor!, 'test-secret', 0).off).toBe(res.pagination.returnedCount);
     expect(Buffer.byteLength(JSON.stringify(res))).toBeLessThanOrEqual(6000);
+    // I1: the page WAS actually shortened by the halving loop, so PAYLOAD_LIMITED fires, and
+    // since a nextCursor exists here, its message carries the "cursor continues" clause.
+    expect(res.warnings).toContainEqual({
+      code: 'PAYLOAD_LIMITED',
+      message: 'This page was shortened to fit the response size limit; the cursor continues from the last row returned.',
+    });
     await expect(createResearchService(makeDeps({ limits: { ...DEFAULT_LIMITS, maxPayloadBytes: 200 } })).search(actor, { schemaVersion: 1 })).rejects.toMatchObject({ code: 'RESPONSE_TOO_LARGE' });
   });
   it('C5: a cursor too large to sign still returns the already-computed page, capped at payload with a warning — never discarded', async () => {
@@ -152,7 +196,34 @@ describe('search: continuation and caps', () => {
     expect(res.pagination.capReason).toBe('payload');
     expect(res.pagination.expiresAt).toBeNull();
     expect(res.warnings.map((w) => w.code)).toContain('CURSOR_TOO_LARGE');
+    // I1: the page itself was never shortened (still 50 full rows, asserted above) — only the
+    // cursor was dropped — so PAYLOAD_LIMITED must NOT fire; it would contradict nextCursor: null
+    // by claiming "the cursor continues from the last row returned".
+    expect(res.warnings.map((w) => w.code)).not.toContain('PAYLOAD_LIMITED');
     expect(deps.record).toHaveBeenCalledWith('u1', 50);
+  });
+  it('I1: halving AND a too-large cursor together report PAYLOAD_LIMITED (without the cursor clause) alongside CURSOR_TOO_LARGE', async () => {
+    // Same oversized leafPaths as C5 (cursor never signs), but with maxPayloadBytes small
+    // enough that the response itself — dominated by those same leafPaths, echoed back in
+    // appliedFilters — also needs the halving loop to run at least once. So this response
+    // is BOTH actually shortened (pageShortened: true) AND has its cursor dropped for size;
+    // PAYLOAD_LIMITED must fire (the page really was cut) but without the "cursor continues"
+    // clause (there is no cursor — cursorTooLarge forced nextCursor to null).
+    const leafPaths = Array.from({ length: 60 }, (_, i) => `Leaf-${String(i).padStart(3, '0')}-${'x'.repeat(130)}`);
+    const bigCatalog = buildCategoryCatalog(
+      { snapshotVersion: 'snap-a', datasetWeek: '2026-09-12' },
+      leafPaths.map((p) => ({ categoryPath: p, allCount: 1 })),
+    );
+    const deps = makeDeps({
+      categories: { loadCatalog: async () => bigCatalog, loadCustomRows: async () => [], listCustom: async () => [] },
+      limits: { ...DEFAULT_LIMITS, maxPayloadBytes: 15000 },
+    });
+    const res = await createResearchService(deps).search(actor, { schemaVersion: 1, filters: { categories: { leafPaths } } });
+    expect(res.rows.length).toBeLessThan(50);
+    expect(res.pagination.nextCursor).toBeNull();
+    expect(res.pagination.capReason).toBe('payload');
+    expect(res.warnings.map((w) => w.code)).toEqual(expect.arrayContaining(['PAYLOAD_LIMITED', 'CURSOR_TOO_LARGE']));
+    expect(res.warnings).toContainEqual({ code: 'PAYLOAD_LIMITED', message: 'This page was shortened to fit the response size limit.' });
   });
 });
 
@@ -170,19 +241,29 @@ describe('the other tools', () => {
     const page2 = await svc.resolveCategories(actor, { query: 'a', limit: 1, cursor: res.nextCursor });
     expect(page2.candidates.map((c) => c.label)).toEqual(['A › B']);
     expect(deps.reserve).toHaveBeenCalledWith(expect.objectContaining({ rows: 0 }));
+    // I3: resolveCategories now records a request too (RESERVE_NO_ROWS), same as guide — every
+    // accepted tool call must bump Task 17's mcp_request counter, not just search/details/history.
+    expect(deps.record).toHaveBeenCalledWith('u1', 0);
     await expect(svc.resolveCategories(actor, { query: 'a', cursor: 'zzz' })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
     expect((await svc.resolveCategories(actor, { query: 'zzzz', source: 'taxonomy' })).noMatch).toBe(true);
   });
   it('details and history validate, reserve, delegate, and record', async () => {
     const details = vi.fn(async () => ({ searchTermId: 'x', keyword: 'x', keywordUrl: 'u', status: 'dormant' as const, firstSeenWeek: 'a', lastSeenWeek: 'b', current: null, products: [], provenance: { datasetWeek: '', snapshotVersion: '', resultCapturedAt: '' }, warnings: [] }));
-    const history = vi.fn(async () => ({ searchTermId: 'x', keyword: 'x', windowStart: 'a', windowEnd: 'b', requestedWeeks: 4, points: [{ weekEndDate: 'b', rank: 1, estimatedMonthlySearches: null, volumeIsExtrapolated: false, severity: null }], missingWeeks: [], source: 'chart_series' as const, seriesUpdatedAt: null, warnings: [] }));
+    // I4a: 2 points, distinct from details' 1-row record, so the two record() calls can't be
+    // confused by asserting the same ('u1', 1) shape for both.
+    const history = vi.fn(async () => ({ searchTermId: 'x', keyword: 'x', windowStart: 'a', windowEnd: 'b', requestedWeeks: 4, points: [{ weekEndDate: 'a', rank: 2, estimatedMonthlySearches: null, volumeIsExtrapolated: false, severity: null }, { weekEndDate: 'b', rank: 1, estimatedMonthlySearches: null, volumeIsExtrapolated: false, severity: null }], missingWeeks: [], source: 'chart_series' as const, seriesUpdatedAt: null, warnings: [] }));
     const deps = makeDeps({ loadDetails: details, loadHistory: history } as Partial<ResearchServiceDeps>);
     const svc = createResearchService(deps);
     await svc.details(actor, { searchTermId: '11111111-1111-4111-8111-111111111111' });
-    expect(deps.record).toHaveBeenCalledWith('u1', 1);
+    // I4b: details reserves rows: 1.
+    expect(deps.reserve).toHaveBeenNthCalledWith(1, expect.objectContaining({ rows: 1 }));
+    expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', 1);
     await svc.history(actor, { searchTermId: '11111111-1111-4111-8111-111111111111', weeks: 4 });
     expect(history).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', 4, expect.objectContaining({ timeoutMs: DEFAULT_LIMITS.sqlTimeoutMs }));
-    expect(deps.record).toHaveBeenCalledWith('u1', 1);
+    // I4b: history reserves rows: 4 (the requested weeks, not the 2 points actually returned).
+    expect(deps.reserve).toHaveBeenNthCalledWith(2, expect.objectContaining({ rows: 4 }));
+    // I4a: history records the delivered point count (2), distinct from details' ('u1', 1) above.
+    expect(deps.record).toHaveBeenNthCalledWith(2, 'u1', 2);
     await expect(svc.details(actor, { searchTermId: 'nope' })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
   });
   it('guide reports the dataset week and audience, and reserves without rows', async () => {
@@ -190,5 +271,23 @@ describe('the other tools', () => {
     const g = await createResearchService(deps).guide(actor);
     expect(g).toMatchObject({ datasetWeek: '2026-09-12', audience: 'all' });
     expect(deps.reserve).toHaveBeenCalledWith(expect.objectContaining({ rows: 0 }));
+    // I3: guide records a request too (RESERVE_NO_ROWS) — every accepted tool call bumps
+    // Task 17's mcp_request counter, not just search/details/history.
+    expect(deps.record).toHaveBeenCalledWith('u1', 0);
+  });
+});
+
+describe('defaultResearchService', () => {
+  // M10: one shared service per process, memoised on first use; resetResearchServiceForTests()
+  // clears the memo so the next call rebuilds from scratch (as production code needs it to, in
+  // the rare case the underlying deps — e.g. an env-driven singleton — must be re-read).
+  it('memoises one service per process, and resetResearchServiceForTests clears it for the next call', () => {
+    resetResearchServiceForTests();
+    const a = defaultResearchService();
+    const b = defaultResearchService();
+    expect(b).toBe(a);
+    resetResearchServiceForTests();
+    const c = defaultResearchService();
+    expect(c).not.toBe(a);
   });
 });
