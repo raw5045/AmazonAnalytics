@@ -86,8 +86,10 @@ export async function withReadOnlyTx<T>(
  * Deliberately does NOT match two other, similarly-worded timeouts, both confirmed against
  * the same installed versions: pg-pool's own `'Connection terminated due to connection
  * timeout'` (index.js:276 — the underlying socket's connect timeout, not the queue wait; it
- * carries a `cause`) and node-postgres Client's `'timeout expired'` (pg/lib/client.js:150 — a
- * query/statement timeout, unrelated to connecting at all).
+ * carries a `cause`) and node-postgres Client's `'timeout expired'` (pg@8.20.0 lib/client.js:150 —
+ * the Client's OWN connectionTimeoutMillis timer in _connect(), the socket/startup connect timeout
+ * when it fires before pg-pool's wrapper; still not the queue wait). pg's query-level timeout is a
+ * different literal, `'Query read timeout'` (client.js:641), and statement_timeout is SQLSTATE 57014.
  */
 export function isPoolConnectTimeout(err: unknown): boolean {
   return err instanceof Error && err.message === 'timeout exceeded when trying to connect';

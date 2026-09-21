@@ -101,6 +101,23 @@ describe('parseSearchInput', () => {
     expect(bigVolume.kind).toBe('new');
   });
 
+  it('is empty at the ceiling too, symmetric with the floor: no explicit upper bound, but the column ceiling leaves no integer at or above an explicit lower bound', () => {
+    // Ceiling-seeded emptiness: no lt/lte is given, so the field's own column ceiling
+    // (INT4_MAX for rank, SMALLINT_MAX for wordCount) supplies the implied upper bound,
+    // symmetric to `{ lt: floor }` above already being empty because the floor supplies the
+    // implied lower bound. `gt: <ceiling>` leaves no integer strictly below the ceiling;
+    // `gte: <ceiling>` still names exactly one legal integer (the ceiling itself).
+    fails({ ...base, filters: { rank: { gt: 2_147_483_647 } } }, 'filters.rank');
+    expect(parseSearchInput({ ...base, filters: { rank: { gte: 2_147_483_647 } } }).kind).toBe('new');
+    fails({ ...base, filters: { wordCount: { gt: 32_767 } } }, 'filters.wordCount');
+    // Same fix in movementSchema's superRefine, for the rank-metric int4 ceiling on prior/current.
+    fails({ ...base, filters: { movement: { window: '4w', metric: 'rank', prior: { gt: 2_147_483_647 } } } }, 'filters.movement.prior');
+    // estimatedMonthlySearches (bigint, uncapped) has no ceiling to seed `hi` with, so an
+    // explicit-lower-bound-only range stays merely unbounded above, never reported as empty.
+    const bigGt = parseSearchInput({ ...base, filters: { estimatedMonthlySearches: { gt: 9_007_199_254_740_990 } } });
+    expect(bigGt.kind).toBe('new');
+  });
+
   it('accepts zero for reviews and searches, an at-the-floor lte, and a negative delta', () => {
     const out = parseSearchInput({
       ...base,

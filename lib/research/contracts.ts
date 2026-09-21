@@ -19,22 +19,26 @@ export const PAGE_SIZE_MAX = 100;
 const safeInt = z.int();
 
 /**
- * The floor-vs-implied-range emptiness message for one gt/gte/lt/lte range, given a domain
- * floor (or null for none), or null when the range isn't empty. `floor` seeds the implicit
- * lower bound when neither gt nor gte is given, so e.g. `{ lt: 1 }` against floor 1 is
- * recognized as empty. Shared by integerRange (its own field-level floor) and
- * movementSchema's superRefine (the metric-scoped floor for prior/current, which anyRange
- * can't know statically — but movementSchema calls this only for that floor-seeded case;
- * when an explicit lower bound is given, anyRange has already checked it against the upper
- * bound and reported any emptiness itself, so calling this again there would double-report
- * the same issue). Bound-COUNT issues (missing / duplicate bounds) are deliberately NOT
- * part of this: they live in integerRange alone, since anyRange's own superRefine already
- * runs them for prior/current before movementSchema's domain check ever sees the parsed
- * value — rerunning them there would double-report the same issue.
+ * The floor/ceiling-vs-implied-range emptiness message for one gt/gte/lt/lte range, given a
+ * domain floor and ceiling (either or both null for none), or null when the range isn't
+ * empty. `floor` seeds the implicit lower bound when neither gt nor gte is given, and
+ * symmetrically `ceiling` seeds the implicit upper bound when neither lt nor lte is given —
+ * so e.g. `{ lt: 1 }` against floor 1 is recognized as empty, and so is `{ gt: ceiling }`
+ * against that same ceiling (an explicit lower bound sitting exactly at the ceiling leaves no
+ * integer strictly above it). Shared by integerRange (its own field-level min/max) and
+ * movementSchema's superRefine (the metric-scoped floor/ceiling for prior/current, which
+ * anyRange can't know statically — but movementSchema calls this only when at least one side
+ * is left for floor/ceiling to seed; when both an explicit lower AND an explicit upper bound
+ * are given, anyRange has already checked them against each other and reported any emptiness
+ * itself, so calling this again there would double-report the same issue). Bound-COUNT issues
+ * (missing / duplicate bounds) are deliberately NOT part of this: they live in integerRange
+ * alone, since anyRange's own superRefine already runs them for prior/current before
+ * movementSchema's domain check ever sees the parsed value — rerunning them there would
+ * double-report the same issue.
  */
-function emptyRangeIssue(range: { gt?: number; gte?: number; lt?: number; lte?: number }, floor: number | null): string | null {
+function emptyRangeIssue(range: { gt?: number; gte?: number; lt?: number; lte?: number }, floor: number | null, ceiling: number | null): string | null {
   const lo = range.gte !== undefined ? range.gte : range.gt !== undefined ? range.gt + 1 : floor;
-  const hi = range.lte !== undefined ? range.lte : range.lt !== undefined ? range.lt - 1 : null;
+  const hi = range.lte !== undefined ? range.lte : range.lt !== undefined ? range.lt - 1 : ceiling;
   if (lo !== null && hi !== null && lo > hi) return 'the range contains no integer';
   return null;
 }
@@ -56,12 +60,11 @@ function integerRange(min: number | null, max?: number) {
       if (lowers + uppers === 0) ctx.addIssue({ code: 'custom', message: 'a range needs at least one bound (gt, gte, lt, lte); use null for no range' });
       if (lowers > 1) ctx.addIssue({ code: 'custom', message: 'use only one of gt / gte' });
       if (uppers > 1) ctx.addIssue({ code: 'custom', message: 'use only one of lt / lte' });
-      const empty = emptyRangeIssue(r, min);
+      const empty = emptyRangeIssue(r, min, max ?? null);
       if (empty) ctx.addIssue({ code: 'custom', message: empty });
     });
 }
 export const nonNegativeRange = integerRange(0);
-export const positiveRange = integerRange(1);
 export const anyRange = integerRange(null);
 export type IntegerRange = z.infer<typeof anyRange>;
 
@@ -123,16 +126,21 @@ export const movementSchema = z
     // only delta may be negative. anyRange can't enforce this statically since the floor
     // depends on the sibling `metric` field, so the out-of-domain check always runs here
     // with the metric-scoped floor. Emptiness is NOT always safe to re-run, though: when
-    // an explicit lower bound (gt/gte) is given, anyRange's own superRefine has already
-    // checked it against the upper bound and reported emptiness itself — redoing that here
-    // would double-report the same issue. Only the floor-seeded case (no explicit lower
-    // bound, so `floor` supplies the implicit one) is new information anyRange couldn't
-    // have known, so that's the only case this re-checks. The bound-count checks are NOT
-    // repeated here either — anyRange's own superRefine already ran them for this same
-    // parsed value, so redoing them would report each one twice. A rank-metric ceiling
-    // (INT4_MAX — prior/current bind to int4 columns) is checked the same way here, since
-    // anyRange has no column-type information either; delta and every volume-metric bound
-    // stay uncapped (bigint columns), matching filtersSchema's own int4-vs-bigint split.
+    // BOTH an explicit lower bound (gt/gte) AND an explicit upper bound (lt/lte) are given,
+    // anyRange's own superRefine has already checked them against each other and reported
+    // any emptiness itself — redoing that here would double-report the same issue. Only
+    // when exactly one side is explicit — so `floor` or `ceiling` is the one supplying the
+    // other side, information anyRange couldn't have had — is this new, so that's the only
+    // case this re-checks (checkDomain's `!hasLower || !hasUpper`). The bound-count checks
+    // are NOT repeated here either — anyRange's own superRefine already ran them for this
+    // same parsed value, so redoing them would report each one twice. A rank-metric ceiling
+    // (INT4_MAX — prior/current bind to int4 columns) is checked two ways here, since
+    // anyRange has no column-type information either: aboveCeiling below catches an explicit
+    // bound literally past it, and emptyRangeIssue's ceiling-seeded `hi` catches an explicit
+    // lower bound sitting exactly at it (e.g. `{ gt: INT4_MAX }`, which isn't "above" the
+    // ceiling but leaves no integer strictly below it either) — the same way its floor-seeded
+    // `lo` already catches `{ lt: floor }`. delta and every volume-metric bound stay uncapped
+    // (bigint columns), matching filtersSchema's own int4-vs-bigint split.
     const floor = m.metric === 'volume' ? 0 : 1;
     const ceiling = m.metric === 'rank' ? INT4_MAX : null;
     const checkDomain = (key: 'prior' | 'current', range: typeof m.prior) => {
@@ -141,12 +149,13 @@ export const movementSchema = z
       const outOfDomain = bounds.some((b) => b !== undefined && b < floor);
       const aboveCeiling = ceiling !== null && bounds.some((b) => b !== undefined && b > ceiling);
       const hasLower = range.gt !== undefined || range.gte !== undefined;
+      const hasUpper = range.lt !== undefined || range.lte !== undefined;
       if (outOfDomain) {
         ctx.addIssue({ code: 'custom', message: `${key} bounds must be >= ${floor} for metric=${m.metric}`, path: [key] });
       } else if (aboveCeiling) {
         ctx.addIssue({ code: 'custom', message: `${key} bounds must be <= ${ceiling} for metric=${m.metric}`, path: [key] });
-      } else if (!hasLower) {
-        const empty = emptyRangeIssue(range, floor);
+      } else if (!hasLower || !hasUpper) {
+        const empty = emptyRangeIssue(range, floor, ceiling);
         if (empty) ctx.addIssue({ code: 'custom', message: empty, path: [key] });
       }
     };
