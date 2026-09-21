@@ -244,6 +244,7 @@ export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' 
       'Comparators are exact: gt 10000 excludes exactly 10000.',
       'Any bound on a metric excludes rows where that metric is null.',
       'Sorting by averageReviews or wordCount excludes keywords with no value for that field (nulls are never ranked); to include them, sort by something else.',
+      'Sorting by wordCount over the whole population is slow (no index on word_count) and will time out; combine a wordCount sort with a text, category or range filter.',
       `Counts above ${COUNT_CAP.toLocaleString('en-US')} are reported as at_least; never claim a capped result is everything.`,
     ],
     presetRules: [
