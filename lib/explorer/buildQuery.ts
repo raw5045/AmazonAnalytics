@@ -27,7 +27,7 @@ import type {
 import { findJumpPreset } from './jumpPresets';
 import { wordPattern, broadPattern } from './matchPattern';
 
-/** Stored prior-rank column per window. Shared with lib/research/query.ts. (bare column names; the caller prefixes `kcs.`) */
+/** Stored prior-rank column per window. Shared with lib/research/query.ts. (bare column names; the caller supplies the alias) */
 export const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
   '1w': 'prior_week_rank',
   '4w': 'rank_4w_ago',
@@ -36,7 +36,7 @@ export const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
   '52w': 'rank_52w_ago',
 };
 
-/** Stored prior-volume column per window. Shared with lib/research/query.ts. (bare column names; the caller prefixes `kcs.`) */
+/** Stored prior-volume column per window. Shared with lib/research/query.ts. (bare column names; the caller supplies the alias) */
 export const WINDOW_TO_VOLUME_COLUMN: Record<WindowKey, string> = {
   '1w': 'estimated_monthly_volume_1w_ago',
   '4w': 'estimated_monthly_volume_4w_ago',

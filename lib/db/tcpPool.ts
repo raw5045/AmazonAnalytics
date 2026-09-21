@@ -1,5 +1,4 @@
 import { Pool, type PoolClient } from 'pg';
-import { env } from '@/lib/env';
 
 /**
  * Small node-postgres pools for work the neon-http driver cannot do:
@@ -7,19 +6,26 @@ import { env } from '@/lib/env';
  * Explorer's broad-search path keeps its own copy of this pattern in
  * lib/explorer/runQuery.ts (deliberately untouched); research queries use
  * a dedicated pool so a burst of tool calls cannot starve page loads.
+ *
+ * `connectionTimeoutMillis` also bounds how long a caller waits in the
+ * pending queue when all `max` clients are busy — that wait rejects with a
+ * plain Error (no SQLSTATE), which callers must treat as retryable.
  */
 export interface TcpPoolOptions {
   /** Appears in log lines. */
   name: string;
   max: number;
+  connectionString: string;
+  /** Defaults to 20_000. */
+  connectionTimeoutMillis?: number;
 }
 
 export function createTcpPool(opts: TcpPoolOptions): Pool {
   const pool = new Pool({
-    connectionString: env.DATABASE_URL,
+    connectionString: opts.connectionString,
     max: opts.max,
     keepAlive: true,
-    connectionTimeoutMillis: 20_000,
+    connectionTimeoutMillis: opts.connectionTimeoutMillis ?? 20_000,
   });
   pool.on('error', (e: Error) => console.warn(`[${opts.name} pool] idle client error:`, e.message));
   return pool;
@@ -38,10 +44,20 @@ export async function withReadOnlyTx<T>(
   statementTimeoutMs: number,
   fn: (client: TxClient) => Promise<T>,
 ): Promise<T | 'timeout'> {
-  if (!Number.isInteger(statementTimeoutMs) || statementTimeoutMs <= 0) {
-    throw new Error(`statementTimeoutMs must be a positive integer, got ${statementTimeoutMs}`);
+  if (
+    !Number.isSafeInteger(statementTimeoutMs) ||
+    statementTimeoutMs <= 0 ||
+    statementTimeoutMs > 2_147_483_647
+  ) {
+    throw new Error(`statementTimeoutMs must be a positive integer up to 2147483647, got ${statementTimeoutMs}`);
   }
   const client = await pool.connect();
+  // pg-pool removes its own idle-client 'error' listener the instant a
+  // client is checked out, so a socket drop mid-transaction would otherwise
+  // be an uncaught event on `client`. A no-op listener absorbs it; the real
+  // failure still reaches the caller via the rejected query/ROLLBACK below.
+  const onSocketError = () => {};
+  client.on('error', onSocketError);
   try {
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     // SET LOCAL takes no bind parameter; the value is validated as an integer above.
@@ -51,9 +67,10 @@ export async function withReadOnlyTx<T>(
     return out;
   } catch (e) {
     try { await client.query('ROLLBACK'); } catch { /* connection may be dead */ }
-    if ((e as { code?: string }).code === '57014') return 'timeout';
+    if ((e as { code?: string } | null)?.code === '57014') return 'timeout';
     throw e;
   } finally {
+    client.removeListener('error', onSocketError);
     client.release();
   }
 }
