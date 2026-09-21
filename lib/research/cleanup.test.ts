@@ -24,6 +24,7 @@ describe('deleteStaleUsageBuckets', () => {
       });
       expect(await deleteStaleUsageBuckets({ query })).toBe(0);
       expect(console.warn).toHaveBeenCalledWith('[cleanup-research-usage] table not present yet');
+      expect(console.warn).toHaveBeenCalledTimes(1);
     });
 
     it('propagates any other error', async () => {
