@@ -31,6 +31,8 @@ function activeUser(i: number, reads: number): PerUserActivity {
     savedViewsCreated: 0,
     customCategoriesCreated: 0,
     exports: 0,
+    mcpRequests: 0,
+    mcpRows: 0,
   };
 }
 
@@ -209,6 +211,21 @@ describe('buildAbuseDigestEmail — exports column', () => {
     expect(built.html).toContain('>Exports</th>');
     expect(built.html).toContain('<td style="padding:5px 0 5px 8px;text-align:right;">3</td>');
     expect(built.text).toContain('0 categories, 3 exports');
+  });
+});
+
+describe('buildAbuseDigestEmail — MCP columns', () => {
+  it('renders MCP calls/rows columns in the table and the counts in the text rows', () => {
+    const stats: AbuseDigestStats = {
+      ...quietStats(),
+      activeUsers: [{ ...activeUser(1, 50), mcpRequests: 12, mcpRows: 480 }],
+    };
+    const built = buildAbuseDigestEmail(stats, []);
+    expect(built.html).toContain('>MCP calls</th>');
+    expect(built.html).toContain('>MCP rows</th>');
+    expect(built.html).toContain('<td style="padding:5px 0 5px 8px;text-align:right;">12</td>');
+    expect(built.html).toContain('<td style="padding:5px 0 5px 8px;text-align:right;">480</td>');
+    expect(built.text).toContain('12 MCP calls (480 rows)');
   });
 });
 

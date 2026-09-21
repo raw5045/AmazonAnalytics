@@ -21,6 +21,10 @@ export interface PerUserActivity {
   customCategoriesCreated: number;
   /** CSV exports (explorer_export counter) — capped at 10/day by the route. */
   exports: number;
+  /** MCP tool calls (mcp_request counter) — every accepted call to any of the five research tools or whoami's siblings; failures are not counted. */
+  mcpRequests: number;
+  /** Rows returned by MCP tools (mcp_rows counter). */
+  mcpRows: number;
 }
 
 /** Per-user activity over a trailing window of ET days (inclusive bounds). */

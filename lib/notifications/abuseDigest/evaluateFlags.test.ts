@@ -26,6 +26,8 @@ function userWith(overrides: Partial<PerUserActivity>): PerUserActivity {
     savedViewsCreated: 0,
     customCategoriesCreated: 0,
     exports: 0,
+    mcpRequests: 0,
+    mcpRows: 0,
     ...overrides,
   };
 }

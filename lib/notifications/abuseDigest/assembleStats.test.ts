@@ -37,6 +37,8 @@ describe('assemblePerUserActivity', () => {
       savedViewsCreated: 0,
       customCategoriesCreated: 0,
       exports: 0,
+      mcpRequests: 0,
+      mcpRows: 0,
     });
     // A creations-only user (no counters) still appears as active:
     expect(rows[2].customCategoriesCreated).toBe(1);
@@ -87,6 +89,20 @@ describe('assemblePerUserActivity — exports', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].exports).toBe(4);
     expect(rows[0].explorerQueries).toBe(0);
+  });
+});
+
+describe('assemblePerUserActivity — MCP', () => {
+  it('maps the MCP counters onto the per-user row', () => {
+    const rows = assemblePerUserActivity(
+      [
+        { userId: 'u1', metric: 'mcp_request', count: 12 },
+        { userId: 'u1', metric: 'mcp_rows', count: 480 },
+      ],
+      { watchlistAdds: new Map(), savedViewsCreated: new Map(), customCategoriesCreated: new Map() },
+      new Map([['u1', { email: 'a@b.c', name: null }]]),
+    );
+    expect(rows[0]).toMatchObject({ mcpRequests: 12, mcpRows: 480 });
   });
 });
 
