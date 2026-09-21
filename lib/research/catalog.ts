@@ -112,7 +112,7 @@ export interface PresetExpansion {
  * Exported separately from applyPresets (rather than inlined) so tests can exercise
  * preset-vs-preset conflicts with a synthetic `definitions` map, without needing a real
  * conflicting pair in the shipped catalog — PRESETS' filter fields are pairwise disjoint and at
- * most one preset defines sort, by design (see catalog.test.ts's invariant check).
+ * most one preset defines sort or comparisonWindow, by design (see catalog.test.ts's invariant check).
  */
 export function applyPresetDefinitions(request: SearchRequest, definitions: Record<PresetId, PresetDefinition>): PresetExpansion {
   const filters: Filters = { ...request.filters };
@@ -216,7 +216,9 @@ export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' 
     catalogVersion: CATALOG_VERSION,
     datasetWeek: ctx.datasetWeek,
     audience: ctx.audience,
-    metrics: METRIC_DEFINITIONS,
+    // METRIC_DEFINITIONS, unlike PRESETS, is not frozen — clone it so a caller mutating its own
+    // guide response can never corrupt the shared, process-wide catalog every other request reads.
+    metrics: structuredClone(METRIC_DEFINITIONS),
     // structuredClone filters/sort: PRESETS is the frozen, process-wide shared catalog (see
     // deepFreeze) — a guide response must never hand out those references directly, or a caller
     // mutating its own guide could corrupt every other request's view of the catalog.

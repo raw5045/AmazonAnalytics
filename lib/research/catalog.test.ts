@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 // reaches @/lib/env mocks it the same way (see lib/research/limits.test.ts); this file
 // only needs the static DEFAULT_LIMITS constant, so an empty env is enough.
 vi.mock('@/lib/env', () => ({ env: {} }));
-import { applyPresets, applyPresetDefinitions, PRESETS, buildGuide, CATALOG_VERSION, type PresetDefinition } from './catalog';
+import { applyPresets, applyPresetDefinitions, PRESETS, buildGuide, CATALOG_VERSION, METRIC_DEFINITIONS, type PresetDefinition } from './catalog';
 import { searchRequestSchema, filtersSchema, DEFAULT_SORT, type PresetId } from './contracts';
 import { DEFAULT_LIMITS } from './limits';
 
@@ -181,6 +181,8 @@ describe('buildGuide', () => {
   it('describes every preset with its exact thresholds and the live-pagination rule', () => {
     const g = buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS });
     expect(g.catalogVersion).toBe(CATALOG_VERSION);
+    // Never the frozen METRIC_DEFINITIONS singleton — same reasoning as the presets/defaultSort checks below.
+    expect(g.metrics).not.toBe(METRIC_DEFINITIONS);
     expect(g.presets.map((p) => p.id)).toEqual(Object.keys(PRESETS));
     expect(g.presets.find((p) => p.id === 'high_demand_v1')?.filters).toEqual({ estimatedMonthlySearches: { gte: 10000 } });
     // Never the frozen PRESETS singleton itself — a caller mutating its own guide response must

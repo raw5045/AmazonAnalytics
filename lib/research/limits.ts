@@ -1,4 +1,5 @@
 import { env } from '@/lib/env';
+import { PAGE_SIZE_MAX } from './contracts';
 
 /** Amendment §3.6. Engineering defaults, not product allowances. */
 export interface ResearchLimits {
@@ -38,7 +39,7 @@ export interface ResearchLimits {
 
 export const DEFAULT_LIMITS: Readonly<ResearchLimits> = Object.freeze({
   pageSizeDefault: 50,
-  pageSizeMax: 100,
+  pageSizeMax: PAGE_SIZE_MAX,
   maxRowsPerSearch: 1000,
   cursorTtlSeconds: 900,
   categoryCandidatesDefault: 20,
@@ -59,7 +60,7 @@ export const DEFAULT_LIMITS: Readonly<ResearchLimits> = Object.freeze({
  * Keys RESEARCH_LIMITS_JSON may override. The other six (pageSizeDefault, pageSizeMax,
  * categoryCandidatesDefault, categoryCandidatesMax, historyWeeksDefault, historyWeeksMax)
  * are bound by literal maximums baked into the tool input schemas in contracts.ts
- * (pageSize ≤ 100, category resolve limit ≤ 50, history weeks ≤ 52) — changing the default
+ * (pageSize ≤ PAGE_SIZE_MAX, category resolve limit ≤ 50, history weeks ≤ 52) — changing the default
  * here without changing the schema would just be overridden per call, and changing the max
  * here would do nothing since the schema still rejects anything past its own literal. An
  * override for one of those six is reported, not silently accepted, and the default is kept.
