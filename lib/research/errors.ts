@@ -12,26 +12,35 @@ export type ResearchErrorCode =
   | 'HISTORY_UNAVAILABLE'
   | 'DATA_UNAVAILABLE';
 
+/** One rejected input field: where it failed and why. Safe to show a person — never SQL, tokens or other accounts. */
+export interface ResearchFieldIssue {
+  path: string;
+  message: string;
+}
+
 export interface ResearchErrorInfo {
   code: ResearchErrorCode;
   message: string;
   retryable: boolean;
   retryAfterSeconds?: number;
-  details?: unknown;
+  details?: ReadonlyArray<ResearchFieldIssue>;
+}
+
+export interface ResearchErrorOptions {
+  retryable?: boolean;
+  retryAfterSeconds?: number;
+  details?: ReadonlyArray<ResearchFieldIssue>;
+  cause?: unknown;
 }
 
 export class ResearchError extends Error {
   readonly code: ResearchErrorCode;
   readonly retryable: boolean;
   readonly retryAfterSeconds?: number;
-  readonly details?: unknown;
+  readonly details?: ReadonlyArray<ResearchFieldIssue>;
 
-  constructor(
-    code: ResearchErrorCode,
-    message: string,
-    opts: { retryable?: boolean; retryAfterSeconds?: number; details?: unknown } = {},
-  ) {
-    super(message);
+  constructor(code: ResearchErrorCode, message: string, opts: ResearchErrorOptions = {}) {
+    super(message, { cause: opts.cause });
     this.name = 'ResearchError';
     this.code = code;
     this.retryable = opts.retryable ?? false;

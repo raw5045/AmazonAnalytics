@@ -70,6 +70,7 @@ describe('withReadOnlyTx', () => {
     expect(log.at(-1)).toBe('ROLLBACK');
     expect(log).not.toContain('COMMIT');
     expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.listenerCount('error')).toBe(0);
   });
 
   it('rethrows any other error after rolling back', async () => {
@@ -81,6 +82,7 @@ describe('withReadOnlyTx', () => {
       withReadOnlyTx(pool as never, 50, async (c: TxClient) => c.query('SELECT boom')),
     ).rejects.toThrow('relation missing');
     expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.listenerCount('error')).toBe(0);
   });
 
   it('rethrows the ORIGINAL error, not a ROLLBACK failure, when ROLLBACK itself throws', async () => {
@@ -93,17 +95,16 @@ describe('withReadOnlyTx', () => {
       withReadOnlyTx(pool as never, 50, async (c: TxClient) => c.query('SELECT boom')),
     ).rejects.toThrow('relation missing');
     expect(client.release).toHaveBeenCalledTimes(1);
+    expect(client.listenerCount('error')).toBe(0);
   });
 
-  it('propagates a pool.connect() rejection and never calls release', async () => {
-    const release = vi.fn();
+  it('propagates a pool.connect() rejection', async () => {
     const pool = {
       connect: vi.fn(async () => {
         throw new Error('pool exhausted');
       }),
     };
     await expect(withReadOnlyTx(pool as never, 50, async () => 'done')).rejects.toThrow('pool exhausted');
-    expect(release).not.toHaveBeenCalled();
   });
 
   it('absorbs a socket error emitted on the client during fn, and leaves no listener behind once settled', async () => {
@@ -127,6 +128,23 @@ describe('withReadOnlyTx', () => {
       expect(pool.connect).not.toHaveBeenCalled();
     },
   );
+
+  it('accepts the inclusive upper bound 2_147_483_647', async () => {
+    const { pool, log } = fakePool(async () => ({ rows: [] }));
+    const out = await withReadOnlyTx(pool as never, 2_147_483_647, async () => 'done');
+    expect(out).toBe('done');
+    expect(pool.connect).toHaveBeenCalled();
+    expect(log).toContain('SET LOCAL statement_timeout = 2147483647');
+  });
+
+  it('propagates a non-Error rejection value from fn, and still releases once', async () => {
+    const { pool, client } = fakePool(async () => ({ rows: [] }));
+    const promise = withReadOnlyTx(pool as never, 50, async () => {
+      throw null;
+    });
+    await expect(promise).rejects.toBeNull();
+    expect(client.release).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('createTcpPool', () => {
