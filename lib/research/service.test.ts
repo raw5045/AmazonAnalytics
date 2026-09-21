@@ -126,6 +126,30 @@ describe('search: a new request', () => {
     expect(res.pagination.totalMatches).toEqual({ kind: 'exact', value: 3 });
     expect(res.pagination.returnedCount).toBe(3);
   });
+  it('S1 guard uses the visible budget, not the page size: a low maxRowsPerSearch override still counts', async () => {
+    // maxRowsPerSearch 20 with pageSize 100 → visible = 20, the query asks for 21 rows; 21 came
+    // back, so a row exists beyond the page and the total must be counted, not inferred.
+    const deps = makeDeps({
+      limits: { ...DEFAULT_LIMITS, maxRowsPerSearch: 20 },
+      runSearch: vi.fn(async (_pool, _t, compile) => ({ meta: META, rows: Array.from({ length: 21 }, (_, i) => raw(i + 1)), compiled: compile(META) })),
+    });
+    const res = await createResearchService(deps).search(actor, { schemaVersion: 1, pageSize: 100 });
+    expect(deps.countMatches).toHaveBeenCalledTimes(1);
+    expect(res.pagination.totalMatches).toEqual({ kind: 'exact', value: 137 });
+    expect(res.pagination).toMatchObject({ returnedCount: 20, capped: true, capReason: 'max_rows', nextCursor: null });
+    const firstRun = (await (deps.runSearch as ReturnType<typeof vi.fn>).mock.results[0].value) as { compiled: { args: unknown[] } };
+    const compiledArgs = firstRun.compiled.args;
+    expect(compiledArgs).toContain(21); // LIMIT visible + 1, not pageSize + 1
+  });
+  it('a cursor forged beyond the reach cap yields an empty capped page, no cursor, and records zero rows', async () => {
+    const deps = makeDeps({ limits: { ...DEFAULT_LIMITS, maxRowsPerSearch: 120 } });
+    const svc = createResearchService(deps);
+    const first = await svc.search(actor, { schemaVersion: 1, pageSize: 50 });
+    const beyond = signCursor({ ...verifyCursor(first.pagination.nextCursor!, 'test-secret', 0), off: 120 }, 'test-secret');
+    const res = await svc.search(actor, { cursor: beyond });
+    expect(res.pagination).toMatchObject({ offset: 120, returnedCount: 0, nextCursor: null });
+    expect(deps.record).toHaveBeenLastCalledWith('u1', 0);
+  });
 });
 
 describe('search: continuation and caps', () => {

@@ -223,14 +223,15 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     // first `now` above (kept fixed for the cursor's own nowSec/exp math) — this one marks when
     // the result was actually produced, after the SQL that produced it ran.
     const resultCapturedAt = deps.now();
-    // S1: page one already proves the total when the page itself came back at or under
-    // pageSize — there is no row beyond it to count, so a whole second transaction would only
-    // confirm what the page already showed. Otherwise, C2: countMatches takes
+    // S1: page one already proves the total when no probe row came back beyond the visible
+    // budget (the query asks for visible + 1, and visible can be smaller than pageSize under a
+    // low maxRowsPerSearch override) — then there is no row beyond it to count, so a whole second
+    // transaction would only confirm what the page already showed. Otherwise, C2: countMatches takes
     // { expectedSnapshot } — always the snapshot the search actually ran against
     // (run.meta.snapshotVersion), even on a first page, so a weekly swap racing between the
     // search transaction and this separate count transaction is caught as `unknown` rather than
     // silently counting a different population than the rows just fetched.
-    const totalMatches: TotalMatches = carriedTotal ?? (offset === 0 && run.rows.length <= pageSize
+    const totalMatches: TotalMatches = carriedTotal ?? (offset === 0 && run.rows.length <= visible
       ? { kind: 'exact', value: run.rows.length }
       : await deps.countMatches(deps.pool, deps.limits.countTimeoutMs, run.compiled, { expectedSnapshot: run.meta.snapshotVersion }));
 
