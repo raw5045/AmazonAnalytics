@@ -168,6 +168,30 @@ describe('parseSearchInput', () => {
     }
   });
 
+  it('reports an out-of-domain bound once, but keeps both issues when an explicit lower bound is also out of domain and empty', () => {
+    // No explicit lower bound: checkDomain's out-of-domain issue alone, no redundant
+    // floor-seeded emptiness issue for the same bound.
+    try {
+      parseSearchInput({ ...base, filters: { movement: { window: '4w', metric: 'volume', prior: { lte: -1 } } } });
+      throw new Error('expected rejection at filters.movement.prior for prior={"lte":-1}');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ResearchError);
+      const err = e as ResearchError;
+      expect(err.details!.filter((d) => d.path === 'filters.movement.prior')).toHaveLength(1);
+    }
+    // Explicit lower bound: anyRange's own superRefine already reported the explicit-bound
+    // emptiness (gte 5 > lte -1), and checkDomain separately reports the out-of-domain bound
+    // (lte -1 < floor 0) — two distinct, non-redundant issues.
+    try {
+      parseSearchInput({ ...base, filters: { movement: { window: '4w', metric: 'volume', prior: { gte: 5, lte: -1 } } } });
+      throw new Error('expected rejection at filters.movement.prior for prior={"gte":5,"lte":-1}');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ResearchError);
+      const err = e as ResearchError;
+      expect(err.details!.filter((d) => d.path === 'filters.movement.prior')).toHaveLength(2);
+    }
+  });
+
   it('rejects a comparisonWindow that disagrees with movement.window, accepts an explicit null, and firstSeenWeek sorts', () => {
     fails({ ...base, comparisonWindow: '13w', filters: { movement: { window: '4w', metric: 'volume', delta: { gt: 0 } } } }, 'comparisonWindow');
     fails({ ...base, sort: { field: 'firstSeenWeek', direction: 'asc' } }, 'sort.field');

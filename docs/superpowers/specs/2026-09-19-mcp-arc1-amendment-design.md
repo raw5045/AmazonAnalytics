@@ -332,7 +332,7 @@ maintenance cron. Daily totals go to `user_activity_daily`.
 | Variable | Meaning |
 |---|---|
 | `RESEARCH_CURSOR_SECRET` | HMAC key for cursors. When unset the server derives a stable key from `CLERK_SECRET_KEY` (HMAC with a fixed label), so cursors survive deploys; setting a dedicated value lets cursors be rotated independently of Clerk |
-| `RESEARCH_LIMITS_JSON` | optional JSON overriding §3.6 numbers, validated, ignored with a warning when malformed |
+| `RESEARCH_LIMITS_JSON` | optional JSON overriding the §3.6 runtime limits (see §3.6 for which), validated, ignored with a warning when malformed |
 | `MCP_AUDIENCE` | as in the spike; `all` = the beta rollout |
 
 ## 8. Rollout and the fluidity gate

@@ -110,10 +110,13 @@ export const movementSchema = z
     const checkDomain = (key: 'prior' | 'current', range: typeof m.prior) => {
       if (!range) return;
       const outOfDomain = [range.gt, range.gte, range.lt, range.lte].some((b) => b !== undefined && b < floor);
-      if (outOfDomain) ctx.addIssue({ code: 'custom', message: `${key} bounds must be >= ${floor} for metric=${m.metric}`, path: [key] });
       const hasLower = range.gt !== undefined || range.gte !== undefined;
-      const empty = hasLower ? null : emptyRangeIssue(range, floor);
-      if (empty) ctx.addIssue({ code: 'custom', message: empty, path: [key] });
+      if (outOfDomain) {
+        ctx.addIssue({ code: 'custom', message: `${key} bounds must be >= ${floor} for metric=${m.metric}`, path: [key] });
+      } else if (!hasLower) {
+        const empty = emptyRangeIssue(range, floor);
+        if (empty) ctx.addIssue({ code: 'custom', message: empty, path: [key] });
+      }
     };
     checkDomain('prior', m.prior);
     checkDomain('current', m.current);

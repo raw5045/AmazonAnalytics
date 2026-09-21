@@ -79,7 +79,13 @@ const OVERRIDABLE = new Set<keyof ResearchLimits>([
 
 /** True for a value this module accepts as a limit override: a safe integer in 1..2147483647. */
 function isOverrideValue(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= 2_147_483_647;
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value >= 1 &&
+    // PostgreSQL int4 max, the statement_timeout ceiling these values feed; also Node's max timer delay
+    value <= 2_147_483_647
+  );
 }
 
 /**
@@ -92,7 +98,7 @@ function isOverrideValue(value: unknown): value is number {
  */
 export function parseResearchLimits(raw: string | undefined): ResearchLimits {
   const out: ResearchLimits = { ...DEFAULT_LIMITS };
-  if (!raw) return out;
+  if (!raw?.trim()) return { ...DEFAULT_LIMITS };
 
   let parsed: unknown;
   try {
