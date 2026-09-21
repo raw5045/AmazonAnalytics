@@ -61,3 +61,13 @@ export class ResearchError extends Error {
 export function isResearchError(e: unknown): e is ResearchError {
   return e instanceof ResearchError;
 }
+
+/**
+ * The standard INVALID_CURSOR error: cursor.ts's own verifyCursor (MAC, JSON or schema failure —
+ * no per-field detail to offer, so `details` is omitted) and contracts.ts's parseSearchInput (a
+ * malformed `{ cursor }` continuation, with the zod issue paths as `details`) both throw exactly
+ * this, so the code and message live in one place instead of two hand-copied literals.
+ */
+export function invalidCursorError(details?: ReadonlyArray<ResearchFieldIssue>): ResearchError {
+  return new ResearchError('INVALID_CURSOR', 'The cursor is not valid. Start a new search.', { details });
+}

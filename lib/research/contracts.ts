@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ResearchError } from './errors';
+import { ResearchError, invalidCursorError } from './errors';
 import type { ResearchLimits } from './limits';
 
 export const SCHEMA_VERSION = 1 as const;
@@ -11,6 +11,10 @@ export const SEVERITIES = ['none', 'warning', 'critical'] as const;
 export type Severity = (typeof SEVERITIES)[number];
 export const PRESET_IDS = ['high_demand_v1', 'low_review_competition_v1', 'growing_4w_v1', 'title_gap_loose_any_v1'] as const;
 export type PresetId = (typeof PRESET_IDS)[number];
+export const TOTAL_MATCHES_KINDS = ['exact', 'at_least', 'unknown'] as const;
+export type TotalMatchesKind = (typeof TOTAL_MATCHES_KINDS)[number];
+/** Ceiling shared by searchRequestSchema.pageSize and cursor.ts's cursorPayloadSchema.ps — a cursor's page size can never exceed what a request could ever specify. */
+export const PAGE_SIZE_MAX = 100;
 
 const safeInt = z.int();
 
@@ -163,7 +167,7 @@ export const searchRequestSchema = z
     // one it must fill in itself (from an applied preset, else DEFAULT_SORT — see catalog.ts).
     sort: sortSchema.optional(),
     comparisonWindow: z.enum(WINDOWS).nullable().default(null),
-    pageSize: z.int().min(1).max(100).default(50),
+    pageSize: z.int().min(1).max(PAGE_SIZE_MAX).default(50),
   })
   .superRefine((r, ctx) => {
     if (r.comparisonWindow && r.filters.movement && r.filters.movement.window !== r.comparisonWindow) {
@@ -172,8 +176,11 @@ export const searchRequestSchema = z
   });
 export type SearchRequest = z.infer<typeof searchRequestSchema>;
 
+/** Max length of an encoded cursor token (`body.mac`, both base64url) — also cursor.ts's own ceiling for signCursor/verifyCursor. */
+export const MAX_CURSOR_LENGTH = 8192;
+
 /** The MCP tool input: a bare `{ cursor }` continuation or a new search (declared loose; parseSearchInput enforces the rest). */
-export const searchToolInputSchema = z.looseObject({ cursor: z.string().min(16).max(8192).optional() });
+export const searchToolInputSchema = z.looseObject({ cursor: z.string().min(16).max(MAX_CURSOR_LENGTH).optional() });
 export type ParsedSearchInput = { kind: 'continuation'; cursor: string } | { kind: 'new'; request: SearchRequest };
 
 export function parseSearchInput(raw: unknown): ParsedSearchInput {
@@ -186,10 +193,10 @@ export function parseSearchInput(raw: unknown): ParsedSearchInput {
         details: [{ path: 'cursor', message: `unexpected keys with cursor: ${extra.join(', ')}` }],
       });
     }
-    const c = z.strictObject({ cursor: z.string().min(16).max(8192) }).safeParse({ cursor: obj.cursor });
+    const c = z.strictObject({ cursor: z.string().min(16).max(MAX_CURSOR_LENGTH) }).safeParse({ cursor: obj.cursor });
     if (!c.success) {
       const details = c.error.issues.map((i) => ({ path: i.path.map(String).join('.') || '(root)', message: i.message }));
-      throw new ResearchError('INVALID_CURSOR', 'The cursor is not valid. Start a new search.', { details });
+      throw invalidCursorError(details);
     }
     return { kind: 'continuation', cursor: c.data.cursor };
   }
@@ -262,7 +269,7 @@ export interface SearchRow {
   titleFlags?: { mode: 'loose' | 'strict'; slots: [boolean | null, boolean | null, boolean | null] };
 }
 export interface TotalMatches {
-  kind: 'exact' | 'at_least' | 'unknown';
+  kind: TotalMatchesKind;
   value: number | null;
 }
 export interface Pagination {

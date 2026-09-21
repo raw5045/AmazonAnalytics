@@ -1,8 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { z } from 'zod';
 import { env } from '@/lib/env';
-import { searchRequestSchema } from './contracts';
+import { searchRequestSchema, MAX_CURSOR_LENGTH, PAGE_SIZE_MAX, TOTAL_MATCHES_KINDS } from './contracts';
 import type { SearchRequest, TotalMatches } from './contracts';
-import { ResearchError } from './errors';
+import { ResearchError, invalidCursorError } from './errors';
 
 /**
  * Stateless continuation (amendment §5.3): the cursor carries everything a
@@ -27,9 +28,29 @@ export interface CursorPayload {
   tm: TotalMatches;
 }
 
-export const MAX_CURSOR_LENGTH = 8192;
+/** Single source is contracts.ts; re-exported here so cursor.ts's public API is unchanged. */
+export { MAX_CURSOR_LENGTH };
 
-const TOTAL_MATCHES_KINDS: ReadonlyArray<TotalMatches['kind']> = ['exact', 'at_least', 'unknown'];
+/**
+ * The exact runtime shape of a decoded cursor body. Mirrors CursorPayload field-for-field, but as
+ * a zod schema so a single safeParse rejects a structurally-off or numerically-abusive payload —
+ * ps: 0, a non-safe-integer off (e.g. 1e300), an infinite/non-integer exp, an unknown tm.kind, or
+ * a stray extra key anywhere (z.strictObject, including on tm) — instead of the hand-rolled
+ * per-field checks this replaces. `req` re-validates against searchRequestSchema itself (the
+ * service re-applies presets from it, so it must be valid — cheap insurance beyond the MAC
+ * alone).
+ */
+const cursorPayloadSchema = z.strictObject({
+  v: z.literal(1),
+  req: searchRequestSchema,
+  snap: z.string().min(1),
+  off: z.int().min(0),
+  ps: z.int().min(1).max(PAGE_SIZE_MAX),
+  exp: z.int().positive(),
+  uid: z.string().min(1),
+  ch: z.literal('mcp'),
+  tm: z.strictObject({ kind: z.enum(TOTAL_MATCHES_KINDS), value: z.int().min(0).nullable() }),
+});
 
 /**
  * The key signCursor/verifyCursor sign under. RESEARCH_CURSOR_SECRET (Task 5) wins when set;
@@ -60,69 +81,37 @@ export function signCursor(payload: CursorPayload, secret: string): string {
  * also happens to carry a stale `exp`, and only a well-formed, correctly-signed cursor can ever
  * report the more specific SEARCH_EXPIRED.
  *
- * Beyond checking each top-level field's type, `req` is re-validated against
- * searchRequestSchema (the service re-applies presets from it, so it must be a valid request —
- * cheap insurance beyond the MAC alone, e.g. against a schema that has moved on since the
- * cursor was signed) and `tm.kind` is checked against the three documented TotalMatches kinds.
- * `off`/`ps` must be non-negative integers.
+ * The MAC check compares the *encoded* base64url strings in constant time — the same convention
+ * lib/notifications/digest/unsubToken.ts uses — rather than base64url-decoding the given
+ * signature first: a lenient decoder can treat a subtly different encoded string (e.g. one with
+ * extra padding) as the same bytes, which would let a corrupted signature slip past a
+ * decode-then-compare check.
+ *
+ * The shape check is cursorPayloadSchema (see its doc comment) in one safeParse; any failure —
+ * including `req` failing searchRequestSchema — is INVALID_CURSOR.
  */
 export function verifyCursor(token: string, secret: string, nowSeconds: number): CursorPayload {
-  const invalid = () => new ResearchError('INVALID_CURSOR', 'The cursor is not valid. Start a new search.');
-  if (typeof token !== 'string' || token.length === 0 || token.length > MAX_CURSOR_LENGTH) throw invalid();
+  if (typeof token !== 'string' || token.length === 0 || token.length > MAX_CURSOR_LENGTH) throw invalidCursorError();
   const dot = token.lastIndexOf('.');
-  if (dot <= 0) throw invalid();
+  if (dot <= 0) throw invalidCursorError();
   const body = token.slice(0, dot);
-  const expected = createHmac('sha256', secret).update(body).digest();
-  const given = Buffer.from(token.slice(dot + 1), 'base64url');
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw invalid();
+  const given = Buffer.from(token.slice(dot + 1));
+  const expected = Buffer.from(createHmac('sha256', secret).update(body).digest('base64url'));
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw invalidCursorError();
 
   let raw: unknown;
   try {
     raw = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
   } catch {
-    throw invalid();
-  }
-  if (!raw || typeof raw !== 'object') throw invalid();
-  const payload = raw as Record<string, unknown>;
-
-  const off = payload.off;
-  const ps = payload.ps;
-  const tm = payload.tm;
-  const offOk = typeof off === 'number' && Number.isInteger(off) && off >= 0;
-  const psOk = typeof ps === 'number' && Number.isInteger(ps) && ps >= 0;
-  const tmOk = typeof tm === 'object' && tm !== null && TOTAL_MATCHES_KINDS.includes((tm as Record<string, unknown>).kind as TotalMatches['kind']);
-
-  if (
-    payload.v !== 1 ||
-    !offOk ||
-    !psOk ||
-    typeof payload.exp !== 'number' ||
-    typeof payload.uid !== 'string' ||
-    typeof payload.snap !== 'string' ||
-    payload.ch !== 'mcp' ||
-    typeof payload.req !== 'object' ||
-    payload.req === null ||
-    !tmOk
-  ) {
-    throw invalid();
+    throw invalidCursorError();
   }
 
-  const parsedReq = searchRequestSchema.safeParse(payload.req);
-  if (!parsedReq.success) throw invalid();
+  const parsed = cursorPayloadSchema.safeParse(raw);
+  if (!parsed.success) throw invalidCursorError();
 
-  if ((payload.exp as number) <= nowSeconds) {
+  if (parsed.data.exp <= nowSeconds) {
     throw new ResearchError('SEARCH_EXPIRED', 'This search has expired. Start a new search.');
   }
 
-  return {
-    v: 1,
-    req: parsedReq.data,
-    snap: payload.snap as string,
-    off: off as number,
-    ps: ps as number,
-    exp: payload.exp as number,
-    uid: payload.uid as string,
-    ch: 'mcp',
-    tm: tm as TotalMatches,
-  };
+  return parsed.data;
 }
