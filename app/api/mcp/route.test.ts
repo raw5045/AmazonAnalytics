@@ -14,12 +14,22 @@ const { mockAuth, mockFindFirst, mockDatasetWeek, envMock } = vi.hoisted(() => (
   },
 }));
 const { mockGetConnection, mockTouch } = vi.hoisted(() => ({ mockGetConnection: vi.fn(), mockTouch: vi.fn() }));
+const { fakeService } = vi.hoisted(() => ({
+  fakeService: {
+    guide: vi.fn(async () => ({ guideVersion: 1, datasetWeek: '2026-09-12' })),
+    resolveCategories: vi.fn(async () => ({ candidates: [], noMatch: true })),
+    search: vi.fn(async () => ({ schemaVersion: 1, requestId: 'r1', rows: [], pagination: { nextCursor: null } })),
+    details: vi.fn(async () => ({ status: 'dormant' })),
+    history: vi.fn(async () => ({ points: [] })),
+  },
+}));
 
 vi.mock('@clerk/nextjs/server', () => ({ auth: mockAuth }));
 vi.mock('@/db/client', () => ({ db: { query: { users: { findFirst: mockFindFirst } } } }));
 vi.mock('@/lib/mcp/datasetWeek', () => ({ currentDatasetWeek: mockDatasetWeek }));
 vi.mock('@/lib/mcp/connections', () => ({ getMcpConnection: mockGetConnection, touchMcpConnection: mockTouch }));
 vi.mock('@/lib/env', () => envMock);
+vi.mock('@/lib/research/service', () => ({ defaultResearchService: () => fakeService }));
 
 import { GET, POST } from './route';
 
@@ -154,7 +164,7 @@ describe('/api/mcp', () => {
       expect(client.getInstructions()).toContain('KeywordQuarry');
 
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name)).toEqual(['whoami']);
+      expect(tools.map((t) => t.name).sort()).toEqual(['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami']);
       expect(tools[0].annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
 
       const result = await client.callTool({ name: 'whoami', arguments: {} });
@@ -168,6 +178,21 @@ describe('/api/mcp', () => {
       expect(result.content[0]).toMatchObject({ type: 'text' });
       expect((result.content[0] as { text: string }).text).toContain('o***@example.com');
       expect(mockAuth).toHaveBeenCalledWith({ acceptsToken: 'oauth_token' });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+
+  it('runs a research tool with the gate-supplied actor', async () => {
+    const client = await connect();
+    try {
+      const r = await client.callTool({ name: 'search_keywords', arguments: { schemaVersion: 1 } });
+      expect(r.isError).toBeFalsy();
+      expect(fakeService.search).toHaveBeenCalledWith(
+        { localUserId: 'uuid-admin', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp' },
+        { schemaVersion: 1 },
+      );
+      expect(client.getInstructions()).toContain('get_research_guide');
     } finally {
       await client.close().catch(() => {});
     }

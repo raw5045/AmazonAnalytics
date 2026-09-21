@@ -1,9 +1,11 @@
 import { createMcpHandler, withMcpAuth } from 'mcp-handler';
 import type { AuthInfo } from '@modelcontextprotocol/server';
 import { env } from '@/lib/env';
+import { defaultResearchService } from '@/lib/research/service';
 import { MCP_SCOPE, MCP_SERVER_INFO, mcpAllowedClientIds, mcpAudience, mcpResourceUrl } from './config';
 import { getMcpConnection, touchMcpConnection, type McpConnectionState } from './connections';
 import { registerWhoami } from './tools/whoami';
+import { registerResearchTools } from './tools/registerResearchTools';
 import {
   authorizeMcpAccount,
   authorizeMcpClient,
@@ -36,10 +38,12 @@ const PROTECTED_RESOURCE_METADATA_PREFIX = '/.well-known/oauth-protected-resourc
 const mcp = createMcpHandler(
   (server) => {
     registerWhoami(server);
+    registerResearchTools(server, defaultResearchService());
   },
   {
     serverInfo: MCP_SERVER_INFO,
-    instructions: 'KeywordQuarry beta: this spike exposes a single diagnostic tool, whoami.',
+    instructions:
+      'KeywordQuarry research tools (beta). Call get_research_guide once per conversation; use resolve_categories before any category-scoped search; search_keywords takes exact filters and pages with {cursor} only; get_keyword_details and get_keyword_history read one keyword. Search volumes are estimates, capped results are labelled, and null means unknown, never zero.',
   },
 );
 
