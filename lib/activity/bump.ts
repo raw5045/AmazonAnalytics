@@ -14,7 +14,12 @@ import { db } from '@/db/client';
 import { userActivityDaily, appActivityDaily } from '@/db/schema';
 import { etDay } from './etDay';
 
-export type UserActivityMetric = 'explorer_query' | 'detail_view' | 'explorer_export';
+export type UserActivityMetric =
+  | 'explorer_query'
+  | 'detail_view'
+  | 'explorer_export'
+  | 'mcp_request'
+  | 'mcp_rows';
 export type AppActivityMetric = 'contact_submission' | 'contact_honeypot' | 'feedback_submission';
 
 export async function bumpUserActivity(userId: string, metric: UserActivityMetric): Promise<void> {
@@ -28,6 +33,22 @@ export async function bumpUserActivity(userId: string, metric: UserActivityMetri
       });
   } catch (e) {
     console.warn(`[activity] bumpUserActivity(${metric}) failed:`, e instanceof Error ? e.message : e);
+  }
+}
+
+/** Increment-by-N variant (MCP rows per page); same fire-and-forget contract as bumpUserActivity. */
+export async function bumpUserActivityBy(userId: string, metric: UserActivityMetric, by: number): Promise<void> {
+  if (!Number.isInteger(by) || by <= 0) return;
+  try {
+    await db
+      .insert(userActivityDaily)
+      .values({ userId, day: etDay(new Date()), metric, count: by })
+      .onConflictDoUpdate({
+        target: [userActivityDaily.userId, userActivityDaily.day, userActivityDaily.metric],
+        set: { count: sql`${userActivityDaily.count} + ${by}` },
+      });
+  } catch (e) {
+    console.warn(`[activity] bumpUserActivityBy(${metric}) failed:`, e instanceof Error ? e.message : e);
   }
 }
 

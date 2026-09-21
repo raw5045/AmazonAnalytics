@@ -30,3 +30,5 @@ export * from './keywordChartSeries';
 export * from './customCategories';
 export * from './userActivityDaily';
 export * from './appActivityDaily';
+export * from './researchUsageBuckets';
+export * from './mcpConnections';
