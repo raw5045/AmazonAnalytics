@@ -24,12 +24,19 @@ import { Suspense, use, useEffect, useState } from 'react';
  */
 const LAST_EXPLORER_URL_KEY = 'kw-analytics.last-explorer-url';
 
-export function TabNav({ watchlistCountPromise }: { watchlistCountPromise: Promise<number> }) {
+export function TabNav({
+  watchlistCountPromise,
+  showConnectAi,
+}: {
+  watchlistCountPromise: Promise<number>;
+  showConnectAi: boolean;
+}) {
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
   const isExplorer = pathname === '/explorer' || pathname.startsWith('/explorer/');
   const isWatchlist = pathname === '/watchlist' || pathname.startsWith('/watchlist/');
   const isCategoryBuilder = pathname === '/category-builder' || pathname.startsWith('/category-builder/');
+  const isConnectAi = pathname === '/connect-ai' || pathname.startsWith('/connect-ai/');
 
   // Tracks the URL the Explorer tab should navigate to. Starts as the
   // bare /explorer (so SSR + first paint match), then useEffect updates
@@ -78,6 +85,11 @@ export function TabNav({ watchlistCountPromise }: { watchlistCountPromise: Promi
       <Link href="/category-builder" className={tabClass(isCategoryBuilder)}>
         Category Builder
       </Link>
+      {showConnectAi && (
+        <Link href="/connect-ai" className={tabClass(isConnectAi)}>
+          Connect AI
+        </Link>
+      )}
       {/* Lives in the marketing layout (/help) — never matches an app
           pathname, so it never shows the active underline. Intentional. */}
       <Link href="/help" className={tabClass(false)}>

@@ -4,6 +4,8 @@ import { UserButton } from '@clerk/nextjs';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/AuthError';
 import { watchlistCountForUser } from '@/lib/watchlist/loadServer';
+import { mcpAudience } from '@/lib/mcp/config';
+import { connectAiEligible } from '@/lib/mcp/eligibility';
 import { TabNav } from './TabNav';
 import { TutorialsBanner } from './_components/TutorialsBanner';
 import { FeedbackButton } from './_components/FeedbackButton';
@@ -47,7 +49,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <BrandMark size={24} />
             <span>Keyword<span className="text-sky-400">Quarry</span></span>
           </Link>
-          <TabNav watchlistCountPromise={watchlistCountPromise} />
+          <TabNav
+            watchlistCountPromise={watchlistCountPromise}
+            showConnectAi={connectAiEligible(user.role, mcpAudience())}
+          />
         </div>
         <div className="flex items-center gap-4 whitespace-nowrap text-sm text-slate-300">
           {user.role === 'admin' && (
