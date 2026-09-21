@@ -1,16 +1,18 @@
 /** Stable domain codes (amendment §3.7). Messages are safe to show a person; never SQL, tokens or other accounts. */
-export type ResearchErrorCode =
-  | 'INVALID_FILTERS'
-  | 'UNSUPPORTED_FILTER'
-  | 'CATEGORY_NOT_AVAILABLE'
-  | 'KEYWORD_NOT_FOUND'
-  | 'SEARCH_EXPIRED'
-  | 'INVALID_CURSOR'
-  | 'RESPONSE_TOO_LARGE'
-  | 'RATE_LIMITED'
-  | 'QUERY_TIMEOUT'
-  | 'HISTORY_UNAVAILABLE'
-  | 'DATA_UNAVAILABLE';
+export const RESEARCH_ERROR_CODES = [
+  'INVALID_FILTERS',
+  'UNSUPPORTED_FILTER',
+  'CATEGORY_NOT_AVAILABLE',
+  'KEYWORD_NOT_FOUND',
+  'SEARCH_EXPIRED',
+  'INVALID_CURSOR',
+  'RESPONSE_TOO_LARGE',
+  'RATE_LIMITED',
+  'QUERY_TIMEOUT',
+  'HISTORY_UNAVAILABLE',
+  'DATA_UNAVAILABLE',
+] as const;
+export type ResearchErrorCode = (typeof RESEARCH_ERROR_CODES)[number];
 
 /** One rejected input field: where it failed and why. Safe to show a person — never SQL, tokens or other accounts. */
 export interface ResearchFieldIssue {

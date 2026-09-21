@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { ResearchError } from './errors';
+import type { ResearchLimits } from './limits';
 
 export const SCHEMA_VERSION = 1 as const;
 export const WINDOWS = ['1w', '4w', '13w', '26w', '52w'] as const;
@@ -141,6 +142,13 @@ export type Filters = z.infer<typeof filtersSchema>;
 
 export const sortSchema = z.strictObject({ field: z.enum(SORT_FIELDS), direction: z.enum(['asc', 'desc']) });
 export type Sort = z.infer<typeof sortSchema>;
+/**
+ * The catalog's documented default sort, used by lib/research/catalog.ts when neither the
+ * request nor an applied preset supplies one. Frozen: it is a process-wide singleton, so a
+ * caller mutating a `sort`/`effectiveSort` it was handed must never be able to corrupt the
+ * fallback every other request relies on.
+ */
+export const DEFAULT_SORT: Sort = Object.freeze({ field: 'estimatedMonthlySearches', direction: 'desc' });
 
 export const searchRequestSchema = z
   .strictObject({
@@ -151,7 +159,9 @@ export const searchRequestSchema = z
       .refine((p) => new Set(p).size === p.length, 'presetIds must be distinct')
       .default([]),
     filters: filtersSchema.prefault({}),
-    sort: sortSchema.default({ field: 'estimatedMonthlySearches', direction: 'desc' }),
+    // Optional, not defaulted: presence is how the catalog tells an explicit sort apart from
+    // one it must fill in itself (from an applied preset, else DEFAULT_SORT — see catalog.ts).
+    sort: sortSchema.optional(),
     comparisonWindow: z.enum(WINDOWS).nullable().default(null),
     pageSize: z.int().min(1).max(100).default(50),
   })
@@ -274,8 +284,8 @@ export interface ResolvedScope {
 }
 export interface PresetApplication {
   presetId: PresetId;
-  appliedFields: string[];
-  overriddenFields: string[];
+  appliedFields: Array<keyof Filters | 'sort' | 'comparisonWindow'>;
+  overriddenFields: Array<keyof Filters | 'sort' | 'comparisonWindow'>;
 }
 export interface Warning {
   code: string;
@@ -378,12 +388,26 @@ export interface GuideResponse {
   datasetWeek: string | null;
   audience: 'admin' | 'all';
   metrics: Array<{ name: string; definition: string }>;
-  presets: Array<{ id: PresetId; description: string; filters: Partial<Filters>; sort?: Sort }>;
+  presets: Array<{ id: PresetId; description: string; filters: Partial<Filters>; sort?: Sort; comparisonWindow?: Window }>;
   sorts: readonly SortField[];
   windows: readonly Window[];
   categoryRules: string[];
   populationRules: string[];
-  limits: Record<string, number>;
+  /** How presets interact with explicit request fields and with each other (parent §8.2). */
+  presetRules: string[];
+  limits: Pick<
+    ResearchLimits,
+    | 'pageSizeDefault'
+    | 'pageSizeMax'
+    | 'maxRowsPerSearch'
+    | 'cursorTtlSeconds'
+    | 'categoryCandidatesMax'
+    | 'maxExpandedLeaves'
+    | 'historyWeeksMax'
+    | 'requestsPerMinute'
+    | 'rowsPerMinute'
+    | 'maxPayloadBytes'
+  >;
   pagination: string;
   errorCodes: string[];
 }

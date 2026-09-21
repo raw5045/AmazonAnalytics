@@ -31,7 +31,9 @@ describe('parseSearchInput', () => {
     expect(out.kind).toBe('new');
     if (out.kind !== 'new') return;
     expect(out.request.pageSize).toBe(50);
-    expect(out.request.sort).toEqual({ field: 'estimatedMonthlySearches', direction: 'desc' });
+    // sort is optional, not defaulted, in the schema: presence = explicitness. An absent
+    // sort key means the catalog (lib/research/catalog.ts) must supply DEFAULT_SORT itself.
+    expect(out.request.sort).toBeUndefined();
     expect(out.request.filters.severities).toEqual(['none', 'warning']);
     expect(out.request.filters.categories).toEqual({ selections: [], leafPaths: [] });
     expect(out.request.filters.estimatedMonthlySearches).toBeNull();
@@ -259,7 +261,9 @@ describe('parseSearchInput', () => {
           titleGap: { slots: [2], quantifier: 'any', mode: 'loose' },
           movement: { window: '4w', metric: 'volume', prior: null, current: null, delta: { gt: 0 }, baseline: 'observed_only' },
         },
-        sort: { field: 'estimatedMonthlySearches', direction: 'desc' },
+        // No `sort` key: zod's `.optional()` omits an absent field entirely rather than
+        // setting it to `undefined` (verified against this repo's zod install), and
+        // toStrictEqual treats a present-but-undefined key as different from an absent one.
         comparisonWindow: null,
         pageSize: 50,
       },

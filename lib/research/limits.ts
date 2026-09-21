@@ -98,7 +98,7 @@ function isOverrideValue(value: unknown): value is number {
  */
 export function parseResearchLimits(raw: string | undefined): ResearchLimits {
   const out: ResearchLimits = { ...DEFAULT_LIMITS };
-  if (!raw?.trim()) return { ...DEFAULT_LIMITS };
+  if (!raw?.trim()) return out;
 
   let parsed: unknown;
   try {
