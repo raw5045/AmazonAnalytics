@@ -268,11 +268,11 @@ export type CategoryTxRunner = <T>(fn: (tx: TxClient) => Promise<T>) => Promise<
 const defaultRunner: CategoryTxRunner = (fn) => withReadOnlyTx(getResearchPool(), researchLimits().categorySqlTimeoutMs, fn);
 
 function timeoutError(): ResearchError {
-  // Shared factory (lib/research/errors.ts, Task 10 review): keeps this module's own hint
-  // text and its 5-second retry cadence (shorter than the generic default — a category
-  // lookup is cheap to retry) while still building the same QUERY_TIMEOUT shape search.ts
-  // and cursor.ts use.
-  return queryTimeoutError(researchLimits().categorySqlTimeoutMs, 'Category lookup timed out; try again.', 5);
+  // Shared factory (lib/research/errors.ts, Task 10 review): keeps this module's own guidance
+  // text (replacing, not joining, the generic search-oriented sentence — Task 11 review) and
+  // its 5-second retry cadence (shorter than the generic default — a category lookup is cheap
+  // to retry) while still building the same QUERY_TIMEOUT shape search.ts and cursor.ts use.
+  return queryTimeoutError(researchLimits().categorySqlTimeoutMs, { guidance: 'Category lookup timed out; try again.', retryAfterSeconds: 5 });
 }
 
 const CATALOG_TTL_MS = 60_000;

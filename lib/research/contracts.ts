@@ -379,7 +379,13 @@ export interface ProductSlot {
   ratingStars: number | null;
   currentPriceCents: number | null;
   salesRank: number | null;
-  enrichmentStatus: string | null;
+  /**
+   * Mirrors `EnrichedProduct['enrichmentStatus']` (lib/explorer/fetchKeywordDetail.ts),
+   * inlined rather than imported so this pure output-contracts module stays free of a
+   * dependency on that page-data-fetching module; null when the slot has no ASIN or the ASIN
+   * was never enriched (details.ts's `toProductSlots`).
+   */
+  enrichmentStatus: 'active' | 'no_price' | 'delisted' | 'error' | null;
 }
 export interface KeywordDetailsResponse {
   searchTermId: string;

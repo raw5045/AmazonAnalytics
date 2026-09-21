@@ -285,9 +285,12 @@ expires outstanding cursors.
 As the parent §11.2, §11.4, §11.5. Details use `fetchKeywordHeader` +
 `fetchKeywordProducts` (no history, no images); history uses the
 `keyword_chart_series` row filtered to the calendar window, with the
-`fetchKeywordRawHistory` fallback only under the 10 s deadline. Ratings
-are stars (stored 0–50 ÷ 10); shares are the stored percentage strings
-parsed to numbers; missing stays null.
+`fetchKeywordRawHistory` fallback only under the 10 s deadline.
+[Implementation note 2026-09-21: no raw-history fallback is used; a
+missing or empty cached series is HISTORY_UNAVAILABLE, and
+get_keyword_details still works.] Ratings are stars (stored 0–50 ÷
+10); shares are the stored percentage strings parsed to numbers;
+missing stays null.
 
 ### 5.5 `get_research_guide`
 

@@ -6,29 +6,10 @@ import { countMatches, runSearch } from './search';
 import { loadSnapshotMeta, SNAPSHOT_META_SQL } from './snapshot';
 import type { CompiledSearch } from './query';
 import type { TxClient } from '@/lib/db/tcpPool';
+import { fakePool as pool } from './testing/fakePool';
 
 const META = { week: '2026-09-12', snap: 'snap-a', refreshed: '2026-09-13T06:12:01.500Z', fit_id: 'fit-1', cal_month: '2026-06-30', extrapolated: false };
 const compiled: CompiledSearch = { sql: 'SELECT rows', args: ['x'], countSql: 'SELECT COUNT', countArgs: ['x'], orderBy: '' };
-
-/** A pool whose single client answers by SQL text; `fail` makes one statement raise. */
-function pool(answers: Record<string, unknown[]>, fail?: { sql: string; code?: string }) {
-  const log: string[] = [];
-  const client = {
-    query: vi.fn(async (sql: string) => {
-      log.push(sql);
-      if (fail && sql === fail.sql) throw Object.assign(new Error('boom'), fail.code ? { code: fail.code } : {});
-      const key = Object.keys(answers).find((k) => sql.includes(k));
-      return { rows: key ? answers[key] : [] };
-    }),
-    release: vi.fn(),
-    // withReadOnlyTx (lib/db/tcpPool.ts) attaches a no-op 'error' listener to the checked-out
-    // client for the duration of the transaction and removes it in `finally` — the fake client
-    // needs both so that plumbing doesn't throw.
-    on: vi.fn(),
-    removeListener: vi.fn(),
-  };
-  return { pool: { connect: async () => client } as never, log, client };
-}
 
 describe('loadSnapshotMeta', () => {
   it('maps the singleton row to ISO strings and nulls, or null when absent', async () => {

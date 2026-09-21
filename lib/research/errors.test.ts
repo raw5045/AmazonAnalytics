@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResearchError, isResearchError, invalidCursorError, dataUnavailableError, queryTimeoutError, searchExpiredError } from './errors';
+import { ResearchError, isResearchError, invalidCursorError, dataUnavailableError, queryTimeoutError, searchExpiredError, keywordNotFoundError } from './errors';
 
 describe('ResearchError', () => {
   it('carries a stable code, a safe message, and retry metadata', () => {
@@ -70,14 +70,27 @@ describe('queryTimeoutError', () => {
   it('rounds a sub-second remainder up to a full second', () => {
     expect(queryTimeoutError(3_001).message).toContain('4-second');
   });
-  it('appends an optional hint after the generic message', () => {
-    const e = queryTimeoutError(3_000, 'Category lookup timed out; try again.');
+  it('uses the default search-guidance sentence when no guidance is given', () => {
+    const e = queryTimeoutError(10_000);
+    expect(e.message).toContain('Narrow the criteria (a category scope or a tighter range) and try again; this is not an empty result.');
+  });
+  it('replaces the default guidance with a caller-specific one, instead of appending to it', () => {
+    const e = queryTimeoutError(3_000, { guidance: 'Category lookup timed out; try again.' });
     expect(e.message).toContain('3-second');
     expect(e.message).toContain('Category lookup timed out; try again.');
+    expect(e.message).not.toContain('Narrow the criteria');
   });
   it('accepts an explicit retryAfterSeconds for a caller with its own retry cadence', () => {
-    const e = queryTimeoutError(3_000, 'Category lookup timed out; try again.', 5);
+    const e = queryTimeoutError(3_000, { guidance: 'Category lookup timed out; try again.', retryAfterSeconds: 5 });
     expect(e.retryAfterSeconds).toBe(5);
+  });
+});
+
+describe('keywordNotFoundError', () => {
+  it('builds the standard KEYWORD_NOT_FOUND error', () => {
+    const e = keywordNotFoundError();
+    expect(e).toBeInstanceOf(ResearchError);
+    expect(e.toInfo()).toStrictEqual({ code: 'KEYWORD_NOT_FOUND', message: 'No keyword exists with that id.', retryable: false });
   });
 });
 

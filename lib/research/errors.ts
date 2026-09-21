@@ -86,14 +86,28 @@ export function dataUnavailableError(): ResearchError {
  * The standard QUERY_TIMEOUT error for a statement cancelled by `statement_timeout` (SQLSTATE
  * 57014, surfaced as `'timeout'` by `withReadOnlyTx`). `budgetMs` is the transaction's own
  * deadline, rendered as whole seconds (rounded up, so a sub-second remainder still reads as a
- * full second rather than 0); `hint` appends caller-specific guidance after the generic
- * message. `retryAfterSeconds` is left undefined by default — search.ts's and history.ts's
+ * full second rather than 0). `opts.guidance` REPLACES the default search-oriented sentence
+ * ("Narrow the criteria (a category scope or a tighter range) and try again; this is not an
+ * empty result.") rather than appending to it: search.ts and history.ts pass no `guidance` and
+ * get that default, but categories.ts passes its own ('Category lookup timed out; try again.')
+ * so the category message never carries search-specific advice that doesn't apply to it.
+ * `opts.retryAfterSeconds` is left undefined by default — search.ts's and history.ts's
  * timeouts have no fixed retry cadence — but categories.ts passes its own 5-second cadence
  * through explicitly, so its callers keep that distinct advice.
  */
-export function queryTimeoutError(budgetMs: number, hint?: string, retryAfterSeconds?: number): ResearchError {
-  const message = `The query took longer than its ${Math.ceil(budgetMs / 1000)}-second budget. Narrow the criteria (a category scope or a tighter range) and try again; this is not an empty result.${hint ? ` ${hint}` : ''}`;
-  return new ResearchError('QUERY_TIMEOUT', message, { retryable: true, retryAfterSeconds });
+export function queryTimeoutError(budgetMs: number, opts: { guidance?: string; retryAfterSeconds?: number } = {}): ResearchError {
+  const guidance = opts.guidance ?? 'Narrow the criteria (a category scope or a tighter range) and try again; this is not an empty result.';
+  const message = `The query took longer than its ${Math.ceil(budgetMs / 1000)}-second budget. ${guidance}`;
+  return new ResearchError('QUERY_TIMEOUT', message, { retryable: true, retryAfterSeconds: opts.retryAfterSeconds });
+}
+
+/**
+ * The standard KEYWORD_NOT_FOUND error: history.ts and details.ts both throw exactly this for
+ * a `searchTermId` with no matching `search_terms` row, so the code and message live in one
+ * place instead of two hand-copied literals.
+ */
+export function keywordNotFoundError(): ResearchError {
+  return new ResearchError('KEYWORD_NOT_FOUND', 'No keyword exists with that id.');
 }
 
 /**

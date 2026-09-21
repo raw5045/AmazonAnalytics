@@ -12,6 +12,7 @@ import {
 } from '@/lib/explorer/buildQuery';
 import { broadPattern, wordPattern } from '@/lib/explorer/matchPattern';
 import type { BaselineStatus, Filters, IntegerRange, SearchRow, Severity, Sort, Window } from './contracts';
+import { keywordUrlFor } from './links';
 
 export interface CompileInput {
   filters: Filters;
@@ -233,7 +234,7 @@ export function mapSearchRow(r: RawSearchRow, ctx: RowContext): SearchRow {
   const row: SearchRow = {
     searchTermId: r.search_term_id,
     keyword: r.search_term_raw,
-    keywordUrl: `${ctx.appUrl.replace(/\/+$/, '')}/explorer/keyword/${r.search_term_id}`,
+    keywordUrl: keywordUrlFor(ctx.appUrl, r.search_term_id),
     estimatedMonthlySearches: toInt(r.estimated_monthly_volume_current),
     averageReviews: r.avg_reviews,
     rank: r.current_rank,

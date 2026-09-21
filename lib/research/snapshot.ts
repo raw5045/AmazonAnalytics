@@ -11,10 +11,20 @@ export interface SnapshotMeta {
   isExtrapolated: boolean;
 }
 
+/**
+ * SQL fragment formatting a `timestamptz` column `col` as an ISO 8601 UTC string with
+ * milliseconds (`YYYY-MM-DDTHH:MI:SS.MSZ`) directly in Postgres, so the driver hands back a
+ * string that's already in the client's target format — never re-parsed with `new Date(...)`
+ * client-side (see mapMeta's docstring below). Shared by `SNAPSHOT_META_SQL` (`refreshed_at`)
+ * and history.ts's `keyword_chart_series` read (`updated_at`), which both need exactly this
+ * formatting and previously hand-copied the same `to_char` call.
+ */
+export const isoUtcSql = (col: string) => `to_char(${col} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+
 export const SNAPSHOT_META_SQL = `
   SELECT m.current_week_end_date::text AS week,
          m.snapshot_version::text AS snap,
-         to_char(m.refreshed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS refreshed,
+         ${isoUtcSql('m.refreshed_at')} AS refreshed,
          m.volume_fit_run_id::text AS fit_id,
          r.calibration_month_end_date::text AS cal_month,
          m.volume_fit_is_extrapolated AS extrapolated
