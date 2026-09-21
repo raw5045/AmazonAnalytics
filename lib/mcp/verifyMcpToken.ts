@@ -20,8 +20,10 @@ import { MCP_SCOPE, type McpAudience } from './config';
  *    token and re-run OAuth over a transient Neon hiccup.
  * 2. The gate (`lib/mcp/handler.ts`) — policy on top of a valid token:
  *    `authorizeMcpClient` (MCP_ALLOWED_CLIENT_IDS), `resolveMcpAccount`
- *    (the users row; a failure there is a `503`, not a `401`) and
- *    `authorizeMcpAccount` (a KeywordQuarry account exists; MCP_AUDIENCE).
+ *    (the users row; a failure there is a `503`, not a `401`),
+ *    `authorizeMcpAccount` (a KeywordQuarry account exists; MCP_AUDIENCE) and
+ *    `getMcpConnection` (lib/mcp/connections.ts; `disconnected` → 403
+ *    `disconnected`, lookup failure → 503).
  *
  * Audience binding = our issuer (Clerk verifies), our custom scope (the
  * wrapper's `requiredScopes`) and, once pinned, our own OAuth client ids.

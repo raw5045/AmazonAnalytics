@@ -13,12 +13,27 @@ export interface McpConnectionState {
 
 function toState(r: McpConnectionRow): McpConnectionState {
   return {
-    status: r.status === 'disconnected' ? 'disconnected' : 'enabled',
+    status: toStatus(r),
     lastRequestAt: r.lastRequestAt,
     lastClientId: r.lastClientId,
     disconnectedAt: r.disconnectedAt,
     reconnectedAt: r.reconnectedAt,
   };
+}
+
+/**
+ * `status` is a plain varchar column (`McpConnectionRow.status: string`), so
+ * a value this module never wrote (manual edit, a future status it doesn't
+ * know yet) is possible at runtime even though only 'enabled' and
+ * 'disconnected' are ever written. This is a security-relevant gate, so an
+ * unrecognized value fails closed to 'disconnected' rather than defaulting
+ * open, and logs a warning; the Connect AI page then shows the account as
+ * disconnected, and Reconnect writes back a valid status, which self-heals.
+ */
+function toStatus(r: McpConnectionRow): McpConnectionStatus {
+  if (r.status === 'enabled' || r.status === 'disconnected') return r.status;
+  console.warn('[mcp connections]', JSON.stringify({ outcome: 'unknown_status', userId: r.userId, status: r.status }));
+  return 'disconnected';
 }
 
 /** null = the account has never used MCP (treated as enabled by the gate). */

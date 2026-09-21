@@ -1,5 +1,6 @@
 import { createMcpHandler, withMcpAuth } from 'mcp-handler';
 import type { AuthInfo } from '@modelcontextprotocol/server';
+import { env } from '@/lib/env';
 import { MCP_SCOPE, MCP_SERVER_INFO, mcpAllowedClientIds, mcpAudience, mcpResourceUrl } from './config';
 import { getMcpConnection, touchMcpConnection, type McpConnectionState } from './connections';
 import { registerWhoami } from './tools/whoami';
@@ -66,10 +67,11 @@ async function gated(req: Request): Promise<Response> {
 
   const accountDenial = authorizeMcpAccount(account, mcpAudience());
   if (accountDenial) return accessDenied(accountDenial, ids);
+  const localUserId = account!.localUserId;
 
   let connection: McpConnectionState | null;
   try {
-    connection = await getMcpConnection(account!.localUserId);
+    connection = await getMcpConnection(localUserId);
   } catch (e) {
     console.error('[mcp auth]', JSON.stringify({ outcome: 'connection_lookup_failed', ...ids, error: e instanceof Error ? e.message : String(e) }));
     return unavailable();
@@ -78,14 +80,14 @@ async function gated(req: Request): Promise<Response> {
     return accessDenied(
       {
         reason: 'disconnected',
-        message: `MCP access for this account is disconnected. Reconnect from ${new URL(mcpResourceUrl()).origin}/connect-ai, then try again.`,
+        message: `MCP access for this account is disconnected. Reconnect from ${new URL('/connect-ai', env.APP_PUBLIC_URL).toString()}, then try again.`,
       },
       ids,
     );
   }
-  touchMcpConnection(account!.localUserId, authInfo.clientId);
+  touchMcpConnection(localUserId, authInfo.clientId);
 
-  logAuth({ outcome: 'admitted', ...ids, localUserId: account!.localUserId, role: account!.role });
+  logAuth({ outcome: 'admitted', ...ids, localUserId, role: account!.role });
   const enriched: AuthInfo = { ...authInfo, extra: { clerkUserId: extra.clerkUserId, account } };
   req.auth = enriched;
   return mcp(req);

@@ -230,6 +230,7 @@ describe('/api/mcp', () => {
     const body = await res.json();
     expect(body.reason).toBe('disconnected');
     expect(body.error_description).toContain('/connect-ai');
+    expect(body.error_description).toContain('https://keywordquarry.com/connect-ai');
     expect(mockTouch).not.toHaveBeenCalled();
   });
 
@@ -248,5 +249,7 @@ describe('/api/mcp', () => {
     const res = await post({ authorization: `Bearer ${TOKEN}` });
     expect(res.status).toBe(503);
     expect(res.headers.get('www-authenticate')).toBeNull();
+    expect(res.headers.get('retry-after')).toBe('30');
+    expect((await res.json()).error).toBe('temporarily_unavailable');
   });
 });
