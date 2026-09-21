@@ -81,6 +81,13 @@ export async function withReadOnlyTx<T>(
  * `'timeout exceeded when trying to connect'`, raised when a caller waits
  * `connectionTimeoutMillis` for a client without one freeing up. Callers should treat this
  * as retryable — the pool itself is healthy, the caller just lost the race for a client.
+ *
+ * The literal is pinned to pg-pool@3.13.0 (index.js:224); re-verify it on a pg/pg-pool bump.
+ * Deliberately does NOT match two other, similarly-worded timeouts, both confirmed against
+ * the same installed versions: pg-pool's own `'Connection terminated due to connection
+ * timeout'` (index.js:276 — the underlying socket's connect timeout, not the queue wait; it
+ * carries a `cause`) and node-postgres Client's `'timeout expired'` (pg/lib/client.js:150 — a
+ * query/statement timeout, unrelated to connecting at all).
  */
 export function isPoolConnectTimeout(err: unknown): boolean {
   return err instanceof Error && err.message === 'timeout exceeded when trying to connect';

@@ -39,9 +39,15 @@ function emptyRangeIssue(range: { gt?: number; gte?: number; lt?: number; lte?: 
   return null;
 }
 
-/** gt/gte/lt/lte with at least one bound, at most one per side, and at least one legal integer inside. */
-function integerRange(min: number | null) {
-  const bound = min === null ? safeInt : safeInt.min(min);
+/**
+ * gt/gte/lt/lte with at least one bound, at most one per side, and at least one legal integer
+ * inside. `max`, when given, additionally caps every bound — for a filter field bound to a
+ * fixed-width Postgres column (see INT4_MAX/SMALLINT_MAX below); omitted, a bound is limited
+ * only by z.int()'s own safe-integer ceiling, for the bigint-column fields.
+ */
+function integerRange(min: number | null, max?: number) {
+  let bound = min === null ? safeInt : safeInt.min(min);
+  if (max !== undefined) bound = bound.max(max);
   return z
     .strictObject({ gt: bound.optional(), gte: bound.optional(), lt: bound.optional(), lte: bound.optional() })
     .superRefine((r, ctx) => {
@@ -58,6 +64,19 @@ export const nonNegativeRange = integerRange(0);
 export const positiveRange = integerRange(1);
 export const anyRange = integerRange(null);
 export type IntegerRange = z.infer<typeof anyRange>;
+
+/**
+ * Postgres column ceilings for the filter fields bound directly to a fixed-width column
+ * (lib/research/query.ts, over lib/explorer/buildQuery.ts's WHERE fragments): current_rank /
+ * rank_*_ago / avg_reviews are int4, word_count is int2. z.int() alone accepts any safe
+ * integer (up to 2^53-1), but Postgres infers each bind param's type from its column, so a
+ * bound above the column's own range raises SQLSTATE 22003 at query time instead of this
+ * schema's own INVALID_FILTERS. lib/explorer/parseFilters.ts enforces the same two ceilings,
+ * under the same names, for the Explorer's URL-param bounds — but doesn't export them, so
+ * they're redefined here rather than reaching into that module for this fix.
+ */
+const INT4_MAX = 2_147_483_647;
+const SMALLINT_MAX = 32_767;
 
 export const textFilterSchema = z.strictObject({
   value: z.string().trim().min(3, 'text needs at least 3 characters').max(200),
@@ -110,14 +129,22 @@ export const movementSchema = z
     // bound, so `floor` supplies the implicit one) is new information anyRange couldn't
     // have known, so that's the only case this re-checks. The bound-count checks are NOT
     // repeated here either — anyRange's own superRefine already ran them for this same
-    // parsed value, so redoing them would report each one twice.
+    // parsed value, so redoing them would report each one twice. A rank-metric ceiling
+    // (INT4_MAX — prior/current bind to int4 columns) is checked the same way here, since
+    // anyRange has no column-type information either; delta and every volume-metric bound
+    // stay uncapped (bigint columns), matching filtersSchema's own int4-vs-bigint split.
     const floor = m.metric === 'volume' ? 0 : 1;
+    const ceiling = m.metric === 'rank' ? INT4_MAX : null;
     const checkDomain = (key: 'prior' | 'current', range: typeof m.prior) => {
       if (!range) return;
-      const outOfDomain = [range.gt, range.gte, range.lt, range.lte].some((b) => b !== undefined && b < floor);
+      const bounds = [range.gt, range.gte, range.lt, range.lte];
+      const outOfDomain = bounds.some((b) => b !== undefined && b < floor);
+      const aboveCeiling = ceiling !== null && bounds.some((b) => b !== undefined && b > ceiling);
       const hasLower = range.gt !== undefined || range.gte !== undefined;
       if (outOfDomain) {
         ctx.addIssue({ code: 'custom', message: `${key} bounds must be >= ${floor} for metric=${m.metric}`, path: [key] });
+      } else if (aboveCeiling) {
+        ctx.addIssue({ code: 'custom', message: `${key} bounds must be <= ${ceiling} for metric=${m.metric}`, path: [key] });
       } else if (!hasLower) {
         const empty = emptyRangeIssue(range, floor);
         if (empty) ctx.addIssue({ code: 'custom', message: empty, path: [key] });
@@ -130,9 +157,9 @@ export const movementSchema = z
 export const filtersSchema = z.strictObject({
   text: textFilterSchema.nullable().default(null),
   estimatedMonthlySearches: nonNegativeRange.nullable().default(null),
-  averageReviews: nonNegativeRange.nullable().default(null),
-  rank: positiveRange.nullable().default(null),
-  wordCount: positiveRange.nullable().default(null),
+  averageReviews: integerRange(0, INT4_MAX).nullable().default(null),
+  rank: integerRange(1, INT4_MAX).nullable().default(null),
+  wordCount: integerRange(1, SMALLINT_MAX).nullable().default(null),
   categories: categoriesSchema.prefault({}),
   broadCategory: z.string().trim().min(1).max(255).nullable().default(null),
   severities: z

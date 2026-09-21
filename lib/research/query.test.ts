@@ -69,6 +69,25 @@ describe('compileSearch — other filters', () => {
   });
 });
 
+describe('compileSearch — window variants (M3)', () => {
+  it('1w window: projection reads prior_week_rank / estimated_monthly_volume_1w_ago, and a movement predicate binds the same columns', () => {
+    const c = compileSearch({ ...base, window: '1w', filters: F() });
+    const s = norm(c.sql);
+    expect(s).toContain('kcs.prior_week_rank AS prior_rank');
+    expect(s).toContain('kcs.estimated_monthly_volume_1w_ago::text AS prior_volume_raw');
+    const m = compileSearch({ ...base, window: '1w', filters: F({ movement: { window: '1w', metric: 'rank', prior: { gt: 100000 } } }) });
+    expect(norm(m.sql)).toContain('kcs.prior_week_rank IS NOT NULL AND kcs.prior_week_rank > $2');
+  });
+});
+
+describe('compileSearch — invariants (M2)', () => {
+  it('throws a programming-error guard when movement.window differs from the comparison window (the catalog enforces equality upstream)', () => {
+    expect(() =>
+      compileSearch({ ...base, window: '4w', filters: F({ movement: { window: '13w', metric: 'volume', delta: { gt: 0 } } }) }),
+    ).toThrow('compileSearch: movement window 13w differs from the comparison window 4w');
+  });
+});
+
 const ELIG_4W = '(kcs.estimated_monthly_volume_current IS NOT NULL AND (kcs.rank_4w_ago IS NULL OR kcs.estimated_monthly_volume_4w_ago IS NOT NULL))';
 const DELTA_4W = '(kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_4w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_4w_ago END)';
 const PRIOR_4W = 'CASE WHEN kcs.rank_4w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_4w_ago END';
@@ -86,10 +105,24 @@ describe('compileSearch — movement (Q16, Q17)', () => {
     expect(s).not.toContain('kcs.rank_4w_ago IS NOT NULL');
   });
   it('rank, observed: prior present + prior/current bounds on rank columns; include_not_observed ORs the missing prior', () => {
-    const o = compileSearch({ ...base, filters: F({ movement: { window: '13w', metric: 'rank', prior: { gt: 100000 }, current: { lt: 10000 } } }) });
+    const o = compileSearch({ ...base, window: '13w', filters: F({ movement: { window: '13w', metric: 'rank', prior: { gt: 100000 }, current: { lt: 10000 } } }) });
     expect(norm(o.sql)).toContain('kcs.rank_13w_ago IS NOT NULL AND kcs.rank_13w_ago > $2 AND kcs.current_rank < $3');
-    const n = compileSearch({ ...base, filters: F({ movement: { window: '13w', metric: 'rank', baseline: 'include_not_observed', prior: { gt: 100000 }, current: { lt: 10000 } } }) });
+    const n = compileSearch({ ...base, window: '13w', filters: F({ movement: { window: '13w', metric: 'rank', baseline: 'include_not_observed', prior: { gt: 100000 }, current: { lt: 10000 } } }) });
     expect(norm(n.sql)).toContain('(kcs.rank_13w_ago > $2 OR kcs.rank_13w_ago IS NULL) AND kcs.current_rank < $3');
+  });
+  it('volume, observed_only: the prior bound binds on the bare prior-volume column, not the zero-baseline CASE (index-friendly — M1)', () => {
+    const c = compileSearch({ ...base, filters: F({ movement: { window: '4w', metric: 'volume', prior: { gte: 1000 } } }) });
+    const s = norm(c.sql);
+    const whereOnly = s.slice(s.indexOf('WHERE'), s.indexOf('ORDER BY'));
+    expect(whereOnly).toContain('kcs.estimated_monthly_volume_4w_ago >= $2');
+    expect(whereOnly).not.toContain('CASE WHEN');
+  });
+  it('volume movement with prior, current, and delta together binds all three in order after the eligibility/prior-present guards', () => {
+    const c = compileSearch({ ...base, filters: F({ movement: { window: '4w', metric: 'volume', prior: { gte: 1000 }, current: { gte: 2000 }, delta: { gt: 0 } } }) });
+    expect(norm(c.sql)).toContain(
+      `${ELIG_4W} AND kcs.rank_4w_ago IS NOT NULL AND kcs.estimated_monthly_volume_4w_ago >= $2 AND kcs.estimated_monthly_volume_current >= $3 AND ${DELTA_4W} > $4`,
+    );
+    expect(c.args.slice(1, 4)).toEqual([1000, 2000, 0]);
   });
 });
 
@@ -100,11 +133,20 @@ describe('orderByFor and sort-driven predicates (Q20)', () => {
     expect(orderByFor({ field: 'rank', direction: 'desc' }, '4w')).toBe('ORDER BY kcs.current_rank DESC, kcs.search_term_id ASC');
     expect(orderByFor({ field: 'averageReviews', direction: 'asc' }, '4w')).toBe('ORDER BY kcs.avg_reviews ASC NULLS LAST, kcs.current_rank ASC, kcs.search_term_id ASC');
     expect(orderByFor({ field: 'wordCount', direction: 'desc' }, '4w')).toBe('ORDER BY kcs.word_count DESC NULLS LAST, kcs.current_rank ASC, kcs.search_term_id ASC');
-    expect(orderByFor({ field: 'volumeDelta', direction: 'desc' }, '4w')).toBe(`ORDER BY ${DELTA_4W} DESC NULLS LAST, kcs.current_rank ASC, kcs.search_term_id ASC`);
+    expect(orderByFor({ field: 'volumeDelta', direction: 'desc' }, '4w')).toBe(`ORDER BY ${DELTA_4W} DESC, kcs.current_rank ASC, kcs.search_term_id ASC`);
   });
   it('a volumeDelta sort without a movement filter still adds the eligibility predicate', () => {
     const c = compileSearch({ ...base, filters: F(), sort: { field: 'volumeDelta', direction: 'desc' } });
     expect(norm(c.sql)).toContain(`AND ${ELIG_4W} ORDER BY`);
+  });
+  it('rank-metric movement + volumeDelta sort: the eligibility guard still runs exactly once (I1 — movement itself adds nothing for rank)', () => {
+    const c = compileSearch({ ...base, filters: F({ movement: { window: '4w', metric: 'rank', prior: { gt: 100000 } } }), sort: { field: 'volumeDelta', direction: 'desc' } });
+    expect(norm(c.sql).split(ELIG_4W).length - 1).toBe(1);
+    expect(norm(c.countSql).split(ELIG_4W).length - 1).toBe(1);
+  });
+  it('volume-metric movement + volumeDelta sort: still exactly one eligibility guard (movement and the sort-driven guard never both add it)', () => {
+    const c = compileSearch({ ...base, filters: F({ movement: { window: '4w', metric: 'volume', delta: { gt: 0 } } }), sort: { field: 'volumeDelta', direction: 'desc' } });
+    expect(norm(c.sql).split(ELIG_4W).length - 1).toBe(1);
   });
 });
 
@@ -135,5 +177,33 @@ describe('mapSearchRow', () => {
     expect(plain.movement).toBeUndefined();
     expect(plain.titleFlags).toBeUndefined();
     expect(plain.estimatedMonthlySearches).toBeNull();
+  });
+  it('titleMode strict reads the strict columns (not loose)', () => {
+    const strict = mapSearchRow(raw, { ...ctx, titleMode: 'strict' });
+    expect(strict.titleFlags).toEqual({ mode: 'strict', slots: [false, null, null] });
+  });
+});
+
+describe('compileSearch — every filter kind at once (M3)', () => {
+  it('pins the full args order across text, broadCategory, two leaves, titleGap, a volume-movement delta, and severities', () => {
+    const c = compileSearch({
+      ...base,
+      leaves: ['A › B', 'A › C'],
+      filters: F({
+        text: { value: 'Hair Oil' },
+        broadCategory: 'Beauty',
+        titleGap: { slots: [1, 3] },
+        movement: { window: '4w', metric: 'volume', delta: { gt: 0 } },
+        severities: ['critical'],
+      }),
+    });
+    expect(c.args).toEqual(['2026-09-12', '\\mhair oil\\M', 'Beauty', 'A › B', 'A › C', 0, 'critical', 51, 0]);
+    const s = norm(c.sql);
+    expect(s).toContain('kcs.search_term_normalized ~ $2');
+    expect(s).toContain('kcs.top_clicked_category_1_current = $3');
+    expect(s).toContain('kcs.top_clicked_category_path IN ($4, $5)');
+    expect(s).toContain(`${ELIG_4W} AND kcs.rank_4w_ago IS NOT NULL AND ${DELTA_4W} > $6`);
+    expect(s).toContain('kcs.fake_volume_severity_current IN ($7)');
+    expect(s).toContain('(kcs.keyword_in_title_1_loose_current = false OR kcs.keyword_in_title_3_loose_current = false)');
   });
 });

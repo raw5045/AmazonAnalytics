@@ -92,6 +92,15 @@ describe('parseSearchInput', () => {
     fails({ ...base, filters: { estimatedMonthlySearches: { lt: 0 } } }, 'filters.estimatedMonthlySearches');
   });
 
+  it('caps rank/averageReviews bounds at the int4 column ceiling and wordCount at the int2 ceiling (I3); estimatedMonthlySearches (bigint) stays uncapped', () => {
+    fails({ ...base, filters: { rank: { lte: 2_147_483_648 } } }, 'filters.rank.lte');
+    expect(parseSearchInput({ ...base, filters: { rank: { lte: 2_147_483_647 } } }).kind).toBe('new');
+    fails({ ...base, filters: { averageReviews: { lte: 2_147_483_648 } } }, 'filters.averageReviews.lte');
+    fails({ ...base, filters: { wordCount: { gte: 32_768 } } }, 'filters.wordCount.gte');
+    const bigVolume = parseSearchInput({ ...base, filters: { estimatedMonthlySearches: { gte: 3_000_000_000 } } });
+    expect(bigVolume.kind).toBe('new');
+  });
+
   it('accepts zero for reviews and searches, an at-the-floor lte, and a negative delta', () => {
     const out = parseSearchInput({
       ...base,
@@ -144,6 +153,15 @@ describe('parseSearchInput', () => {
       filters: { movement: { window: '4w', metric: 'volume', baseline: 'include_not_observed', prior: { lt: 5000 } } },
     });
     expect(okVolume.kind).toBe('new');
+  });
+
+  it('caps rank-metric movement prior/current at the int4 ceiling too (I3); volume-metric movement bounds stay uncapped (bigint)', () => {
+    fails({ ...base, filters: { movement: { window: '4w', metric: 'rank', prior: { gt: 3_000_000_000 } } } }, 'filters.movement.prior');
+    const bigVolumeMovement = parseSearchInput({
+      ...base,
+      filters: { movement: { window: '4w', metric: 'volume', prior: { gte: 3_000_000_000 } } },
+    });
+    expect(bigVolumeMovement.kind).toBe('new');
   });
 
   it('does not duplicate bound-count or explicit-bound emptiness issues for a movement range (anyRange already reports those once)', () => {

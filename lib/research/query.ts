@@ -40,9 +40,14 @@ export function rangePredicates(column: string, range: IntegerRange | null | und
 const TAIL = 'kcs.current_rank ASC, kcs.search_term_id ASC';
 
 /**
- * Deterministic total order. estimatedMonthlySearches runs as current_rank
- * because the stored estimate is monotone non-increasing in rank by
- * construction (guarded weekly by lib/analytics/volumeMonotonicity.ts).
+ * Deterministic total order. estimatedMonthlySearches runs as current_rank because the stored
+ * estimate is monotone non-increasing in rank by construction, guarded weekly (Task 20,
+ * lib/analytics/volumeMonotonicity.ts). When current volumes are NULL, that's snapshot-wide —
+ * one fit (or none) applies to the whole current-week refresh, and buildPiecewiseSql
+ * (lib/analytics/volumeModel.ts) always emits an ELSE for a multi-segment fit, so there is no
+ * per-row branch that leaves some rows NULL and others not within a single snapshot. So rank
+ * order is the only order that means anything for this sort key in that case — every row is
+ * equally NULL, not distinguishable by volume.
  */
 export function orderByFor(sort: Sort, window: Window): string {
   const dir = sort.direction === 'asc' ? 'ASC' : 'DESC';
@@ -56,7 +61,20 @@ export function orderByFor(sort: Sort, window: Window): string {
     case 'wordCount':
       return `ORDER BY kcs.word_count ${dir} NULLS LAST, ${TAIL}`;
     case 'volumeDelta':
-      return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ${dir} NULLS LAST, ${TAIL}`;
+      // No NULLS LAST here, unlike averageReviews/wordCount above (which stay genuinely
+      // nullable in the result set): compileSearch now pushes the eligibility predicate for
+      // EVERY volumeDelta sort, so this expression is never NULL among the rows the WHERE
+      // admits — NULLS placement can't change the result, only the plan. And for the plan, a
+      // bare direction is what the 0044 partial indexes need: they're built plain ASC, which
+      // Postgres pathkey-matches as `ASC NULLS LAST` on a forward scan and `DESC NULLS FIRST`
+      // on a backward one (the implicit default for each direction) — never `DESC NULLS LAST`.
+      // Asking for NULLS LAST on a DESC sort (the old behavior) demanded a pathkey no scan of
+      // this index produces, so the planner fell back to a full sort. Compare migration 0027's
+      // kcs_est_vol_idx, which explicitly declares `DESC NULLS LAST` in its DDL because ITS
+      // sort (see buildOrderBy's rank_desc case in lib/explorer/buildQuery.ts) is over a
+      // genuinely-nullable column and needs that exact placement — a deliberate contrast, not
+      // an inconsistency.
+      return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ${dir}, ${TAIL}`;
   }
 }
 
@@ -69,8 +87,18 @@ function movementPredicates(m: NonNullable<Filters['movement']>, next: NextParam
     // Same eligibility as the Explorer's Δ-volume sorts and the 0044 partial indexes:
     // current present; a present prior rank must carry a prior volume.
     out.push(`(${volumeDeltaEligibility(w, 'kcs.')})`);
-    if (m.baseline === 'observed_only') out.push(`${priorRankCol} IS NOT NULL`);
-    out.push(...rangePredicates(volumePriorExpr(w, 'kcs.'), m.prior, next));
+    if (m.baseline === 'observed_only') {
+      out.push(`${priorRankCol} IS NOT NULL`);
+      // Bind on the bare column, not volumePriorExpr's CASE: with the guard just above, the
+      // CASE's WHEN branch (prior rank NULL) can never be taken, so the CASE always reduces
+      // to this same column — but the planner can't fold that across two separate predicates,
+      // and a CASE-wrapped column can't use a plain index on the column itself
+      // (kcs_est_vol_{w}_idx). include_not_observed has no such guard (a NULL prior rank is
+      // an in-population zero, not excluded), so it keeps the CASE below.
+      out.push(...rangePredicates(`kcs.${WINDOW_TO_VOLUME_COLUMN[w]}`, m.prior, next));
+    } else {
+      out.push(...rangePredicates(volumePriorExpr(w, 'kcs.'), m.prior, next));
+    }
     out.push(...rangePredicates('kcs.estimated_monthly_volume_current', m.current, next));
     out.push(...rangePredicates(volumeDeltaExpr(w, 'kcs.'), m.delta, next));
   } else if (m.baseline === 'observed_only') {
@@ -85,8 +113,22 @@ function movementPredicates(m: NonNullable<Filters['movement']>, next: NextParam
   return out;
 }
 
+/**
+ * Compiles one search request to parameterized SQL. Two invariants Task 10's search runner
+ * relies on: `countArgs` is always the exact prefix of `args` (the count query reuses the
+ * WHERE args verbatim — nothing appended, removed, or reordered), and `limit`/`offset` are
+ * always the last two entries of `args`, in that order (bound last, right before the SELECT
+ * is assembled). Every bigint and date column in the row projection is `::text`-cast so the
+ * driver never has to reconcile a bigint-vs-number or date-vs-string mismatch across
+ * environments; `mapSearchRow` parses those text values back into numbers.
+ */
 export function compileSearch(input: CompileInput): CompiledSearch {
   const { filters: f, sort, window } = input;
+  if (f.movement && f.movement.window !== window) {
+    // Programming error, not a request-validation failure: the catalog (Task 10) is
+    // responsible for enforcing window === movement.window before calling in here.
+    throw new Error(`compileSearch: movement window ${f.movement.window} differs from the comparison window ${window}`);
+  }
   const args: unknown[] = [];
   const next: NextParam = (v) => { args.push(v); return `$${args.length}`; };
 
@@ -103,11 +145,7 @@ export function compileSearch(input: CompileInput): CompiledSearch {
   if (f.broadCategory) where.push(`kcs.top_clicked_category_1_current = ${next(f.broadCategory)}`);
   const leaf = leafPathPredicate({ leafPaths: input.leaves }, next);
   if (leaf) where.push(leaf);
-  // Movement's own bound params (prior/current/delta) are bound here, BEFORE severity's fixed
-  // default predicate below, so they claim the lowest available $N. severities defaults to
-  // ['none', 'warning'] (never empty — see contracts.ts), so severityPredicate almost always
-  // binds two params of its own; if movement ran after it, every movement bound would be
-  // shifted by two params for no reason tied to the request itself.
+  // Movement binds before severity, so its first bound is $2 (severities defaults non-empty).
   if (f.movement) where.push(...movementPredicates(f.movement, next));
   const sev = severityPredicate({ severities: f.severities }, next);
   if (sev) where.push(sev);
@@ -116,11 +154,14 @@ export function compileSearch(input: CompileInput): CompiledSearch {
     const conds = f.titleGap.slots.map((s) => `${slotColumn(s, mode)} = false`);
     where.push(`(${conds.join(f.titleGap.quantifier === 'all' ? ' AND ' : ' OR ')})`);
   }
-  // Only when there's no movement filter: a bare volumeDelta sort still needs the eligibility
-  // guard (movement's own volume-metric branch above already includes it — never both). This
-  // predicate binds no args, so it can stay last without disturbing any $N numbering; kept last
-  // so it stays immediately adjacent to ORDER BY when nothing else follows it.
-  if (!f.movement && sort.field === 'volumeDelta') where.push(`(${volumeDeltaEligibility(window, 'kcs.')})`);
+  // Every volumeDelta sort needs the eligibility guard; the volume-metric movement branch
+  // above already pushes it (never both — a rank-metric movement filter does NOT push it, so
+  // that combination still needs this branch to run). This predicate binds no args, so it can
+  // stay last without disturbing any $N numbering; kept last so it stays immediately adjacent
+  // to ORDER BY when nothing else follows it.
+  if (sort.field === 'volumeDelta' && !(f.movement && f.movement.metric === 'volume')) {
+    where.push(`(${volumeDeltaEligibility(window, 'kcs.')})`);
+  }
 
   const whereClause = `WHERE ${where.join('\n        AND ')}`;
   const countArgs = [...args];
@@ -178,6 +219,16 @@ export interface RowContext { appUrl: string; window: Window; includeMovement: b
 
 const toInt = (v: string | null): number | null => (v === null ? null : parseInt(v, 10));
 
+/**
+ * Parses one compiled row (RawSearchRow — the ::text-cast driver output) into the response's
+ * SearchRow shape: bigint-as-text fields back to numbers, and the ISO week strings trimmed to
+ * YYYY-MM-DD. When `ctx.includeMovement`, also builds the movement block and its
+ * baselineStatus label: 'not_observed' (no prior rank at all — priorVolume reported as the
+ * same zero baseline movementPredicates uses, not null), 'calibration_unavailable' (a prior
+ * rank exists but no volume fit covers it — priorVolume and volumeDelta both null, never a
+ * fabricated number), or 'observed' (both present). `ctx.titleMode` picks the loose or strict
+ * title-flag columns; null omits `titleFlags` entirely.
+ */
 export function mapSearchRow(r: RawSearchRow, ctx: RowContext): SearchRow {
   const row: SearchRow = {
     searchTermId: r.search_term_id,

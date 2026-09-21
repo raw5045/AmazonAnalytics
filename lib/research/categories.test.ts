@@ -345,11 +345,11 @@ describe('loadCategoryCatalog', () => {
     expect(query).toHaveBeenCalledTimes(2); // no further query — TTL was refreshed when the cache was served
   });
 
-  it('zero facets with a cached catalog for a DIFFERENT snapshot version throws and does not serve the stale catalog', async () => {
+  it('zero facets with a cached catalog for a DIFFERENT snapshot version throws and leaves nothing servable cached (three queries — this can\'t distinguish an untouched old cache from a cleared one, since either way the third call is past TTL and must query again)', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: SNAP_A_ROWS }) // caches snap-a
       .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW_SNAP_B }) // now snap-b, but its facets aren't in yet
-      .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW_SNAP_B }); // still no facets — proves the earlier throw left the cache untouched
+      .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW_SNAP_B }); // still no facets — nothing servable was left cached (can't tell untouched from cleared)
     const run = runWith(query);
     await loadCategoryCatalog(0, run);
     await expect(loadCategoryCatalog(60_001, run)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', retryable: true });
