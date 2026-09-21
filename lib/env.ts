@@ -20,6 +20,9 @@ const serverSchema = z.object({
   MCP_AUDIENCE: z.string().optional(),
   MCP_ALLOWED_CLIENT_IDS: z.string().optional(),
   MCP_RESOURCE_URL: z.string().optional(),
+  // Research service (arc 1): cursor signing key and validated limit overrides.
+  RESEARCH_CURSOR_SECRET: z.string().optional(),
+  RESEARCH_LIMITS_JSON: z.string().optional(),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
