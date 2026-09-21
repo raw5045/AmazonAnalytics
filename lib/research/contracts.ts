@@ -19,10 +19,13 @@ const safeInt = z.int();
  * lower bound when neither gt nor gte is given, so e.g. `{ lt: 1 }` against floor 1 is
  * recognized as empty. Shared by integerRange (its own field-level floor) and
  * movementSchema's superRefine (the metric-scoped floor for prior/current, which anyRange
- * can't know statically). Bound-COUNT issues (missing / duplicate bounds) are deliberately
- * NOT part of this: they live in integerRange alone, since anyRange's own superRefine
- * already runs them for prior/current before movementSchema's domain check ever sees the
- * parsed value — rerunning them there would double-report the same issue.
+ * can't know statically — but movementSchema calls this only for that floor-seeded case;
+ * when an explicit lower bound is given, anyRange has already checked it against the upper
+ * bound and reported any emptiness itself, so calling this again there would double-report
+ * the same issue). Bound-COUNT issues (missing / duplicate bounds) are deliberately NOT
+ * part of this: they live in integerRange alone, since anyRange's own superRefine already
+ * runs them for prior/current before movementSchema's domain check ever sees the parsed
+ * value — rerunning them there would double-report the same issue.
  */
 function emptyRangeIssue(range: { gt?: number; gte?: number; lt?: number; lte?: number }, floor: number | null): string | null {
   const lo = range.gte !== undefined ? range.gte : range.gt !== undefined ? range.gt + 1 : floor;
@@ -94,16 +97,22 @@ export const movementSchema = z
     }
     // Domain floor (parent design §8.1): volume ranges are >= 0, rank ranges are >= 1;
     // only delta may be negative. anyRange can't enforce this statically since the floor
-    // depends on the sibling `metric` field, so the floor/emptiness half of the check is
-    // re-run here with the metric-scoped floor. The bound-count checks are NOT repeated
-    // here — anyRange's own superRefine already ran them for this same parsed value, so
-    // redoing them would report each one twice.
+    // depends on the sibling `metric` field, so the out-of-domain check always runs here
+    // with the metric-scoped floor. Emptiness is NOT always safe to re-run, though: when
+    // an explicit lower bound (gt/gte) is given, anyRange's own superRefine has already
+    // checked it against the upper bound and reported emptiness itself — redoing that here
+    // would double-report the same issue. Only the floor-seeded case (no explicit lower
+    // bound, so `floor` supplies the implicit one) is new information anyRange couldn't
+    // have known, so that's the only case this re-checks. The bound-count checks are NOT
+    // repeated here either — anyRange's own superRefine already ran them for this same
+    // parsed value, so redoing them would report each one twice.
     const floor = m.metric === 'volume' ? 0 : 1;
     const checkDomain = (key: 'prior' | 'current', range: typeof m.prior) => {
       if (!range) return;
       const outOfDomain = [range.gt, range.gte, range.lt, range.lte].some((b) => b !== undefined && b < floor);
       if (outOfDomain) ctx.addIssue({ code: 'custom', message: `${key} bounds must be >= ${floor} for metric=${m.metric}`, path: [key] });
-      const empty = emptyRangeIssue(range, floor);
+      const hasLower = range.gt !== undefined || range.gte !== undefined;
+      const empty = hasLower ? null : emptyRangeIssue(range, floor);
       if (empty) ctx.addIssue({ code: 'custom', message: empty, path: [key] });
     };
     checkDomain('prior', m.prior);

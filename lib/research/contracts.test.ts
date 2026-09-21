@@ -144,8 +144,8 @@ describe('parseSearchInput', () => {
     expect(okVolume.kind).toBe('new');
   });
 
-  it('does not duplicate bound-count issues for a movement range (anyRange already reports those once)', () => {
-    for (const prior of [{}, { gt: 1, gte: 2 }]) {
+  it('does not duplicate bound-count or explicit-bound emptiness issues for a movement range (anyRange already reports those once)', () => {
+    for (const prior of [{}, { gt: 1, gte: 2 }, { gte: 10, lte: 5 }, { gt: 5, lt: 6 }]) {
       try {
         parseSearchInput({ ...base, filters: { movement: { window: '4w', metric: 'volume', prior } } });
         throw new Error(`expected rejection at filters.movement.prior for prior=${JSON.stringify(prior)}`);
@@ -154,6 +154,17 @@ describe('parseSearchInput', () => {
         const err = e as ResearchError;
         expect(err.details!.filter((d) => d.path === 'filters.movement.prior')).toHaveLength(1);
       }
+    }
+    // Floor-seeded emptiness (no explicit lower bound, so the metric floor supplies the
+    // implied one) is reported once too, but by checkDomain itself — anyRange never sees
+    // this case since it has no way to know the metric-scoped floor.
+    try {
+      parseSearchInput({ ...base, filters: { movement: { window: '4w', metric: 'volume', prior: { lt: 0 } } } });
+      throw new Error('expected rejection at filters.movement.prior for prior={"lt":0}');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ResearchError);
+      const err = e as ResearchError;
+      expect(err.details!.filter((d) => d.path === 'filters.movement.prior')).toHaveLength(1);
     }
   });
 
