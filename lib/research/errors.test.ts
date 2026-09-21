@@ -46,7 +46,7 @@ describe('invalidCursorError', () => {
 });
 
 describe('dataUnavailableError', () => {
-  it('builds the standard DATA_UNAVAILABLE error', () => {
+  it('builds the standard DATA_UNAVAILABLE error, defaulting to a 120s retry', () => {
     const e = dataUnavailableError();
     expect(e).toBeInstanceOf(ResearchError);
     expect(e.toInfo()).toStrictEqual({
@@ -54,6 +54,15 @@ describe('dataUnavailableError', () => {
       message: 'The keyword dataset is being refreshed; try again in a few minutes.',
       retryable: true,
       retryAfterSeconds: 120,
+    });
+  });
+  it('accepts an override retryAfterSeconds for a distinct cause with its own cadence', () => {
+    const e = dataUnavailableError(5);
+    expect(e.toInfo()).toStrictEqual({
+      code: 'DATA_UNAVAILABLE',
+      message: 'The keyword dataset is being refreshed; try again in a few minutes.',
+      retryable: true,
+      retryAfterSeconds: 5,
     });
   });
 });

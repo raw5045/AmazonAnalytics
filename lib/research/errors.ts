@@ -75,11 +75,16 @@ export function invalidCursorError(details?: ReadonlyArray<ResearchFieldIssue>):
 /**
  * The standard DATA_UNAVAILABLE error: the snapshot meta row is missing (the kill switch, or
  * a fresh deploy before the first weekly import). search.ts, history.ts and categories.ts all
- * throw exactly this so the message and retry metadata live in one place instead of
- * hand-copied literals.
+ * throw exactly this (with the default 120s retry) so the message and retry metadata live in
+ * one place instead of hand-copied literals.
+ *
+ * `retryAfterSeconds` defaults to 120 (the kill-switch cadence) but accepts an override for a
+ * distinct cause with its own, shorter cadence: service.ts's `guarded()` throws
+ * `dataUnavailableError(5)` for a pg-pool connect-queue timeout (`isPoolConnectTimeout` in
+ * lib/db/tcpPool.ts) — the pool itself is healthy there, so a 5s retry is honest, not 120s.
  */
-export function dataUnavailableError(): ResearchError {
-  return new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
+export function dataUnavailableError(retryAfterSeconds = 120): ResearchError {
+  return new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds });
 }
 
 /**
