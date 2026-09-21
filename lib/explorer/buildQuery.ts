@@ -27,7 +27,8 @@ import type {
 import { findJumpPreset } from './jumpPresets';
 import { wordPattern, broadPattern } from './matchPattern';
 
-const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
+/** Stored prior-rank column per window. Shared with lib/research/query.ts. */
+export const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
   '1w': 'prior_week_rank',
   '4w': 'rank_4w_ago',
   '13w': 'rank_13w_ago',
@@ -35,7 +36,8 @@ const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
   '52w': 'rank_52w_ago',
 };
 
-const WINDOW_TO_VOLUME_COLUMN: Record<WindowKey, string> = {
+/** Stored prior-volume column per window. Shared with lib/research/query.ts. */
+export const WINDOW_TO_VOLUME_COLUMN: Record<WindowKey, string> = {
   '1w': 'estimated_monthly_volume_1w_ago',
   '4w': 'estimated_monthly_volume_4w_ago',
   '13w': 'estimated_monthly_volume_13w_ago',
@@ -404,10 +406,11 @@ export function wordCountExpr(alias: 'kcs.' | '' = 'kcs.'): string {
   return `(length(${col}) - length(replace(${col}, ' ', '')) + 1)`;
 }
 
-type NextParam = (val: unknown) => string;
+/** Numbered-param binder used across query builders. Shared with lib/research/query.ts. */
+export type NextParam = (val: unknown) => string;
 
-/** Severity fragment — null unless the filter narrows below all-3. */
-function severityPredicate(filters: ExplorerFilters, next: NextParam): string | null {
+/** Severity fragment — null unless the filter narrows below all-3. Shared with lib/research/query.ts. */
+export function severityPredicate(filters: Pick<ExplorerFilters, 'severities'>, next: NextParam): string | null {
   if (filters.severities.length === 0 || filters.severities.length >= 3) return null;
   const params = filters.severities.map((s) => next(s)).join(', ');
   return filters.severities.includes('none')
@@ -429,8 +432,8 @@ function rangeBoundPredicates(filters: ExplorerFilters, next: NextParam): string
   return out;
 }
 
-/** leafPaths IN fragment; null when no leaf filter. */
-function leafPathPredicate(filters: ExplorerFilters, next: NextParam): string | null {
+/** leafPaths IN fragment; null when no leaf filter. Shared with lib/research/query.ts. */
+export function leafPathPredicate(filters: Pick<ExplorerFilters, 'leafPaths'>, next: NextParam): string | null {
   if (filters.leafPaths.length === 0) return null;
   const ps = filters.leafPaths.map((c) => next(c)).join(', ');
   return `kcs.top_clicked_category_path IN (${ps})`;
@@ -589,8 +592,8 @@ function buildOuterOrderBy(sort: ExplorerFilters['sort'], matchMode: MatchMode, 
   }
 }
 
-/** Returns the per-slot in-title boolean column for a given match mode. */
-function slotColumn(slot: number, matchMode: MatchMode): string {
+/** Returns the per-slot in-title boolean column for a given match mode. Shared with lib/research/query.ts. */
+export function slotColumn(slot: number, matchMode: MatchMode): string {
   return matchMode === 'loose'
     ? `kcs.keyword_in_title_${slot}_loose_current`
     : `kcs.keyword_in_title_${slot}_current`;
