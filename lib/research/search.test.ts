@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
 
 import { countMatches, runSearch } from './search';
-import { loadSnapshotMeta, SNAPSHOT_META_SQL } from './snapshot';
+import { isoUtcSql, loadSnapshotMeta, SNAPSHOT_META_SQL } from './snapshot';
 import type { CompiledSearch } from './query';
 import type { TxClient } from '@/lib/db/tcpPool';
 import { fakePool as pool } from './testing/fakePool';
@@ -101,5 +101,11 @@ describe('countMatches', () => {
 
     const same = pool({ keyword_current_summary_meta: [META], 'SELECT COUNT': [{ total: 137 }] });
     expect(await countMatches(same.pool, 3_000, compiled, { expectedSnapshot: 'snap-a' })).toEqual({ kind: 'exact', value: 137 });
+  });
+});
+
+describe('isoUtcSql', () => {
+  it('expands to the exact to_char ISO-8601 UTC expression the meta and series reads rely on', () => {
+    expect(isoUtcSql('m.refreshed_at')).toBe(`to_char(m.refreshed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`);
   });
 });

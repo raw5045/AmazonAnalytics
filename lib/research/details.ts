@@ -85,15 +85,17 @@ export function toProductSlots(products: KeywordProducts): ProductSlot[] {
  * `current: null` and `products: []` WITHOUT ever calling `deps.products` (Q30): there is
  * nothing current to fetch products for.
  *
- * Throws `KEYWORD_NOT_FOUND` for an unknown `searchTermId`, and `DATA_UNAVAILABLE` when the
- * snapshot meta row is missing (the kill switch) — checked right after the parallel reads,
- * before any dormant/active branching, so a missing meta refuses the whole response instead of
- * answering with empty provenance strings.
+ * Throws `DATA_UNAVAILABLE` when the snapshot meta row is missing (the kill switch) — checked
+ * first, right after the parallel reads, so a missing meta refuses the whole response (never
+ * empty provenance strings, never a cacheable false `KEYWORD_NOT_FOUND`) — and then
+ * `KEYWORD_NOT_FOUND` for an unknown `searchTermId`.
  */
 export async function loadKeywordDetails(searchTermId: string, deps: DetailsDeps): Promise<KeywordDetailsResponse> {
   const [header, summary, meta] = await Promise.all([deps.header(searchTermId), deps.summary(searchTermId), deps.meta()]);
-  if (!header) throw keywordNotFoundError();
+  // Meta is checked FIRST: the kill switch refuses the whole response (as search and history do),
+  // so an outage can never be cached by a client as a non-retryable "id does not exist".
   if (!meta) throw dataUnavailableError();
+  if (!header) throw keywordNotFoundError();
   const keywordUrl = keywordUrlFor(deps.appUrl, searchTermId);
   const warnings: Warning[] = [{ code: 'ESTIMATED_VOLUME', message: 'estimatedMonthlySearches is an estimate derived from rank and calibration.' }];
   const identity = { searchTermId, keyword: header.searchTermRaw, keywordUrl, firstSeenWeek: header.firstSeenWeek, lastSeenWeek: header.lastSeenWeek };
@@ -125,7 +127,7 @@ export async function loadKeywordDetails(searchTermId: string, deps: DetailsDeps
   const estimatedMonthlySearches = stored !== null ? parseInt(stored, 10) : cur.estimatedMonthlyVolumeCurrent;
   const volumeIsExtrapolated = stored !== null ? meta.isExtrapolated : cur.estimatedMonthlyVolumeIsExtrapolated;
   if (volumeIsExtrapolated) {
-    warnings.push({ code: 'EXTRAPOLATED_VOLUME', message: 'The volume estimate uses a calibration fit extrapolated beyond its observed range.' });
+    warnings.push({ code: 'EXTRAPOLATED_VOLUME', message: 'The dataset week predates every calibration month, so this volume estimate applies the earliest calibration fit backward in time; treat it as directional.' });
   }
 
   return {

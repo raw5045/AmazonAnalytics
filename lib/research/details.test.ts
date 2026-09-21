@@ -58,7 +58,9 @@ describe('loadKeywordDetails', () => {
     expect(out.products).toEqual([]);
     expect(productsCalled).toBe(false);
     expect(out.warnings.map((w) => w.code)).toContain('DORMANT');
-    await expect(loadKeywordDetails('x', deps({ header: async () => null }))).rejects.toMatchObject({ code: 'KEYWORD_NOT_FOUND' });
+    let notFoundProductsCalled = false;
+    await expect(loadKeywordDetails('x', deps({ header: async () => null, products: async () => { notFoundProductsCalled = true; return products; } }))).rejects.toMatchObject({ code: 'KEYWORD_NOT_FOUND' });
+    expect(notFoundProductsCalled).toBe(false);
   });
 
   it('a dormant keyword ignores a non-null summary row — current stays null and status stays dormant regardless', async () => {
@@ -80,7 +82,16 @@ describe('loadKeywordDetails', () => {
     const out = await loadKeywordDetails('id-1', deps({ meta: async () => ({ ...meta, isExtrapolated: true }) }));
     expect(out.current?.estimatedMonthlySearches).toBe(48210); // still the stored summary value
     expect(out.current?.volumeIsExtrapolated).toBe(true); // meta's flag — header.current.estimatedMonthlyVolumeIsExtrapolated is false
-    expect(out.warnings.map((w) => w.code)).toContain('EXTRAPOLATED_VOLUME');
+    expect(out.warnings.map((w) => w.code)).toEqual(['ESTIMATED_VOLUME', 'PARTIAL_REVIEW_COVERAGE_POSSIBLE', 'EXTRAPOLATED_VOLUME']);
+    expect(out.warnings.at(-1)?.message).toContain('predates every calibration month');
+  });
+
+  it('DATA_UNAVAILABLE wins over KEYWORD_NOT_FOUND when both the header and the meta row are missing (an outage must never be cached as a missing id)', async () => {
+    let productsCalled = false;
+    await expect(
+      loadKeywordDetails('x', deps({ header: async () => null, meta: async () => null, products: async () => { productsCalled = true; return products; } })),
+    ).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE' });
+    expect(productsCalled).toBe(false);
   });
 
   it('falls back to the header current volume and ITS OWN extrapolation flag when no stored summary volume exists; meta.isExtrapolated is not consulted', async () => {
