@@ -513,7 +513,7 @@ function toIsoDate(value: string | Date): string {
 // ---------------------------------------------------------------------------
 
 /** Fetch all calibration fits from model_calibration_runs. */
-async function fetchFits(dbUrl: string): Promise<FitParams[]> {
+export async function fetchFits(dbUrl: string): Promise<FitParams[]> {
   const sql = neon(dbUrl);
   const fitRowsAny = await sql`
     SELECT
