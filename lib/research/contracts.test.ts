@@ -1,5 +1,14 @@
-import { describe, it, expect } from 'vitest';
-import { parseSearchInput, resolveCategoriesInputSchema, keywordHistoryInputSchema, keywordDetailsInputSchema } from './contracts';
+import { describe, it, expect, expectTypeOf } from 'vitest';
+import {
+  parseSearchInput,
+  resolveCategoriesInputSchema,
+  keywordHistoryInputSchema,
+  keywordDetailsInputSchema,
+  searchToolInputSchema,
+  emptyInputSchema,
+  type SearchRequest,
+  type Window,
+} from './contracts';
 import { ResearchError } from './errors';
 
 const base = { schemaVersion: 1 as const };
@@ -10,7 +19,7 @@ const fails = (input: unknown, path: string) => {
     expect(e).toBeInstanceOf(ResearchError);
     const err = e as ResearchError;
     expect(err.code).toBe('INVALID_FILTERS');
-    expect(JSON.stringify(err.details)).toContain(path);
+    expect(err.details!.some((d) => d.path === path)).toBe(true);
     return;
   }
   throw new Error(`expected rejection at ${path}`);
@@ -29,6 +38,18 @@ describe('parseSearchInput', () => {
     expect(out.request.presetIds).toEqual([]);
   });
 
+  it('gives each parse its own categories arrays, not a shared default', () => {
+    const a = parseSearchInput(base);
+    const b = parseSearchInput(base);
+    if (a.kind !== 'new' || b.kind !== 'new') throw new Error();
+    expect(a.request.filters.categories.leafPaths).not.toBe(b.request.filters.categories.leafPaths);
+    expect(a.request.filters.categories.selections).not.toBe(b.request.filters.categories.selections);
+    a.request.filters.categories.leafPaths.push('A > B');
+    a.request.filters.categories.selections.push({ kind: 'taxonomy', path: 'A', includeDescendants: true });
+    expect(b.request.filters.categories.leafPaths).toEqual([]);
+    expect(b.request.filters.categories.selections).toEqual([]);
+  });
+
   it('keeps comparators as given (gt stays gt)', () => {
     const out = parseSearchInput({ ...base, filters: { estimatedMonthlySearches: { gt: 10000 }, averageReviews: { lt: 500 } } });
     if (out.kind !== 'new') throw new Error();
@@ -36,56 +57,186 @@ describe('parseSearchInput', () => {
     expect(out.request.filters.averageReviews).toEqual({ lt: 500 });
   });
 
-  it('rejects unknown keys, wrong schema versions, and a cursor mixed with filters', () => {
-    fails({ ...base, filters: { volume: { gt: 1 } } }, 'volume');
+  it('rejects an unknown top-level key, wrong schema versions, and a cursor mixed with filters', () => {
+    try {
+      parseSearchInput({ ...base, volume: { gt: 1 } });
+      throw new Error('expected rejection at (root)');
+    } catch (e) {
+      expect(e).toBeInstanceOf(ResearchError);
+      const err = e as ResearchError;
+      expect(err.code).toBe('INVALID_FILTERS');
+      expect(err.details!.some((d) => d.path === '(root)')).toBe(true);
+      expect(err.message).toContain('volume');
+    }
     fails({ schemaVersion: 2 }, 'schemaVersion');
     fails({ cursor: 'abc'.repeat(10), pageSize: 10 }, 'cursor');
   });
 
-  it('rejects malformed ranges: empty, two lower bounds, inverted, no legal integer, non-integers, unsafe, negative where forbidden', () => {
-    fails({ ...base, filters: { rank: {} } }, 'rank');
-    fails({ ...base, filters: { rank: { gt: 1, gte: 2 } } }, 'rank');
-    fails({ ...base, filters: { rank: { gte: 10, lte: 5 } } }, 'rank');
-    fails({ ...base, filters: { rank: { gt: 5, lt: 6 } } }, 'rank');
-    fails({ ...base, filters: { averageReviews: { lt: 1.5 } } }, 'averageReviews');
-    fails({ ...base, filters: { averageReviews: { lt: '500' } } }, 'averageReviews');
-    fails({ ...base, filters: { estimatedMonthlySearches: { gte: Number.MAX_SAFE_INTEGER + 2 } } }, 'estimatedMonthlySearches');
-    fails({ ...base, filters: { rank: { gte: 0 } } }, 'rank');
-    fails({ ...base, filters: { averageReviews: { gte: -1 } } }, 'averageReviews');
+  it('rejects malformed ranges: empty, two lower bounds, inverted, non-integers, unsafe, below the domain floor, and empty because of the domain floor', () => {
+    fails({ ...base, filters: { rank: {} } }, 'filters.rank');
+    fails({ ...base, filters: { rank: { gt: 1, gte: 2 } } }, 'filters.rank');
+    fails({ ...base, filters: { rank: { gte: 10, lte: 5 } } }, 'filters.rank');
+    fails({ ...base, filters: { rank: { gt: 5, lt: 6 } } }, 'filters.rank');
+    fails({ ...base, filters: { averageReviews: { lt: 1.5 } } }, 'filters.averageReviews.lt');
+    fails({ ...base, filters: { averageReviews: { lt: '500' } } }, 'filters.averageReviews.lt');
+    fails({ ...base, filters: { estimatedMonthlySearches: { gte: Number.MAX_SAFE_INTEGER + 2 } } }, 'filters.estimatedMonthlySearches.gte');
+    fails({ ...base, filters: { rank: { gte: 0 } } }, 'filters.rank.gte');
+    fails({ ...base, filters: { averageReviews: { gte: -1 } } }, 'filters.averageReviews.gte');
+    // Empty at the domain floor: no explicit lower bound is given, but the domain floor
+    // seeds one implicitly, and that leaves no room below the given upper bound.
+    fails({ ...base, filters: { rank: { lt: 1 } } }, 'filters.rank');
+    fails({ ...base, filters: { wordCount: { lt: 1 } } }, 'filters.wordCount');
+    fails({ ...base, filters: { averageReviews: { lt: 0 } } }, 'filters.averageReviews');
+    fails({ ...base, filters: { estimatedMonthlySearches: { lt: 0 } } }, 'filters.estimatedMonthlySearches');
   });
 
-  it('accepts zero for reviews and searches, and a negative delta', () => {
-    const out = parseSearchInput({ ...base, filters: { averageReviews: { lte: 0 }, movement: { window: '4w', metric: 'volume', delta: { lt: -100 } } } });
+  it('accepts zero for reviews and searches, an at-the-floor lte, and a negative delta', () => {
+    const out = parseSearchInput({
+      ...base,
+      filters: { averageReviews: { lte: 0 }, movement: { window: '4w', metric: 'volume', delta: { lt: -100 } } },
+    });
     expect(out.kind).toBe('new');
+    expect(parseSearchInput({ ...base, filters: { rank: { lte: 1 } } }).kind).toBe('new');
   });
 
   it('rejects short text, an explicit empty severities array, duplicate slots, and a rank-metric delta', () => {
-    fails({ ...base, filters: { text: { value: 'ab' } } }, 'text');
-    fails({ ...base, filters: { severities: [] } }, 'severities');
-    fails({ ...base, filters: { titleGap: { slots: [1, 1] } } }, 'titleGap');
-    fails({ ...base, filters: { movement: { window: '4w', metric: 'rank', delta: { gt: 0 } } } }, 'movement');
-    fails({ ...base, filters: { movement: { window: '4w', metric: 'volume' } } }, 'movement');
+    fails({ ...base, filters: { text: { value: 'ab' } } }, 'filters.text.value');
+    fails({ ...base, filters: { severities: [] } }, 'filters.severities');
+    fails({ ...base, filters: { titleGap: { slots: [1, 1] } } }, 'filters.titleGap.slots');
+    fails({ ...base, filters: { movement: { window: '4w', metric: 'rank', delta: { gt: 0 } } } }, 'filters.movement.delta');
+    fails({ ...base, filters: { movement: { window: '4w', metric: 'volume' } } }, 'filters.movement');
+  });
+
+  it('names the allowed values when a titleGap slot is out of range', () => {
+    try {
+      parseSearchInput({ ...base, filters: { titleGap: { slots: [4] } } });
+      throw new Error('expected rejection');
+    } catch (e) {
+      const err = e as ResearchError;
+      expect(err.details).toEqual([{ path: 'filters.titleGap.slots.0', message: 'Invalid option: expected one of 1|2|3' }]);
+    }
   });
 
   it('rejects the include_not_observed rank shape without a prior lower bound and a current upper bound', () => {
-    fails({ ...base, filters: { movement: { window: '4w', metric: 'rank', baseline: 'include_not_observed', current: { lt: 100 } } } }, 'movement');
-    const ok = parseSearchInput({ ...base, filters: { movement: { window: '4w', metric: 'rank', baseline: 'include_not_observed', prior: { gt: 100000 }, current: { lt: 10000 } } } });
+    fails(
+      { ...base, filters: { movement: { window: '4w', metric: 'rank', baseline: 'include_not_observed', current: { lt: 100 } } } },
+      'filters.movement.baseline',
+    );
+    const ok = parseSearchInput({
+      ...base,
+      filters: { movement: { window: '4w', metric: 'rank', baseline: 'include_not_observed', prior: { gt: 100000 }, current: { lt: 10000 } } },
+    });
     expect(ok.kind).toBe('new');
   });
 
-  it('rejects a comparisonWindow that disagrees with movement.window, and firstSeenWeek sorts', () => {
-    fails({ ...base, comparisonWindow: '13w', filters: { movement: { window: '4w', metric: 'volume', delta: { gt: 0 } } } }, 'comparisonWindow');
-    fails({ ...base, sort: { field: 'firstSeenWeek', direction: 'asc' } }, 'sort');
+  it('keeps movement prior/current inside the metric domain (volume >= 0, rank >= 1); delta may still be negative', () => {
+    fails({ ...base, filters: { movement: { window: '4w', metric: 'volume', prior: { gte: -5 } } } }, 'filters.movement.prior');
+    fails({ ...base, filters: { movement: { window: '4w', metric: 'rank', current: { lte: 0 } } } }, 'filters.movement.current');
+    // No bound is itself below the floor (1), but with no explicit lower bound the floor
+    // is the implied one, and { lt: 1 } leaves no integer above it.
+    fails({ ...base, filters: { movement: { window: '4w', metric: 'rank', current: { lt: 1 } } } }, 'filters.movement.current');
+    const out = parseSearchInput({ ...base, filters: { movement: { window: '4w', metric: 'volume', delta: { lt: -100 } } } });
+    expect(out.kind).toBe('new');
+    const okVolume = parseSearchInput({
+      ...base,
+      filters: { movement: { window: '4w', metric: 'volume', baseline: 'include_not_observed', prior: { lt: 5000 } } },
+    });
+    expect(okVolume.kind).toBe('new');
   });
 
-  it('caps pageSize at 100 and selections at 25', () => {
+  it('rejects a comparisonWindow that disagrees with movement.window, accepts an explicit null, and firstSeenWeek sorts', () => {
+    fails({ ...base, comparisonWindow: '13w', filters: { movement: { window: '4w', metric: 'volume', delta: { gt: 0 } } } }, 'comparisonWindow');
+    fails({ ...base, sort: { field: 'firstSeenWeek', direction: 'asc' } }, 'sort.field');
+    const out = parseSearchInput({ ...base, comparisonWindow: null });
+    expect(out.kind).toBe('new');
+    if (out.kind === 'new') expect(out.request.comparisonWindow).toBeNull();
+    expectTypeOf<SearchRequest['comparisonWindow']>().toEqualTypeOf<Window | null>();
+  });
+
+  it('caps pageSize at 100, selections at 25, and presetIds at 4 distinct entries', () => {
     fails({ ...base, pageSize: 101 }, 'pageSize');
     const sel = Array.from({ length: 26 }, (_, i) => ({ kind: 'taxonomy', path: `P${i}`, includeDescendants: true }));
-    fails({ ...base, filters: { categories: { selections: sel } } }, 'selections');
+    fails({ ...base, filters: { categories: { selections: sel } } }, 'filters.categories.selections');
+    fails({ ...base, presetIds: ['high_demand_v1', 'high_demand_v1'] }, 'presetIds');
+    fails(
+      { ...base, presetIds: ['high_demand_v1', 'low_review_competition_v1', 'growing_4w_v1', 'title_gap_loose_any_v1', 'high_demand_v1'] },
+      'presetIds',
+    );
   });
 
   it('returns a continuation for a bare cursor', () => {
     expect(parseSearchInput({ cursor: 'x'.repeat(40) })).toEqual({ kind: 'continuation', cursor: 'x'.repeat(40) });
+  });
+
+  it('treats an unparseable cursor as INVALID_CURSOR (not INVALID_FILTERS), but a present-and-undefined cursor as a new search', () => {
+    for (const bad of ['short', 123]) {
+      try {
+        parseSearchInput({ cursor: bad });
+        throw new Error(`expected rejection for cursor ${JSON.stringify(bad)}`);
+      } catch (e) {
+        expect(e).toBeInstanceOf(ResearchError);
+        const err = e as ResearchError;
+        expect(err.code).toBe('INVALID_CURSOR');
+        expect(err.details).toEqual([{ path: 'cursor', message: expect.any(String) }]);
+      }
+    }
+    const out = parseSearchInput({ cursor: undefined, schemaVersion: 1 });
+    expect(out.kind).toBe('new');
+  });
+
+  it('normalizes a fully populated request to the documented defaults', () => {
+    const out = parseSearchInput({
+      schemaVersion: 1,
+      filters: {
+        text: { value: 'hair oil' },
+        titleGap: { slots: [2] },
+        categories: { selections: [{ kind: 'taxonomy', path: 'A' }] },
+        movement: { window: '4w', metric: 'volume', delta: { gt: 0 } },
+      },
+    });
+    expect(out).toStrictEqual({
+      kind: 'new',
+      request: {
+        schemaVersion: 1,
+        presetIds: [],
+        filters: {
+          text: { value: 'hair oil', mode: 'word' },
+          estimatedMonthlySearches: null,
+          averageReviews: null,
+          rank: null,
+          wordCount: null,
+          categories: { selections: [{ kind: 'taxonomy', path: 'A', includeDescendants: true }], leafPaths: [] },
+          broadCategory: null,
+          severities: ['none', 'warning'],
+          titleGap: { slots: [2], quantifier: 'any', mode: 'loose' },
+          movement: { window: '4w', metric: 'volume', prior: null, current: null, delta: { gt: 0 }, baseline: 'observed_only' },
+        },
+        sort: { field: 'estimatedMonthlySearches', direction: 'desc' },
+        comparisonWindow: null,
+        pageSize: 50,
+      },
+    });
+  });
+
+  it('pins a handful of edge cases', () => {
+    expect(emptyInputSchema.safeParse({ x: 1 }).success).toBe(false);
+    expect(searchToolInputSchema.safeParse({ schemaVersion: 1, filters: {} }).success).toBe(true);
+    expect(searchToolInputSchema.safeParse({ cursor: 'short' }).success).toBe(false);
+    fails({ ...base, filters: { categories: { leafPaths: Array.from({ length: 2001 }, (_, i) => `p${i}`) } } }, 'filters.categories.leafPaths');
+    fails({ ...base, filters: { categories: { leafPaths: ['x'.repeat(257)] } } }, 'filters.categories.leafPaths.0');
+    fails({ ...base, filters: { rank: { gte: NaN } } }, 'filters.rank.gte');
+    fails({ ...base, filters: { rank: { lt: Infinity } } }, 'filters.rank.lt');
+    for (const bad of [null, 'x']) {
+      try {
+        parseSearchInput(bad);
+        throw new Error('expected rejection at (root)');
+      } catch (e) {
+        expect(e).toBeInstanceOf(ResearchError);
+        const err = e as ResearchError;
+        expect(err.code).toBe('INVALID_FILTERS');
+        expect(err.details!.some((d) => d.path === '(root)')).toBe(true);
+      }
+    }
   });
 });
 

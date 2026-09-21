@@ -11,7 +11,27 @@ export type Severity = (typeof SEVERITIES)[number];
 export const PRESET_IDS = ['high_demand_v1', 'low_review_competition_v1', 'growing_4w_v1', 'title_gap_loose_any_v1'] as const;
 export type PresetId = (typeof PRESET_IDS)[number];
 
-const safeInt = z.int().min(Number.MIN_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER);
+const safeInt = z.int();
+
+/**
+ * Bound-count and floor-vs-implied-range issues for one gt/gte/lt/lte range, given a
+ * domain floor (or null for none). `floor` seeds the implicit lower bound when neither
+ * gt nor gte is given, so e.g. `{ lt: 1 }` against floor 1 is recognized as empty.
+ * Shared by integerRange (its own field-level floor) and movementSchema's superRefine
+ * (the metric-scoped floor for prior/current, which anyRange can't know statically).
+ */
+function rangeFloorIssues(range: { gt?: number; gte?: number; lt?: number; lte?: number }, floor: number | null): string[] {
+  const issues: string[] = [];
+  const lowers = [range.gt, range.gte].filter((v) => v !== undefined).length;
+  const uppers = [range.lt, range.lte].filter((v) => v !== undefined).length;
+  if (lowers + uppers === 0) issues.push('a range needs at least one bound (gt, gte, lt, lte); use null for no range');
+  if (lowers > 1) issues.push('use only one of gt / gte');
+  if (uppers > 1) issues.push('use only one of lt / lte');
+  const lo = range.gte !== undefined ? range.gte : range.gt !== undefined ? range.gt + 1 : floor;
+  const hi = range.lte !== undefined ? range.lte : range.lt !== undefined ? range.lt - 1 : null;
+  if (lo !== null && hi !== null && lo > hi) issues.push('the range contains no integer');
+  return issues;
+}
 
 /** gt/gte/lt/lte with at least one bound, at most one per side, and at least one legal integer inside. */
 function integerRange(min: number | null) {
@@ -19,20 +39,13 @@ function integerRange(min: number | null) {
   return z
     .strictObject({ gt: bound.optional(), gte: bound.optional(), lt: bound.optional(), lte: bound.optional() })
     .superRefine((r, ctx) => {
-      const lowers = [r.gt, r.gte].filter((v) => v !== undefined).length;
-      const uppers = [r.lt, r.lte].filter((v) => v !== undefined).length;
-      if (lowers + uppers === 0) ctx.addIssue({ code: 'custom', message: 'a range needs at least one bound (gt, gte, lt, lte); use null for no range' });
-      if (lowers > 1) ctx.addIssue({ code: 'custom', message: 'use only one of gt / gte' });
-      if (uppers > 1) ctx.addIssue({ code: 'custom', message: 'use only one of lt / lte' });
-      const lo = r.gte !== undefined ? r.gte : r.gt !== undefined ? r.gt + 1 : null;
-      const hi = r.lte !== undefined ? r.lte : r.lt !== undefined ? r.lt - 1 : null;
-      if (lo !== null && hi !== null && lo > hi) ctx.addIssue({ code: 'custom', message: 'the range contains no integer' });
+      for (const message of rangeFloorIssues(r, min)) ctx.addIssue({ code: 'custom', message });
     });
 }
-export type IntegerRange = { gt?: number; gte?: number; lt?: number; lte?: number };
 export const nonNegativeRange = integerRange(0);
 export const positiveRange = integerRange(1);
 export const anyRange = integerRange(null);
+export type IntegerRange = z.infer<typeof anyRange>;
 
 export const textFilterSchema = z.strictObject({
   value: z.string().trim().min(3, 'text needs at least 3 characters').max(200),
@@ -50,7 +63,7 @@ export const categoriesSchema = z.strictObject({
 });
 export const titleGapSchema = z
   .strictObject({
-    slots: z.array(z.union([z.literal(1), z.literal(2), z.literal(3)])).min(1).max(3),
+    slots: z.array(z.literal([1, 2, 3])).min(1).max(3),
     quantifier: z.enum(['any', 'all']).default('any'),
     mode: z.enum(['loose', 'strict']).default('loose'),
   })
@@ -75,6 +88,19 @@ export const movementSchema = z
         ctx.addIssue({ code: 'custom', message: 'include_not_observed with metric=rank needs a prior lower bound, no prior upper bound, and a current upper bound', path: ['baseline'] });
       }
     }
+    // Domain floor (parent design §8.1): volume ranges are >= 0, rank ranges are >= 1;
+    // only delta may be negative. anyRange can't enforce this statically since the floor
+    // depends on the sibling `metric` field, so it's re-checked here per bound and via
+    // the same floor-aware emptiness rule integerRange uses.
+    const floor = m.metric === 'volume' ? 0 : 1;
+    const checkDomain = (key: 'prior' | 'current', range: typeof m.prior) => {
+      if (!range) return;
+      const outOfDomain = [range.gt, range.gte, range.lt, range.lte].some((b) => b !== undefined && b < floor);
+      if (outOfDomain) ctx.addIssue({ code: 'custom', message: `${key} bounds must be >= ${floor} for metric=${m.metric}`, path: [key] });
+      for (const message of rangeFloorIssues(range, floor)) ctx.addIssue({ code: 'custom', message, path: [key] });
+    };
+    checkDomain('prior', m.prior);
+    checkDomain('current', m.current);
   });
 
 export const filtersSchema = z.strictObject({
@@ -83,7 +109,7 @@ export const filtersSchema = z.strictObject({
   averageReviews: nonNegativeRange.nullable().default(null),
   rank: positiveRange.nullable().default(null),
   wordCount: positiveRange.nullable().default(null),
-  categories: categoriesSchema.default({ selections: [], leafPaths: [] }),
+  categories: categoriesSchema.prefault({}),
   broadCategory: z.string().trim().min(1).max(255).nullable().default(null),
   severities: z
     .array(z.enum(SEVERITIES)).min(1, 'severities cannot be empty; omit it for the default').max(3)
@@ -100,10 +126,14 @@ export type Sort = z.infer<typeof sortSchema>;
 export const searchRequestSchema = z
   .strictObject({
     schemaVersion: z.literal(SCHEMA_VERSION),
-    presetIds: z.array(z.enum(PRESET_IDS)).max(4).default([]),
+    presetIds: z
+      .array(z.enum(PRESET_IDS))
+      .max(4)
+      .refine((p) => new Set(p).size === p.length, 'presetIds must be distinct')
+      .default([]),
     filters: filtersSchema.prefault({}),
     sort: sortSchema.default({ field: 'estimatedMonthlySearches', direction: 'desc' }),
-    comparisonWindow: z.enum(WINDOWS).optional(),
+    comparisonWindow: z.enum(WINDOWS).nullable().default(null),
     pageSize: z.int().min(1).max(100).default(50),
   })
   .superRefine((r, ctx) => {
@@ -119,25 +149,34 @@ export type ParsedSearchInput = { kind: 'continuation'; cursor: string } | { kin
 
 export function parseSearchInput(raw: unknown): ParsedSearchInput {
   const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-  if (typeof obj.cursor === 'string') {
+  const hasCursorKey = Object.prototype.hasOwnProperty.call(obj, 'cursor');
+  if (hasCursorKey && obj.cursor !== undefined) {
     const extra = Object.keys(obj).filter((k) => k !== 'cursor');
     if (extra.length > 0) {
       throw new ResearchError('INVALID_FILTERS', 'A continuation carries only the cursor; a filter or sort change starts a new search.', {
         details: [{ path: 'cursor', message: `unexpected keys with cursor: ${extra.join(', ')}` }],
       });
     }
-    const c = z.string().min(16).max(8192).safeParse(obj.cursor);
-    if (!c.success) throw invalid(c.error);
-    return { kind: 'continuation', cursor: c.data };
+    const c = z.strictObject({ cursor: z.string().min(16).max(8192) }).safeParse({ cursor: obj.cursor });
+    if (!c.success) {
+      const details = c.error.issues.map((i) => ({ path: i.path.map(String).join('.') || '(root)', message: i.message }));
+      throw new ResearchError('INVALID_CURSOR', 'The cursor is not valid. Start a new search.', { details });
+    }
+    return { kind: 'continuation', cursor: c.data.cursor };
   }
-  const parsed = searchRequestSchema.safeParse(raw);
+  // A `cursor` key present with an undefined value (e.g. `{ cursor: undefined, ... }`)
+  // isn't a continuation attempt; strip it so it doesn't trip the strict-object
+  // unrecognized-key check below (an own key survives even when its value is undefined).
+  const searchInput = hasCursorKey ? Object.fromEntries(Object.entries(obj).filter(([k]) => k !== 'cursor')) : raw;
+  const parsed = searchRequestSchema.safeParse(searchInput);
   if (!parsed.success) throw invalid(parsed.error);
   return { kind: 'new', request: parsed.data };
 }
 
 export function invalid(error: z.ZodError): ResearchError {
   const details = error.issues.map((i) => ({ path: i.path.map(String).join('.') || '(root)', message: i.message }));
-  return new ResearchError('INVALID_FILTERS', `Invalid input: ${details.map((d) => `${d.path}: ${d.message}`).join('; ')}`, { details });
+  const rendered = details.map((d) => (d.path === '(root)' ? d.message : `${d.path}: ${d.message}`));
+  return new ResearchError('INVALID_FILTERS', `Invalid input: ${rendered.join('; ')}`, { details });
 }
 
 export const resolveCategoriesInputSchema = z
