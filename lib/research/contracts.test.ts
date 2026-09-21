@@ -6,6 +6,12 @@ import {
   keywordDetailsInputSchema,
   searchToolInputSchema,
   emptyInputSchema,
+  textFilterSchema,
+  anyRange,
+  titleGapSchema,
+  movementSchema,
+  categoriesSchema,
+  filtersSchema,
   type SearchRequest,
   type Window,
 } from './contracts';
@@ -324,6 +330,35 @@ describe('parseSearchInput', () => {
         expect(err.details!.some((d) => d.path === '(root)')).toBe(true);
       }
     }
+  });
+});
+
+describe('searchToolInputSchema (the published MCP tool input)', () => {
+  it('accepts every documented field, at the wire level, as optional', () => {
+    expect(searchToolInputSchema.safeParse({}).success).toBe(true);
+    expect(searchToolInputSchema.safeParse({ schemaVersion: 1, filters: {} }).success).toBe(true);
+    expect(searchToolInputSchema.safeParse({ cursor: 'x'.repeat(40) }).success).toBe(true);
+  });
+
+  it('rejects a short cursor and a hallucinated top-level key (SDK pre-validation, ahead of parseSearchInput)', () => {
+    expect(searchToolInputSchema.safeParse({ cursor: 'short' }).success).toBe(false);
+    expect(searchToolInputSchema.safeParse({ schemaVersion: 1, page_size: 5 }).success).toBe(false);
+  });
+
+  it('parses a bare cursor to exactly { cursor }, with no defaulted sibling injected', () => {
+    // The whole point of unwrapping every ZodDefault/ZodPrefault before .optional(): the SDK
+    // hands parseSearchInput its own PARSED output, so a defaulted sibling here would turn a
+    // bare `{ cursor }` continuation into "unexpected keys with cursor".
+    expect(searchToolInputSchema.parse({ cursor: 'x'.repeat(40) })).toEqual({ cursor: 'x'.repeat(40) });
+  });
+
+  it('carries the field-level descriptions the published JSON schema depends on', () => {
+    expect(textFilterSchema.description).toContain('whole-word');
+    expect(anyRange.description).toContain('Exact comparators');
+    expect(titleGapSchema.description).toContain('top clicked products');
+    expect(movementSchema.description).toContain('metric=volume');
+    expect(categoriesSchema.description).toContain('resolve_categories');
+    expect(filtersSchema.shape.severities.description).toContain("'critical'");
   });
 });
 

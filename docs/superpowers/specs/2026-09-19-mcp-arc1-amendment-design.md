@@ -165,6 +165,10 @@ broad path uses) plus the statement timeout, not by leases.
 401/403/503 (plus `reason: disconnected`). All are MCP tool errors
 (`isError: true` with a structured `{ code, message, retryable,
 retryAfterSeconds?, details? }`), never a 200 with prose only.
+[Implementation note 2026-09-21: the MCP SDK validates tool arguments against the published
+input schema before the tool runs and answers schema violations as an MCP tool error with a
+prose message ("Input validation error: …"); every error raised by KeywordQuarry itself is the
+JSON { error: { code, … } } shape.]
 
 ### 3.8 Migrations (parent §17)
 

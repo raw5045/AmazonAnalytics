@@ -157,7 +157,7 @@ describe('/api/mcp', () => {
     expect((await res.json()).reason).toBe('no_account');
   });
 
-  it('lets an admin connect, lists exactly one read-only tool, and answers whoami with structured output', async () => {
+  it('lets an admin connect, lists the six read-only tools, and answers whoami with structured output', async () => {
     const client = await connect();
     try {
       expect(client.getServerVersion()?.name).toBe('keywordquarry');

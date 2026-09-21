@@ -38,7 +38,14 @@ const PROTECTED_RESOURCE_METADATA_PREFIX = '/.well-known/oauth-protected-resourc
 const mcp = createMcpHandler(
   (server) => {
     registerWhoami(server);
-    registerResearchTools(server, defaultResearchService());
+    try {
+      registerResearchTools(server, defaultResearchService());
+    } catch (e) {
+      // A research-deps failure (e.g. the pool cannot be constructed) must not take the whole
+      // connection down: whoami stays registered and keeps serving as a diagnostic even when
+      // the five research tools cannot be.
+      console.error('[mcp]', JSON.stringify({ outcome: 'research_tools_unavailable', error: e instanceof Error ? e.message : String(e) }));
+    }
   },
   {
     serverInfo: MCP_SERVER_INFO,

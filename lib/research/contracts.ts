@@ -62,7 +62,8 @@ function integerRange(min: number | null, max?: number) {
       if (uppers > 1) ctx.addIssue({ code: 'custom', message: 'use only one of lt / lte' });
       const empty = emptyRangeIssue(r, min, max ?? null);
       if (empty) ctx.addIssue({ code: 'custom', message: empty });
-    });
+    })
+    .describe('Exact comparators: gt 10000 excludes 10000; one lower and/or one upper bound; a bound excludes null rows.');
 }
 export const nonNegativeRange = integerRange(0);
 export const anyRange = integerRange(null);
@@ -81,27 +82,32 @@ export type IntegerRange = z.infer<typeof anyRange>;
 const INT4_MAX = 2_147_483_647;
 const SMALLINT_MAX = 32_767;
 
-export const textFilterSchema = z.strictObject({
-  value: z.string().trim().min(3, 'text needs at least 3 characters').max(200),
-  mode: z.enum(['word', 'broad']).default('word'),
-});
+export const textFilterSchema = z
+  .strictObject({
+    value: z.string().trim().min(3, 'text needs at least 3 characters').max(200),
+    mode: z.enum(['word', 'broad']).default('word'),
+  })
+  .describe('mode word = whole-word match (default), broad = substring');
 export const taxonomySelectionSchema = z.strictObject({
   kind: z.literal('taxonomy'),
   path: z.string().trim().min(1).max(256),
   includeDescendants: z.boolean().default(true),
 });
 export const customSelectionSchema = z.strictObject({ kind: z.literal('custom'), id: z.uuid() });
-export const categoriesSchema = z.strictObject({
-  selections: z.array(z.discriminatedUnion('kind', [taxonomySelectionSchema, customSelectionSchema])).max(25).default([]),
-  leafPaths: z.array(z.string().trim().min(1).max(256)).max(2000).default([]),
-});
+export const categoriesSchema = z
+  .strictObject({
+    selections: z.array(z.discriminatedUnion('kind', [taxonomySelectionSchema, customSelectionSchema])).max(25).default([]),
+    leafPaths: z.array(z.string().trim().min(1).max(256)).max(2000).default([]),
+  })
+  .describe('selections from resolve_categories (several = OR); leafPaths = exact terminal paths');
 export const titleGapSchema = z
   .strictObject({
     slots: z.array(z.literal([1, 2, 3])).min(1).max(3),
     quantifier: z.enum(['any', 'all']).default('any'),
     mode: z.enum(['loose', 'strict']).default('loose'),
   })
-  .refine((t) => new Set(t.slots).size === t.slots.length, { message: 'slots must be distinct', path: ['slots'] });
+  .refine((t) => new Set(t.slots).size === t.slots.length, { message: 'slots must be distinct', path: ['slots'] })
+  .describe('slots 1..3 = top clicked products; quantifier any|all; mode loose|strict');
 export const movementSchema = z
   .strictObject({
     window: z.enum(WINDOWS),
@@ -161,7 +167,8 @@ export const movementSchema = z
     };
     checkDomain('prior', m.prior);
     checkDomain('current', m.current);
-  });
+  })
+  .describe('delta only for metric=volume; at least one of prior/current/delta; include_not_observed counts a missing prior as zero volume');
 
 export const filtersSchema = z.strictObject({
   text: textFilterSchema.nullable().default(null),
@@ -174,7 +181,8 @@ export const filtersSchema = z.strictObject({
   severities: z
     .array(z.enum(SEVERITIES)).min(1, 'severities cannot be empty; omit it for the default').max(3)
     .refine((s) => new Set(s).size === s.length, 'severities must be distinct')
-    .default(['none', 'warning']),
+    .default(['none', 'warning'])
+    .describe("default ['none','warning']; add 'critical' to include flagged keywords"),
   titleGap: titleGapSchema.nullable().default(null),
   movement: movementSchema.nullable().default(null),
 });
@@ -215,8 +223,45 @@ export type SearchRequest = z.infer<typeof searchRequestSchema>;
 /** Max length of an encoded cursor token (`body.mac`, both base64url) — also cursor.ts's own ceiling for signCursor/verifyCursor. */
 export const MAX_CURSOR_LENGTH = 8192;
 
-/** The MCP tool input: a bare `{ cursor }` continuation or a new search (declared loose; parseSearchInput enforces the rest). */
-export const searchToolInputSchema = z.looseObject({ cursor: z.string().min(16).max(MAX_CURSOR_LENGTH).optional() });
+/**
+ * True for a `.default(v)`/`.prefault(v)`-wrapped schema — `ZodDefault`/`ZodPrefault` are
+ * unwrapped to the plain inner schema before `.optional()`, so the published tool schema never
+ * carries a wire-level default (searchToolInputSchema below: the SDK hands the tool callback its
+ * own PARSED output, so a defaulted sibling field would turn a bare `{ cursor }` continuation
+ * into `parseSearchInput`'s "unexpected keys with cursor" rejection once the SDK fills it in).
+ */
+const optionalWithoutDefault = (s: z.ZodType) =>
+  (s instanceof z.ZodDefault || s instanceof z.ZodPrefault ? (s.unwrap() as z.ZodType) : s).optional();
+const shape = searchRequestSchema.shape;
+/**
+ * The MCP tool's published input: every `SearchRequest` field, individually optional and never
+ * defaulted at this top level (see `optionalWithoutDefault` above), so `tools/list` advertises
+ * the real shape — field names, types, per-field descriptions — instead of a bare `{ cursor }`
+ * with `additionalProperties: {}`, and the SDK rejects an unrecognized/hallucinated key before
+ * the tool ever runs. `parseSearchInput` below does its own independent strict validation
+ * (cursor-only continuation vs. `searchRequestSchema`) regardless of what this schema already
+ * checked; it does not read from this schema at all.
+ */
+export const searchToolInputSchema = z.strictObject({
+  cursor: z
+    .string()
+    .min(16)
+    .max(MAX_CURSOR_LENGTH)
+    .optional()
+    .describe(
+      "Continuation token from the previous page's pagination.nextCursor. Send it ALONE; any other key with it is rejected. Expires after 15 minutes or at the weekly refresh (SEARCH_EXPIRED: start a new search).",
+    ),
+  schemaVersion: shape.schemaVersion.optional().describe('Required for a new search; always 1.'),
+  presetIds: optionalWithoutDefault(shape.presetIds).describe(
+    'Catalog presets (get_research_guide lists exact thresholds). An explicit filter on the same field replaces the preset value.',
+  ),
+  filters: optionalWithoutDefault(shape.filters),
+  sort: shape.sort.describe('Default estimatedMonthlySearches desc. volumeDelta sorts by change over comparisonWindow.'),
+  comparisonWindow: optionalWithoutDefault(shape.comparisonWindow).describe(
+    'Lookback for movement columns; must equal filters.movement.window when both are given; default 4w.',
+  ),
+  pageSize: optionalWithoutDefault(shape.pageSize).describe('1-100, default 50.'),
+});
 export type ParsedSearchInput = { kind: 'continuation'; cursor: string } | { kind: 'new'; request: SearchRequest };
 
 export function parseSearchInput(raw: unknown): ParsedSearchInput {
