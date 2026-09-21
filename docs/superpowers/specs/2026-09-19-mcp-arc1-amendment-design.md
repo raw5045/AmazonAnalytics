@@ -105,7 +105,7 @@ only if measurements say so.
 - Sorts: `estimatedMonthlySearches`, `rank`, `averageReviews`,
   `wordCount`, `volumeDelta`. **`firstSeenWeek` is dropped** (it lives on
   `search_terms` with no index; an unbounded sort would be a 140 M-row
-  hazard). `NULLS LAST` everywhere the key is nullable.
+  hazard). `NULLS LAST` everywhere the key is nullable. [Implementation note 2026-09-21: production probes showed `DESC NULLS LAST` cannot use the ASC `kcs_avg_reviews_idx` (17.9 s seq scan), so sorting by `averageReviews` or `wordCount` now EXCLUDES rows with a null key (`IS NOT NULL` in the WHERE, plain `ASC`/`DESC`); the guide states that nulls are never ranked.]
 - Every search response carries `provenance` from
   `keyword_current_summary_meta` read in the same transaction.
 
@@ -331,8 +331,8 @@ Bucket check = one statement at request start: `INSERT … ON CONFLICT DO
 UPDATE SET requests = requests + 1, rows = rows + $pageSize RETURNING
 requests, rows` (rows are reserved at the requested page size, so a
 burst cannot overshoot); over either limit → `RATE_LIMITED` with
-`retryAfterSeconds` to the next minute. Buckets older than one day are deleted by the existing hourly
-maintenance cron. Daily totals go to `user_activity_daily`.
+`retryAfterSeconds` to the next minute. Buckets older than one day are deleted by the hourly
+cleanup cron (Task 19; tolerant of the table not existing yet). Daily totals go to `user_activity_daily`.
 
 ## 7. Configuration (all optional; `lib/env.ts` strings, interpreted in code)
 
@@ -390,7 +390,8 @@ or marketplace submission, ChatGPT deep-research adapter.
 | Step | Outcome |
 |---|---|
 | Owner review of this amendment | approved 2026-09-21 (live pages) |
-| Implementation plan | `docs/superpowers/plans/2026-09-21-mcp-arc1.md` |
+| Implementation plan | `docs/superpowers/plans/2026-09-21-mcp-arc1.md` — executed 2026-09-21 by subagent-driven development (Tasks 1–21 landed on local `main` after `8428fd4`; every task spec-reviewed and code-reviewed to APPROVED; Task 22 ship checklist pending the owner) |
+| Query probes | 2026-09-21 (read-only EXPLAIN ANALYZE on production, REPEATABLE READ READ ONLY, 60 s cap; cold run then warm run; rows / count ms): acceptance (lighting 27,515 leaves via IN-list, >10k searches, <500 reviews, volume desc) = 4458/69 cold, 520/87 warm, plans Bitmap Index Scan kcs_leaf_path_idx + sort; same at offset 950 = 80/63, 71/69; no-category reviews asc >10k = 691/1596, 216/318, Index Scan kcs_avg_reviews_idx (count: Bitmap kcs_est_vol_idx); growing 4w preset = 202/25340 cold, 65/40 warm, rows Index Scan Backward kcs_vol_delta_4w_idx, COUNT Seq Scan (cold 25 s → cancelled at the 3 s count cap = `unknown`; FIXED by ordering the count subquery on the delta expression so it walks the partial index); text word match + reviews bound = 2766/51, 145/50, Bitmap kcs_norm_trgm_b_idx; title gap any loose, lighting = 1615/676, 109/154, kcs_rank_idx walk + leaf bitmap; volume asc (worst first, min 424) = 8462/207, 338/39, Parallel Index Scan Backward kcs_rank_idx (SFR tie group, accepted); volume movement observed_only prior-volume bound = 135/397, 36/42, kcs_rank_idx (planner preferred the rank walk over kcs_est_vol_4w_idx — fine); averageReviews desc, whole population = 17888/30 cold, 2476/35 warm, Parallel Seq Scan + top-N (DESC NULLS LAST cannot use the ASC index → FIXED: sorting by a nullable key now excludes null keys and emits plain ASC/DESC so the index serves both directions; re-probe after 0e2f28f: 230 ms via Index Scan Backward kcs_avg_reviews_idx; low_review preset + reviews desc 879/480 via the same index / kcs_cat_cover_idx); growing 4w COUNT re-probe: 2818 ms via Index Scan Backward kcs_vol_delta_4w_idx (down from 25 s; still close to the 3 s count cap, so a cold growth-preset total may report `unknown` — honest by design); wordCount desc over the whole population = 24413 ms rows (Parallel Seq Scan: `word_count` has no index) → over the 10 s deadline → QUERY_TIMEOUT unless combined with a text/category/range filter — documented in the guide rather than adding DDL for the beta. No category-scoped shape seq-scanned kcs. |
 | Migration 0047 | pending owner confirmation |
 | Fluidity checklist (§8.2) | pending |
 | Audience flip | pending |
