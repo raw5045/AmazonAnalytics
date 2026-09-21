@@ -3,7 +3,7 @@ import { withReadOnlyTx, type TxClient } from '@/lib/db/tcpPool';
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
 import { escapeLike } from '@/lib/explorer/matchPattern';
 import type { CategoryCandidate, Filters, ResolvedScope } from './contracts';
-import { ResearchError } from './errors';
+import { ResearchError, dataUnavailableError, queryTimeoutError } from './errors';
 import { researchLimits } from './limits';
 import { getResearchPool } from './pool';
 
@@ -268,7 +268,11 @@ export type CategoryTxRunner = <T>(fn: (tx: TxClient) => Promise<T>) => Promise<
 const defaultRunner: CategoryTxRunner = (fn) => withReadOnlyTx(getResearchPool(), researchLimits().categorySqlTimeoutMs, fn);
 
 function timeoutError(): ResearchError {
-  return new ResearchError('QUERY_TIMEOUT', 'Category lookup timed out; try again.', { retryable: true, retryAfterSeconds: 5 });
+  // Shared factory (lib/research/errors.ts, Task 10 review): keeps this module's own hint
+  // text and its 5-second retry cadence (shorter than the generic default — a category
+  // lookup is cheap to retry) while still building the same QUERY_TIMEOUT shape search.ts
+  // and cursor.ts use.
+  return queryTimeoutError(researchLimits().categorySqlTimeoutMs, 'Category lookup timed out; try again.', 5);
 }
 
 const CATALOG_TTL_MS = 60_000;
@@ -327,7 +331,7 @@ export async function loadCategoryCatalog(now = Date.now(), run: CategoryTxRunne
   if (result === 'timeout') throw timeoutError();
   const first = result[0];
   if (!first || !first.sv) {
-    throw new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
+    throw dataUnavailableError();
   }
   if (first.category_path === null) {
     // Zero facets for this exact snapshot_version. Keep serving an already-cached catalog for
@@ -337,7 +341,7 @@ export async function loadCategoryCatalog(now = Date.now(), run: CategoryTxRunne
       cached = { at: now, catalog: cached.catalog };
       return cached.catalog;
     }
-    throw new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
+    throw dataUnavailableError();
   }
   const sv = first.sv;
   const facets = result

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ResearchError, isResearchError, invalidCursorError } from './errors';
+import { ResearchError, isResearchError, invalidCursorError, dataUnavailableError, queryTimeoutError, searchExpiredError } from './errors';
 
 describe('ResearchError', () => {
   it('carries a stable code, a safe message, and retry metadata', () => {
@@ -42,5 +42,54 @@ describe('invalidCursorError', () => {
       retryable: false,
       details: [{ path: 'cursor', message: 'too short' }],
     });
+  });
+});
+
+describe('dataUnavailableError', () => {
+  it('builds the standard DATA_UNAVAILABLE error', () => {
+    const e = dataUnavailableError();
+    expect(e).toBeInstanceOf(ResearchError);
+    expect(e.toInfo()).toStrictEqual({
+      code: 'DATA_UNAVAILABLE',
+      message: 'The keyword dataset is being refreshed; try again in a few minutes.',
+      retryable: true,
+      retryAfterSeconds: 120,
+    });
+  });
+});
+
+describe('queryTimeoutError', () => {
+  it('states the budget in whole seconds, rounded up', () => {
+    const e = queryTimeoutError(10_000);
+    expect(e).toBeInstanceOf(ResearchError);
+    expect(e.code).toBe('QUERY_TIMEOUT');
+    expect(e.retryable).toBe(true);
+    expect(e.message).toContain('10-second');
+    expect(e.retryAfterSeconds).toBeUndefined();
+  });
+  it('rounds a sub-second remainder up to a full second', () => {
+    expect(queryTimeoutError(3_001).message).toContain('4-second');
+  });
+  it('appends an optional hint after the generic message', () => {
+    const e = queryTimeoutError(3_000, 'Category lookup timed out; try again.');
+    expect(e.message).toContain('3-second');
+    expect(e.message).toContain('Category lookup timed out; try again.');
+  });
+  it('accepts an explicit retryAfterSeconds for a caller with its own retry cadence', () => {
+    const e = queryTimeoutError(3_000, 'Category lookup timed out; try again.', 5);
+    expect(e.retryAfterSeconds).toBe(5);
+  });
+});
+
+describe('searchExpiredError', () => {
+  it('distinguishes a moved snapshot from a plain cursor expiry, both as SEARCH_EXPIRED', () => {
+    const moved = searchExpiredError('snapshot_changed');
+    expect(moved.code).toBe('SEARCH_EXPIRED');
+    expect(moved.retryable).toBe(false);
+    expect(moved.message).toBe('The dataset was refreshed since this search started. Start a new search to see current data.');
+
+    const expired = searchExpiredError('cursor_expired');
+    expect(expired.code).toBe('SEARCH_EXPIRED');
+    expect(expired.message).toBe('This search has expired. Start a new search.');
   });
 });

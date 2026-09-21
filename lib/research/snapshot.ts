@@ -14,7 +14,7 @@ export interface SnapshotMeta {
 export const SNAPSHOT_META_SQL = `
   SELECT m.current_week_end_date::text AS week,
          m.snapshot_version::text AS snap,
-         m.refreshed_at::text AS refreshed,
+         to_char(m.refreshed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS refreshed,
          m.volume_fit_run_id::text AS fit_id,
          r.calibration_month_end_date::text AS cal_month,
          m.volume_fit_is_extrapolated AS extrapolated
@@ -24,12 +24,17 @@ export const SNAPSHOT_META_SQL = `
 
 interface MetaRow { week: string | null; snap: string | null; refreshed: string | null; fit_id: string | null; cal_month: string | null; extrapolated: boolean | null }
 
+/**
+ * `refreshed` is already ISO 8601 (formatted by `to_char` above, UTC, milliseconds) — passed
+ * through unchanged, never re-parsed with `new Date(...)` client-side. Missing week/snap/
+ * refreshed are all treated the same way: the row isn't usable yet, so the whole meta is null.
+ */
 function mapMeta(row: MetaRow | undefined): SnapshotMeta | null {
-  if (!row || !row.week || !row.snap) return null;
+  if (!row || !row.week || !row.snap || !row.refreshed) return null;
   return {
     currentWeekEndDate: row.week.slice(0, 10),
     snapshotVersion: row.snap,
-    refreshedAt: row.refreshed ? new Date(row.refreshed).toISOString() : new Date(0).toISOString(),
+    refreshedAt: row.refreshed,
     volumeFitRunId: row.fit_id ?? null,
     calibrationMonthEndDate: row.cal_month ? row.cal_month.slice(0, 10) : null,
     isExtrapolated: row.extrapolated ?? false,

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { env } from '@/lib/env';
 import { searchRequestSchema, MAX_CURSOR_LENGTH, PAGE_SIZE_MAX, TOTAL_MATCHES_KINDS } from './contracts';
 import type { SearchRequest, TotalMatches } from './contracts';
-import { ResearchError, invalidCursorError } from './errors';
+import { ResearchError, invalidCursorError, searchExpiredError } from './errors';
 
 /**
  * Stateless continuation (amendment §5.3): the cursor carries everything a
@@ -110,7 +110,7 @@ export function verifyCursor(token: string, secret: string, nowSeconds: number):
   if (!parsed.success) throw invalidCursorError();
 
   if (parsed.data.exp <= nowSeconds) {
-    throw new ResearchError('SEARCH_EXPIRED', 'This search has expired. Start a new search.');
+    throw searchExpiredError('cursor_expired');
   }
 
   return parsed.data;

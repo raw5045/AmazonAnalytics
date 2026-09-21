@@ -105,7 +105,7 @@ describe('parseSearchInput', () => {
     // Ceiling-seeded emptiness: no lt/lte is given, so the field's own column ceiling
     // (INT4_MAX for rank, SMALLINT_MAX for wordCount) supplies the implied upper bound,
     // symmetric to `{ lt: floor }` above already being empty because the floor supplies the
-    // implied lower bound. `gt: <ceiling>` leaves no integer strictly below the ceiling;
+    // implied lower bound. `gt: <ceiling>` leaves no integer strictly above the ceiling;
     // `gte: <ceiling>` still names exactly one legal integer (the ceiling itself).
     fails({ ...base, filters: { rank: { gt: 2_147_483_647 } } }, 'filters.rank');
     expect(parseSearchInput({ ...base, filters: { rank: { gte: 2_147_483_647 } } }).kind).toBe('new');

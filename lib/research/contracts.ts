@@ -138,7 +138,7 @@ export const movementSchema = z
     // anyRange has no column-type information either: aboveCeiling below catches an explicit
     // bound literally past it, and emptyRangeIssue's ceiling-seeded `hi` catches an explicit
     // lower bound sitting exactly at it (e.g. `{ gt: INT4_MAX }`, which isn't "above" the
-    // ceiling but leaves no integer strictly below it either) — the same way its floor-seeded
+    // ceiling but leaves no integer strictly above it either) — the same way its floor-seeded
     // `lo` already catches `{ lt: floor }`. delta and every volume-metric bound stay uncapped
     // (bigint columns), matching filtersSchema's own int4-vs-bigint split.
     const floor = m.metric === 'volume' ? 0 : 1;
