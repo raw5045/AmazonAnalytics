@@ -148,8 +148,11 @@ additionally see the audience setting and the pinned client ids.
 | Rows returned per account per minute | 6 000 |
 | Tool response payload | 256 KiB |
 
-All are environment-overridable (`RESEARCH_*`, validated, defaulting
-as above). Concurrency is bounded by a dedicated research pool (max 4
+The runtime limits (rows per search, cursor lifetime, expanded scope, SQL
+deadlines, per-minute rates, payload, pool size) are environment-overridable
+(`RESEARCH_LIMITS_JSON`, validated, positive integers); the page-size,
+candidate and history bounds are fixed by the tool input schemas and only
+reported. Concurrency is bounded by a dedicated research pool (max 4
 connections, built by the same `lib/db/tcpPool.ts` factory the Explorer's
 broad path uses) plus the statement timeout, not by leases.
 
