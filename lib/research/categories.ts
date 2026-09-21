@@ -71,7 +71,14 @@ export interface CategoryCatalog {
    * object instead of writing through these references.
    */
   entries: ReadonlyArray<Readonly<CatalogEntry>>;
-  /** Same shared, frozen-entry objects as `entries`, indexed by path for O(1) lookup. */
+  /**
+   * Same shared, frozen-entry objects as `entries`, indexed by path for O(1) lookup.
+   * `ReadonlyMap` here is a TYPE-LEVEL restriction only: `Object.freeze` on the CategoryCatalog
+   * object does not reach a `Map`'s internal slots, so `.set`/`.delete`/`.clear` would still
+   * work at runtime on this same instance if a caller cast past the type (unlike `entries`,
+   * whose array and elements are genuinely frozen — see `buildCategoryCatalog`). Nothing in
+   * this module writes to `byPath` after `buildCategoryCatalog` returns; callers must not either.
+   */
   byPath: ReadonlyMap<string, Readonly<CatalogEntry>>;
 }
 
@@ -98,7 +105,7 @@ export function buildCategoryCatalog(meta: { snapshotVersion: string; datasetWee
   const entries: ReadonlyArray<Readonly<CatalogEntry>> = Object.freeze(
     [...byPath.values()].sort((a, b) => compareCodeUnits(a.path, b.path)).map((e) => Object.freeze(e)),
   );
-  return { snapshotVersion: meta.snapshotVersion, datasetWeek: meta.datasetWeek, entries, byPath };
+  return Object.freeze({ snapshotVersion: meta.snapshotVersion, datasetWeek: meta.datasetWeek, entries, byPath });
 }
 
 const notAvailable = () => new ResearchError('CATEGORY_NOT_AVAILABLE', 'That category is not available in the current dataset. Resolve categories again and pick from the returned candidates.');
@@ -282,10 +289,29 @@ interface CatalogRow {
 /**
  * Meta + facets in ONE statement (amendment §3.3) so both come from the same snapshot — two
  * separate requests (the pre-fix-round shape) could straddle a weekly swap and cache an
- * empty catalog for the full 60 s TTL. No meta row (the kill switch: the meta table
- * truncated) or a meta row whose LEFT JOIN found no facets yet both surface as one row with
- * `category_path IS NULL`; either way this throws DATA_UNAVAILABLE and never caches — an
- * existing cached catalog is not served either, matching the pre-fix-round behavior.
+ * empty catalog for the full 60 s TTL.
+ *
+ * Facets for a snapshot are rewritten IN PLACE, not immutable per version:
+ * `worker/kcsKeepaSyncJobs.ts` Phase 3 does
+ * `DELETE FROM keyword_current_summary_leaf_category_facets WHERE snapshot_version = $1` and
+ * re-INSERTs under the SAME snapshot_version after every Keepa enrichment run. So past the TTL,
+ * this always rebuilds from the rows the statement just returned — even when `snapshot_version`
+ * is unchanged from what's cached — instead of reusing the old catalog object; a corrected
+ * top_clicked_category_path from that run is picked up within one TTL window instead of being
+ * masked by a same-version cache hit. Building from ~11k facets is a few ms, so the unconditional
+ * rebuild costs nothing measurable.
+ *
+ * No meta row at all (the kill switch: the meta table truncated) always throws DATA_UNAVAILABLE.
+ * A meta row whose LEFT JOIN found no facets (`category_path IS NULL`) is ambiguous between two
+ * very different situations and is handled accordingly:
+ *   - Genuinely no facets ever built for this snapshot_version (or nothing cached yet) —
+ *     DATA_UNAVAILABLE, same as before.
+ *   - The Keepa sync's DELETE→INSERT window (Phase 3 above): the meta row's snapshot_version
+ *     hasn't changed, but its facets are momentarily gone mid-rebuild. If a catalog for that
+ *     EXACT snapshot_version is already cached, this keeps serving it (refreshing `at`, no
+ *     query-log noise) through the gap instead of surfacing a transient outage for what is, from
+ *     the caller's perspective, a no-op refresh. A cached catalog for a DIFFERENT snapshot
+ *     version is never served stale — that still throws DATA_UNAVAILABLE.
  */
 export async function loadCategoryCatalog(now = Date.now(), run: CategoryTxRunner = defaultRunner): Promise<CategoryCatalog> {
   if (cached && now - cached.at < CATALOG_TTL_MS) return cached.catalog;
@@ -300,14 +326,20 @@ export async function loadCategoryCatalog(now = Date.now(), run: CategoryTxRunne
   });
   if (result === 'timeout') throw timeoutError();
   const first = result[0];
-  if (!first || !first.sv || first.category_path === null) {
+  if (!first || !first.sv) {
+    throw new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
+  }
+  if (first.category_path === null) {
+    // Zero facets for this exact snapshot_version. Keep serving an already-cached catalog for
+    // the SAME version through the Keepa sync's DELETE→INSERT window; anything else (nothing
+    // cached, or cached under a different version) is a genuine DATA_UNAVAILABLE.
+    if (cached && cached.catalog.snapshotVersion === first.sv) {
+      cached = { at: now, catalog: cached.catalog };
+      return cached.catalog;
+    }
     throw new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
   }
   const sv = first.sv;
-  if (cached && cached.catalog.snapshotVersion === sv) {
-    cached = { at: now, catalog: cached.catalog };
-    return cached.catalog;
-  }
   const facets = result
     .filter((r): r is CatalogRow & { category_path: string; all_count: number } => r.category_path !== null && r.all_count !== null)
     .map((r) => ({ categoryPath: r.category_path, allCount: r.all_count }));
@@ -335,7 +367,7 @@ export async function loadCustomRows(userId: string, ids: string[], run: Categor
 export async function listCustomCandidates(userId: string, query: string, run: CategoryTxRunner = defaultRunner): Promise<CategoryCandidate[]> {
   const q = query.trim();
   const params: unknown[] = [userId];
-  let sql = 'SELECT id, name, jsonb_array_length(leaf_paths)::int AS leaf_count FROM custom_categories WHERE user_id = $1';
+  let sql = `SELECT id, name, CASE WHEN jsonb_typeof(leaf_paths) = 'array' THEN jsonb_array_length(leaf_paths) ELSE 0 END::int AS leaf_count FROM custom_categories WHERE user_id = $1`;
   if (q !== '') {
     params.push(`%${escapeLike(q)}%`);
     sql += ` AND name ILIKE $${params.length}`;

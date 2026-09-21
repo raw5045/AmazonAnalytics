@@ -66,9 +66,11 @@ describe('buildCategoryCatalog', () => {
     const nfc = 'A › Café'; // 'é' as one code point, U+00E9
     const nfd = 'A › Café'; // 'e' + combining acute accent, U+0301
     expect(nfc).not.toBe(nfd);
-    // Proves the premise: these two collate as EQUAL under localeCompare on this box, which is
-    // exactly why localeCompare is unsafe for deterministic ordering here.
-    expect(nfc.localeCompare(nfd)).toBe(0);
+    // Motivation (not asserted — host ICU data is not guaranteed, so this would be flaky): on
+    // most hosts these two collate as EQUAL under localeCompare, which is exactly why
+    // localeCompare is unsafe for deterministic ordering here. The assertions below prove the
+    // actual property this module relies on — deterministic code-unit ordering — without
+    // depending on any particular collation behavior.
     const cat = buildCategoryCatalog(META, [
       { categoryPath: nfc, allCount: 1 },
       { categoryPath: nfd, allCount: 2 },
@@ -81,9 +83,13 @@ describe('buildCategoryCatalog', () => {
     expect(cat.byPath.get(nfd)).toMatchObject({ keywordCount: 2 });
   });
 
-  it('freezes entries and every entry so no caller can mutate the catalog instance the cache hands to every concurrent caller', () => {
+  it('freezes the catalog object, its entries, and every entry so no caller can mutate the shared instance the cache hands to every concurrent caller', () => {
+    expect(Object.isFrozen(catalog)).toBe(true);
     expect(Object.isFrozen(catalog.entries)).toBe(true);
     expect(Object.isFrozen(catalog.entries[0])).toBe(true);
+    expect(() => {
+      (catalog as unknown as { snapshotVersion: string }).snapshotVersion = 'zzz';
+    }).toThrow(TypeError);
     expect(() => {
       (catalog.entries[0] as unknown as { keywordCount: number | null }).keywordCount = 999;
     }).toThrow(TypeError);
@@ -274,6 +280,7 @@ describe('loadCategoryCatalog', () => {
   ];
   const SNAP_B_ROWS = [{ sv: 'snap-b', week: '2026-09-19', category_path: 'C', all_count: 7 }];
   const NO_FACETS_YET_ROW = [{ sv: 'snap-a', week: '2026-09-12', category_path: null, all_count: null }];
+  const NO_FACETS_YET_ROW_SNAP_B = [{ sv: 'snap-b', week: '2026-09-19', category_path: null, all_count: null }];
 
   it('serves the cached catalog within the TTL without querying', async () => {
     const query = vi.fn(async () => ({ rows: SNAP_A_ROWS }));
@@ -284,16 +291,19 @@ describe('loadCategoryCatalog', () => {
     expect(query).toHaveBeenCalledTimes(1);
   });
 
-  it('past the TTL with an unchanged snapshot version, re-reads once but reuses the same catalog object and refreshes the TTL clock', async () => {
-    const query = vi.fn(async () => ({ rows: SNAP_A_ROWS }));
+  it('past the TTL with an unchanged snapshot version but rewritten facets (Keepa sync rebuilds them in place), rebuilds from the fresh rows', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: SNAP_A_ROWS })
+      .mockResolvedValueOnce({ rows: [...SNAP_A_ROWS, { sv: 'snap-a', week: '2026-09-12', category_path: 'A › C', all_count: 9 }] });
     const run = runWith(query);
     const first = await loadCategoryCatalog(0, run);
-    const second = await loadCategoryCatalog(60_001, run); // past the 60s TTL
-    expect(second).toBe(first); // same object — no rebuild
-    expect(query).toHaveBeenCalledTimes(2); // re-reads to check sv
-    const third = await loadCategoryCatalog(60_001 + 59_000, run); // within TTL of the refreshed `at`
-    expect(third).toBe(first);
-    expect(query).toHaveBeenCalledTimes(2); // no further query
+    expect(first.byPath.has('A › C')).toBe(false);
+    const second = await loadCategoryCatalog(60_001, run);
+    expect(second.snapshotVersion).toBe('snap-a');
+    expect(second.byPath.get('A › C')).toMatchObject({ terminal: true, keywordCount: 9 });
+    const third = await loadCategoryCatalog(60_001 + 59_000, run);
+    expect(third).toBe(second);
+    expect(query).toHaveBeenCalledTimes(2);
   });
 
   it('past the TTL with a changed snapshot version, rebuilds a new catalog object with the new snapshotVersion/datasetWeek', async () => {
@@ -321,9 +331,39 @@ describe('loadCategoryCatalog', () => {
     expect(query).toHaveBeenCalledTimes(2); // no caching short-circuit between the two failing calls
   });
 
+  it('zero facets mid-Keepa-sync (DELETE→INSERT window) with a cached catalog for the SAME snapshot version serves the cached catalog instead of throwing', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: SNAP_A_ROWS })
+      .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW }); // same sv ('snap-a'), facets table momentarily empty
+    const run = runWith(query);
+    const first = await loadCategoryCatalog(0, run);
+    const second = await loadCategoryCatalog(60_001, run); // past TTL, mid-rebuild
+    expect(second).toBe(first); // served from cache, not rebuilt, and does not throw
+    expect(query).toHaveBeenCalledTimes(2);
+    const third = await loadCategoryCatalog(60_001 + 59_000, run); // within TTL of the refreshed `at`
+    expect(third).toBe(first);
+    expect(query).toHaveBeenCalledTimes(2); // no further query — TTL was refreshed when the cache was served
+  });
+
+  it('zero facets with a cached catalog for a DIFFERENT snapshot version throws and does not serve the stale catalog', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({ rows: SNAP_A_ROWS }) // caches snap-a
+      .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW_SNAP_B }); // now snap-b, but its facets aren't in yet
+    const run = runWith(query);
+    await loadCategoryCatalog(0, run);
+    await expect(loadCategoryCatalog(60_001, run)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', retryable: true });
+  });
+
   it('a runner timeout surfaces as QUERY_TIMEOUT, retryable', async () => {
     const timeoutRun: CategoryTxRunner = async () => 'timeout';
     await expect(loadCategoryCatalog(0, timeoutRun)).rejects.toMatchObject({ code: 'QUERY_TIMEOUT', retryable: true });
+  });
+
+  it('a runner that throws propagates the raw error, never wrapped into DATA_UNAVAILABLE/QUERY_TIMEOUT (withReadOnlyTx rejects raw on a connect-queue timeout — see lib/db/tcpPool.ts)', async () => {
+    const throwingRun: CategoryTxRunner = async () => {
+      throw new Error('boom');
+    };
+    await expect(loadCategoryCatalog(0, throwingRun)).rejects.toThrow('boom');
   });
 });
 
@@ -353,9 +393,9 @@ describe('listCustomCandidates', () => {
     const run = runWith(query);
     const candidates = await listCustomCandidates('u1', '50% off_', run);
     const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
-    expect(sql).toContain('jsonb_array_length(leaf_paths)');
-    // "leaf_paths" appears exactly once — inside jsonb_array_length(...) — never selected as its own column.
-    expect(sql.split('leaf_paths').length - 1).toBe(1);
+    expect(sql).toContain("CASE WHEN jsonb_typeof(leaf_paths) = 'array' THEN jsonb_array_length(leaf_paths) ELSE 0 END");
+    // "leaf_paths" appears exactly twice — inside jsonb_typeof(...) and jsonb_array_length(...) — never selected as its own column.
+    expect(sql.split('leaf_paths').length - 1).toBe(2);
     expect(sql).toContain('ORDER BY name, id');
     expect(params).toEqual(['u1', '%50\\% off\\_%']);
     expect(candidates).toEqual([{ kind: 'custom', label: 'My niche', path: null, id: 'c1', terminal: true, descendantLeafCount: 5, keywordCount: null, selection: { kind: 'custom', id: 'c1' } }]);
