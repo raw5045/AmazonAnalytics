@@ -1,14 +1,27 @@
 // lib/research/categories.test.ts
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 // @/lib/env parses process.env at import time (throws on the missing NEXT_PUBLIC_* vars without
-// a mock — see lib/research/cursor.test.ts) and @/db/client opens a driver at import (see
-// lib/notifications/digest/loadDigestData.test.ts). Neither is exercised by the pure functions
-// under test here (buildCategoryCatalog/rankCandidates/expandSelections never touch db or env),
-// so a minimal stub of each is enough to let the module load.
+// a mock — see lib/research/cursor.test.ts). It's pulled in transitively via ./pool and ./limits
+// (loadCategoryCatalog/loadCustomRows/listCustomCandidates now run through the dedicated research
+// pool, not a direct db import), so a minimal stub is enough to let the module load. The pure
+// functions under test (buildCategoryCatalog/rankCandidates/expandSelections) and the loader tests
+// below (which inject a fake CategoryTxRunner) never touch it directly.
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
-vi.mock('@/db/client', () => ({ db: {} }));
 
-import { buildCategoryCatalog, rankCandidates, expandSelections, type CatalogEntry } from './categories';
+import {
+  buildCategoryCatalog,
+  rankCandidates,
+  expandSelections,
+  loadCategoryCatalog,
+  loadCustomRows,
+  listCustomCandidates,
+  resolveScope,
+  resetCategoryCatalogCacheForTests,
+  type CatalogEntry,
+  type CategoryTxRunner,
+  type CategoryDeps,
+} from './categories';
+import type { TxClient } from '@/lib/db/tcpPool';
 
 /** Catches and returns a thrown value instead of letting it propagate; fails the test if `fn` doesn't throw. */
 function captureError(fn: () => unknown): { message: string; code?: string } {
@@ -20,7 +33,12 @@ function captureError(fn: () => unknown): { message: string; code?: string } {
   throw new Error('expected fn to throw');
 }
 
-const SNAP = 'snap-1';
+/** A CategoryTxRunner that hands `fn` a fake TxClient wrapping the given `query` mock — the pool module is never touched. */
+function runWith(query: ReturnType<typeof vi.fn>): CategoryTxRunner {
+  return async (fn) => fn({ query } as unknown as TxClient);
+}
+
+const META = { snapshotVersion: 'snap-1', datasetWeek: '2026-09-12' };
 const facets = [
   { categoryPath: 'Tools & Home Improvement › Lighting & Ceiling Fans › Lamps & Shades › Table Lamps', allCount: 120 },
   { categoryPath: 'Tools & Home Improvement › Lighting & Ceiling Fans › Lamps & Shades › Lampshades', allCount: 15 },
@@ -28,7 +46,7 @@ const facets = [
   { categoryPath: 'Electronics › Camera & Photo › Lighting & Studio › Continuous Lighting', allCount: 9 },
   { categoryPath: 'Home & Kitchen › Lamps', allCount: 3 },
 ];
-const catalog = buildCategoryCatalog(SNAP, facets);
+const catalog = buildCategoryCatalog(META, facets);
 
 describe('buildCategoryCatalog', () => {
   it('indexes leaves with counts and parents with descendant counts; the same label under different parents stays distinct (Q07)', () => {
@@ -39,6 +57,11 @@ describe('buildCategoryCatalog', () => {
     expect(paths).toEqual([...paths].sort());
   });
 
+  it('carries the snapshot version and dataset week from the meta row', () => {
+    expect(catalog.snapshotVersion).toBe('snap-1');
+    expect(catalog.datasetWeek).toBe('2026-09-12');
+  });
+
   it('orders by plain code units, not locale collation: NFC and NFD forms of the same visual text are distinct entries in a deterministic order', () => {
     const nfc = 'A › Café'; // 'é' as one code point, U+00E9
     const nfd = 'A › Café'; // 'e' + combining acute accent, U+0301
@@ -46,7 +69,7 @@ describe('buildCategoryCatalog', () => {
     // Proves the premise: these two collate as EQUAL under localeCompare on this box, which is
     // exactly why localeCompare is unsafe for deterministic ordering here.
     expect(nfc.localeCompare(nfd)).toBe(0);
-    const cat = buildCategoryCatalog(SNAP, [
+    const cat = buildCategoryCatalog(META, [
       { categoryPath: nfc, allCount: 1 },
       { categoryPath: nfd, allCount: 2 },
     ]);
@@ -104,7 +127,7 @@ describe('rankCandidates', () => {
     expect(() => rankCandidates(catalog, { query: '   ', parentPath: null, offset: 0, limit: 10 })).toThrow(expect.objectContaining({ code: 'INVALID_FILTERS' }));
   });
   it('an exact full-path match scores 0 even though the label alone does not equal the query, ranking ahead of a full-path substring match', () => {
-    const fixture = buildCategoryCatalog(SNAP, [
+    const fixture = buildCategoryCatalog(META, [
       { categoryPath: 'Parent › Leaf', allCount: 1 },
       { categoryPath: 'Parent › Leafy', allCount: 2 },
     ]);
@@ -113,7 +136,7 @@ describe('rankCandidates', () => {
     expect(total).toBe(2);
   });
   it('a multi-token match confined to the label (score 3) ranks ahead of one that only spans the full path (score 5)', () => {
-    const fixture = buildCategoryCatalog(SNAP, [
+    const fixture = buildCategoryCatalog(META, [
       { categoryPath: 'Dept › Zeta Alpha', allCount: 1 }, // both tokens in the label itself
       { categoryPath: 'Dept Zeta › Gamma Alpha', allCount: 2 }, // "zeta" only in the parent segment
     ]);
@@ -134,7 +157,7 @@ describe('rankCandidates', () => {
 });
 
 describe('sibling and cross-branch discrimination (a dedicated mini-fixture so the shared ranking fixture/expectations above stay untouched)', () => {
-  const sib = buildCategoryCatalog(SNAP, [
+  const sib = buildCategoryCatalog(META, [
     { categoryPath: 'Home & Kitchen › Lamps', allCount: 3 }, // terminal AND parent
     { categoryPath: 'Home & Kitchen › Lamps › Desk Lamps', allCount: 2 },
     { categoryPath: 'Home & Kitchen › Lampshades', allCount: 5 }, // text-prefix sibling
@@ -239,5 +262,137 @@ describe('expandSelections', () => {
     expect(() => expandSelections(catalog, { selections: [{ kind: 'custom', id: custom[0].id }], leafPaths: [] }, dead, 2000)).toThrow(
       expect.objectContaining({ code: 'CATEGORY_NOT_AVAILABLE', message: 'None of the paths in that custom category have keywords in the current dataset.' }),
     );
+  });
+});
+
+describe('loadCategoryCatalog', () => {
+  beforeEach(() => resetCategoryCatalogCacheForTests());
+
+  const SNAP_A_ROWS = [
+    { sv: 'snap-a', week: '2026-09-12', category_path: 'A', all_count: 5 },
+    { sv: 'snap-a', week: '2026-09-12', category_path: 'A › B', all_count: 3 },
+  ];
+  const SNAP_B_ROWS = [{ sv: 'snap-b', week: '2026-09-19', category_path: 'C', all_count: 7 }];
+  const NO_FACETS_YET_ROW = [{ sv: 'snap-a', week: '2026-09-12', category_path: null, all_count: null }];
+
+  it('serves the cached catalog within the TTL without querying', async () => {
+    const query = vi.fn(async () => ({ rows: SNAP_A_ROWS }));
+    const run = runWith(query);
+    const first = await loadCategoryCatalog(1000, run);
+    const second = await loadCategoryCatalog(1000 + 59_000, run); // < 60s later
+    expect(second).toBe(first);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('past the TTL with an unchanged snapshot version, re-reads once but reuses the same catalog object and refreshes the TTL clock', async () => {
+    const query = vi.fn(async () => ({ rows: SNAP_A_ROWS }));
+    const run = runWith(query);
+    const first = await loadCategoryCatalog(0, run);
+    const second = await loadCategoryCatalog(60_001, run); // past the 60s TTL
+    expect(second).toBe(first); // same object — no rebuild
+    expect(query).toHaveBeenCalledTimes(2); // re-reads to check sv
+    const third = await loadCategoryCatalog(60_001 + 59_000, run); // within TTL of the refreshed `at`
+    expect(third).toBe(first);
+    expect(query).toHaveBeenCalledTimes(2); // no further query
+  });
+
+  it('past the TTL with a changed snapshot version, rebuilds a new catalog object with the new snapshotVersion/datasetWeek', async () => {
+    const query = vi.fn().mockResolvedValueOnce({ rows: SNAP_A_ROWS }).mockResolvedValueOnce({ rows: SNAP_B_ROWS });
+    const run = runWith(query);
+    const first = await loadCategoryCatalog(0, run);
+    const second = await loadCategoryCatalog(60_001, run);
+    expect(second).not.toBe(first);
+    expect(second.snapshotVersion).toBe('snap-b');
+    expect(second.datasetWeek).toBe('2026-09-19');
+  });
+
+  it('no rows (meta truncated) throws DATA_UNAVAILABLE, never falling back to a previously cached catalog', async () => {
+    const query = vi.fn().mockResolvedValueOnce({ rows: SNAP_A_ROWS }).mockResolvedValueOnce({ rows: [] });
+    const run = runWith(query);
+    await loadCategoryCatalog(0, run);
+    await expect(loadCategoryCatalog(60_001, run)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', retryable: true });
+  });
+
+  it('a single meta row with no facets yet throws DATA_UNAVAILABLE and caches nothing, so the next call queries again', async () => {
+    const query = vi.fn(async () => ({ rows: NO_FACETS_YET_ROW }));
+    const run = runWith(query);
+    await expect(loadCategoryCatalog(0, run)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', retryable: true });
+    await expect(loadCategoryCatalog(1, run)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE' });
+    expect(query).toHaveBeenCalledTimes(2); // no caching short-circuit between the two failing calls
+  });
+
+  it('a runner timeout surfaces as QUERY_TIMEOUT, retryable', async () => {
+    const timeoutRun: CategoryTxRunner = async () => 'timeout';
+    await expect(loadCategoryCatalog(0, timeoutRun)).rejects.toMatchObject({ code: 'QUERY_TIMEOUT', retryable: true });
+  });
+});
+
+describe('loadCustomRows', () => {
+  it('queries by user and ids, filtering non-string jsonb elements', async () => {
+    const query = vi.fn(async () => ({ rows: [{ id: 'c1', leaf_paths: ['A › B', 42, null, 'A › C'] }] }));
+    const run = runWith(query);
+    const rows = await loadCustomRows('u1', ['c1'], run);
+    expect(query).toHaveBeenCalledWith('SELECT id, leaf_paths FROM custom_categories WHERE user_id = $1 AND id = ANY($2::uuid[])', ['u1', ['c1']]);
+    expect(rows).toEqual([{ id: 'c1', leafPaths: ['A › B', 'A › C'] }]);
+  });
+  it('short-circuits on empty ids without querying', async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const run = runWith(query);
+    expect(await loadCustomRows('u1', [], run)).toEqual([]);
+    expect(query).not.toHaveBeenCalled();
+  });
+  it('a runner timeout surfaces as QUERY_TIMEOUT, retryable', async () => {
+    const timeoutRun: CategoryTxRunner = async () => 'timeout';
+    await expect(loadCustomRows('u1', ['c1'], timeoutRun)).rejects.toMatchObject({ code: 'QUERY_TIMEOUT', retryable: true });
+  });
+});
+
+describe('listCustomCandidates', () => {
+  it('selects a leaf count instead of leaf_paths, and orders by name then id', async () => {
+    const query = vi.fn(async () => ({ rows: [{ id: 'c1', name: 'My niche', leaf_count: 5 }] }));
+    const run = runWith(query);
+    const candidates = await listCustomCandidates('u1', '50% off_', run);
+    const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(sql).toContain('jsonb_array_length(leaf_paths)');
+    // "leaf_paths" appears exactly once — inside jsonb_array_length(...) — never selected as its own column.
+    expect(sql.split('leaf_paths').length - 1).toBe(1);
+    expect(sql).toContain('ORDER BY name, id');
+    expect(params).toEqual(['u1', '%50\\% off\\_%']);
+    expect(candidates).toEqual([{ kind: 'custom', label: 'My niche', path: null, id: 'c1', terminal: true, descendantLeafCount: 5, keywordCount: null, selection: { kind: 'custom', id: 'c1' } }]);
+  });
+  it('omits the ILIKE clause and its param for an empty query', async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    const run = runWith(query);
+    await listCustomCandidates('u1', '', run);
+    const [sql, params] = query.mock.calls[0] as unknown as [string, unknown[]];
+    expect(sql).not.toContain('ILIKE');
+    expect(params).toEqual(['u1']);
+  });
+  it('a runner timeout surfaces as QUERY_TIMEOUT, retryable', async () => {
+    const timeoutRun: CategoryTxRunner = async () => 'timeout';
+    await expect(listCustomCandidates('u1', 'x', timeoutRun)).rejects.toMatchObject({ code: 'QUERY_TIMEOUT', retryable: true });
+  });
+});
+
+describe('resolveScope', () => {
+  it('loads the catalog, resolves only the custom ids referenced in selections for this actor, and stamps the catalog snapshot/week', async () => {
+    const zCatalog = buildCategoryCatalog({ snapshotVersion: 'snap-z', datasetWeek: '2026-09-12' }, [{ categoryPath: 'A › B', allCount: 1 }]);
+    const loadCustomRowsSpy = vi.fn(async () => [{ id: 'custom-1', leafPaths: ['A › B'] }]);
+    const deps: CategoryDeps = {
+      loadCatalog: async () => zCatalog,
+      loadCustomRows: loadCustomRowsSpy,
+      listCustom: async () => [],
+    };
+    const out = await resolveScope('user-1', {
+      selections: [
+        { kind: 'taxonomy', path: 'A › B', includeDescendants: false },
+        { kind: 'custom', id: 'custom-1' },
+      ],
+      leafPaths: [],
+    }, 2000, deps);
+    expect(loadCustomRowsSpy).toHaveBeenCalledWith('user-1', ['custom-1']);
+    expect(out.snapshotVersion).toBe('snap-z');
+    expect(out.datasetWeek).toBe('2026-09-12');
+    expect(out.leaves).toEqual(['A › B']);
   });
 });

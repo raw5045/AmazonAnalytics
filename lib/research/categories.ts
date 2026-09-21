@@ -1,13 +1,11 @@
 import { createHash } from 'node:crypto';
-import { neon } from '@neondatabase/serverless';
-import { and, eq, inArray, ilike } from 'drizzle-orm';
-import { db } from '@/db/client';
-import { customCategories } from '@/db/schema';
-import { env } from '@/lib/env';
+import { withReadOnlyTx, type TxClient } from '@/lib/db/tcpPool';
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
 import { escapeLike } from '@/lib/explorer/matchPattern';
 import type { CategoryCandidate, Filters, ResolvedScope } from './contracts';
 import { ResearchError } from './errors';
+import { researchLimits } from './limits';
+import { getResearchPool } from './pool';
 
 /**
  * Category catalog, candidate ranking, and scope expansion for the research MCP tools
@@ -63,6 +61,8 @@ export interface CatalogEntry {
 }
 export interface CategoryCatalog {
   snapshotVersion: string;
+  /** The current snapshot's week-ending date (`keyword_current_summary_meta.current_week_end_date`), as YYYY-MM-DD. */
+  datasetWeek: string;
   /**
    * Sorted by path (code-unit order — see the module docstring). This array, and every
    * entry in it, is frozen: the object is shared by every caller of the cached loader
@@ -76,7 +76,7 @@ export interface CategoryCatalog {
 }
 
 /** Pure: facet leaves → leaves + every parent prefix. */
-export function buildCategoryCatalog(snapshotVersion: string, facets: Array<{ categoryPath: string; allCount: number }>): CategoryCatalog {
+export function buildCategoryCatalog(meta: { snapshotVersion: string; datasetWeek: string }, facets: Array<{ categoryPath: string; allCount: number }>): CategoryCatalog {
   const byPath = new Map<string, CatalogEntry>();
   for (const f of facets) {
     const segs = f.categoryPath.split(PATH_SEP);
@@ -98,7 +98,7 @@ export function buildCategoryCatalog(snapshotVersion: string, facets: Array<{ ca
   const entries: ReadonlyArray<Readonly<CatalogEntry>> = Object.freeze(
     [...byPath.values()].sort((a, b) => compareCodeUnits(a.path, b.path)).map((e) => Object.freeze(e)),
   );
-  return { snapshotVersion, entries, byPath };
+  return { snapshotVersion: meta.snapshotVersion, datasetWeek: meta.datasetWeek, entries, byPath };
 }
 
 const notAvailable = () => new ResearchError('CATEGORY_NOT_AVAILABLE', 'That category is not available in the current dataset. Resolve categories again and pick from the returned candidates.');
@@ -252,53 +252,107 @@ export function expandSelections(
 }
 
 // ---- loaders (60 s cache keyed by snapshot; custom rows are always the caller's own) ----
+// Every loader runs through the dedicated research pool under categorySqlTimeoutMs
+// (amendment §3.3/§3.6): withReadOnlyTx resolves to 'timeout' on overrun, which every
+// loader below turns into QUERY_TIMEOUT.
+
+/** Runs `fn` inside a read-only transaction under the category deadline; 'timeout' on overrun. Injectable for tests. */
+export type CategoryTxRunner = <T>(fn: (tx: TxClient) => Promise<T>) => Promise<T | 'timeout'>;
+const defaultRunner: CategoryTxRunner = (fn) => withReadOnlyTx(getResearchPool(), researchLimits().categorySqlTimeoutMs, fn);
+
+function timeoutError(): ResearchError {
+  return new ResearchError('QUERY_TIMEOUT', 'Category lookup timed out; try again.', { retryable: true, retryAfterSeconds: 5 });
+}
 
 const CATALOG_TTL_MS = 60_000;
 let cached: { at: number; catalog: CategoryCatalog } | null = null;
 
-export async function loadCategoryCatalog(now = Date.now()): Promise<CategoryCatalog> {
+/** Test-only: clears the process-level catalog memo so the next loadCategoryCatalog() call re-queries. */
+export function resetCategoryCatalogCacheForTests(): void {
+  cached = null;
+}
+
+interface CatalogRow {
+  sv: string | null;
+  week: string | null;
+  category_path: string | null;
+  all_count: number | null;
+}
+
+/**
+ * Meta + facets in ONE statement (amendment §3.3) so both come from the same snapshot — two
+ * separate requests (the pre-fix-round shape) could straddle a weekly swap and cache an
+ * empty catalog for the full 60 s TTL. No meta row (the kill switch: the meta table
+ * truncated) or a meta row whose LEFT JOIN found no facets yet both surface as one row with
+ * `category_path IS NULL`; either way this throws DATA_UNAVAILABLE and never caches — an
+ * existing cached catalog is not served either, matching the pre-fix-round behavior.
+ */
+export async function loadCategoryCatalog(now = Date.now(), run: CategoryTxRunner = defaultRunner): Promise<CategoryCatalog> {
   if (cached && now - cached.at < CATALOG_TTL_MS) return cached.catalog;
-  const sql = neon(env.DATABASE_URL);
-  const meta = (await sql`SELECT snapshot_version::text AS sv FROM keyword_current_summary_meta WHERE singleton = true`) as Array<{ sv: string | null }>;
-  const sv = meta[0]?.sv;
-  if (!sv) throw new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
+  const result = await run(async (tx) => {
+    const { rows } = await tx.query<CatalogRow>(`
+      SELECT m.snapshot_version::text AS sv, m.current_week_end_date::text AS week, f.category_path, f.all_count
+      FROM keyword_current_summary_meta m
+      LEFT JOIN keyword_current_summary_leaf_category_facets f ON f.snapshot_version = m.snapshot_version
+      WHERE m.singleton = true
+    `);
+    return rows;
+  });
+  if (result === 'timeout') throw timeoutError();
+  const first = result[0];
+  if (!first || !first.sv || first.category_path === null) {
+    throw new ResearchError('DATA_UNAVAILABLE', 'The keyword dataset is being refreshed; try again in a few minutes.', { retryable: true, retryAfterSeconds: 120 });
+  }
+  const sv = first.sv;
   if (cached && cached.catalog.snapshotVersion === sv) {
     cached = { at: now, catalog: cached.catalog };
     return cached.catalog;
   }
-  const rows = (await sql`
-    SELECT category_path, all_count
-    FROM keyword_current_summary_leaf_category_facets
-    WHERE snapshot_version = ${sv}::uuid
-  `) as Array<{ category_path: string; all_count: number }>;
-  const catalog = buildCategoryCatalog(sv, rows.map((r) => ({ categoryPath: r.category_path, allCount: r.all_count })));
+  const facets = result
+    .filter((r): r is CatalogRow & { category_path: string; all_count: number } => r.category_path !== null && r.all_count !== null)
+    .map((r) => ({ categoryPath: r.category_path, allCount: r.all_count }));
+  const catalog = buildCategoryCatalog({ snapshotVersion: sv, datasetWeek: first.week ?? '' }, facets);
   cached = { at: now, catalog };
   return catalog;
 }
 
-export async function loadCustomRows(userId: string, ids: string[]): Promise<CustomRow[]> {
+export async function loadCustomRows(userId: string, ids: string[], run: CategoryTxRunner = defaultRunner): Promise<CustomRow[]> {
   if (ids.length === 0) return [];
-  const rows = await db
-    .select({ id: customCategories.id, leafPaths: customCategories.leafPaths })
-    .from(customCategories)
-    .where(and(eq(customCategories.userId, userId), inArray(customCategories.id, ids)));
-  return rows.map((r) => ({ id: r.id, leafPaths: (r.leafPaths as string[]) ?? [] }));
+  const result = await run(async (tx) => {
+    const { rows } = await tx.query<{ id: string; leaf_paths: unknown }>(
+      'SELECT id, leaf_paths FROM custom_categories WHERE user_id = $1 AND id = ANY($2::uuid[])',
+      [userId, ids],
+    );
+    return rows;
+  });
+  if (result === 'timeout') throw timeoutError();
+  return result.map((r) => ({
+    id: r.id,
+    leafPaths: Array.isArray(r.leaf_paths) ? r.leaf_paths.filter((p): p is string => typeof p === 'string') : [],
+  }));
 }
 
-export async function listCustomCandidates(userId: string, query: string): Promise<CategoryCandidate[]> {
+export async function listCustomCandidates(userId: string, query: string, run: CategoryTxRunner = defaultRunner): Promise<CategoryCandidate[]> {
   const q = query.trim();
-  const rows = await db
-    .select({ id: customCategories.id, name: customCategories.name, leafPaths: customCategories.leafPaths })
-    .from(customCategories)
-    .where(q === '' ? eq(customCategories.userId, userId) : and(eq(customCategories.userId, userId), ilike(customCategories.name, `%${escapeLike(q)}%`)))
-    .orderBy(customCategories.name);
-  return rows.map((r) => ({
+  const params: unknown[] = [userId];
+  let sql = 'SELECT id, name, jsonb_array_length(leaf_paths)::int AS leaf_count FROM custom_categories WHERE user_id = $1';
+  if (q !== '') {
+    params.push(`%${escapeLike(q)}%`);
+    sql += ` AND name ILIKE $${params.length}`;
+  }
+  sql += ' ORDER BY name, id';
+  const result = await run(async (tx) => {
+    const { rows } = await tx.query<{ id: string; name: string; leaf_count: number }>(sql, params);
+    return rows;
+  });
+  if (result === 'timeout') throw timeoutError();
+  return result.map((r) => ({
     kind: 'custom' as const,
     label: r.name,
     path: null,
     id: r.id,
     terminal: true,
-    descendantLeafCount: null,
+    descendantLeafCount: r.leaf_count,
     keywordCount: null,
     selection: { kind: 'custom' as const, id: r.id },
   }));
@@ -311,10 +365,22 @@ export interface CategoryDeps {
 }
 export const defaultCategoryDeps: CategoryDeps = { loadCatalog: () => loadCategoryCatalog(), loadCustomRows, listCustom: listCustomCandidates };
 
-/** Search-time resolution: revalidate every reference for THIS user and expand (never a silent skip). */
-export async function resolveScope(userId: string, categories: Filters['categories'], maxLeaves: number, deps: CategoryDeps): Promise<{ leaves: string[]; scope: ResolvedScope; snapshotVersion: string }> {
+/**
+ * Search-time resolution: revalidate every reference for THIS user and expand (never a
+ * silent skip). `snapshotVersion`/`datasetWeek` here are the CATALOG's values — current as
+ * of its last refresh, at most CATALOG_TTL_MS (60 s) stale — used for resolve_categories'
+ * own provenance. The search transaction (lib/research/search.ts) stamps its own from the
+ * snapshot it actually queried; the two are allowed to disagree by up to that same 60 s
+ * window across a weekly swap.
+ */
+export async function resolveScope(
+  userId: string,
+  categories: Filters['categories'],
+  maxLeaves: number,
+  deps: CategoryDeps,
+): Promise<{ leaves: string[]; scope: ResolvedScope; snapshotVersion: string; datasetWeek: string }> {
   const catalog = await deps.loadCatalog();
   const customIds = categories.selections.filter((s) => s.kind === 'custom').map((s) => s.id);
   const customRows = await deps.loadCustomRows(userId, customIds);
-  return { ...expandSelections(catalog, categories, customRows, maxLeaves), snapshotVersion: catalog.snapshotVersion };
+  return { ...expandSelections(catalog, categories, customRows, maxLeaves), snapshotVersion: catalog.snapshotVersion, datasetWeek: catalog.datasetWeek };
 }
