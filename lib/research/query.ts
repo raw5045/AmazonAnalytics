@@ -49,6 +49,10 @@ const TAIL = 'kcs.current_rank ASC, kcs.search_term_id ASC';
  * per-row branch that leaves some rows NULL and others not within a single snapshot. So rank
  * order is the only order that means anything for this sort key in that case — every row is
  * equally NULL, not distinguishable by volume.
+ *
+ * Sorting by a nullable key excludes rows without a value (the WHERE adds `IS NOT NULL`) so
+ * both directions can use `kcs_avg_reviews_idx`; `NULLS LAST` would defeat the backward scan
+ * (18 s seq scan measured 2026-09-21).
  */
 export function orderByFor(sort: Sort, window: Window): string {
   const dir = sort.direction === 'asc' ? 'ASC' : 'DESC';
@@ -58,23 +62,27 @@ export function orderByFor(sort: Sort, window: Window): string {
     case 'rank':
       return `ORDER BY kcs.current_rank ${dir}, kcs.search_term_id ASC`;
     case 'averageReviews':
-      return `ORDER BY kcs.avg_reviews ${dir} NULLS LAST, ${TAIL}`;
+      // No NULLS LAST: compileSearch pushes kcs.avg_reviews IS NOT NULL into the WHERE whenever
+      // this is the sort field, so nulls never reach the result set and NULLS placement has
+      // nothing to do (see the docstring above and the F1 comment on volumeDelta below).
+      return `ORDER BY kcs.avg_reviews ${dir}, ${TAIL}`;
     case 'wordCount':
-      return `ORDER BY kcs.word_count ${dir} NULLS LAST, ${TAIL}`;
+      // Same reasoning as averageReviews — compileSearch pushes kcs.word_count IS NOT NULL.
+      return `ORDER BY kcs.word_count ${dir}, ${TAIL}`;
     case 'volumeDelta':
-      // No NULLS LAST here, unlike averageReviews/wordCount above (which stay genuinely
-      // nullable in the result set): compileSearch now pushes the eligibility predicate for
-      // EVERY volumeDelta sort, so this expression is never NULL among the rows the WHERE
-      // admits — NULLS placement can't change the result, only the plan. And for the plan, a
-      // bare direction is what the 0044 partial indexes need: they're built plain ASC, which
-      // Postgres pathkey-matches as `ASC NULLS LAST` on a forward scan and `DESC NULLS FIRST`
-      // on a backward one (the implicit default for each direction) — never `DESC NULLS LAST`.
-      // Asking for NULLS LAST on a DESC sort (the old behavior) demanded a pathkey no scan of
-      // this index produces, so the planner fell back to a full sort. Compare migration 0027's
-      // kcs_est_vol_idx, which explicitly declares `DESC NULLS LAST` in its DDL because ITS
-      // sort (see buildOrderBy's rank_desc case in lib/explorer/buildQuery.ts) is over a
-      // genuinely-nullable column and needs that exact placement — a deliberate contrast, not
-      // an inconsistency.
+      // No NULLS LAST here, same as averageReviews/wordCount above since Task 21 F1 (all three
+      // now exclude nulls via a sort-driven WHERE predicate, so NULLS placement can't change the
+      // result set — only the plan): compileSearch pushes the eligibility predicate for EVERY
+      // volumeDelta sort, so this expression is never NULL among the rows the WHERE admits. And
+      // for the plan, a bare direction is what the 0044 partial indexes need: they're built plain
+      // ASC, which Postgres pathkey-matches as `ASC NULLS LAST` on a forward scan and `DESC NULLS
+      // FIRST` on a backward one (the implicit default for each direction) — never `DESC NULLS
+      // LAST`. Asking for NULLS LAST on a DESC sort (the old behavior) demanded a pathkey no scan
+      // of this index produces, so the planner fell back to a full sort. Compare migration 0027's
+      // kcs_est_vol_idx, which explicitly declares `DESC NULLS LAST` in its DDL because ITS sort
+      // (see buildOrderBy's rank_desc case in lib/explorer/buildQuery.ts) is over a
+      // genuinely-nullable column and needs that exact placement — a deliberate contrast, not an
+      // inconsistency.
       return `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ${dir}, ${TAIL}`;
   }
 }
@@ -155,6 +163,14 @@ export function compileSearch(input: CompileInput): CompiledSearch {
     const conds = f.titleGap.slots.map((s) => `${slotColumn(s, mode)} = false`);
     where.push(`(${conds.join(f.titleGap.quantifier === 'all' ? ' AND ' : ' OR ')})`);
   }
+  // Sort-driven null exclusion (Task 21 F1): sorting by a nullable key excludes rows without a
+  // value, so both directions can use the column's index — kcs_avg_reviews_idx is built plain
+  // ASC, and NULLS LAST on a DESC sort demanded a backward-scan pathkey the index can't produce,
+  // falling back to an 18 s seq scan (measured 2026-09-21). A no-op when a bound on the same
+  // field already excludes nulls (e.g. averageReviews: { lt: 500 }). word_count has no dedicated
+  // index but gets the same treatment for consistency. Neither predicate binds an arg.
+  if (sort.field === 'averageReviews') where.push('kcs.avg_reviews IS NOT NULL');
+  if (sort.field === 'wordCount') where.push('kcs.word_count IS NOT NULL');
   // Every volumeDelta sort needs the eligibility guard; the volume-metric movement branch
   // above already pushes it (never both — a rank-metric movement filter does NOT push it, so
   // that combination still needs this branch to run). This predicate binds no args, so it can
@@ -166,7 +182,26 @@ export function compileSearch(input: CompileInput): CompiledSearch {
 
   const whereClause = `WHERE ${where.join('\n        AND ')}`;
   const countArgs = [...args];
-  const countSql = `
+  // A plain `SELECT 1 … LIMIT` count (the default below) lets the planner pick any access path
+  // that satisfies the WHERE. For a volumeDelta sort that's usually kcs_vol_delta_{w}_idx (F2,
+  // Task 21) too, but not always: for the sparse growing/declining shapes the planner's row
+  // estimate for the eligibility+delta-sign predicate is high enough that it expects to fill the
+  // LIMIT quickly by scanning in physical order — except qualifying rows are sparse in physical
+  // order, so it burns CPU instead (measured: 25.3 s, cancelled at the 3 s count cap, reported as
+  // `unknown`). Adding the same ORDER BY the row query already uses doesn't change which rows are
+  // counted (LIMIT + COUNT(*) over a 1-column `SELECT 1` is order-independent), but it does steer
+  // the planner onto the partial expression index, which walks in exactly the eligible,
+  // sign-matching order and stops at COUNT_CAP + 1 rows.
+  const countSql = (sort.field === 'volumeDelta' ? `
+    SELECT COUNT(*)::int AS total
+    FROM (
+      SELECT 1
+      FROM keyword_current_summary kcs
+      ${whereClause}
+      ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ${sort.direction === 'asc' ? 'ASC' : 'DESC'}
+      LIMIT ${COUNT_CAP + 1}
+    ) sub
+  ` : `
     SELECT COUNT(*)::int AS total
     FROM (
       SELECT 1
@@ -174,7 +209,7 @@ export function compileSearch(input: CompileInput): CompiledSearch {
       ${whereClause}
       LIMIT ${COUNT_CAP + 1}
     ) sub
-  `.trim();
+  `).trim();
 
   const orderBy = orderByFor(sort, window);
   const limitParam = next(input.limit);

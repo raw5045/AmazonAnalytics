@@ -127,12 +127,12 @@ describe('compileSearch — movement (Q16, Q17)', () => {
 });
 
 describe('orderByFor and sort-driven predicates (Q20)', () => {
-  it('volume order runs as rank order with the id tie-break; other keys are NULLS LAST with the same tail', () => {
+  it('volume order runs as rank order with the id tie-break; other keys share the same tail, no NULLS LAST (nulls are excluded by the WHERE instead — F1)', () => {
     expect(orderByFor({ field: 'estimatedMonthlySearches', direction: 'desc' }, '4w')).toBe('ORDER BY kcs.current_rank ASC, kcs.search_term_id ASC');
     expect(orderByFor({ field: 'estimatedMonthlySearches', direction: 'asc' }, '4w')).toBe('ORDER BY kcs.current_rank DESC, kcs.search_term_id ASC');
     expect(orderByFor({ field: 'rank', direction: 'desc' }, '4w')).toBe('ORDER BY kcs.current_rank DESC, kcs.search_term_id ASC');
-    expect(orderByFor({ field: 'averageReviews', direction: 'asc' }, '4w')).toBe('ORDER BY kcs.avg_reviews ASC NULLS LAST, kcs.current_rank ASC, kcs.search_term_id ASC');
-    expect(orderByFor({ field: 'wordCount', direction: 'desc' }, '4w')).toBe('ORDER BY kcs.word_count DESC NULLS LAST, kcs.current_rank ASC, kcs.search_term_id ASC');
+    expect(orderByFor({ field: 'averageReviews', direction: 'asc' }, '4w')).toBe('ORDER BY kcs.avg_reviews ASC, kcs.current_rank ASC, kcs.search_term_id ASC');
+    expect(orderByFor({ field: 'wordCount', direction: 'desc' }, '4w')).toBe('ORDER BY kcs.word_count DESC, kcs.current_rank ASC, kcs.search_term_id ASC');
     expect(orderByFor({ field: 'volumeDelta', direction: 'desc' }, '4w')).toBe(`ORDER BY ${DELTA_4W} DESC, kcs.current_rank ASC, kcs.search_term_id ASC`);
   });
   it('a volumeDelta sort without a movement filter still adds the eligibility predicate', () => {
@@ -147,6 +147,38 @@ describe('orderByFor and sort-driven predicates (Q20)', () => {
   it('volume-metric movement + volumeDelta sort: still exactly one eligibility guard (movement and the sort-driven guard never both add it)', () => {
     const c = compileSearch({ ...base, filters: F({ movement: { window: '4w', metric: 'volume', delta: { gt: 0 } } }), sort: { field: 'volumeDelta', direction: 'desc' } });
     expect(norm(c.sql).split(ELIG_4W).length - 1).toBe(1);
+  });
+  it('an averageReviews sort excludes null-review rows so the index serves both directions (F1); the count shares the same WHERE', () => {
+    const c = compileSearch({ ...base, filters: F(), sort: { field: 'averageReviews', direction: 'desc' } });
+    expect(norm(c.sql)).toContain('AND kcs.avg_reviews IS NOT NULL ORDER BY kcs.avg_reviews DESC, kcs.current_rank ASC, kcs.search_term_id ASC');
+    expect(norm(c.countSql)).toContain('kcs.avg_reviews IS NOT NULL LIMIT 10001');
+  });
+  it('an averageReviews sort with an existing reviews bound still adds IS NOT NULL exactly once, and the bound keeps its arg number', () => {
+    const c = compileSearch({ ...base, filters: F({ averageReviews: { lt: 500 } }), sort: { field: 'averageReviews', direction: 'desc' } });
+    const s = norm(c.sql);
+    expect(s).toContain('kcs.avg_reviews < $2');
+    expect(c.args[1]).toBe(500);
+    expect((s.match(/kcs\.avg_reviews IS NOT NULL/g) ?? []).length).toBe(1);
+  });
+  it('a wordCount sort excludes null-word-count rows the same way (no dedicated index, same semantics for consistency); the count shares the same WHERE', () => {
+    const c = compileSearch({ ...base, filters: F(), sort: { field: 'wordCount', direction: 'asc' } });
+    expect(norm(c.sql)).toContain('AND kcs.word_count IS NOT NULL ORDER BY kcs.word_count ASC, kcs.current_rank ASC, kcs.search_term_id ASC');
+    expect(norm(c.countSql)).toContain('kcs.word_count IS NOT NULL LIMIT 10001');
+  });
+  it('a wordCount sort with an existing word-count bound still adds IS NOT NULL exactly once', () => {
+    const c = compileSearch({ ...base, filters: F({ wordCount: { gte: 3 } }), sort: { field: 'wordCount', direction: 'desc' } });
+    const s = norm(c.sql);
+    expect(s).toContain('kcs.word_count >= $2');
+    expect((s.match(/kcs\.word_count IS NOT NULL/g) ?? []).length).toBe(1);
+  });
+  it('a volumeDelta sort steers the count onto the partial index via a matching ORDER BY + LIMIT (F2)', () => {
+    const c = compileSearch({ ...base, filters: F(), sort: { field: 'volumeDelta', direction: 'desc' } });
+    expect(norm(c.countSql)).toContain(`ORDER BY ${DELTA_4W} DESC LIMIT 10001`);
+    expect(c.countArgs).toEqual(c.args.slice(0, -2));
+  });
+  it('a non-volumeDelta sort keeps the plain, unordered count', () => {
+    const c = compileSearch({ ...base, filters: F(), sort: { field: 'rank', direction: 'asc' } });
+    expect(norm(c.countSql)).not.toContain('ORDER BY');
   });
 });
 

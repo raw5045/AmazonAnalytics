@@ -243,6 +243,7 @@ export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' 
       'Search covers keywords seen within 28 days of the dataset week; "current" does not guarantee observation in the latest week.',
       'Comparators are exact: gt 10000 excludes exactly 10000.',
       'Any bound on a metric excludes rows where that metric is null.',
+      'Sorting by averageReviews or wordCount excludes keywords with no value for that field (nulls are never ranked); to include them, sort by something else.',
       `Counts above ${COUNT_CAP.toLocaleString('en-US')} are reported as at_least; never claim a capped result is everything.`,
     ],
     presetRules: [

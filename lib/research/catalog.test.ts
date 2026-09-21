@@ -197,6 +197,8 @@ describe('buildGuide', () => {
     expect(g.limits.maxRowsPerSearch).toBe(1000);
     expect(g.limits.rowsPerMinute).toBe(DEFAULT_LIMITS.rowsPerMinute);
     expect(g.presetRules).toHaveLength(3);
+    // Task 21 F1: sorting by a nullable key excludes rows without a value — the guide says so.
+    expect(g.populationRules.some((r) => r.includes('excludes keywords with no value'))).toBe(true);
     expect(JSON.stringify(g)).not.toMatch(/@/);
   });
 });
