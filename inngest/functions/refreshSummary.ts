@@ -36,6 +36,7 @@
  */
 import { Pool, type PoolClient } from 'pg';
 import { pickFitForWeek, buildVolumeExpressions, type FitParams } from '@/lib/analytics/volumeModel';
+import { countVolumeInversions } from '@/lib/analytics/volumeMonotonicity';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 import { kwmRowToEntry, appendWeek, type ChartSeriesKwmRow } from '@/lib/explorer/chartSeries';
 import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
@@ -449,6 +450,25 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
         '[refreshSummary] VACUUM ANALYZE of stage table failed; relying on autovacuum:',
         (e as Error).message,
       );
+    }
+
+    // 4b′. Monotonicity guard (arc 1): the research volume sort runs as rank
+    //      order, which is only valid while the estimate never increases with
+    //      rank. Log loudly on a violation; never fail the refresh for it.
+    //      Runs outside any transaction (the 4./BEGIN…COMMIT above already
+    //      closed and the swap's BEGIN below hasn't opened yet), same as the
+    //      VACUUM ANALYZE and GIN build around it — so a failed or cancelled
+    //      statement here just throws for this one query; there's no open
+    //      transaction for it to poison.
+    try {
+      const inversions = await countVolumeInversions(client, 'keyword_current_summary_stage');
+      if (inversions > 0) {
+        console.error(`[refreshSummary] VOLUME MONOTONICITY VIOLATED: ${inversions} rank-order inversions in estimated_monthly_volume_current`);
+      } else {
+        console.log('[refreshSummary] volume monotonicity check ok');
+      }
+    } catch (e) {
+      console.warn('[refreshSummary] monotonicity check failed:', (e as Error).message);
     }
 
     // 4c. Build the trigram GIN on the freshly-populated stage column, one-shot
