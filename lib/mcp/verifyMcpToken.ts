@@ -41,7 +41,7 @@ export interface McpAuthExtra {
 }
 
 export type McpAccessDenial = {
-  reason: 'client_not_allowed' | 'no_account' | 'admin_only';
+  reason: 'client_not_allowed' | 'no_account' | 'admin_only' | 'disconnected';
   /** Plain words a client can show the person. */
   message: string;
 };

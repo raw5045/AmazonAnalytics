@@ -13,10 +13,12 @@ const { mockAuth, mockFindFirst, mockDatasetWeek, envMock } = vi.hoisted(() => (
     } as Record<string, string | undefined>,
   },
 }));
+const { mockGetConnection, mockTouch } = vi.hoisted(() => ({ mockGetConnection: vi.fn(), mockTouch: vi.fn() }));
 
 vi.mock('@clerk/nextjs/server', () => ({ auth: mockAuth }));
 vi.mock('@/db/client', () => ({ db: { query: { users: { findFirst: mockFindFirst } } } }));
 vi.mock('@/lib/mcp/datasetWeek', () => ({ currentDatasetWeek: mockDatasetWeek }));
+vi.mock('@/lib/mcp/connections', () => ({ getMcpConnection: mockGetConnection, touchMcpConnection: mockTouch }));
 vi.mock('@/lib/env', () => envMock);
 
 import { GET, POST } from './route';
@@ -81,6 +83,7 @@ describe('/api/mcp', () => {
     delete envMock.env.MCP_ALLOWED_CLIENT_IDS;
     mockAuth.mockResolvedValue(clerkOauth());
     mockFindFirst.mockResolvedValue(adminRow);
+    mockGetConnection.mockResolvedValue(null);
     mockDatasetWeek.mockResolvedValue('2026-09-12');
     for (const m of ['log', 'warn', 'error'] as const) spies.push(vi.spyOn(console, m).mockImplementation(() => {}));
   });
@@ -217,5 +220,33 @@ describe('/api/mcp', () => {
     await post({ authorization: `Bearer ${TOKEN}` });
     expect(consoleLines().length).toBeGreaterThan(0);
     for (const line of consoleLines()) expect(line).not.toContain(TOKEN);
+  });
+
+  it('refuses a disconnected account with a plain 403 that points at the Connect AI page', async () => {
+    mockGetConnection.mockResolvedValueOnce({ status: 'disconnected', lastRequestAt: null, lastClientId: null, disconnectedAt: new Date(), reconnectedAt: null });
+    const res = await post({ authorization: `Bearer ${TOKEN}` });
+    expect(res.status).toBe(403);
+    expect(res.headers.get('www-authenticate')).toBeNull();
+    const body = await res.json();
+    expect(body.reason).toBe('disconnected');
+    expect(body.error_description).toContain('/connect-ai');
+    expect(mockTouch).not.toHaveBeenCalled();
+  });
+
+  it('stamps last-seen for an admitted account with its local id and client id', async () => {
+    const client = await connect();
+    try {
+      await client.callTool({ name: 'whoami', arguments: {} });
+      expect(mockTouch).toHaveBeenCalledWith('uuid-admin', 'client_claude');
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+
+  it('answers 503 when the connection lookup itself fails', async () => {
+    mockGetConnection.mockRejectedValueOnce(new Error('connect ETIMEDOUT'));
+    const res = await post({ authorization: `Bearer ${TOKEN}` });
+    expect(res.status).toBe(503);
+    expect(res.headers.get('www-authenticate')).toBeNull();
   });
 });
