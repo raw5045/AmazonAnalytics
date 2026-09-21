@@ -19,21 +19,13 @@
 import 'server-only';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
-import { volumeDeltaExpr, volumePriorExpr } from './buildQuery';
+import { volumeDeltaExpr, volumePriorExpr, WINDOW_TO_RANK_COLUMN } from './buildQuery';
 import type {
   ExplorerRow,
   MatchMode,
   SortKey,
   WindowKey,
 } from './types';
-
-const WINDOW_TO_RANK_COLUMN: Record<WindowKey, string> = {
-  '1w': 'prior_week_rank',
-  '4w': 'rank_4w_ago',
-  '13w': 'rank_13w_ago',
-  '26w': 'rank_26w_ago',
-  '52w': 'rank_52w_ago',
-};
 
 const WINDOW_TO_IMPROVEMENT_COLUMN: Record<WindowKey, string> = {
   '1w': 'improvement_1w',

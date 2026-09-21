@@ -74,3 +74,14 @@ export async function withReadOnlyTx<T>(
     client.release();
   }
 }
+
+/**
+ * True when `err` is pg-pool's connect-queue timeout: a plain `Error` (no `code`, unlike a
+ * Postgres-originated error, which always carries a SQLSTATE) with the exact message
+ * `'timeout exceeded when trying to connect'`, raised when a caller waits
+ * `connectionTimeoutMillis` for a client without one freeing up. Callers should treat this
+ * as retryable — the pool itself is healthy, the caller just lost the race for a client.
+ */
+export function isPoolConnectTimeout(err: unknown): boolean {
+  return err instanceof Error && err.message === 'timeout exceeded when trying to connect';
+}

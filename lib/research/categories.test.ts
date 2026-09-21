@@ -348,10 +348,13 @@ describe('loadCategoryCatalog', () => {
   it('zero facets with a cached catalog for a DIFFERENT snapshot version throws and does not serve the stale catalog', async () => {
     const query = vi.fn()
       .mockResolvedValueOnce({ rows: SNAP_A_ROWS }) // caches snap-a
-      .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW_SNAP_B }); // now snap-b, but its facets aren't in yet
+      .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW_SNAP_B }) // now snap-b, but its facets aren't in yet
+      .mockResolvedValueOnce({ rows: NO_FACETS_YET_ROW_SNAP_B }); // still no facets — proves the earlier throw left the cache untouched
     const run = runWith(query);
     await loadCategoryCatalog(0, run);
     await expect(loadCategoryCatalog(60_001, run)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', retryable: true });
+    await expect(loadCategoryCatalog(60_002, run)).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', retryable: true });
+    expect(query).toHaveBeenCalledTimes(3);
   });
 
   it('a runner timeout surfaces as QUERY_TIMEOUT, retryable', async () => {
@@ -360,10 +363,9 @@ describe('loadCategoryCatalog', () => {
   });
 
   it('a runner that throws propagates the raw error, never wrapped into DATA_UNAVAILABLE/QUERY_TIMEOUT (withReadOnlyTx rejects raw on a connect-queue timeout — see lib/db/tcpPool.ts)', async () => {
-    const throwingRun: CategoryTxRunner = async () => {
-      throw new Error('boom');
-    };
-    await expect(loadCategoryCatalog(0, throwingRun)).rejects.toThrow('boom');
+    const err = new Error('boom');
+    const throwingRun: CategoryTxRunner = async () => { throw err; };
+    await expect(loadCategoryCatalog(0, throwingRun)).rejects.toBe(err);
   });
 });
 

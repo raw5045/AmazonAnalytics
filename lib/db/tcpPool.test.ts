@@ -18,7 +18,7 @@ vi.mock('pg', async () => {
   return { Pool: MockPool };
 });
 
-import { createTcpPool, withReadOnlyTx, type TxClient } from './tcpPool';
+import { createTcpPool, withReadOnlyTx, isPoolConnectTimeout, type TxClient } from './tcpPool';
 
 class FakeClient extends EventEmitter {
   query: ReturnType<typeof vi.fn>;
@@ -183,5 +183,19 @@ describe('createTcpPool', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('isPoolConnectTimeout', () => {
+  it('is true for an Error with exactly the connect-queue timeout message', () => {
+    expect(isPoolConnectTimeout(new Error('timeout exceeded when trying to connect'))).toBe(true);
+  });
+
+  it('is false for other Errors and for non-Error values', () => {
+    expect(isPoolConnectTimeout(new Error('connection terminated unexpectedly'))).toBe(false);
+    expect(isPoolConnectTimeout(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }))).toBe(false);
+    expect(isPoolConnectTimeout('timeout exceeded when trying to connect')).toBe(false);
+    expect(isPoolConnectTimeout(null)).toBe(false);
+    expect(isPoolConnectTimeout(undefined)).toBe(false);
   });
 });
