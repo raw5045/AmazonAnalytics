@@ -68,8 +68,13 @@ function presetFieldValue(def: PresetDefinition, field: string): unknown {
  * Records that `presetId` would set `field`, and throws INVALID_FILTERS if an earlier preset in
  * this same expansion already set that field to a different (non-deep-equal) value — two presets
  * silently disagreeing on a field would otherwise let iteration order pick a winner with no
- * signal to the caller. Two presets contributing deep-equal values are not a conflict (both
- * simply report the field applied, same as an explicit value that happens to match a preset).
+ * signal to the caller. For a filter field, two presets contributing deep-equal values are not a
+ * conflict (both simply report the field applied, same as an explicit value that happens to
+ * match a preset). That "both report" guarantee is filter-field-only: for the synthetic `sort` /
+ * `comparisonWindow` fields, only the last preset in the expansion that defines the field ends up
+ * reporting it (applyPresetDefinitions' presetSortApp/presetWindowApp are overwritten, not
+ * accumulated, as later presets are processed) — harmless today only because the catalog
+ * invariant test enforces that at most one preset ever defines `sort` or `comparisonWindow`.
  * This check runs before the request's own explicit value (if any) for the field is considered,
  * so an explicit override on the contested field never rescues a preset-vs-preset conflict.
  */
@@ -212,11 +217,15 @@ export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' 
     datasetWeek: ctx.datasetWeek,
     audience: ctx.audience,
     metrics: METRIC_DEFINITIONS,
+    // structuredClone filters/sort: PRESETS is the frozen, process-wide shared catalog (see
+    // deepFreeze) — a guide response must never hand out those references directly, or a caller
+    // mutating its own guide could corrupt every other request's view of the catalog.
+    // comparisonWindow is a plain string, so no aliasing risk; nothing to clone there.
     presets: (Object.keys(PRESETS) as PresetId[]).map((id) => ({
       id,
       description: PRESETS[id].description,
-      filters: PRESETS[id].filters,
-      ...(PRESETS[id].sort ? { sort: PRESETS[id].sort } : {}),
+      filters: structuredClone(PRESETS[id].filters),
+      ...(PRESETS[id].sort ? { sort: structuredClone(PRESETS[id].sort) } : {}),
       ...(PRESETS[id].comparisonWindow ? { comparisonWindow: PRESETS[id].comparisonWindow } : {}),
     })),
     sorts: SORT_FIELDS,

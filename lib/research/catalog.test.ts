@@ -119,28 +119,39 @@ describe('PRESETS catalog invariants', () => {
       }
     }
   });
-  it('preset filter fields are pairwise disjoint, and at most one preset defines sort', () => {
+  it('preset filter fields are pairwise disjoint, and at most one preset defines sort or comparisonWindow', () => {
     const seenBy = new Map<string, string>();
     let sortCount = 0;
+    let windowCount = 0;
     for (const [id, def] of Object.entries(PRESETS)) {
       for (const field of Object.keys(def.filters)) {
         expect(seenBy.has(field), `field ${field} set by both ${seenBy.get(field)} and ${id}`).toBe(false);
         seenBy.set(field, id);
       }
       if (def.sort) sortCount += 1;
+      if (def.comparisonWindow) windowCount += 1;
     }
     expect(sortCount).toBeLessThanOrEqual(1);
+    // noteSetBy's "both agreeing presets report the field applied" guarantee doesn't extend to
+    // sort/comparisonWindow (see its docstring): only the last preset defining one of these ends
+    // up reporting it, since applyPresetDefinitions overwrites presetSortApp/presetWindowApp
+    // rather than accumulating them. At most one preset may define either, so that gap can never
+    // actually surface.
+    expect(windowCount).toBeLessThanOrEqual(1);
   });
 });
 
 describe('applyPresetDefinitions (preset-vs-preset conflicts)', () => {
-  it('rejects two presets that would set the same field to different values', () => {
+  it('rejects two presets that would set the same field to different values, in either order (order-independent)', () => {
     const conflicting: Record<PresetId, PresetDefinition> = {
       ...PRESETS,
       low_review_competition_v1: { ...PRESETS.low_review_competition_v1, filters: { estimatedMonthlySearches: { gte: 5000 } } },
     };
     expect(() => applyPresetDefinitions(req({ presetIds: ['high_demand_v1', 'low_review_competition_v1'] }), conflicting)).toThrow(
       /Presets high_demand_v1 and low_review_competition_v1 both set estimatedMonthlySearches; use one of them\./,
+    );
+    expect(() => applyPresetDefinitions(req({ presetIds: ['low_review_competition_v1', 'high_demand_v1'] }), conflicting)).toThrow(
+      /Presets low_review_competition_v1 and high_demand_v1 both set estimatedMonthlySearches; use one of them\./,
     );
   });
   it('rejects a preset-vs-preset conflict even when the caller supplies an explicit value for the contested field', () => {
@@ -172,7 +183,11 @@ describe('buildGuide', () => {
     expect(g.catalogVersion).toBe(CATALOG_VERSION);
     expect(g.presets.map((p) => p.id)).toEqual(Object.keys(PRESETS));
     expect(g.presets.find((p) => p.id === 'high_demand_v1')?.filters).toEqual({ estimatedMonthlySearches: { gte: 10000 } });
+    // Never the frozen PRESETS singleton itself — a caller mutating its own guide response must
+    // never be able to corrupt the shared catalog every other request relies on.
+    expect(g.presets.find((p) => p.id === 'high_demand_v1')?.filters).not.toBe(PRESETS.high_demand_v1.filters);
     expect(g.presets.find((p) => p.id === 'growing_4w_v1')?.comparisonWindow).toBe('4w');
+    expect(g.presets.find((p) => p.id === 'growing_4w_v1')?.sort).not.toBe(PRESETS.growing_4w_v1.sort);
     expect(g.defaultSort).toEqual(DEFAULT_SORT);
     expect(g.defaultSort).not.toBe(DEFAULT_SORT);
     expect(g.pagination).toMatch(/live/i);
