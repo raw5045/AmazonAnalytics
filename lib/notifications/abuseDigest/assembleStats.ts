@@ -34,7 +34,7 @@ const USER_METRICS = {
 
 /**
  * One row per user that has ANY counter or creation for the day, sorted by
- * reads (explorer queries + detail views) desc. Unknown metric names are
+ * reads (explorer queries + detail views + MCP calls) desc. Unknown metric names are
  * ignored (forward-compat if a future metric ships before the digest knows
  * how to display it).
  */
@@ -80,7 +80,10 @@ export function assemblePerUserActivity(
   for (const [userId, n] of creations.savedViewsCreated) rowFor(userId).savedViewsCreated = n;
   for (const [userId, n] of creations.customCategoriesCreated) rowFor(userId).customCategoriesCreated = n;
 
-  return [...byUser.values()].sort(
-    (a, b) => b.explorerQueries + b.detailViews - (a.explorerQueries + a.detailViews),
-  );
+  // Rank = every read the user initiated, whichever door: explorer queries,
+  // detail views, MCP calls. Calls, not rows — rows are volume, not intent.
+  // The subject-line "reads" pulse and THRESHOLDS.userReadsPerDay stay
+  // explorer + detail on purpose (owner-tracked trend; MCP has its own limiter).
+  const rank = (u: PerUserActivity) => u.explorerQueries + u.detailViews + u.mcpRequests;
+  return [...byUser.values()].sort((a, b) => rank(b) - rank(a));
 }

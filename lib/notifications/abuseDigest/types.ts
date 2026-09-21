@@ -21,7 +21,7 @@ export interface PerUserActivity {
   customCategoriesCreated: number;
   /** CSV exports (explorer_export counter) — capped at 10/day by the route. */
   exports: number;
-  /** MCP tool calls (mcp_request counter) — every accepted call to any of the five research tools or whoami's siblings; failures are not counted. */
+  /** MCP research calls (mcp_request counter): +1 per tool call the research service completed — see recordMcpActivity in lib/research/usage.ts. Refused (rate-limited, invalid) or failed calls are not counted; whoami is never counted. */
   mcpRequests: number;
   /** Rows returned by MCP tools (mcp_rows counter). */
   mcpRows: number;
@@ -33,7 +33,7 @@ export interface ActiveUsersWindow {
   startDay: string;
   /** Last ET day in the window (the digest day), YYYY-MM-DD. */
   endDay: string;
-  /** One row per user active anywhere in the window, sorted by reads desc. */
+  /** One row per user active anywhere in the window, sorted by reads (queries + detail views + MCP calls) desc. */
   users: PerUserActivity[];
 }
 
@@ -42,7 +42,7 @@ export interface AbuseDigestStats {
   day: string;
   totalUsers: number;
   signups: SignupRow[];
-  /** One row per active user on `day`, sorted by reads (queries + detail views) desc. */
+  /** One row per active user on `day`, sorted by reads (queries + detail views + MCP calls) desc. */
   activeUsers: PerUserActivity[];
   /** Trailing 7 ET days ending on `day` (same columns, counters summed across the window). */
   weeklyActiveUsers: ActiveUsersWindow;

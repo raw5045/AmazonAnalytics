@@ -93,6 +93,20 @@ describe('assemblePerUserActivity — exports', () => {
 });
 
 describe('assemblePerUserActivity — MCP', () => {
+  it('ranks MCP calls with explorer reads (calls, not rows)', () => {
+    const rows = assemblePerUserActivity(
+      [
+        { userId: 'ui', metric: 'explorer_query', count: 10 },
+        { userId: 'mcp', metric: 'mcp_request', count: 50 },
+        { userId: 'mcp', metric: 'mcp_rows', count: 20_000 },
+        { userId: 'bulk', metric: 'mcp_request', count: 1 },
+        { userId: 'bulk', metric: 'mcp_rows', count: 100_000 },
+      ],
+      { watchlistAdds: new Map(), savedViewsCreated: new Map(), customCategoriesCreated: new Map() },
+      new Map(),
+    );
+    expect(rows.map((r) => r.userId)).toEqual(['mcp', 'ui', 'bulk']); // 50, 10, 1 — rows never rank
+  });
   it('maps the MCP counters onto the per-user row', () => {
     const rows = assemblePerUserActivity(
       [

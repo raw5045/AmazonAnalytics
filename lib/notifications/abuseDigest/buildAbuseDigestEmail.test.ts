@@ -226,6 +226,11 @@ describe('buildAbuseDigestEmail — MCP columns', () => {
     expect(built.html).toContain('<td style="padding:5px 0 5px 8px;text-align:right;">12</td>');
     expect(built.html).toContain('<td style="padding:5px 0 5px 8px;text-align:right;">480</td>');
     expect(built.text).toContain('12 MCP calls (480 rows)');
+    // Column order is pinned: Exports, then MCP calls, then MCP rows (headers and cells alike).
+    const calls = built.html.indexOf('>MCP calls</th>');
+    expect(calls).toBeGreaterThan(built.html.indexOf('>Exports</th>'));
+    expect(built.html.indexOf('>MCP rows</th>')).toBeGreaterThan(calls);
+    expect(built.html.indexOf('>12</td>')).toBeLessThan(built.html.indexOf('>480</td>'));
   });
 });
 
