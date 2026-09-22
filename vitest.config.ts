@@ -15,6 +15,9 @@ export default defineConfig({
     exclude: [
       '**/node_modules/**',
       '**/.next/**',
+      // The desktop app checks out side-session worktrees under .claude/worktrees,
+      // inside the repo; without this every test file is collected once per worktree.
+      '**/.claude/**',
       ...(isIntegration ? [] : ['tests/integration/**']),
     ],
     // Integration tests hit a shared Neon database and collide on unique
