@@ -2,7 +2,7 @@
  * Pure total-resolution helpers for runExplorerQuery, split out so they
  * carry no env/neon import and can be unit-tested directly.
  */
-import { COUNT_CAP, sortUsesVolumeDelta } from './buildQuery';
+import { COUNT_CAP, sortHidesRows } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters, SeverityKey } from './types';
 
@@ -49,14 +49,15 @@ function noKeepaFilters(f: ExplorerFilters): boolean {
 
 /**
  * True when the filter set is "default landing": no narrowing filters
- * beyond the default severity, and the sort is not a volume-delta sort
- * (imp/decline bypass precomputed totals). Lets us skip the live
- * COUNT(*) and use the precomputed total on meta.
+ * beyond the default severity, and the sort hides no rows (imp/decline's
+ * eligibility predicate and the avg price/reviews sorts' null-key
+ * exclusion bypass precomputed totals). Lets us skip the live COUNT(*)
+ * and use the precomputed total on meta.
  */
 export function canUseDefaultTotal(f: ExplorerFilters): boolean {
-  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
+  // Row-hiding sorts add a WHERE predicate of their own — precomputed totals overcount.
   return (
-    !sortUsesVolumeDelta(f.sort)
+    !sortHidesRows(f.sort)
     && f.q === null
     && f.rankMin === null
     && f.rankMax === null
@@ -76,14 +77,14 @@ export function canUseDefaultTotal(f: ExplorerFilters): boolean {
 
 /**
  * True when the filter set is "broad-category-only + default severity":
- * exactly one broad category filter, no other narrowing, and the sort is
- * not a volume-delta sort (imp/decline bypass precomputed totals). Lets
- * us use the per-category precomputed count from facets.
+ * exactly one broad category filter, no other narrowing, and the sort
+ * hides no rows (imp/decline and the avg sorts bypass precomputed
+ * totals). Lets us use the per-category precomputed count from facets.
  */
 export function canUseCategoryFacet(f: ExplorerFilters): boolean {
-  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
+  // Row-hiding sorts add a WHERE predicate of their own — precomputed totals overcount.
   return (
-    !sortUsesVolumeDelta(f.sort)
+    !sortHidesRows(f.sort)
     && f.q === null
     && f.rankMin === null
     && f.rankMax === null
@@ -104,14 +105,14 @@ export function canUseCategoryFacet(f: ExplorerFilters): boolean {
 /**
  * True when the filter set is "single category-path-only + default
  * severity": exactly ONE category-path filter, no broad cat, no other
- * narrowing, and the sort is not a volume-delta sort (imp/decline bypass
- * precomputed totals). Lets us use the precomputed leaf-facet count.
- * Multi-path selections fall through to the live COUNT(*) path.
+ * narrowing, and the sort hides no rows (imp/decline and the avg sorts
+ * bypass precomputed totals). Lets us use the precomputed leaf-facet
+ * count. Multi-path selections fall through to the live COUNT(*) path.
  */
 export function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
-  // Volume-delta sorts filter rows by eligibility — precomputed totals overcount.
+  // Row-hiding sorts add a WHERE predicate of their own — precomputed totals overcount.
   return (
-    !sortUsesVolumeDelta(f.sort)
+    !sortHidesRows(f.sort)
     && f.q === null
     && f.rankMin === null
     && f.rankMax === null

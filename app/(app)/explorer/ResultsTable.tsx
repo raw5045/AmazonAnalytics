@@ -34,7 +34,7 @@ export function ResultsTable({
   showWatchColumn = false,
   addedAtByKeyword,
   onWatchStarToggle,
-  volSortHidesIneligible = true,
+  sortHidesIneligible = true,
 }: {
   rows: ExplorerRow[];
   window: WindowKey;
@@ -52,11 +52,12 @@ export function ResultsTable({
   /** Called when the ⭐ in any row is toggled. Used by /watchlist to animate-remove. */
   onWatchStarToggle?: (keywordId: string, isNowWatched: boolean) => void;
   /**
-   * Whether the active volume-delta sort hides ineligible rows server-side
-   * (true on the explorer; the watchlist never hides rows — they sort last).
-   * Drives one sentence of the Δ-header tooltip.
+   * Whether a sort that needs a value hides the rows lacking it server-side:
+   * the Δ sorts' eligibility predicate and the avg price/reviews sorts'
+   * null-key exclusion (true on the explorer; the watchlist never hides rows
+   * — they sort last). Drives one sentence of those headers' tooltips.
    */
-  volSortHidesIneligible?: boolean;
+  sortHidesIneligible?: boolean;
 }) {
   // Always carry `from` so the detail page can tell it was reached from the
   // explorer (even the default, unfiltered view) and restore it instantly via
@@ -70,9 +71,22 @@ export function ResultsTable({
   const volSort = currentSort === 'imp' || currentSort === 'decline';
   const deltaTitle =
     'Click to sort by estimated search-volume change in the selected window. First click shows biggest improvements first. '
-    + (volSortHidesIneligible
+    + (sortHidesIneligible
       ? "Keywords whose volume can't be estimated for the comparison week are hidden under this sort."
       : "Keywords whose volume can't be estimated for the comparison week sort last (shown as —).");
+  // The avg price/reviews sorts exclude rows without a value on the explorer
+  // (sortNullKeyColumn in lib/explorer/buildQuery.ts — the plain-ASC avg
+  // indexes can't serve DESC NULLS LAST); the watchlist keeps them, sorted last.
+  const avgPriceTitle =
+    'Mean price across the top-3 clicked products. Click to sort — first click shows cheapest first. '
+    + (sortHidesIneligible
+      ? 'Sorting by this column hides keywords with no average price (top-3 products not enriched).'
+      : 'Keywords with no average price sort last (shown as —).');
+  const avgReviewsTitle =
+    'Mean review count across the top-3 clicked products. Click to sort — first click shows most-reviewed first. '
+    + (sortHidesIneligible
+      ? 'Sorting by this column hides keywords with no average review count (top-3 products not enriched).'
+      : 'Keywords with no average review count sort last (shown as —).');
   const inTitle = (r: ExplorerRow, slot: 1 | 2 | 3): boolean | null => {
     if (matchMode === 'loose') {
       return slot === 1 ? r.keywordInTitle1Loose : slot === 2 ? r.keywordInTitle2Loose : r.keywordInTitle3Loose;
@@ -150,7 +164,7 @@ export function ResultsTable({
               firstClickKey="avg_price_asc"
               currentSort={currentSort}
               align="right"
-              title="Mean price across the top-3 clicked products. Click to sort — first click shows cheapest first."
+              title={avgPriceTitle}
             />
             <SortableHeader
               label="Avg reviews"
@@ -159,7 +173,7 @@ export function ResultsTable({
               firstClickKey="avg_reviews_desc"
               currentSort={currentSort}
               align="right"
-              title="Mean review count across the top-3 clicked products. Click to sort — first click shows most-reviewed first."
+              title={avgReviewsTitle}
             />
             <th className="p-2" title="Top clicked category #1 (broad)">Category</th>
             <th className="p-2" title="Keepa leaf category for the slot-1 ASIN">Leaf category</th>

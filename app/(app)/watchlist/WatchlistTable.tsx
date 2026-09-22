@@ -70,7 +70,7 @@ export function WatchlistTable({
       watchedKeywordIds={watchedKeywordIds}
       showWatchColumn
       addedAtByKeyword={addedAtByKeyword}
-      volSortHidesIneligible={false}
+      sortHidesIneligible={false}
       onWatchStarToggle={(keywordId, isNowWatched) => {
         if (!isNowWatched) {
           setRemovedKeywordIds((prev) => {

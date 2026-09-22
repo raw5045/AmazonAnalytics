@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered, rankSortUsesVolumeWalk } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered, rankSortUsesVolumeWalk, sortNullKeyColumn, sortHidesRows } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters, WindowKey } from './types';
 
@@ -94,8 +94,8 @@ describe('buildExplorerQuery', () => {
 
     it('sorts by ANY column: inner ORDER BY kcs.<col>, outer ORDER BY k.<alias>', () => {
       const reviews = buildExplorerQuery({ ...baseFilters, q: 'hair', sort: 'avg_reviews_desc' });
-      expect(norm(reviews.sql)).toContain('ORDER BY kcs.avg_reviews DESC NULLS LAST');
-      expect(norm(reviews.sql)).toContain('ORDER BY k.avg_reviews DESC NULLS LAST');
+      expect(norm(reviews.sql)).toContain('ORDER BY kcs.avg_reviews DESC LIMIT $');
+      expect(norm(reviews.sql)).toMatch(/ORDER BY k[.]avg_reviews DESC$/);
       const imp = buildExplorerQuery({ ...baseFilters, q: 'hair', window: '4w', sort: 'imp' });
       expect(norm(imp.sql)).toContain('ORDER BY (kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_4w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_4w_ago END) DESC');
       expect(norm(imp.sql)).toContain('ORDER BY k.volume_delta DESC');
@@ -859,7 +859,7 @@ describe('rank sorts with a volume bound take the volume-ordered walk', () => {
     const plain = norm(buildExplorerQuery(baseFilters).sql);
     expect(plain).toContain('ORDER BY kcs.current_rank ASC');
     expect(plain).not.toContain('NULLS LAST, kcs.current_rank');
-    expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_asc', volMax: 10_000 }).sql)).toContain('ORDER BY kcs.avg_reviews ASC NULLS LAST');
+    expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_asc', volMax: 10_000 }).sql)).toContain('ORDER BY kcs.avg_reviews ASC LIMIT $');
     expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'imp', volMax: 10_000 }).sql)).toMatch(/ORDER BY \(kcs\.estimated_monthly_volume_current - CASE/);
   });
 
@@ -868,5 +868,82 @@ describe('rank sorts with a volume bound take the volume-ordered walk', () => {
     expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'added_asc' })).toBe(false);
     expect(rankSortUsesVolumeWalk({ ...baseFilters, sort: 'title_gap', volMax: 5 })).toBe(false);
     expect(norm(buildExplorerQuery({ ...baseFilters, sort: 'added_desc', volMax: 5 }).sql)).toContain('ORDER BY kcs.estimated_monthly_volume_current DESC NULLS LAST, kcs.current_rank ASC');
+  });
+});
+
+describe('avg price/reviews sorts exclude null keys (bare direction, index-served both ways)', () => {
+  // kcs_avg_price_idx / kcs_avg_reviews_idx (0030; 0041 twins) are plain ASC btrees. A backward
+  // scan yields DESC NULLS FIRST, so `DESC NULLS LAST` demanded a pathkey no scan of them
+  // produces and the planner fell back to a Parallel Seq Scan + on-disk top-N sort over all of
+  // kcs (avg_reviews_desc: 23.1 s cold / 2.7 s warm on production, 2026-09-22). With null keys
+  // excluded in the WHERE, NULLS placement can no longer change the result set, so both
+  // directions order with a bare ASC/DESC the index serves. Same rule as the research tool
+  // (lib/research/query.ts, 0e2f28f) and the explorer's own imp/decline eligibility predicate.
+  const NULL_KEY_SORTS = [
+    ['avg_reviews_desc', 'avg_reviews', 'DESC'],
+    ['avg_reviews_asc', 'avg_reviews', 'ASC'],
+    ['avg_price_desc', 'avg_price_cents', 'DESC'],
+    ['avg_price_asc', 'avg_price_cents', 'ASC'],
+  ] as const;
+
+  it.each(NULL_KEY_SORTS)('legacy path: %s excludes NULL %s in rows AND count and orders with a bare %s', (sort, col, dir) => {
+    const { sql, countSql } = buildExplorerQuery({ ...baseFilters, sort }, '2026-09-19');
+    expect(norm(sql)).toContain(`kcs.${col} IS NOT NULL`);
+    expect(norm(countSql)).toContain(`kcs.${col} IS NOT NULL`);
+    expect(norm(sql)).toContain(`ORDER BY kcs.${col} ${dir} LIMIT $`);
+    expect(norm(sql)).not.toContain('NULLS LAST');
+  });
+
+  it('q path: inner WHERE and the fallback count carry the predicate; inner and outer ORDER BY drop NULLS LAST', () => {
+    const { sql, countSql } = buildExplorerQuery({ ...baseFilters, sort: 'avg_price_desc', q: 'lamp' }, '2026-09-19');
+    const n = norm(sql);
+    const inner = n.slice(0, n.indexOf(') k JOIN'));
+    expect(inner).toContain('kcs.avg_price_cents IS NOT NULL');
+    expect(n).toContain('ORDER BY kcs.avg_price_cents DESC LIMIT $');
+    expect(n).toMatch(/ORDER BY k\.avg_price_cents DESC$/);
+    expect(n).not.toContain('NULLS LAST');
+    expect(norm(countSql)).toContain('kcs.avg_price_cents IS NOT NULL');
+  });
+
+  it('the predicate binds no args (countArgs prefix invariant holds)', () => {
+    const plain = buildExplorerQuery({ ...baseFilters, sort: 'rank' }, '2026-09-19');
+    const sorted = buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_desc' }, '2026-09-19');
+    expect(sorted.args).toEqual(plain.args);
+    expect(sorted.countArgs).toEqual(plain.countArgs);
+  });
+
+  it('every other sort gets no null-key predicate', () => {
+    for (const sort of ['rank', 'rank_desc', 'imp', 'decline', 'title_gap', 'added_desc'] as const) {
+      const { sql, countSql } = buildExplorerQuery({ ...baseFilters, sort, window: '4w' }, '2026-09-19');
+      expect(norm(sql)).not.toContain('avg_reviews IS NOT NULL');
+      expect(norm(sql)).not.toContain('avg_price_cents IS NOT NULL');
+      expect(norm(countSql)).not.toContain('avg_reviews IS NOT NULL');
+      expect(norm(countSql)).not.toContain('avg_price_cents IS NOT NULL');
+    }
+  });
+
+  it('composes with an explicit reviews bound (bound and predicate both present)', () => {
+    const { sql } = buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_desc', reviewsMax: 500 }, '2026-09-19');
+    expect(norm(sql)).toContain('kcs.avg_reviews <= $');
+    expect(norm(sql)).toContain('kcs.avg_reviews IS NOT NULL');
+  });
+
+  it('sortNullKeyColumn names the nullable sort column, null for every other sort', () => {
+    expect(sortNullKeyColumn('avg_reviews_desc')).toBe('avg_reviews');
+    expect(sortNullKeyColumn('avg_reviews_asc')).toBe('avg_reviews');
+    expect(sortNullKeyColumn('avg_price_desc')).toBe('avg_price_cents');
+    expect(sortNullKeyColumn('avg_price_asc')).toBe('avg_price_cents');
+    for (const sort of ['rank', 'rank_desc', 'imp', 'decline', 'title_gap', 'added_asc', 'added_desc'] as const) {
+      expect(sortNullKeyColumn(sort)).toBeNull();
+    }
+  });
+
+  it('sortHidesRows is true for exactly the sorts that add their own WHERE predicate', () => {
+    for (const sort of ['imp', 'decline', 'avg_reviews_desc', 'avg_reviews_asc', 'avg_price_desc', 'avg_price_asc'] as const) {
+      expect(sortHidesRows(sort)).toBe(true);
+    }
+    for (const sort of ['rank', 'rank_desc', 'title_gap', 'added_asc', 'added_desc'] as const) {
+      expect(sortHidesRows(sort)).toBe(false);
+    }
   });
 });

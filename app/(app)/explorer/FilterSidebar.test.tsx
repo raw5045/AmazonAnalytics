@@ -81,3 +81,26 @@ describe('FilterSidebar range metric toggle', () => {
     expect(screen.getByRole('button', { name: /filters applied/i })).toBeDisabled();
   });
 });
+
+describe('FilterSidebar sort hint (sorts that hide rows without a sort key)', () => {
+  it('explains the null-key exclusion under an avg sort and says nothing under rank', () => {
+    const { unmount } = render(
+      <FilterSidebar filters={{ ...EXPLORER_DEFAULTS, sort: 'avg_reviews_desc' }} categories={[]} leafCategories={[]} />,
+    );
+    expect(screen.getByText(/no average review count .*hidden under this sort/i)).toBeInTheDocument();
+    unmount();
+    render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
+    expect(screen.queryByText(/hidden under this sort/i)).not.toBeInTheDocument();
+  });
+
+  it('follows the pending sort before Apply, including the volume-movement sorts', () => {
+    render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
+    const select = screen.getByDisplayValue('Best current rank');
+    fireEvent.change(select, { target: { value: 'avg_price_asc' } });
+    expect(screen.getByText(/no average price .*hidden under this sort/i)).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: 'imp' } });
+    expect(screen.getByText(/volume can't be estimated .*hidden under this sort/i)).toBeInTheDocument();
+    fireEvent.change(select, { target: { value: 'rank_desc' } });
+    expect(screen.queryByText(/hidden under this sort/i)).not.toBeInTheDocument();
+  });
+});

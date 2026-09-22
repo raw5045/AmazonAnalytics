@@ -42,6 +42,21 @@ const SORTS: Array<{ value: SortKey; label: string }> = [
   { value: 'avg_reviews_desc', label: 'Most avg reviews (top-3)' },
 ];
 
+/**
+ * One line under the Sort select for the sorts that hide rows server-side —
+ * each adds a WHERE predicate of its own (sortHidesRows in
+ * lib/explorer/buildQuery.ts): the Δ-volume eligibility guard, and the avg
+ * price/reviews null-key exclusion. Keyed by SortKey; absent = no hint.
+ */
+const SORT_HINTS: Partial<Record<SortKey, string>> = {
+  imp: "Keywords whose volume can't be estimated for the comparison week are hidden under this sort.",
+  decline: "Keywords whose volume can't be estimated for the comparison week are hidden under this sort.",
+  avg_price_asc: 'Keywords with no average price (top-3 products not enriched) are hidden under this sort.',
+  avg_price_desc: 'Keywords with no average price (top-3 products not enriched) are hidden under this sort.',
+  avg_reviews_asc: 'Keywords with no average review count (top-3 products not enriched) are hidden under this sort.',
+  avg_reviews_desc: 'Keywords with no average review count (top-3 products not enriched) are hidden under this sort.',
+};
+
 const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
   { value: '', label: 'Show all (no title filter)' },
   { value: 'any', label: 'Missing from any selected' },
@@ -252,6 +267,9 @@ export function FilterSidebar({
             </option>
           ))}
         </select>
+        {SORT_HINTS[pending.sort] && (
+          <p className="text-xs text-gray-500 mt-1">{SORT_HINTS[pending.sort]}</p>
+        )}
       </FieldGroup>
 
       <FieldGroup label="Search term contains">
