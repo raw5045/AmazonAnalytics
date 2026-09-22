@@ -204,7 +204,7 @@ export const METRIC_DEFINITIONS: Array<{ name: string; definition: string }> = [
   { name: 'rank', definition: 'Amazon search-frequency rank for the current dataset week; lower is better. Not a product position.' },
   { name: 'averageReviews', definition: 'Stored integer average of review counts over the observed top three clicked products; null when unobserved. Unknown never means zero.' },
   { name: 'wordCount', definition: 'Words in the normalized keyword (hyphenated terms count once).' },
-  { name: 'volumeDelta', definition: 'estimatedMonthlySearches minus the prior-window estimate; a missing prior rank uses a zero baseline only when baseline=include_not_observed and is labelled not_observed.' },
+  { name: 'volumeDelta', definition: 'estimatedMonthlySearches minus the prior-window estimate; a missing prior rank uses a zero baseline (labelled not_observed) whenever movement.baseline is include_not_observed or a volumeDelta sort is used without an observed_only movement filter.' },
   { name: 'categoryPath', definition: 'Full Keepa category path of the most-clicked product: a proxy for the keyword niche, not proof every product is in it.' },
   { name: 'severity', definition: 'Fake-volume indicator: none, warning, critical, or null (never evaluated). Indicators, not proof.' },
 ];

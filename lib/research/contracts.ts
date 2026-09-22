@@ -249,7 +249,7 @@ export const searchToolInputSchema = z.strictObject({
     .max(MAX_CURSOR_LENGTH)
     .optional()
     .describe(
-      "Continuation token from the previous page's pagination.nextCursor. Send it ALONE; any other key with it is rejected. Expires after 15 minutes or at the weekly refresh (SEARCH_EXPIRED: start a new search).",
+      "Continuation token from the previous page's pagination.nextCursor. Send it ALONE; any other key with it is rejected. Expires at the search's pagination.expiresAt or at the weekly refresh (SEARCH_EXPIRED: start a new search).",
     ),
   schemaVersion: shape.schemaVersion.optional().describe('Required for a new search; always 1.'),
   presetIds: optionalWithoutDefault(shape.presetIds).describe(

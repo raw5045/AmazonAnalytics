@@ -34,6 +34,10 @@ describe('/api/mcp/connection', () => {
     mockRequireUser.mockResolvedValue(admin);
     mockGet.mockResolvedValue(null);
     delete envMock.env.MCP_AUDIENCE;
+    // M-5: MCP_ENABLED is live in production (Task 22 Step 3's ordering note) — default it on
+    // here so every other test below exercises the route's real logic; the kill-switch test
+    // further down unsets/zeros it explicitly.
+    envMock.env.MCP_ENABLED = '1';
   });
 
   it('GET reports the status (never-connected reads as enabled) with no-store', async () => {
@@ -108,5 +112,19 @@ describe('/api/mcp/connection', () => {
   it('a FORBIDDEN AuthError maps to 403', async () => {
     mockRequireUser.mockRejectedValue(new AuthError('FORBIDDEN', 'Not allowed'));
     expect((await GET()).status).toBe(403);
+  });
+
+  it('M-5: the kill switch 404s both handlers when MCP_ENABLED is unset or "0", before touching auth or the DB', async () => {
+    delete envMock.env.MCP_ENABLED;
+    expect((await GET()).status).toBe(404);
+    expect((await post({ action: 'disconnect' })).status).toBe(404);
+
+    envMock.env.MCP_ENABLED = '0';
+    expect((await GET()).status).toBe(404);
+    expect((await post({ action: 'disconnect' })).status).toBe(404);
+
+    expect(mockRequireUser).not.toHaveBeenCalled();
+    expect(mockGet).not.toHaveBeenCalled();
+    expect(mockSet).not.toHaveBeenCalled();
   });
 });

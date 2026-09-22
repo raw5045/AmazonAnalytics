@@ -113,6 +113,20 @@ describe('search: a new request', () => {
     });
     expect(res.provenance.volumeIsExtrapolated).toBe(true);
   });
+  it('I-1: a bare volumeDelta sort discloses the zero baseline; an observed_only movement filter does not', async () => {
+    const deps = makeDeps();
+    const svc = createResearchService(deps);
+    const bare = await svc.search(actor, { schemaVersion: 1, sort: { field: 'volumeDelta', direction: 'desc' } });
+    expect(bare.warnings.map((w) => w.code)).toContain('BASELINE_NOT_OBSERVED');
+    expect(bare.rows[0].movement).toBeDefined();
+
+    const observedOnly = await svc.search(actor, {
+      schemaVersion: 1,
+      sort: { field: 'volumeDelta', direction: 'desc' },
+      filters: { movement: { window: '4w', metric: 'volume', delta: { gt: 0 } } },
+    });
+    expect(observedOnly.warnings.map((w) => w.code)).not.toContain('BASELINE_NOT_OBSERVED');
+  });
   it('I4d: a SEARCH_EXPIRED thrown by runSearch propagates unchanged, and record is never called', async () => {
     const err = searchExpiredError('snapshot_changed');
     const deps = makeDeps({ runSearch: vi.fn(async () => { throw err; }) });

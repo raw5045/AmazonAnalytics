@@ -135,7 +135,15 @@ function buildWarnings(args: { filters: Filters; sort: Sort; meta: SnapshotMeta;
       message: 'The dataset week predates every calibration month, so this volume estimate applies the earliest calibration fit backward in time; treat it as directional.',
     });
   }
-  if (args.filters.movement?.baseline === 'include_not_observed') w.push({ code: 'BASELINE_NOT_OBSERVED', message: 'Rows with baselineStatus not_observed use a zero baseline because the keyword was unranked then; that is not evidence demand was zero.' });
+  // I-1 (Task 15 re-review): the zero baseline isn't only an include_not_observed thing — a
+  // bare volumeDelta sort with no movement filter at all also includes never-observed keywords
+  // at that same zero baseline (rowCtx.includeMovement's own `|| sort.field === 'volumeDelta'`
+  // in search() above is what puts them on the page in the first place). Both populations get
+  // the same disclosure; only an explicit observed_only movement filter excludes them and
+  // suppresses this warning.
+  if ((args.filters.movement === null && args.sort.field === 'volumeDelta') || args.filters.movement?.baseline === 'include_not_observed') {
+    w.push({ code: 'BASELINE_NOT_OBSERVED', message: 'Rows with baselineStatus not_observed use a zero baseline because the keyword was unranked then; that is not evidence demand was zero.' });
+  }
   if (args.filters.averageReviews || args.sort.field === 'averageReviews') w.push({ code: 'PARTIAL_REVIEW_COVERAGE_POSSIBLE', message: 'averageReviews is the stored average over the observed top-three products; some rows may cover fewer than three.' });
   if (args.pagination.nextCursor) w.push({ code: 'LIVE_PAGINATION', message: 'Pages are computed live; continue with {cursor} only. A mid-week product sync can shift review-sorted pages slightly; a weekly refresh expires the cursor.' });
   if (args.pagination.capReason === 'max_rows') w.push({ code: 'RESULTS_CAPPED', message: `Only the first ${args.pagination.offset + args.pagination.returnedCount} matching rows are reachable per search; more matches exist. Narrow the criteria to see them.` });

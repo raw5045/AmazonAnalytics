@@ -103,13 +103,15 @@ describe('errorResult', () => {
     spy.mockRestore();
   });
 
-  it('maps a non-Error throw (e.g. a string) the same way, without throwing itself, and logs only the tool (no stack line)', () => {
+  it('maps a non-Error throw (e.g. a string) the same way, without throwing itself, and logs the tool plus the thrown value itself (no stack line)', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const r = errorResult('a bare string throw', 'search_keywords');
     expect(r.isError).toBe(true);
     expect(JSON.parse((r.content[0] as { text: string }).text).error.code).toBe('DATA_UNAVAILABLE');
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(spy.mock.calls[0][1] as string)).toEqual({ tool: 'search_keywords' });
+    // Task 15 minor 2: a primitive throw has no `.message`, so `message` falls back to
+    // String(e) — `throw 'boom'` must still log its own value, not just `tool`.
+    expect(JSON.parse(spy.mock.calls[0][1] as string)).toEqual({ tool: 'search_keywords', message: 'a bare string throw' });
     spy.mockRestore();
   });
 });

@@ -39,7 +39,12 @@ export function errorResult(e: unknown, tool: string): CallToolResult {
     JSON.stringify({
       tool,
       name: (e as { name?: unknown })?.name,
-      message: (e as { message?: unknown })?.message,
+      // Task 15 minor 2 (re-review): a non-Error throw (e.g. `throw 'boom'`) has no `.message`,
+      // so the old `(e as { message?: unknown })?.message` logged nothing but `tool` — the
+      // thrown value itself never reached the log. `instanceof Object` still reads the real
+      // `.message` off an Error (or any thrown object with one); a primitive throw falls back
+      // to String(e) so its value is always captured.
+      message: e instanceof Object ? (e as { message?: unknown }).message : String(e),
       code: (e as { code?: unknown })?.code,
     }),
   );

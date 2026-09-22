@@ -21,8 +21,8 @@ describe('getResearchPool', () => {
     expect(createTcpPool).toHaveBeenCalledTimes(1);
   });
 
-  it('creates the pool with the research name, researchLimits().poolMax, and env.DATABASE_URL', () => {
+  it('creates the pool with the research name, researchLimits().poolMax, env.DATABASE_URL, and an 8s connect budget', () => {
     getResearchPool();
-    expect(createTcpPool).toHaveBeenCalledWith({ name: 'research', max: 4, connectionString: 'postgres://test' });
+    expect(createTcpPool).toHaveBeenCalledWith({ name: 'research', max: 4, connectionString: 'postgres://test', connectionTimeoutMillis: 8_000 });
   });
 });

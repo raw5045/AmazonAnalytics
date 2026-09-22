@@ -152,6 +152,11 @@ describe('research tools over an in-memory MCP connection', () => {
     expect(search.description).toContain(String(PAGE_SIZE_MAX));
     expect(search.description).toContain(COUNT_CAP.toLocaleString('en-US'));
     expect(search.description).toContain('{ cursor }');
+    // I-1 (Task 15 re-review): the sort sentence discloses that a bare volumeDelta sort (no
+    // movement filter) includes never-observed keywords at a zero baseline.
+    expect(search.description).toContain(
+      'A volumeDelta sort without a movement filter includes never-observed keywords at a zero baseline (labelled not_observed); add movement with baseline observed_only to exclude them.',
+    );
   });
 
   it('calls the service with the gate-supplied actor and returns structured content', async () => {
@@ -201,6 +206,11 @@ describe('research tools over an in-memory MCP connection', () => {
     const r = await client.callTool({ name: 'search_keywords', arguments: { cursor } });
     expect(r.isError).toBeFalsy();
     expect(service.search).toHaveBeenLastCalledWith(actor, { cursor });
+    // Task 15 minor 3 (re-review): toHaveBeenCalledWith's deep-equality treats an explicit
+    // `undefined`-valued key the same as an absent one, so it alone would not catch a
+    // regression that injected e.g. `schemaVersion: undefined` alongside `cursor`. Object.keys
+    // is strict about own keys regardless of value, so this pins the wire shape exactly.
+    expect(Object.keys(vi.mocked(service.search).mock.lastCall![1] as object)).toEqual(['cursor']);
   });
 
   it('rejects a hallucinated key via the SDK, before the service ever runs', async () => {

@@ -25,7 +25,7 @@ function searchDescription(limits: Pick<ResearchLimits, 'maxRowsPerSearch'>): st
   return [
     'Search current Amazon keywords with exact filters. Comparators are exact (gt 10000 excludes 10000); any bound excludes null values.',
     'Resolve category words with resolve_categories first and pass its selection objects in filters.categories.selections (several = OR; all other filters = AND).',
-    'A range is { gt?, gte?, lt?, lte? }. Sorts: estimatedMonthlySearches (default desc), rank, averageReviews, wordCount, volumeDelta.',
+    'A range is { gt?, gte?, lt?, lte? }. Sorts: estimatedMonthlySearches (default desc), rank, averageReviews, wordCount, volumeDelta. A volumeDelta sort without a movement filter includes never-observed keywords at a zero baseline (labelled not_observed); add movement with baseline observed_only to exclude them.',
     `Next page: call again with { cursor } only. Pages return up to ${PAGE_SIZE_MAX} rows each (default 50) and are live; at most ${limits.maxRowsPerSearch.toLocaleString('en-US')} rows are reachable per search; totals above ${COUNT_CAP.toLocaleString('en-US')} are reported as at_least. Never present a capped page as everything.`,
     'A follow-up (tighten a bound, drop a filter) is a new search with the complete filter set; the server keeps no conversation state. Zero rows is a true empty result: report it, do not widen the criteria unasked. There is no cost, PPC or profitability data.',
     'estimatedMonthlySearches is an estimate from rank and calibration; averageReviews is the stored average over observed top-three products.',

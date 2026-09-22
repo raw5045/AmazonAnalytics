@@ -177,6 +177,15 @@ describe('applyPresetDefinitions (preset-vs-preset conflicts)', () => {
   });
 });
 
+describe('METRIC_DEFINITIONS', () => {
+  it('I-1: volumeDelta discloses the zero baseline for both include_not_observed and a bare volumeDelta sort', () => {
+    const def = METRIC_DEFINITIONS.find((m) => m.name === 'volumeDelta')!;
+    expect(def.definition).toContain(
+      'a missing prior rank uses a zero baseline (labelled not_observed) whenever movement.baseline is include_not_observed or a volumeDelta sort is used without an observed_only movement filter.',
+    );
+  });
+});
+
 describe('buildGuide', () => {
   it('describes every preset with its exact thresholds and the live-pagination rule', () => {
     const g = buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS });

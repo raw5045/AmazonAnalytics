@@ -156,6 +156,8 @@ reported. Concurrency is bounded by a dedicated research pool (max 4
 connections, built by the same `lib/db/tcpPool.ts` factory the Explorer's
 broad path uses) plus the statement timeout, not by leases.
 
+[Implementation note 2026-09-21: the bound is measured on the structured payload; the MCP wire body carries it twice (structuredContent plus the required text copy), so the JSON-RPC body can reach ~2× the bound.]
+
 ### 3.7 Errors (parent §16) — arc 1 subset
 
 `INVALID_FILTERS`, `UNSUPPORTED_FILTER`, `CATEGORY_NOT_AVAILABLE`,
@@ -283,6 +285,8 @@ sync touching review averages and category paths, so a review-sorted or
 category-filtered page can shift by a few rows mid-week. The guide and
 the response say so (`warnings: LIVE_PAGINATION`). Rotating the secret
 expires outstanding cursors.
+
+[Implementation note 2026-09-21: the signed payload carries the full validated request (v, req, snap, off, ps, exp, uid, ch, tm) instead of a filter hash, because a continuation is { cursor } alone and the service re-applies presets from req; see lib/research/cursor.ts.]
 
 ### 5.4 `resolve_categories`, `get_keyword_details`, `get_keyword_history`
 

@@ -6,7 +6,7 @@
 import { NextResponse } from 'next/server';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/AuthError';
-import { mcpAudience } from '@/lib/mcp/config';
+import { mcpAudience, mcpEnabled } from '@/lib/mcp/config';
 import { connectAiEligible } from '@/lib/mcp/eligibility';
 import { getMcpConnection, setMcpConnectionStatus } from '@/lib/mcp/connections';
 import type { User } from '@/db/schema';
@@ -24,6 +24,10 @@ function authFailure(e: unknown): NextResponse {
 }
 
 export async function GET() {
+  // M-5 (Task 15 re-review): same kill switch as /api/mcp itself (app/api/mcp/route.ts) —
+  // dark before touching auth or the DB, so flipping MCP_ENABLED off also dark-mode's the
+  // Connect AI page's own status/disconnect API, not just the protocol endpoint.
+  if (!mcpEnabled()) return new NextResponse(null, { status: 404 });
   let user: User | null;
   try {
     user = await eligibleUser();
@@ -39,6 +43,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  // M-5: see the GET handler's comment above — same kill switch, checked first.
+  if (!mcpEnabled()) return new NextResponse(null, { status: 404 });
   const site = req.headers.get('sec-fetch-site');
   if (site && site !== 'same-origin' && site !== 'none') {
     return NextResponse.json({ error: 'Cross-site requests are not allowed.' }, { status: 403 });

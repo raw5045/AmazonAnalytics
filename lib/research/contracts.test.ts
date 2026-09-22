@@ -349,7 +349,7 @@ describe('searchToolInputSchema (the published MCP tool input)', () => {
     // The whole point of unwrapping every ZodDefault/ZodPrefault before .optional(): the SDK
     // hands parseSearchInput its own PARSED output, so a defaulted sibling here would turn a
     // bare `{ cursor }` continuation into "unexpected keys with cursor".
-    expect(searchToolInputSchema.parse({ cursor: 'x'.repeat(40) })).toEqual({ cursor: 'x'.repeat(40) });
+    expect(searchToolInputSchema.parse({ cursor: 'x'.repeat(40) })).toStrictEqual({ cursor: 'x'.repeat(40) });
   });
 
   it('carries the field-level descriptions the published JSON schema depends on', () => {

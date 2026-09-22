@@ -1,7 +1,7 @@
 /** Stable domain codes (amendment §3.7). Messages are safe to show a person; never SQL, tokens or other accounts. */
 export const RESEARCH_ERROR_CODES = [
   'INVALID_FILTERS',
-  'UNSUPPORTED_FILTER',
+  'UNSUPPORTED_FILTER', // reserved: not thrown in arc 1
   'CATEGORY_NOT_AVAILABLE',
   'KEYWORD_NOT_FOUND',
   'SEARCH_EXPIRED',
