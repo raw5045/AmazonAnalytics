@@ -26,6 +26,10 @@ export default defineConfig({
           forks: { singleFork: true },
           fileParallelism: false,
           sequence: { concurrent: false },
+          // Suite-wide backstop: sweep orphaned synthetic test users out of the
+          // production DB after the run, in case a test was killed before its
+          // afterAll. See tests/integration/globalSetup.ts.
+          globalSetup: ['./tests/integration/globalSetup.ts'],
         }
       : {}),
   },
