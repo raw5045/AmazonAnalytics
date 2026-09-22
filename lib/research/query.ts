@@ -192,24 +192,23 @@ export function compileSearch(input: CompileInput): CompiledSearch {
   // counted (LIMIT + COUNT(*) over a 1-column `SELECT 1` is order-independent), but it does steer
   // the planner onto the partial expression index, which walks in exactly the eligible,
   // sign-matching order and stops at COUNT_CAP + 1 rows.
-  const countSql = (sort.field === 'volumeDelta' ? `
+  // Only when nothing more selective is in play: with a leaf-path OR-set or a text match the
+  // plain count already rides the leaf-path / trigram bitmap (69-200 ms measured), and the extra
+  // ORDER BY would drag the whole partial index into a BitmapAnd (6.9 s measured for the lighting
+  // scope) — so the steering is reserved for the unscoped shapes where it is the only fast path.
+  const dir = sort.direction === 'asc' ? 'ASC' : 'DESC';
+  const steerCount = sort.field === 'volumeDelta' && input.leaves.length === 0 && f.text === null;
+  const countOrderBy = steerCount ? `ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ${dir}
+      ` : '';
+  const countSql = `
     SELECT COUNT(*)::int AS total
     FROM (
       SELECT 1
       FROM keyword_current_summary kcs
       ${whereClause}
-      ORDER BY ${volumeDeltaExpr(window, 'kcs.')} ${sort.direction === 'asc' ? 'ASC' : 'DESC'}
-      LIMIT ${COUNT_CAP + 1}
+      ${countOrderBy}LIMIT ${COUNT_CAP + 1}
     ) sub
-  ` : `
-    SELECT COUNT(*)::int AS total
-    FROM (
-      SELECT 1
-      FROM keyword_current_summary kcs
-      ${whereClause}
-      LIMIT ${COUNT_CAP + 1}
-    ) sub
-  `).trim();
+  `.trim();
 
   const orderBy = orderByFor(sort, window);
   const limitParam = next(input.limit);

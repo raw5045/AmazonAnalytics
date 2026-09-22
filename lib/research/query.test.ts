@@ -180,6 +180,16 @@ describe('orderByFor and sort-driven predicates (Q20)', () => {
     const c = compileSearch({ ...base, filters: F(), sort: { field: 'rank', direction: 'asc' } });
     expect(norm(c.countSql)).not.toContain('ORDER BY');
   });
+  it('the steering follows the sort direction and the window (F2: asc, 13w)', () => {
+    const c = compileSearch({ ...base, filters: F(), window: '13w', sort: { field: 'volumeDelta', direction: 'asc' } });
+    expect(norm(c.countSql)).toContain('ORDER BY (kcs.estimated_monthly_volume_current - CASE WHEN kcs.rank_13w_ago IS NULL THEN 0 ELSE kcs.estimated_monthly_volume_13w_ago END) ASC LIMIT 10001');
+  });
+  it('a volumeDelta sort with a leaf scope or a text match keeps the plain count (the bitmap path is faster; F2 probe 2)', () => {
+    const scoped = compileSearch({ ...base, filters: F(), leaves: ['A › B'], sort: { field: 'volumeDelta', direction: 'desc' } });
+    expect(norm(scoped.countSql)).not.toContain('ORDER BY');
+    const text = compileSearch({ ...base, filters: F({ text: { value: 'lamp' } }), sort: { field: 'volumeDelta', direction: 'desc' } });
+    expect(norm(text.countSql)).not.toContain('ORDER BY');
+  });
 });
 
 describe('mapSearchRow', () => {
