@@ -8,8 +8,10 @@ import {
   clerkFrontendApiUrl,
   mcpAllowedClientIds,
   mcpAudience,
+  mcpClientLabel,
   mcpEnabled,
   mcpResourceUrl,
+  resetMcpConfigWarningsForTests,
 } from './config';
 
 const PK_FOR = (host: string) => `pk_test_${Buffer.from(`${host}$`).toString('base64')}`;
@@ -22,6 +24,7 @@ describe('mcp config', () => {
       NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: PK_FOR('clerk.keywordquarry.com'),
     };
     warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resetMcpConfigWarningsForTests();
   });
   afterEach(() => warn.mockRestore());
 
@@ -43,11 +46,22 @@ describe('mcp config', () => {
     expect(mcpAudience()).toBe('all');
   });
 
-  it('treats an unrecognised audience as admin and warns once per read', () => {
+  it('treats an unrecognised audience as admin and warns only once per process, not on every read', () => {
     envMock.env.MCP_AUDIENCE = 'everyone';
+    expect(mcpAudience()).toBe('admin');
+    expect(mcpAudience()).toBe('admin');
     expect(mcpAudience()).toBe('admin');
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain('MCP_AUDIENCE');
+  });
+
+  it('resetMcpConfigWarningsForTests lets the audience warning fire again', () => {
+    envMock.env.MCP_AUDIENCE = 'everyone';
+    expect(mcpAudience()).toBe('admin');
+    expect(warn).toHaveBeenCalledTimes(1);
+    resetMcpConfigWarningsForTests();
+    expect(mcpAudience()).toBe('admin');
+    expect(warn).toHaveBeenCalledTimes(2);
   });
 
   it('parses the client allowlist as a trimmed comma list, empty when unset', () => {
@@ -91,5 +105,12 @@ describe('mcp config', () => {
   it('throws on a publishable key that does not decode to a host', () => {
     envMock.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = 'pk_test_!!!';
     expect(() => clerkFrontendApiUrl()).toThrow(/publishable key/i);
+  });
+
+  it('labels the two pinned client ids and falls back to the raw id, or "unknown client" for null', () => {
+    expect(mcpClientLabel('16oat62Xksi7U2Ri')).toBe('Claude');
+    expect(mcpClientLabel('WzrKBzjxqjhn2pUR')).toBe('ChatGPT');
+    expect(mcpClientLabel('some_other_client_id')).toBe('some_other_client_id');
+    expect(mcpClientLabel(null)).toBe('unknown client');
   });
 });

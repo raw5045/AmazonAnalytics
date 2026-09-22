@@ -50,10 +50,15 @@ export async function POST(req: Request) {
     return authFailure(e);
   }
   if (!user) return new NextResponse(null, { status: 404 });
-  const body = (await req.json().catch(() => ({}))) as { action?: unknown };
-  if (body.action !== 'disconnect' && body.action !== 'reconnect') {
+  // A missing/invalid Content-Type, an empty body, or a body that is valid
+  // JSON but not an object (e.g. `null`, `"x"`, `42`) must all 400 rather
+  // than throw — req.json() rejects on unparsable JSON (caught below), but
+  // resolves to non-object values like `null` without rejecting.
+  const parsed = await req.json().catch(() => null);
+  const action = parsed && typeof parsed === 'object' ? (parsed as { action?: unknown }).action : undefined;
+  if (action !== 'disconnect' && action !== 'reconnect') {
     return NextResponse.json({ error: 'action must be disconnect or reconnect' }, { status: 400 });
   }
-  const c = await setMcpConnectionStatus(user.id, body.action === 'disconnect' ? 'disconnected' : 'enabled');
+  const c = await setMcpConnectionStatus(user.id, action === 'disconnect' ? 'disconnected' : 'enabled');
   return NextResponse.json({ status: c.status }, { headers: { 'cache-control': 'no-store' } });
 }

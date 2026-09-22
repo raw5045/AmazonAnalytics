@@ -24,13 +24,29 @@ export function mcpEnabled(): boolean {
   return env.MCP_ENABLED === '1';
 }
 
+/**
+ * Set once mcpAudience() has warned about a misconfigured MCP_AUDIENCE, so
+ * it logs at most once per process rather than on every call — layout.tsx
+ * now calls mcpAudience() on every authenticated page load, and a bad value
+ * would otherwise warn on every single request.
+ */
+let warnedAudience = false;
+
 /** Who may use MCP: admins only (default, beta) or every active account. */
 export function mcpAudience(): McpAudience {
   const raw = env.MCP_AUDIENCE;
   if (raw === undefined || raw === 'admin') return 'admin';
   if (raw === 'all') return 'all';
-  console.warn(`[mcp config] MCP_AUDIENCE=${JSON.stringify(raw)} is not "admin" or "all" — treating it as admin`);
+  if (!warnedAudience) {
+    warnedAudience = true;
+    console.warn(`[mcp config] MCP_AUDIENCE=${JSON.stringify(raw)} is not "admin" or "all" — treating it as admin`);
+  }
   return 'admin';
+}
+
+/** Test-only: clears the per-process "already warned" flags so a test can observe a warning fire again. */
+export function resetMcpConfigWarningsForTests(): void {
+  warnedAudience = false;
 }
 
 /** Clerk OAuth client ids allowed to present tokens; empty = any client of our instance. */
@@ -39,6 +55,18 @@ export function mcpAllowedClientIds(): string[] {
     .split(',')
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
+}
+
+/** The two client ids we've pinned so far (Connect AI page copy); ids are public OAuth identifiers, not secrets. */
+const CLIENT_LABELS: Record<string, string> = {
+  '16oat62Xksi7U2Ri': 'Claude',
+  'WzrKBzjxqjhn2pUR': 'ChatGPT',
+};
+
+/** Human-readable name for a client id shown on the Connect AI page; falls back to the raw id, or "unknown client" for null. */
+export function mcpClientLabel(clientId: string | null): string {
+  if (clientId === null) return 'unknown client';
+  return CLIENT_LABELS[clientId] ?? clientId;
 }
 
 /**

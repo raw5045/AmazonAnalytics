@@ -50,6 +50,7 @@ describe('/api/mcp/connection', () => {
 
     mockSet.mockResolvedValueOnce({ status: 'enabled' });
     expect(await (await post({ action: 'reconnect' })).json()).toEqual({ status: 'enabled' });
+    expect(mockSet).toHaveBeenLastCalledWith('u1', 'enabled');
   });
 
   it('refuses cross-site posts, unknown actions, and ineligible accounts', async () => {
@@ -62,6 +63,37 @@ describe('/api/mcp/connection', () => {
     expect(mockSet).not.toHaveBeenCalled();
   });
 
+  it('rejects a null body and a non-JSON body with 400', async () => {
+    expect((await post(null)).status).toBe(400);
+
+    const res = await POST(
+      new Request('http://localhost/api/mcp/connection', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' },
+        body: 'not json',
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(mockSet).not.toHaveBeenCalled();
+  });
+
+  it('allows a POST with no sec-fetch-site header (plain same-origin requests may omit it)', async () => {
+    mockSet.mockResolvedValueOnce({ status: 'disconnected' });
+    const res = await POST(
+      new Request('http://localhost/api/mcp/connection', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'disconnect' }),
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('allows sec-fetch-site: none (e.g. a typed URL or bookmark)', async () => {
+    mockSet.mockResolvedValueOnce({ status: 'disconnected' });
+    expect((await post({ action: 'disconnect' }, { 'sec-fetch-site': 'none' })).status).toBe(200);
+  });
+
   it('a standard_user gets 200 on GET once the audience is all', async () => {
     envMock.env.MCP_AUDIENCE = 'all';
     mockRequireUser.mockResolvedValue({ ...admin, role: 'standard_user' });
@@ -71,5 +103,10 @@ describe('/api/mcp/connection', () => {
   it('an unauthenticated caller gets 401', async () => {
     mockRequireUser.mockRejectedValue(new AuthError('UNAUTHENTICATED', 'Not signed in'));
     expect((await GET()).status).toBe(401);
+  });
+
+  it('a FORBIDDEN AuthError maps to 403', async () => {
+    mockRequireUser.mockRejectedValue(new AuthError('FORBIDDEN', 'Not allowed'));
+    expect((await GET()).status).toBe(403);
   });
 });

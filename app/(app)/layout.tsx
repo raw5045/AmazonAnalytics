@@ -13,9 +13,12 @@ import { BrandMark } from '@/app/BrandMark';
 import { AccountProblem } from '@/app/AccountProblem';
 
 /**
- * Layout shared by /explorer/* and /watchlist/*.
+ * Layout shared by /explorer/*, /watchlist/*, /category-builder and
+ * /connect-ai.
  *
- * Owns: auth gate, top tab nav (Explorer | Watchlist), user info.
+ * Owns: auth gate, top tab nav (Explorer | Watchlist | Category Builder |
+ * Connect AI, shown only when connectAiEligible admits this account |
+ * Tutorials), user info.
  * Inner explorer-only chrome (saved-views dropdown, save button) lives
  * in app/(app)/explorer/layout.tsx, one level deeper.
  */

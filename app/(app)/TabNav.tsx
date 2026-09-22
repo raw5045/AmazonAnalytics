@@ -5,7 +5,8 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { Suspense, use, useEffect, useState } from 'react';
 
 /**
- * Top-level navigation: Explorer | Watchlist (N).
+ * Top-level navigation: Explorer | Watchlist (N) | Category Builder |
+ * Connect AI (only when showConnectAi is true) | Tutorials.
  *
  * Server-rendered text but client-side for usePathname() so the active
  * tab gets styled correctly without a full page reload after navigation.
