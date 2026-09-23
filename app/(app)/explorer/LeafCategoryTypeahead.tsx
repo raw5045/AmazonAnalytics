@@ -61,9 +61,10 @@ export function LeafCategoryTypeahead({
     return result;
   }, [draft, options, selectedSet]);
 
-  useEffect(() => {
-    if (highlight >= matches.length) setHighlight(Math.max(0, matches.length - 1));
-  }, [matches.length, highlight]);
+  // The stored index can outrun the list when the parent shrinks `options` or
+  // `selected` (typing and selecting already reset it), so clamp it on read
+  // instead of syncing state in an effect.
+  const activeIndex = Math.min(highlight, Math.max(0, matches.length - 1));
 
   const addCategory = (cat: string) => {
     if (selectedSet.has(cat)) return;
@@ -120,14 +121,14 @@ export function LeafCategoryTypeahead({
           if (e.key === 'ArrowDown') {
             e.preventDefault();
             setOpen(true);
-            setHighlight((h) => Math.min(h + 1, matches.length - 1));
+            setHighlight(Math.min(activeIndex + 1, Math.max(0, matches.length - 1)));
           } else if (e.key === 'ArrowUp') {
             e.preventDefault();
-            setHighlight((h) => Math.max(h - 1, 0));
+            setHighlight(Math.max(activeIndex - 1, 0));
           } else if (e.key === 'Enter') {
-            if (open && matches[highlight]) {
+            if (open && matches[activeIndex]) {
               e.preventDefault();
-              addCategory(matches[highlight]);
+              addCategory(matches[activeIndex]);
             }
           } else if (e.key === 'Backspace' && draft.length === 0 && selected.length > 0) {
             e.preventDefault();
@@ -156,13 +157,13 @@ export function LeafCategoryTypeahead({
               <li
                 key={cat}
                 role="option"
-                aria-selected={i === highlight}
+                aria-selected={i === activeIndex}
                 onMouseDown={(e) => {
                   e.preventDefault();
                   addCategory(cat);
                 }}
                 onMouseEnter={() => setHighlight(i)}
-                className={`px-2 py-1 cursor-pointer ${i === highlight ? 'bg-blue-100' : 'hover:bg-gray-50'}`}
+                className={`px-2 py-1 cursor-pointer ${i === activeIndex ? 'bg-blue-100' : 'hover:bg-gray-50'}`}
               >
                 <div className="font-medium text-gray-800">{leaf}</div>
                 {prefix && <div className="text-[11px] text-gray-400 truncate" title={cat}>{prefix}</div>}

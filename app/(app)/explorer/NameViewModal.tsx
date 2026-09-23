@@ -11,16 +11,7 @@ import { useEffect, useRef, useState } from 'react';
  * cleaned name to the parent via onSubmit; the parent owns the
  * actual API call + post-success handling.
  */
-export function NameViewModal({
-  isOpen,
-  initialName = '',
-  title,
-  submitLabel = 'Save',
-  errorMessage = null,
-  isSubmitting = false,
-  onSubmit,
-  onClose,
-}: {
+type NameViewModalProps = {
   isOpen: boolean;
   initialName?: string;
   title: string;
@@ -31,32 +22,43 @@ export function NameViewModal({
   isSubmitting?: boolean;
   onSubmit: (name: string) => void;
   onClose: () => void;
-}) {
+};
+
+export function NameViewModal(props: NameViewModalProps) {
+  if (!props.isOpen) return null;
+  // Mount the dialog fresh on every open (and whenever the name to edit
+  // changes) so its draft + validation state starts from the current
+  // initialName; nothing has to sync state after the fact.
+  return <NameViewDialog key={props.initialName ?? ''} {...props} />;
+}
+
+function NameViewDialog({
+  initialName = '',
+  title,
+  submitLabel = 'Save',
+  errorMessage = null,
+  isSubmitting = false,
+  onSubmit,
+  onClose,
+}: NameViewModalProps) {
   const [name, setName] = useState(initialName);
   const [localError, setLocalError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  // Sync initialName when the modal re-opens with a different value
+  // Focus + select shortly after the dialog appears.
   useEffect(() => {
-    if (isOpen) {
-      setName(initialName);
-      setLocalError(null);
-      // Focus + select after the modal mounts
-      setTimeout(() => inputRef.current?.select(), 50);
-    }
-  }, [isOpen, initialName]);
+    const t = setTimeout(() => inputRef.current?.select(), 50);
+    return () => clearTimeout(t);
+  }, []);
 
   // Escape closes
   useEffect(() => {
-    if (!isOpen) return;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [isOpen, onClose]);
-
-  if (!isOpen) return null;
+  }, [onClose]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

@@ -67,7 +67,9 @@ function saveDismissed(set: Set<string>): void {
 }
 
 export function ImportStatusChip() {
-  const [status, setStatus] = useState<StatusResponse | null>(null);
+  // fetchedAt: when this payload arrived; "started N min ago" is computed against it
+  // (at most one poll interval stale) so render never reads the clock.
+  const [status, setStatus] = useState<(StatusResponse & { fetchedAt: number }) | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(() => loadDismissed());
 
   useEffect(() => {
@@ -79,7 +81,7 @@ export function ImportStatusChip() {
         });
         if (!res.ok) return;
         const data = (await res.json()) as StatusResponse;
-        if (!cancelled) setStatus(data);
+        if (!cancelled) setStatus({ ...data, fetchedAt: Date.now() });
       } catch {
         // network blip — keep showing whatever we last had
       }
@@ -111,7 +113,7 @@ export function ImportStatusChip() {
     style = { bg: 'bg-gray-100', border: 'border-gray-300', text: 'text-gray-700' };
     const a = activeEntry as ActiveEntry;
     const startedAgo = a.startedAt
-      ? formatAgo(Date.now() - new Date(a.startedAt).getTime())
+      ? formatAgo(status.fetchedAt - new Date(a.startedAt).getTime())
       : null;
     label = `Import in progress: ${filename}${startedAgo ? ` · started ${startedAgo} ago` : ''} · ${humanPhase(a.phase)}`;
   } else {

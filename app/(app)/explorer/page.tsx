@@ -13,7 +13,7 @@ import { runExplorerQuery } from '@/lib/explorer/runQuery';
 import { expandCustomCategories } from '@/lib/customCategories/expand';
 import { listCategories } from '@/lib/explorer/listCategories';
 import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
-import type { VolumeFitMeta } from '@/lib/explorer/types';
+import type { ExplorerFilters, VolumeFitMeta } from '@/lib/explorer/types';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { loadSavedViewForUser } from '@/lib/savedViews/loadServer';
 import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
@@ -42,6 +42,25 @@ export const metadata: Metadata = {
 // all non-q filters return in well under a second — this ceiling only matters
 // for the opt-in Broad path.)
 export const maxDuration = 120;
+
+/**
+ * Loads everything the results panel needs and times it for the admin
+ * PerfStrip. listCategories is timed at the call site so we can
+ * heuristically tell cache hit vs miss (cached call returns <20ms; uncached
+ * DISTINCT scan is 300ms+). A plain function, not a component, so the clock
+ * reads are not render-time side effects.
+ */
+async function loadExplorerData(queryFilters: ExplorerFilters) {
+  const startedAt = Date.now();
+  const tCategoriesStart = Date.now();
+  const categoriesPromise = listCategories().then((r) => ({ result: r, ms: Date.now() - tCategoriesStart }));
+  const [queryResult, categoriesTimed, leafCategories] = await Promise.all([
+    runExplorerQuery(queryFilters),
+    categoriesPromise,
+    listLeafCategories(),
+  ]);
+  return { queryResult, categoriesTimed, leafCategories, handlerTotalMs: Date.now() - startedAt };
+}
 
 export default async function ExplorerPage({
   searchParams,
@@ -127,25 +146,11 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
     queryFilters = { ...filters, leafPaths: merged };
   }
 
-  const handlerStartedAt = Date.now();
-  // Time listCategories at the call site so we can heuristically tell
-  // cache hit vs miss (cached call returns <20ms; uncached DISTINCT scan
-  // is 300ms+).
-  const tCategoriesStart = Date.now();
-  const categoriesPromise = listCategories().then((r) => {
-    return { result: r, ms: Date.now() - tCategoriesStart };
-  });
-  const leafCategoriesPromise = listLeafCategories();
-  const [queryResult, categoriesTimed, leafCategories] = await Promise.all([
-    runExplorerQuery(queryFilters),
-    categoriesPromise,
-    leafCategoriesPromise,
-  ]);
+  const { queryResult, categoriesTimed, leafCategories, handlerTotalMs } = await loadExplorerData(queryFilters);
   // Abuse-digest counter — fire-and-forget by contract (see lib/activity/bump.ts).
   if (user) void bumpUserActivity(user.id, 'explorer_query');
   const { rows, hasNext, total, totalIsCapped, volumeFit, currentWeekEndDate, broadTimedOut, timings: rqTimings } = queryResult;
   const categories = categoriesTimed.result;
-  const handlerTotalMs = Date.now() - handlerStartedAt;
 
   // Lower bound shown immediately ("Showing 101–200"); the exact total + page
   // count stream in via <ResultCount> below.

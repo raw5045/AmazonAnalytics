@@ -1,32 +1,41 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 
 const DISMISSED_KEY = 'kq.tutorials-banner-dismissed';
 
 /**
  * One-time nudge under the app bar pointing new users at the /help video
- * tutorials. localStorage-gated per browser (no schema): renders nothing
- * on the server and until the mount-time check, so dismissed users never
- * see a flash.
+ * tutorials. localStorage-gated per browser (no schema). The server snapshot
+ * reports "dismissed", so nothing renders on the server or during hydration
+ * and dismissed users never see a flash; the client snapshot takes over after
+ * hydration.
  */
+function subscribe(onChange: () => void) {
+  window.addEventListener('storage', onChange);
+  return () => window.removeEventListener('storage', onChange);
+}
+
+function readDismissed(): boolean {
+  try {
+    return localStorage.getItem(DISMISSED_KEY) !== null;
+  } catch {
+    return true; // no usable storage (private mode etc.): stay hidden, as before
+  }
+}
+
 export function TutorialsBanner() {
-  const [show, setShow] = useState(false);
+  const dismissedInStorage = useSyncExternalStore(subscribe, readDismissed, () => true);
+  const [dismissedNow, setDismissedNow] = useState(false);
 
-  useEffect(() => {
-    try {
-      if (!localStorage.getItem(DISMISSED_KEY)) setShow(true);
-    } catch {}
-  }, []);
-
-  if (!show) return null;
+  if (dismissedInStorage || dismissedNow) return null;
 
   const dismiss = () => {
     try {
       localStorage.setItem(DISMISSED_KEY, '1');
     } catch {}
-    setShow(false);
+    setDismissedNow(true);
   };
 
   return (
