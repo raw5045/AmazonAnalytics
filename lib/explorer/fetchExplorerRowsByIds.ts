@@ -182,6 +182,9 @@ function buildOrderBy(
         : 'keyword_title_match_count_current';
       return `ORDER BY kcs.${col} ASC NULLS FIRST`;
     }
+    // NULLS LAST kept here (unlike buildExplorerQuery, which hides null-key
+    // rows under these four sorts — sortNullKeyColumn): watchlist rows are
+    // never hidden, and an id-list fetch needs no index-ordered scan.
     case 'avg_price_asc':
       return 'ORDER BY kcs.avg_price_cents ASC NULLS LAST';
     case 'avg_price_desc':

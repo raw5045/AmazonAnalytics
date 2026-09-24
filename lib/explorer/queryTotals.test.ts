@@ -118,3 +118,24 @@ describe('search-volume range guards', () => {
     expect(canUseLeafCategoryFacet({ ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'], volMax: 0 })).toBe(false);
   });
 });
+
+describe('count short-circuit guards under the null-key-excluding avg sorts', () => {
+  // Sorting by avg price / avg reviews pushes `kcs.<col> IS NOT NULL` into the WHERE
+  // (lib/explorer/buildQuery.ts sortNullKeyColumn), so every precomputed total overcounts.
+  const defaultLanding: ExplorerFilters = { ...baseFilters };
+  const categoryOnly: ExplorerFilters = { ...baseFilters, category: 'Beauty' };
+  const leafOnly: ExplorerFilters = { ...baseFilters, leafPaths: ['Beauty › Face Moisturizers'] };
+  const AVG_SORTS = ['avg_reviews_desc', 'avg_reviews_asc', 'avg_price_desc', 'avg_price_asc'] as const;
+
+  it.each(AVG_SORTS)('canUseDefaultTotal stands down under %s', (sort) => {
+    expect(canUseDefaultTotal({ ...defaultLanding, sort })).toBe(false);
+  });
+
+  it.each(AVG_SORTS)('canUseCategoryFacet stands down under %s', (sort) => {
+    expect(canUseCategoryFacet({ ...categoryOnly, sort })).toBe(false);
+  });
+
+  it.each(AVG_SORTS)('canUseLeafCategoryFacet stands down under %s', (sort) => {
+    expect(canUseLeafCategoryFacet({ ...leafOnly, sort })).toBe(false);
+  });
+});

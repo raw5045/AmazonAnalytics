@@ -19,8 +19,8 @@
  *  - category facets short-circuit (migration 0021): when filters are
  *    "category-only + default severity," count comes from
  *    keyword_current_summary_category_facets, not a live COUNT(*).
- *  - volume-delta sorts (imp/decline) bypass ALL precomputed totals:
- *    their eligibility predicate filters rows, so counts fall through
+ *  - row-hiding sorts (imp/decline; avg price/reviews) bypass ALL precomputed totals:
+ *    their own predicate (eligibility / null-key exclusion) filters rows, so counts fall through
  *    to the deferred live count (which inherits the predicate).
  *
  * Each short-circuit has a graceful fallback to the live count if the
@@ -51,8 +51,8 @@ interface ExplorerQueryResult {
   /**
    * Exact match total when cheaply known (precomputed meta/facet, or the
    * q-path window count). `null` when the total is DEFERRED — the heavy
-   * legacy live-count case, or any volume-delta sort (imp/decline), whose
-   * eligibility predicate invalidates precomputed totals — and must be
+   * legacy live-count case, or any row-hiding sort (imp/decline, avg price/reviews), whose
+   * own predicate invalidates precomputed totals — and must be
    * fetched separately via countExplorerMatches() inside a streamed
    * boundary.
    */
