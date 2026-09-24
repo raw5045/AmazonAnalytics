@@ -63,6 +63,8 @@ export default async function ConnectAiPage() {
         </section>
       ) : (
         <>
+          <ExampleQuestions className={card} />
+
           <section className={card}>
             <h2 className="font-semibold">Server URL</h2>
             <code className="mt-1 block select-all break-all rounded bg-slate-100 px-2 py-1 text-sm">{endpoint}</code>
@@ -100,8 +102,6 @@ export default async function ConnectAiPage() {
               <li>In a chat, open the + menu, choose Developer mode, select the app, and ask a keyword question.</li>
             </ol>
           </section>
-
-          <ExampleQuestions className={card} />
 
           <section className={card}>
             <h2 className="font-semibold">Status</h2>

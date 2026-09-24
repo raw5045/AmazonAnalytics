@@ -56,4 +56,11 @@ describe('Connect AI page example questions', () => {
     expect(screen.getByText(/gained the most search volume/i).closest('details')).toBe(details);
     expect(screen.getByText(/under pet supplies/i).closest('details')).toBe(details);
   });
+
+  it('sits above the Server URL card so the benefit shows before the setup', async () => {
+    render(await ConnectAiPage());
+    const tryAsking = screen.getByRole('heading', { name: 'Try asking' });
+    const serverUrl = screen.getByRole('heading', { name: 'Server URL' });
+    expect(tryAsking.compareDocumentPosition(serverUrl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 });
