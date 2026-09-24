@@ -57,11 +57,39 @@ export function mcpAllowedClientIds(): string[] {
     .filter((id) => id.length > 0);
 }
 
-/** The two client ids we've pinned so far (Connect AI page copy); ids are public OAuth identifiers, not secrets. */
+/** The two Clerk OAuth client ids we've pinned so far; ids are public OAuth identifiers, not secrets. */
+const CLAUDE_CLIENT_ID = '16oat62Xksi7U2Ri';
+const CHATGPT_CLIENT_ID = 'WzrKBzjxqjhn2pUR';
+
 const CLIENT_LABELS: Record<string, string> = {
-  '16oat62Xksi7U2Ri': 'Claude',
-  'WzrKBzjxqjhn2pUR': 'ChatGPT',
+  [CLAUDE_CLIENT_ID]: 'Claude',
+  [CHATGPT_CLIENT_ID]: 'ChatGPT',
 };
+
+export interface McpClientCredentials {
+  label: 'Claude' | 'ChatGPT';
+  clientId: string;
+  /** null when the env var is unset or blank; the page then says to ask for it. */
+  clientSecret: string | null;
+}
+
+/**
+ * The OAuth client credentials the Connect AI page shows to signed-in,
+ * eligible accounts. Each pair identifies the client APPLICATION (claude.ai,
+ * ChatGPT), not the user: every member pastes the same pair into their client
+ * and then signs in as themselves, so the token is theirs and the account is
+ * the real gate. Showing the pairs to members is a deliberate owner decision
+ * (2026-09-24) that removes the "ask us for the secret" step. The secrets
+ * come from env so they can be rotated in Clerk + Vercel without a code
+ * change; an unset secret falls back to the ask-us line for that client.
+ */
+export function mcpClientCredentials(): McpClientCredentials[] {
+  const secret = (v: string | undefined) => (v && v.trim().length > 0 ? v.trim() : null);
+  return [
+    { label: 'Claude', clientId: CLAUDE_CLIENT_ID, clientSecret: secret(env.MCP_CLIENT_SECRET_CLAUDE) },
+    { label: 'ChatGPT', clientId: CHATGPT_CLIENT_ID, clientSecret: secret(env.MCP_CLIENT_SECRET_CHATGPT) },
+  ];
+}
 
 /** Human-readable name for a client id shown on the Connect AI page; falls back to the raw id, or "unknown client" for null. */
 export function mcpClientLabel(clientId: string | null): string {

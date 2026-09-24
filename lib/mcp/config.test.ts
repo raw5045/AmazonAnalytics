@@ -8,6 +8,7 @@ import {
   clerkFrontendApiUrl,
   mcpAllowedClientIds,
   mcpAudience,
+  mcpClientCredentials,
   mcpClientLabel,
   mcpEnabled,
   mcpResourceUrl,
@@ -112,5 +113,30 @@ describe('mcp config', () => {
     expect(mcpClientLabel('WzrKBzjxqjhn2pUR')).toBe('ChatGPT');
     expect(mcpClientLabel('some_other_client_id')).toBe('some_other_client_id');
     expect(mcpClientLabel(null)).toBe('unknown client');
+  });
+});
+
+describe('mcpClientCredentials', () => {
+  beforeEach(() => {
+    envMock.env = {
+      APP_PUBLIC_URL: 'https://keywordquarry.com',
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: PK_FOR('clerk.keywordquarry.com'),
+    };
+  });
+
+  it('pairs each pinned client id with the (trimmed) secret from env', () => {
+    envMock.env.MCP_CLIENT_SECRET_CLAUDE = ' claude-secret ';
+    envMock.env.MCP_CLIENT_SECRET_CHATGPT = 'chatgpt-secret';
+    expect(mcpClientCredentials()).toEqual([
+      { label: 'Claude', clientId: '16oat62Xksi7U2Ri', clientSecret: 'claude-secret' },
+      { label: 'ChatGPT', clientId: 'WzrKBzjxqjhn2pUR', clientSecret: 'chatgpt-secret' },
+    ]);
+  });
+
+  it('reports a missing or blank secret as null so the page can fall back to "ask us"', () => {
+    envMock.env.MCP_CLIENT_SECRET_CLAUDE = '   ';
+    const creds = mcpClientCredentials();
+    expect(creds.find((c) => c.label === 'Claude')?.clientSecret).toBeNull();
+    expect(creds.find((c) => c.label === 'ChatGPT')?.clientSecret).toBeNull();
   });
 });
