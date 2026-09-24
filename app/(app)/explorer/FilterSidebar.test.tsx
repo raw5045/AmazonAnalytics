@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
-import { FilterSidebar, filtersToPending, pendingToParams } from './FilterSidebar';
+import { FilterSidebar, filtersToPending, pendingToParams, sortHint } from './FilterSidebar';
+import { sortHidesRows } from '@/lib/explorer/sortRules';
+import type { SortKey } from '@/lib/explorer/types';
 
 const { replace } = vi.hoisted(() => ({ replace: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace }) }));
@@ -102,5 +104,28 @@ describe('FilterSidebar sort hint (sorts that hide rows without a sort key)', ()
     expect(screen.getByText(/volume can't be estimated .*hidden under this sort/i)).toBeInTheDocument();
     fireEvent.change(select, { target: { value: 'rank_desc' } });
     expect(screen.queryByText(/hidden under this sort/i)).not.toBeInTheDocument();
+  });
+});
+
+/** Exhaustive by construction: adding a SortKey without listing it here is a type error. */
+const ALL_SORTS: Record<SortKey, true> = {
+  rank: true,
+  rank_desc: true,
+  imp: true,
+  decline: true,
+  title_gap: true,
+  avg_price_asc: true,
+  avg_price_desc: true,
+  avg_reviews_asc: true,
+  avg_reviews_desc: true,
+  added_asc: true,
+  added_desc: true,
+};
+
+describe('sortHint', () => {
+  it('shows a hint for exactly the sorts that hide rows server-side', () => {
+    for (const sort of Object.keys(ALL_SORTS) as SortKey[]) {
+      expect(sortHint(sort) !== null, `${sort} should ${sortHidesRows(sort) ? '' : 'not '}have a hint`).toBe(sortHidesRows(sort));
+    }
   });
 });

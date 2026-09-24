@@ -49,7 +49,7 @@ describe('ResultsTable avg-column tooltips (null-key exclusion under the avg sor
 
   it('watchlist (sortHidesIneligible=false): they sort last instead, and nothing says "hidden"', () => {
     render(
-      <ResultsTable rows={[makeRow()]} window="4w" matchMode="loose" currentSort="rank" backUrl="/watchlist" sortHidesIneligible={false} />,
+      <ResultsTable rows={[makeRow()]} window="4w" matchMode="loose" currentSort="avg_reviews_desc" backUrl="/watchlist" sortHidesIneligible={false} />,
     );
     expect(screen.getByTitle(/no average price sort last/i)).toBeInTheDocument();
     expect(screen.getByTitle(/no average review count sort last/i)).toBeInTheDocument();

@@ -1,7 +1,7 @@
 # Explorer Avg Price / Avg Reviews Sorts — Null-Key Exclusion (Design + Decision Record)
 
 **Date:** 2026-09-22
-**Status:** Implemented on branch `claude/pensive-agnesi-c6a7c5` (unpushed; owner review)
+**Status:** Merged into `main` 2026-09-24 (`2ccf83b`; reviewed 2026-09-23, APPROVE WITH NITS — nits applied in the follow-up commit); ships with the next push
 **Scope:** `lib/explorer/buildQuery.ts` sort keys `avg_price_asc|desc`, `avg_reviews_asc|desc`
 and their count guards + UI hints. No schema change, no DDL, no worker change. The
 watchlist is untouched (it never hides rows).

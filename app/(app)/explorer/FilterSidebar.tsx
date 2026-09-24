@@ -13,6 +13,7 @@ import type {
 } from '@/lib/explorer/types';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
 import { jumpPresetsFor, type JumpMetric } from '@/lib/explorer/jumpPresets';
+import { sortHidesRows, sortNullKeyColumn, sortUsesVolumeDelta } from '@/lib/explorer/sortRules';
 import { LeafCategoryTypeahead } from './LeafCategoryTypeahead';
 import { LoadingOverlay } from './LoadingOverlay';
 
@@ -42,20 +43,26 @@ const SORTS: Array<{ value: SortKey; label: string }> = [
   { value: 'avg_reviews_desc', label: 'Most avg reviews (top-3)' },
 ];
 
-/**
- * One line under the Sort select for the sorts that hide rows server-side —
- * each adds a WHERE predicate of its own (sortHidesRows in
- * lib/explorer/buildQuery.ts): the Δ-volume eligibility guard, and the avg
- * price/reviews null-key exclusion. Keyed by SortKey; absent = no hint.
- */
-const SORT_HINTS: Partial<Record<SortKey, string>> = {
-  imp: "Keywords whose volume can't be estimated for the comparison week are hidden under this sort.",
-  decline: "Keywords whose volume can't be estimated for the comparison week are hidden under this sort.",
-  avg_price_asc: 'Keywords with no average price (top-3 products not enriched) are hidden under this sort.',
-  avg_price_desc: 'Keywords with no average price (top-3 products not enriched) are hidden under this sort.',
-  avg_reviews_asc: 'Keywords with no average review count (top-3 products not enriched) are hidden under this sort.',
-  avg_reviews_desc: 'Keywords with no average review count (top-3 products not enriched) are hidden under this sort.',
+const NULL_KEY_HINTS: Record<NonNullable<ReturnType<typeof sortNullKeyColumn>>, string> = {
+  avg_price_cents: 'Keywords with no average price (top-3 products not enriched) are hidden under this sort.',
+  avg_reviews: 'Keywords with no average review count (top-3 products not enriched) are hidden under this sort.',
 };
+
+/**
+ * One line under the Sort select for every sort that hides rows server-side.
+ * Gated on sortHidesRows — the same rule the query builder applies — so a
+ * sort can never hide rows without the sidebar saying so; the copy is keyed
+ * by the reason (the excluded null-key column, or the Δ-volume eligibility
+ * guard), with a generic line as the backstop for any future rule.
+ */
+export function sortHint(sort: SortKey): string | null {
+  const col = sortNullKeyColumn(sort);
+  if (col) return NULL_KEY_HINTS[col];
+  if (sortUsesVolumeDelta(sort)) {
+    return "Keywords whose volume can't be estimated for the comparison week are hidden under this sort.";
+  }
+  return sortHidesRows(sort) ? 'Keywords without the data this sort needs are hidden under it.' : null;
+}
 
 const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
   { value: '', label: 'Show all (no title filter)' },
@@ -267,8 +274,8 @@ export function FilterSidebar({
             </option>
           ))}
         </select>
-        {SORT_HINTS[pending.sort] && (
-          <p className="text-xs text-gray-500 mt-1">{SORT_HINTS[pending.sort]}</p>
+        {sortHint(pending.sort) && (
+          <p className="text-xs text-gray-500 mt-1">{sortHint(pending.sort)}</p>
         )}
       </FieldGroup>
 
