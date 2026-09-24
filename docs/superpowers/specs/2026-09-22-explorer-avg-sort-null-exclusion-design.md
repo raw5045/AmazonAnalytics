@@ -107,3 +107,31 @@ sorts rather than to steer the planner from SQL.
   (`kcs_title_match_idx` covers the strict column only) — a separate, pre-existing seq-scan
   shape.
 - The research tool's `wordCount` sort (no index; documented in the MCP guide).
+
+## Addendum 2026-09-24 — the footer count on the unfiltered landing
+
+After the merge, a read-only re-probe on the 2026-09-19 snapshot showed the one
+shape this change made *new*: under an avg sort the unfiltered landing no longer
+takes its footer total from the precomputed meta value (a row-hiding sort must
+not), so `countExplorerMatches` runs the capped count — and the planner seq-scans
+kcs for the first 10,001 matches. Cheap by its cost model; on the bloated,
+post-refresh-cold heap it read 189k pages: **24.7 s cold** (0.13 s warm) for
+`avg_price_desc`.
+
+Fix (`countSteersOntoSortIndex`, lib/explorer/buildQuery.ts): on that shape only —
+the four avg sorts with default filters apart from sort/window/paging, and a
+severity set that still includes the default `none` + `warning` — the bail-out
+subquery gets `ORDER BY kcs.<col> <dir>`, which makes the planner walk the avg
+index (~10k entries plus their heap rows; the research compiler's volume-delta
+rule). Any narrowing filter turns it off, because there the planner's own
+bitmap/index choice wins and the extra ORDER BY can drag it into a BitmapAnd
+(6.9 s measured for a category-scoped shape in the research compiler).
+
+Production probe 2026-09-24 (read-only EXPLAIN ANALYZE, REPEATABLE READ READ
+ONLY; the first pass pays hint-bit writes on ~8–10k freshly written pages, the
+second pass is warm): avg_price_asc 1.75 s → 0.60 s; avg_price_desc 1.40 s →
+0.16 s; avg_reviews_desc 1.82 s → 0.18 s; avg_reviews_asc 2.08 s → 0.10 s. All
+four on `kcs_stage_avg_*_idx` (the twins' names this cycle), ~9–10k pages read
+instead of 189k. The keep-warm cron is unchanged: the seq-scan shape's 1.5 GB
+working set would not reliably stay cached, whereas the index walk's does.
+

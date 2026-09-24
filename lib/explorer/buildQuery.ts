@@ -363,14 +363,22 @@ export function buildExplorerQuery(
   // sequential aggregate. We only need to render a pagination footer, so
   // count up to COUNT_CAP+1 rows. If we hit the cap the UI shows "10,000+"
   // and pagination caps there. This (legacy, q=null) path's predicates are
-  // all on kcs, so the count needs no search_terms join.
+  // all on kcs, so the count needs no search_terms join. On the unfiltered
+  // landing under an avg sort, ORDER BY the sort key inside the subquery so
+  // the planner walks the avg index instead of seq-scanning the (bloated,
+  // post-refresh cold) heap for the first 10,001 matches — see
+  // countSteersOntoSortIndex.
+  const countOrderBy = countSteersOntoSortIndex(filters)
+    ? `ORDER BY kcs.${sortNullKeyColumn(filters.sort)} ${filters.sort.endsWith('_desc') ? 'DESC' : 'ASC'}
+      `
+    : '';
   const countSql = `
     SELECT COUNT(*)::int AS total
     FROM (
       SELECT 1
       FROM keyword_current_summary kcs
       ${whereClause}
-      LIMIT ${COUNT_CAP + 1}
+      ${countOrderBy}LIMIT ${COUNT_CAP + 1}
     ) sub
   `.trim();
 
@@ -382,6 +390,40 @@ export function buildExplorerQuery(
  * pagination caps at this count.
  */
 export const COUNT_CAP = 10_000;
+
+/**
+ * True when the capped footer count should be steered onto the sort's index
+ * by ordering its bail-out subquery: only the four avg sorts, and only on the
+ * unfiltered landing (default filters apart from sort, window and paging).
+ *
+ * Why: under an avg sort the count's only predicates are the week, the
+ * default severity set and `<col> IS NOT NULL` (about 1.8M of 2.6M rows), so
+ * the planner seq-scans kcs for the first 10,001 matches — cheap by its cost
+ * model, but the heap is bloated by the weekly mass update and cold right
+ * after it (24.7 s measured on production 2026-09-24; 0.13 s warm). An ORDER
+ * BY on the sort key inside the subquery makes the planner walk the avg
+ * index instead: ~10k index entries plus their heap rows. With any other
+ * filter the planner's own bitmap / index choice is better and the extra
+ * ORDER BY can drag it into a BitmapAnd (the research compiler measured
+ * 6.9 s for a category-scoped shape — lib/research/query.ts), so steering
+ * stops as soon as anything narrows the shape.
+ */
+export function countSteersOntoSortIndex(f: ExplorerFilters): boolean {
+  if (sortNullKeyColumn(f.sort) === null) return false;
+  return (
+    f.q === null &&
+    f.rankMin === null && f.rankMax === null &&
+    f.volMin === null && f.volMax === null &&
+    f.reviewsMin === null && f.reviewsMax === null &&
+    f.wordsMin === null && f.wordsMax === null &&
+    f.jump === null &&
+    f.category === null &&
+    f.leafPaths.length === 0 &&
+    f.customCategoryIds.length === 0 &&
+    f.titleMatchMode === null &&
+    f.severities.includes('none') && f.severities.includes('warning')
+  );
+}
 
 /**
  * Word count of the keyword's normalized text (single-spaced by

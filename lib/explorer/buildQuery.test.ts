@@ -947,3 +947,52 @@ describe('avg price/reviews sorts exclude null keys (bare direction, index-serve
     }
   });
 });
+
+describe('count steering onto the avg index (unfiltered landing under an avg sort)', () => {
+  it('orders the bail-out subquery by the sort key so the planner walks the index instead of seq-scanning', () => {
+    const price = buildExplorerQuery({ ...baseFilters, sort: 'avg_price_desc' });
+    expect(norm(price.countSql)).toContain('kcs.avg_price_cents IS NOT NULL');
+    expect(norm(price.countSql)).toContain('ORDER BY kcs.avg_price_cents DESC LIMIT 10001');
+    expect(price.countArgs).toEqual(buildExplorerQuery(baseFilters).countArgs);
+    const reviews = buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_asc' });
+    expect(norm(reviews.countSql)).toContain('ORDER BY kcs.avg_reviews ASC LIMIT 10001');
+    expect(norm(reviews.countSql)).not.toContain('OFFSET');
+  });
+
+  it('leaves the planner alone once any other filter narrows the shape', () => {
+    const narrowings: Array<Partial<ExplorerFilters>> = [
+      { leafPaths: ['Home › Lighting › Lamps'] },
+      { customCategoryIds: ['11111111-1111-1111-1111-111111111111'] },
+      { category: 'Beauty' },
+      { rankMax: 1000 },
+      { volMin: 5000 },
+      { reviewsMax: 500 },
+      { wordsMin: 3 },
+      { jump: '500k_to_100k' },
+      { titleMatchMode: 'any' },
+      { severities: ['critical'] },
+    ];
+    for (const extra of narrowings) {
+      const { countSql } = buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_desc', ...extra });
+      expect(norm(countSql), JSON.stringify(extra)).not.toContain('ORDER BY');
+    }
+  });
+
+  it('still steers when the severity set only widens the default', () => {
+    const { countSql } = buildExplorerQuery({ ...baseFilters, sort: 'avg_reviews_desc', severities: ['none', 'warning', 'critical'] });
+    expect(norm(countSql)).toContain('ORDER BY kcs.avg_reviews DESC LIMIT 10001');
+  });
+
+  it('does not steer the non-avg sorts', () => {
+    for (const sort of ['rank', 'rank_desc', 'imp', 'decline', 'title_gap', 'added_asc', 'added_desc'] as const) {
+      const { countSql } = buildExplorerQuery({ ...baseFilters, sort });
+      expect(norm(countSql), sort).not.toContain('ORDER BY');
+    }
+  });
+
+  it('the q path is untouched: its count comes from the rows window', () => {
+    const r = buildExplorerQuery({ ...baseFilters, sort: 'avg_price_desc', q: 'lamp' });
+    expect(r.countFromRows).toBe(true);
+    expect(norm(r.countSql)).not.toContain('ORDER BY kcs.avg_price_cents DESC LIMIT 10001');
+  });
+});
