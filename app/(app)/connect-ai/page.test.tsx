@@ -40,3 +40,20 @@ describe('Connect AI page credentials', () => {
     expect(screen.getByText(/ask through the feedback button/i)).toBeInTheDocument();
   });
 });
+
+describe('Connect AI page example questions', () => {
+  beforeEach(() => {
+    envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all' };
+  });
+
+  it('shows the first example openly and the other seven behind a disclosure', async () => {
+    render(await ConnectAiPage());
+    const first = screen.getByText(/highest volume keywords in the lighting niche/i);
+    expect(first.closest('details')).toBeNull();
+    const details = screen.getByText('Show more example questions').closest('details');
+    expect(details).not.toBeNull();
+    expect(details!.querySelectorAll('li')).toHaveLength(7);
+    expect(screen.getByText(/gained the most search volume/i).closest('details')).toBe(details);
+    expect(screen.getByText(/under pet supplies/i).closest('details')).toBe(details);
+  });
+});

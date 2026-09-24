@@ -5,6 +5,7 @@ import { mcpAllowedClientIds, mcpAudience, mcpClientCredentials, mcpClientLabel,
 import { connectAiEligible } from '@/lib/mcp/eligibility';
 import { getMcpConnection } from '@/lib/mcp/connections';
 import { ConnectionControls } from './ConnectionControls';
+import { ExampleQuestions } from './ExampleQuestions';
 
 export const metadata: Metadata = { title: 'Connect AI' };
 
@@ -99,6 +100,8 @@ export default async function ConnectAiPage() {
               <li>In a chat, open the + menu, choose Developer mode, select the app, and ask a keyword question.</li>
             </ol>
           </section>
+
+          <ExampleQuestions className={card} />
 
           <section className={card}>
             <h2 className="font-semibold">Status</h2>
