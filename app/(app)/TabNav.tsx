@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { Suspense, use, useEffect, useState } from 'react';
+import { Suspense, use, useEffect, useSyncExternalStore } from 'react';
 
 /**
  * Top-level navigation: Explorer | Watchlist (N) | Category Builder |
@@ -25,6 +25,25 @@ import { Suspense, use, useEffect, useState } from 'react';
  */
 const LAST_EXPLORER_URL_KEY = 'kw-analytics.last-explorer-url';
 
+// The remembered URL is read from localStorage via useSyncExternalStore
+// instead of being copied into state from an effect (which the
+// react-hooks/set-state-in-effect rule rejects). Every render re-reads
+// the snapshot, and the only same-tab writer is this component's own
+// effect below — its value is in place before the next render — so
+// there is nothing to subscribe to and the subscription is a no-op.
+// The server snapshot is null: the server render and the hydrating
+// client render both show the bare /explorer, and React re-renders with
+// the real value right after hydration.
+const subscribeToNothing = () => () => {};
+const getServerSnapshot = () => null;
+function readLastExplorerUrl(): string | null {
+  try {
+    return localStorage.getItem(LAST_EXPLORER_URL_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function TabNav({
   watchlistCountPromise,
   showConnectAi,
@@ -39,29 +58,22 @@ export function TabNav({
   const isCategoryBuilder = pathname === '/category-builder' || pathname.startsWith('/category-builder/');
   const isConnectAi = pathname === '/connect-ai' || pathname.startsWith('/connect-ai/');
 
-  // Tracks the URL the Explorer tab should navigate to. Starts as the
-  // bare /explorer (so SSR + first paint match), then useEffect updates
-  // it from localStorage after mount. Brief race window where a click in
-  // the first ~16ms after navigation could land on /explorer — fine.
-  const [explorerHref, setExplorerHref] = useState<string>('/explorer');
+  // Where the Explorer tab points. On the keyword list page (/explorer,
+  // NOT /explorer/keyword/*) that's the current URL, which the effect
+  // below also records. Anywhere else (/watchlist, /explorer/keyword/*)
+  // it's the remembered URL, so the tab restores the user's filters.
+  const onExplorerList = pathname === '/explorer';
+  const qs = searchParams?.toString() ?? '';
+  const currentExplorerUrl = qs ? `/explorer?${qs}` : '/explorer';
+  const lastExplorerUrl = useSyncExternalStore(subscribeToNothing, readLastExplorerUrl, getServerSnapshot);
+  const explorerHref = onExplorerList ? currentExplorerUrl : lastExplorerUrl || '/explorer';
 
   useEffect(() => {
-    // On the keyword list page (/explorer, NOT /explorer/keyword/*),
-    // record the current URL so we can return to it later.
-    if (pathname === '/explorer') {
-      const qs = searchParams?.toString() ?? '';
-      const current = qs ? `/explorer?${qs}` : '/explorer';
-      try { localStorage.setItem(LAST_EXPLORER_URL_KEY, current); } catch {}
-      setExplorerHref(current);
-      return;
-    }
-    // Anywhere else (/watchlist, /explorer/keyword/*) — pick up the
-    // remembered URL so the Explorer tab restores the user's filters.
+    if (!onExplorerList) return;
     try {
-      const saved = localStorage.getItem(LAST_EXPLORER_URL_KEY);
-      if (saved) setExplorerHref(saved);
+      localStorage.setItem(LAST_EXPLORER_URL_KEY, currentExplorerUrl);
     } catch {}
-  }, [pathname, searchParams]);
+  }, [onExplorerList, currentExplorerUrl]);
 
   // Navy-bar tabs (2026-07 reskin): active = white with an amber underline
   // pinned to the bar's bottom edge; inactive = slate, brightens on hover.
