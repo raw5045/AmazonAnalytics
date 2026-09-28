@@ -201,9 +201,9 @@ Facts about the installed SDK (`resend` 6.12.3, `node_modules/resend/dist/index.
 - `resend.contacts.create({ email, firstName?, lastName?, unsubscribed?, properties?, segments?: { id: string }[], topics? })` posts to `/contacts` (the overload with `audienceId` is deprecated and posts to `/audiences/{id}/contacts` — do not use it).
 - `resend.contacts.remove({ email })` (or `{ id }`, or a bare string) deletes `/contacts/<email>`.
 - Every call resolves to `{ data, error: null, headers } | { data: null, error: { name, message, statusCode }, headers }`; the SDK catches its own fetch, so a network failure comes back as `error.name === 'application_error'` with `statusCode: null` rather than a throw (Task 2 review corrected this bullet). The helper's try/catch guards `new Resend()`, which throws on a malformed key, and any future SDK change.
+- Error names (`RESEND_ERROR_CODE_KEY`) include `not_found`, `validation_error`, `rate_limit_exceeded`, `application_error`; Resend documents no dedicated "contact already exists" error, hence the message-only check below.
 
-> **Review amendment (Task 2, commit 284e04f):** the code blocks below are the versions the implementer transcribed; the review then (a) replaced the `statusCode === 409 ||` half of the duplicate check with a message-only check and a comment on `resource_locked`, (b) added the `UNSAFE_IN_URL_PATH` guard to `removeResendContact`, (c) documented what the try/catch guards, (d) added a "Logging" paragraph and removed the address from the "already gone" line, (e) trimmed both env reads. The committed file and its 32 tests are the source of truth.
-- Error names (`RESEND_ERROR_CODE_KEY`) include `not_found`, `validation_error`, `rate_limit_exceeded`, `application_error`; Resend documents no dedicated "contact already exists" error, hence the 409 / message check below.
+> **Review amendment (Task 2, commit 284e04f; final review nits in the close-out commit):** the code blocks below are the versions the implementer transcribed; the review then (a) replaced the `statusCode === 409 ||` half of the duplicate check with a message-only check and a comment on `resource_locked`, (b) added the `UNSAFE_IN_URL_PATH` guard to `removeResendContact`, (c) documented what the try/catch guards, (d) added a "Logging" paragraph and removed the address from the "already gone" line, (e) trimmed both env reads; the final review added single-character guard cases, redaction of a possible API key in a thrown error's message, and the `not_found` message in the "already gone" line. The committed file and its tests are the source of truth.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -932,3 +932,35 @@ In this order:
 - Backfilling members who signed up between the CSV export and this deploy — an untracked one-off script, on the owner's go, if the gap matters.
 - Syncing Resend unsubscribes into `weekly_digest_subscribed` or the reverse; Resend webhooks.
 - Any schema change.
+
+---
+
+## Results
+
+**Execution:** subagent-driven, 2026-09-28, on local `main` after the plan commit b397628. Task 1 1abac8a; Task 2 59b8513 + review fix 284e04f (re-approved); Task 3 0cfb9cd; Task 4 8a71dca; review nits for Tasks 1, 3 and 4 f620137; plan amendments 5e511dd; final-review nits 948bf53. Every task had a spec review (all ✅ — byte-identical to the plan's code blocks) and a code review (Tasks 1, 3, 4 APPROVE with Minor items, folded in; Task 2 "ready with fixes", fixed, re-approved).
+
+**Task 2 review findings that changed the design (both recorded in the table above):** (1) the SDK splices the address unencoded into `DELETE /contacts/<email>`, so a crafted local part (`/ ? # % \`) could redirect the delete — such addresses are refused with an error log rather than encoded; (2) `resource_locked` is a temporary 409, so a duplicate is recognised only by an "already exists" message, never by the status alone.
+
+**Checks (Task 5 Steps 1–2):**
+
+| Check | Result |
+|---|---|
+| `pnpm vitest run` (unit, whole tree) | 109 files, 1320 tests green at 5e511dd; the helper file alone 36/36 at 948bf53 |
+| `pnpm typecheck` | clean |
+| ESLint on the 13 changed TypeScript files | clean |
+| `RUN_INTEGRATION=1 pnpm vitest run tests/integration/syncUser.test.ts` | 4/4, no orphan-sweep warning (the moved pattern still drives the harness) |
+| Read-only production count of rows matching the sweep pattern | 0 of 88 users (0 on non-synthetic domains) |
+
+**Final whole-diff review (Task 5 Step 3): APPROVE WITH NITS, nothing blocking.** Verified: exactly-once across both provisioning paths, including the orphan re-link (`created: false`) and the email-refresh retry (`created: true` for the newcomer); no Resend failure can produce a 500 (only DB failures, which Svix retries); unit tests cannot reach Resend (the segment var is never set in the unit environment and every test mocks the SDK or the helper); the `user.deleted` payload type carries no addresses; no schema, consent or digest change; all eight trailers correct. Nits folded into 948bf53: single-character guard cases so dropping any one character from the guard fails a test; a thrown error's message is logged with `re_…` tokens redacted (undici quotes the whole bearer value in its invalid-header error); the `not_found` message stays in the "already gone" line; `.env.example` says a Full-access key is required.
+
+**Ship (Task 5 Step 5): OWNER-GATED, not yet done.** In order: confirm the production Resend API key is Full access (a "Sending access" key fails contact calls with `restricted_api_key`, quietly — error logs, no member impact); set `RESEND_SEGMENT_ID` in Vercel Production before the push so the deploy that carries the code turns the feature on; `checkActiveJobs`; push; watch Vercel and Railway; plus-address smoke test (contact appears Subscribed with the first name, then disappears after the Clerk delete); add the member(s) who joined after the CSV export (users went 87 → 88 on 2026-09-28).
+
+**Follow-ups noted, not in scope:**
+- Out-of-order Svix delivery (pre-existing for the welcome email): a `user.updated` retry arriving after `user.deleted` re-creates the row with `created: true`, so the welcome is re-sent, the contact re-added and the digest re-enabled by default. Root fix: for webhook-inserted rows, confirm the user still exists in Clerk before running side effects, or make `user.updated` update-only.
+- No reconciliation: a failed add (429/5xx), a lost `after()` task, an `'exists'` contact outside the segment, or a signup between the CSV export and the deploy leaves a member off the list with only a log line. A periodic diff of the segment's contacts against `users` (or `contacts.segments.add` on `'exists'`, which needs the same path guard) would make the list self-healing.
+- Email and name changes are not propagated; in the email-refresh path the newcomer's `'exists'` contact keeps the previous holder's first name.
+- The synthetic-email pattern is loose: `rw_1990@gmail.com` would be skipped by the sync and, pre-existing, deleted by the integration sweep. Production had 0 matches on 2026-09-28. Tightening to `_[0-9]{13}@` (or `{10,}`, which keeps the historical `csmtest_` rows sweepable) is the owner's call.
+- The privacy page's §5 lists three kinds of email; product or beta broadcasts to this segment are arguably a fourth. Wording is the owner's call.
+- Removal is global (every segment in the Resend team) — right while the team is KeywordQuarry-only; revisit if the team ever hosts a list joined independently of an account.
+- The sibling senders still log caught errors verbatim (the same possible key exposure the helper now redacts); a shared redacting helper is a follow-up.
+- Resend requests have no timeout (a bare fetch in the SDK): an inline await could hold the webhook until Svix gives up. Harmless here (the retry's DELETE matches no row and returns 200), but a bounded timeout would be good hygiene.
