@@ -9,9 +9,11 @@ export function minuteFloor(d: Date): Date {
   return new Date(Math.floor(d.getTime() / 60_000) * 60_000);
 }
 
+export type ResearchChannel = 'mcp' | 'chat';
+
 export interface ReserveArgs {
   userId: string;
-  channel: 'mcp';
+  channel: ResearchChannel;
   /**
    * Rows this call is asking to reserve: the requested page size (search), weeks
    * (history), 1 (details), or 0 (guide/resolve). This is what the call asks for up
@@ -75,8 +77,13 @@ export async function reserveResearchRequest(args: ReserveArgs): Promise<Reserve
   return { requests: row.requests, rows: row.rows };
 }
 
-/** Daily digest counters; fire-and-forget. */
+/** Daily digest counters; fire-and-forget. `mcp` → mcp_request/mcp_rows (unchanged); `chat` → ask_tool_call/ask_rows (spec §5). */
+export function recordResearchActivity(userId: string, rowsReturned: number, channel: ResearchChannel): void {
+  const [request, rows] = channel === 'chat' ? (['ask_tool_call', 'ask_rows'] as const) : (['mcp_request', 'mcp_rows'] as const);
+  void bumpUserActivityBy(userId, request, 1);
+  if (rowsReturned > 0) void bumpUserActivityBy(userId, rows, rowsReturned);
+}
+/** Back-compat name used by existing tests/callers; identical to recordResearchActivity(…, 'mcp'). */
 export function recordMcpActivity(userId: string, rowsReturned: number): void {
-  void bumpUserActivityBy(userId, 'mcp_request', 1);
-  if (rowsReturned > 0) void bumpUserActivityBy(userId, 'mcp_rows', rowsReturned);
+  recordResearchActivity(userId, rowsReturned, 'mcp');
 }

@@ -6,7 +6,7 @@ vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
 const { execute, bumpBy } = vi.hoisted(() => ({ execute: vi.fn(), bumpBy: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('@/db/client', () => ({ db: { execute } }));
 vi.mock('@/lib/activity/bump', () => ({ bumpUserActivityBy: bumpBy }));
-import { minuteFloor, recordMcpActivity, reserveResearchRequest } from './usage';
+import { minuteFloor, recordMcpActivity, recordResearchActivity, reserveResearchRequest } from './usage';
 import { DEFAULT_LIMITS } from './limits';
 
 const now = new Date('2026-09-21T12:00:30Z');
@@ -61,5 +61,23 @@ describe('recordMcpActivity', () => {
   it('is fire-and-forget: returns undefined synchronously, not a Promise', () => {
     const result = recordMcpActivity('u1', 1);
     expect(result).toBeUndefined();
+  });
+});
+
+describe('recordResearchActivity', () => {
+  it('counts chat tool calls under their own metrics, mcp under the old ones', () => {
+    bumpBy.mockClear();
+    recordResearchActivity('u1', 12, 'chat');
+    expect(bumpBy).toHaveBeenCalledWith('u1', 'ask_tool_call', 1);
+    expect(bumpBy).toHaveBeenCalledWith('u1', 'ask_rows', 12);
+    bumpBy.mockClear();
+    recordResearchActivity('u1', 0, 'mcp');
+    expect(bumpBy).toHaveBeenCalledWith('u1', 'mcp_request', 1);
+    expect(bumpBy).toHaveBeenCalledTimes(1);
+  });
+  it('reserveResearchRequest accepts the chat channel and writes it to the bucket', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ requests: 1, rows: 50 }] });
+    await reserveResearchRequest({ ...args, channel: 'chat' });
+    expect(JSON.stringify(execute.mock.calls[0][0])).toContain('chat');
   });
 });

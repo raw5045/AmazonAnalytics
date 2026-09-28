@@ -21,10 +21,10 @@ import { getResearchPool } from './pool';
 import { compileSearch, mapSearchRow, type CompiledSearch } from './query';
 import { countMatches, runSearch } from './search';
 import { loadSnapshotMetaHttp, type SnapshotMeta } from './snapshot';
-import { recordMcpActivity, reserveResearchRequest } from './usage';
+import { recordResearchActivity, reserveResearchRequest, type ResearchChannel } from './usage';
 
 /** Supplied by a trusted adapter (the MCP gate), never by tool arguments. */
-export interface ResearchActor { localUserId: string; clerkUserId: string; clientId: string; channel: 'mcp' }
+export interface ResearchActor { localUserId: string; clerkUserId: string; clientId: string; channel: ResearchChannel }
 
 /**
  * The five MCP research tools, each independently callable. Every method validates its own
@@ -54,7 +54,7 @@ export interface ResearchServiceDeps {
   audience: () => 'admin' | 'all';
   now: () => Date;
   reserve: typeof reserveResearchRequest;
-  record: typeof recordMcpActivity;
+  record: typeof recordResearchActivity;
   categories: CategoryDeps;
   details: DetailsDeps;
   history: Pick<HistoryDeps, 'fetchFits'>;
@@ -75,7 +75,7 @@ export function defaultResearchDeps(): ResearchServiceDeps {
     audience: mcpAudience,
     now: () => new Date(),
     reserve: reserveResearchRequest,
-    record: recordMcpActivity,
+    record: recordResearchActivity,
     categories: defaultCategoryDeps,
     details: defaultDetailsDeps(appUrl),
     history: { fetchFits: () => fetchFits(env.DATABASE_URL) },
@@ -259,7 +259,12 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       let cursorTooLarge = false;
       if (hasNext && returnedCount > 0) {
         try {
-          nextCursor = signCursor({ v: 1, req: request, snap: run.meta.snapshotVersion, off: offset + returnedCount, ps: pageSize, exp, uid: actor.localUserId, ch: actor.channel, tm: totalMatches }, deps.cursorSecret);
+          // Task 4 deviation (see plan blockquote under ### Task 4): CursorPayload.ch
+          // (lib/research/cursor.ts, out of scope for this task) is still typed and
+          // schema-validated as the literal 'mcp' only. Cast only, so an 'mcp' actor's
+          // cursor is byte-for-byte unchanged; runtime value still comes from
+          // actor.channel either way, this only satisfies the type checker.
+          nextCursor = signCursor({ v: 1, req: request, snap: run.meta.snapshotVersion, off: offset + returnedCount, ps: pageSize, exp, uid: actor.localUserId, ch: actor.channel as CursorPayload['ch'], tm: totalMatches }, deps.cursorSecret);
         } catch (e) {
           // C5 (Task 7 review): a cursor too large to sign (mainly filters.categories.leafPaths
           // pushing the token past cursor.ts's MAX_CURSOR_LENGTH) must never discard the page
@@ -313,7 +318,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       capReason = 'payload';
       response = build(rows, capReason, true);
     }
-    deps.record(actor.localUserId, response.rows.length);
+    deps.record(actor.localUserId, response.rows.length, actor.channel);
     return response;
   }
 
@@ -355,7 +360,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     };
     // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
     // (mcp_request counter) must count this the same as search/details/history.
-    deps.record(actor.localUserId, RESERVE_NO_ROWS);
+    deps.record(actor.localUserId, RESERVE_NO_ROWS, actor.channel);
     return response;
   }
 
@@ -364,7 +369,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     if (!p.success) throw invalid(p.error);
     await reserveFor(deps, actor, 1);
     const out = await loadDetails(p.data.searchTermId, deps.details);
-    deps.record(actor.localUserId, 1);
+    deps.record(actor.localUserId, 1, actor.channel);
     return out;
   }
 
@@ -373,7 +378,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     if (!p.success) throw invalid(p.error);
     await reserveFor(deps, actor, p.data.weeks);
     const out = await loadHistory(p.data.searchTermId, p.data.weeks, { pool: deps.pool, timeoutMs: deps.limits.sqlTimeoutMs, fetchFits: deps.history.fetchFits });
-    deps.record(actor.localUserId, out.points.length);
+    deps.record(actor.localUserId, out.points.length, actor.channel);
     return out;
   }
 
@@ -383,7 +388,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     const response = buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: deps.audience(), limits: deps.limits });
     // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
     // (mcp_request counter) must count this the same as search/details/history.
-    deps.record(actor.localUserId, RESERVE_NO_ROWS);
+    deps.record(actor.localUserId, RESERVE_NO_ROWS, actor.channel);
     return response;
   }
 

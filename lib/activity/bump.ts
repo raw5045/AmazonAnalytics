@@ -19,7 +19,10 @@ export type UserActivityMetric =
   | 'detail_view'
   | 'explorer_export'
   | 'mcp_request'
-  | 'mcp_rows';
+  | 'mcp_rows'
+  | 'ask_question'
+  | 'ask_tool_call'
+  | 'ask_rows';
 export type AppActivityMetric = 'contact_submission' | 'contact_honeypot' | 'feedback_submission';
 
 export async function bumpUserActivity(userId: string, metric: UserActivityMetric): Promise<void> {

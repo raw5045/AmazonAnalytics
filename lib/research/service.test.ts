@@ -68,7 +68,7 @@ describe('search: a new request', () => {
     expect(cursor).toMatchObject({ off: 50, ps: 50, snap: 'snap-a', uid: 'u1', ch: 'mcp', tm: { kind: 'exact', value: 137 } });
     expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 1, queryVersion: 1 });
     expect(res.warnings.map((w) => w.code)).toEqual(['ESTIMATED_VOLUME', 'LIVE_PAGINATION']);
-    expect(deps.record).toHaveBeenCalledWith('u1', 50);
+    expect(deps.record).toHaveBeenCalledWith('u1', 50, 'mcp');
     const call = (deps.runSearch as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[3]).toEqual({ expectedSnapshot: null });
     expect(call[1]).toBe(DEFAULT_LIMITS.sqlTimeoutMs);
@@ -162,7 +162,7 @@ describe('search: a new request', () => {
     const beyond = signCursor({ ...verifyCursor(first.pagination.nextCursor!, 'test-secret', 0), off: 120 }, 'test-secret');
     const res = await svc.search(actor, { cursor: beyond });
     expect(res.pagination).toMatchObject({ offset: 120, returnedCount: 0, nextCursor: null });
-    expect(deps.record).toHaveBeenLastCalledWith('u1', 0);
+    expect(deps.record).toHaveBeenLastCalledWith('u1', 0, 'mcp');
   });
 });
 
@@ -238,7 +238,7 @@ describe('search: continuation and caps', () => {
     // cursor was dropped — so PAYLOAD_LIMITED must NOT fire; it would contradict nextCursor: null
     // by claiming "the cursor continues from the last row returned".
     expect(res.warnings.map((w) => w.code)).not.toContain('PAYLOAD_LIMITED');
-    expect(deps.record).toHaveBeenCalledWith('u1', 50);
+    expect(deps.record).toHaveBeenCalledWith('u1', 50, 'mcp');
   });
   it('I1: halving AND a too-large cursor together report PAYLOAD_LIMITED (without the cursor clause) alongside CURSOR_TOO_LARGE', async () => {
     // Same oversized leafPaths as C5 (cursor never signs), but with maxPayloadBytes small
@@ -281,7 +281,7 @@ describe('the other tools', () => {
     expect(deps.reserve).toHaveBeenCalledWith(expect.objectContaining({ rows: 0 }));
     // I3: resolveCategories now records a request too (RESERVE_NO_ROWS), same as guide — every
     // accepted tool call must bump Task 17's mcp_request counter, not just search/details/history.
-    expect(deps.record).toHaveBeenCalledWith('u1', 0);
+    expect(deps.record).toHaveBeenCalledWith('u1', 0, 'mcp');
     await expect(svc.resolveCategories(actor, { query: 'a', cursor: 'zzz' })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
     expect((await svc.resolveCategories(actor, { query: 'zzzz', source: 'taxonomy' })).noMatch).toBe(true);
   });
@@ -295,13 +295,13 @@ describe('the other tools', () => {
     await svc.details(actor, { searchTermId: '11111111-1111-4111-8111-111111111111' });
     // I4b: details reserves rows: 1.
     expect(deps.reserve).toHaveBeenNthCalledWith(1, expect.objectContaining({ rows: 1 }));
-    expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', 1);
+    expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', 1, 'mcp');
     await svc.history(actor, { searchTermId: '11111111-1111-4111-8111-111111111111', weeks: 4 });
     expect(history).toHaveBeenCalledWith('11111111-1111-4111-8111-111111111111', 4, expect.objectContaining({ timeoutMs: DEFAULT_LIMITS.sqlTimeoutMs }));
     // I4b: history reserves rows: 4 (the requested weeks, not the 2 points actually returned).
     expect(deps.reserve).toHaveBeenNthCalledWith(2, expect.objectContaining({ rows: 4 }));
     // I4a: history records the delivered point count (2), distinct from details' ('u1', 1) above.
-    expect(deps.record).toHaveBeenNthCalledWith(2, 'u1', 2);
+    expect(deps.record).toHaveBeenNthCalledWith(2, 'u1', 2, 'mcp');
     await expect(svc.details(actor, { searchTermId: 'nope' })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
   });
   it('guide reports the dataset week and audience, and reserves without rows', async () => {
@@ -311,7 +311,7 @@ describe('the other tools', () => {
     expect(deps.reserve).toHaveBeenCalledWith(expect.objectContaining({ rows: 0 }));
     // I3: guide records a request too (RESERVE_NO_ROWS) — every accepted tool call bumps
     // Task 17's mcp_request counter, not just search/details/history.
-    expect(deps.record).toHaveBeenCalledWith('u1', 0);
+    expect(deps.record).toHaveBeenCalledWith('u1', 0, 'mcp');
   });
 });
 

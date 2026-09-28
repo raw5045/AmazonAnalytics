@@ -6,10 +6,7 @@ import { DEFAULT_LIMITS } from './limits';
 import { PAGE_SIZE_MAX, searchToolInputSchema, resolveCategoriesInputSchema, keywordDetailsInputSchema, keywordHistoryInputSchema, emptyInputSchema } from './contracts';
 import type { ResearchActor, ResearchService } from './service';
 
-// Task 3 deviation (recorded in the plan blockquote under ### Task 3): ResearchActor.channel is
-// currently typed 'mcp' only — Task 4 widens it to 'mcp' | 'chat'. Until then, channel: 'chat'
-// does not typecheck, so this actor uses 'mcp' here. Task 4 should switch it to 'chat'.
-const actor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'mcp' } as const satisfies ResearchActor;
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat' };
 
 describe('RESEARCH_TOOLS', () => {
   it('lists the five tools in the MCP order, read-only, none needing confirmation', () => {
