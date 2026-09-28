@@ -26,25 +26,20 @@ import {
   type User,
   type NewUser,
 } from '@/db/schema';
+import {
+  TEST_USER_EMAIL_SQL_PATTERN,
+  TEST_USER_PREFIXES,
+  isSyntheticTestEmail,
+  type TestUserPrefix,
+} from '@/lib/auth/syntheticEmail';
 
 /**
- * The closed set of email prefixes integration-test users are allowed to use.
- * The orphan-sweep regex is derived from this list, so a test that invents a
- * new prefix without adding it here would create an unsweepable row — hence
- * createTestUser tripwires on it. Matches the four historical patterns
- * (`integration_`, `itest_`, `rw_`, `csmtest_`) so existing/raw-SQL tests stay
- * covered.
+ * The closed set of email prefixes integration-test users may use, and the
+ * orphan-sweep pattern derived from it, live in lib/auth/syntheticEmail.ts —
+ * production code needs the same rule to keep synthetic rows out of the
+ * Resend contact list. Re-exported so the harness keeps a single import.
  */
-export const TEST_USER_PREFIXES = ['integration', 'itest', 'rw', 'csmtest'] as const;
-export type TestUserPrefix = (typeof TEST_USER_PREFIXES)[number];
-
-/**
- * Postgres regex (for the `~` operator) matching every synthetic test-user
- * email: `<prefix>_<epoch>@...`. Anchored at the start and requiring a numeric
- * epoch + `@` keeps it from ever matching a real Clerk-provisioned user.
- */
-export const TEST_USER_EMAIL_SQL_PATTERN = `^(${TEST_USER_PREFIXES.join('|')})_[0-9]+@`;
-const TEST_USER_EMAIL_REGEX = new RegExp(TEST_USER_EMAIL_SQL_PATTERN);
+export { TEST_USER_EMAIL_SQL_PATTERN, TEST_USER_PREFIXES, type TestUserPrefix };
 
 /**
  * Insert a synthetic user for an integration test.
@@ -66,7 +61,7 @@ export async function createTestUser(
   const email = `${prefix}_${epoch}@example.com`;
   // Tripwire: fail loudly at creation if an edit ever produces an email the
   // sweep can't match, rather than silently leaking an unsweepable row.
-  if (!TEST_USER_EMAIL_REGEX.test(email)) {
+  if (!isSyntheticTestEmail(email)) {
     throw new Error(
       `createTestUser produced "${email}", which does not match ` +
         `TEST_USER_EMAIL_SQL_PATTERN (${TEST_USER_EMAIL_SQL_PATTERN}).`,
