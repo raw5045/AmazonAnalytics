@@ -22,6 +22,7 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
   window: '1w',
   q: null,
   qMode: 'word',
+  qExclude: [],
   rankMin: null,
   rankMax: null,
   volMin: null,
@@ -57,6 +58,9 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
 export const MAX_LEAF_PATHS = 2000;
 export const MAX_LEAF_PATH_LENGTH = 256;
 export const MAX_CUSTOM_CATEGORY_IDS = 50;
+export const MAX_EXCLUDE_TERMS = 5;
+export const MIN_EXCLUDE_TERM_LENGTH = 3;
+export const MAX_EXCLUDE_TERM_LENGTH = 200;
 
 /**
  * Cap on the paged OFFSET ((page-1)*perPage). A stray ?page=99999 otherwise
@@ -174,6 +178,32 @@ export function parseLeafPaths(value: string | string[] | undefined): string[] {
     .slice(0, MAX_LEAF_PATHS);
 }
 
+/**
+ * Comma-separated exclude terms (`qx`) → up to MAX_EXCLUDE_TERMS distinct
+ * whole-word terms/phrases. Chunks are trimmed and inner whitespace collapsed;
+ * chunks shorter than MIN_EXCLUDE_TERM_LENGTH or longer than
+ * MAX_EXCLUDE_TERM_LENGTH are ignored (never truncated); duplicates are dropped
+ * case-insensitively, keeping the first spelling (wordPattern lowercases anyway).
+ * Accepts a repeated param (string[]) as well as one comma-joined value.
+ */
+export function parseExcludeTerms(value: string | string[] | undefined): string[] {
+  const chunks = value === undefined ? [] : Array.isArray(value) ? value : [value];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const chunk of chunks) {
+    for (const part of chunk.split(',')) {
+      const term = part.trim().replace(/\s+/g, ' ');
+      if (term.length < MIN_EXCLUDE_TERM_LENGTH || term.length > MAX_EXCLUDE_TERM_LENGTH) continue;
+      const key = term.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(term);
+      if (out.length === MAX_EXCLUDE_TERMS) return out;
+    }
+  }
+  return out;
+}
+
 function parseTitleSlots(value: string | undefined): number[] {
   if (!value) return EXPLORER_DEFAULTS.titleSlots;
   const parts = value
@@ -241,6 +271,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     window,
     q: q.length >= 3 ? q : null,
     qMode,
+    qExclude: parseExcludeTerms(searchParams.qx),
     rankMin,
     rankMax,
     volMin,

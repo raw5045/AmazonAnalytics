@@ -3,6 +3,7 @@ import {
   parseExplorerFilters,
   EXPLORER_DEFAULTS,
   parseLeafPaths,
+  parseExcludeTerms,
   MAX_LEAF_PATHS,
   MAX_LEAF_PATH_LENGTH,
   MAX_CUSTOM_CATEGORY_IDS,
@@ -40,6 +41,7 @@ describe('parseExplorerFilters', () => {
       window: '4w',
       q: 'wireless',
       qMode: 'word',
+      qExclude: [],
       rankMin: 1,
       rankMax: 1000,
       volMin: 10000,
@@ -341,5 +343,28 @@ describe('search-volume range params', () => {
     expect(parseExplorerFilters({ jump: 'custom', jump_from: '2147483648', jump_to: '10' }).jump).toBeNull();
     expect(parseExplorerFilters({ jump: 'custom', jump_from: '2147483647', jump_to: '10' }).jumpFrom).toBe(2147483647);
     expect(parseExplorerFilters({ vol_max: '2147483648' }).volMax).toBe(2147483648);
+  });
+});
+
+describe('exclude terms (qx)', () => {
+  it('defaults to an empty list', () => {
+    expect(EXPLORER_DEFAULTS.qExclude).toEqual([]);
+    expect(parseExplorerFilters({}).qExclude).toEqual([]);
+  });
+
+  it('splits on commas, trims, collapses inner whitespace, drops short chunks, de-duplicates case-insensitively, caps at 5', () => {
+    expect(parseExcludeTerms(' floor , ceiling   fan, ab, FLOOR ,,')).toEqual(['floor', 'ceiling fan']);
+    expect(parseExcludeTerms(['floor', 'led,bulb'])).toEqual(['floor', 'led', 'bulb']);
+    expect(parseExcludeTerms('one1,two2,three3,four4,five5,six6')).toEqual(['one1', 'two2', 'three3', 'four4', 'five5']);
+    expect(parseExcludeTerms('x'.repeat(201))).toEqual([]);
+    expect(parseExcludeTerms(undefined)).toEqual([]);
+  });
+
+  it('reads qx from the URL and keeps the include term independent', () => {
+    const f = parseExplorerFilters({ q: 'lamp', qx: 'floor,ceiling fan' });
+    expect(f.q).toBe('lamp');
+    expect(f.qExclude).toEqual(['floor', 'ceiling fan']);
+    expect(parseExplorerFilters({ qx: 'led' }).q).toBeNull();
+    expect(parseExplorerFilters({ qx: 'led' }).qExclude).toEqual(['led']);
   });
 });

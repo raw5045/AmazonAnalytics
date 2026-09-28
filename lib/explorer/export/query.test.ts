@@ -19,6 +19,7 @@ describe('filtersToQueryString', () => {
     window: '4w',
     q: 'magnesium',
     qMode: 'broad',
+    qExclude: [],
     rankMin: 10,
     rankMax: 5000,
     volMin: null,

@@ -47,6 +47,14 @@ export interface ExplorerFilters {
   q: string | null;
   /** Match mode for `q`: 'word' = whole-word (default), 'broad' = substring. Only meaningful when q is set. */
   qMode: 'word' | 'broad';
+  /**
+   * Whole words or phrases a keyword must NOT contain (URL `qx`, comma-separated).
+   * Each becomes `NOT (search_term_normalized ~ '\m<term>\M')`, so a keyword is
+   * dropped if it contains ANY of them. Independent of `q`/`qMode`: works with or
+   * without an include term and always matches whole words. Empty array = none.
+   * Up to MAX_EXCLUDE_TERMS terms of MIN_EXCLUDE_TERM_LENGTH+ characters.
+   */
+  qExclude: string[];
   rankMin: number | null;
   rankMax: number | null;
   /**

@@ -77,6 +77,8 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     q: typeof f.q === 'string' ? f.q : null,
     // Default to whole-word for views saved before qMode existed.
     qMode: f.qMode === 'broad' ? 'broad' : 'word',
+    // Placeholder until Task 4 maps the stored exclude-terms field.
+    qExclude: [],
     rankMin: typeof f.rankMin === 'number' ? f.rankMin : null,
     rankMax: typeof f.rankMax === 'number' ? f.rankMax : null,
     volMin: typeof f.volMin === 'number' ? f.volMin : null,
