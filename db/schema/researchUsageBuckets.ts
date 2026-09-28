@@ -6,6 +6,9 @@ import { users } from './users';
  * service (amendment §6). One atomic upsert per request reserves the page
  * size in `rows`; the hourly cleanup deletes buckets older than a day.
  * See migration 0047.
+ *
+ * Channel values: the research channels 'mcp' | 'chat' (per-minute buckets) and the reserved
+ * 'chat_day' (per-member daily question guard, lib/ask/gates.ts).
  */
 export const researchUsageBuckets = pgTable(
   'research_usage_buckets',
