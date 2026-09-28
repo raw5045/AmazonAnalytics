@@ -26,6 +26,11 @@ import { isSyntheticTestEmail } from '@/lib/auth/syntheticEmail';
  * (local dev, unit tests, preview). Consent is NOT synced in either
  * direction: a Resend unsubscribe and weekly_digest_subscribed are separate.
  *
+ * Logging: this file logs member addresses on purpose (the only place in lib/ that
+ * does). Nothing here retries, so the address is exactly what the owner needs to fix a
+ * contact by hand in the Resend dashboard. The one exception is a removal that finds
+ * no contact: that member just deleted their account, so the line names nothing.
+ *
  * No `import 'server-only'` — keep this importable everywhere, like the
  * other senders in this directory.
  */
@@ -50,9 +55,9 @@ export function splitName(name: string | null | undefined): { firstName?: string
 
 /** Read at call time (not module load) so tests can stub and Vercel env edits apply per deploy. */
 function settings(): { apiKey: string; segmentId: string } | null {
-  const segmentId = process.env.RESEND_SEGMENT_ID;
+  const segmentId = process.env.RESEND_SEGMENT_ID?.trim();
   if (!segmentId) return null;
-  const apiKey = process.env.RESEND_API_KEY;
+  const apiKey = process.env.RESEND_API_KEY?.trim();
   if (!apiKey) {
     console.warn(`${LOG} RESEND_SEGMENT_ID is set but RESEND_API_KEY is not — skipping`);
     return null;
@@ -65,10 +70,21 @@ function isNotAMember(email: string): boolean {
   return isUndeliverableEmail(email) || isSyntheticTestEmail(email);
 }
 
+/**
+ * The SDK splices the address into `DELETE /contacts/<email>` unencoded: '?' or '#'
+ * would cut the path, '/' or '\' would add segments ('../' walks to another resource)
+ * and Resend decodes '%' ('%40' → '@'). All are legal in an RFC 5322 local part and
+ * absent from real addresses, so refuse rather than encode (encoding would double up
+ * if a later SDK minor starts encoding the path itself).
+ */
+const UNSAFE_IN_URL_PATH = /[/?#%\\]/;
+
 export async function addResendContact(input: { email: string; name: string | null }): Promise<AddContactResult> {
   const cfg = settings();
   if (!cfg) return 'skipped';
   if (isNotAMember(input.email)) return 'skipped';
+  // The SDK returns API and network failures as `{ error }` (6.12.3 catches its own fetch);
+  // the try guards `new Resend()`, which throws on a malformed key, and any future SDK change.
   try {
     const resend = new Resend(cfg.apiKey);
     const { error } = await resend.contacts.create({
@@ -77,11 +93,13 @@ export async function addResendContact(input: { email: string; name: string | nu
       segments: [{ id: cfg.segmentId }],
     });
     if (!error) return 'added';
-    // Resend documents no dedicated duplicate-contact error; a conflict status
-    // or an "already exists" message is the closest signal, and a duplicate is
-    // harmless here (the contact is already on the list).
-    if (error.statusCode === 409 || /already exist/i.test(error.message)) {
-      console.warn(`${LOG} contact already exists for ${input.email} — left as is`);
+    // Resend documents no dedicated duplicate-contact error, so the message is the only
+    // signal. Do not key on 409 alone: `resource_locked` ("Another request is already
+    // updating this resource") is also a 409 and is temporary — filing it as 'exists'
+    // would silently lose the contact (nothing retries). Contacts are account-level, so
+    // "exists" does not prove membership of the segment; the log says to check.
+    if (/already exist/i.test(error.message)) {
+      console.warn(`${LOG} contact already exists for ${input.email} — left as is; check it is in the segment`);
       return 'exists';
     }
     console.error(`${LOG} could not add ${input.email}:`, error);
@@ -96,12 +114,17 @@ export async function removeResendContact(email: string): Promise<RemoveContactR
   const cfg = settings();
   if (!cfg) return 'skipped';
   if (isNotAMember(email)) return 'skipped';
+  if (UNSAFE_IN_URL_PATH.test(email)) {
+    console.error(`${LOG} refusing to put ${email} in a URL path — remove this contact in the Resend dashboard`);
+    return 'failed';
+  }
+  // Same guard as addResendContact: the SDK reports failures as { error }; the try covers new Resend().
   try {
     const resend = new Resend(cfg.apiKey);
     const { error } = await resend.contacts.remove({ email });
     if (!error) return 'removed';
     if (error.name === 'not_found' || error.statusCode === 404) {
-      console.warn(`${LOG} no contact to remove for ${email}`);
+      console.warn(`${LOG} no contact to remove — already gone`);
       return 'missing';
     }
     console.error(`${LOG} could not remove ${email}:`, error);

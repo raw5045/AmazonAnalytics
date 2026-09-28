@@ -82,6 +82,19 @@ describe('addResendContact', () => {
     expect(console.warn).toHaveBeenCalledTimes(1);
   });
 
+  it('trims a pasted segment id (a trailing newline would make every add a 422)', async () => {
+    vi.stubEnv('RESEND_SEGMENT_ID', ' seg_beta\n');
+    mockCreate.mockResolvedValueOnce(ok({ object: 'contact', id: 'c_3' }));
+    await addResendContact({ email: 'jane@shop.co', name: null });
+    expect(mockCreate).toHaveBeenCalledWith({ email: 'jane@shop.co', segments: [{ id: 'seg_beta' }] });
+  });
+
+  it('treats a whitespace-only segment id as unset', async () => {
+    vi.stubEnv('RESEND_SEGMENT_ID', '   ');
+    expect(await addResendContact({ email: 'jane@shop.co', name: 'Jane' })).toBe('skipped');
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
   it.each(['itest_1700000000000@example.com', 'rw_5@shop.co', 'bot@example.com', 'nobody@localhost'])(
     'never adds a synthetic or undeliverable address (%s)',
     async (email) => {
@@ -90,7 +103,7 @@ describe('addResendContact', () => {
     },
   );
 
-  it('treats "already exists" (409 or by message) as benign', async () => {
+  it('treats an "already exists" message as benign, whatever the status', async () => {
     mockCreate.mockResolvedValueOnce(
       fail({ name: 'validation_error', message: 'Contact already exists', statusCode: 409 }),
     );
@@ -103,6 +116,14 @@ describe('addResendContact', () => {
     expect(console.warn).toHaveBeenCalledTimes(2);
   });
 
+  it('does not mistake a temporary 409 (resource_locked) for a duplicate', async () => {
+    mockCreate.mockResolvedValueOnce(
+      fail({ name: 'resource_locked', message: 'Another request is already updating this resource.', statusCode: 409 }),
+    );
+    expect(await addResendContact({ email: 'jane@shop.co', name: 'Jane' })).toBe('failed');
+    expect(console.error).toHaveBeenCalledTimes(1);
+  });
+
   it('reports failed and logs when Resend returns any other error', async () => {
     mockCreate.mockResolvedValueOnce(
       fail({ name: 'rate_limit_exceeded', message: 'Too many requests', statusCode: 429 }),
@@ -111,8 +132,20 @@ describe('addResendContact', () => {
     expect(console.error).toHaveBeenCalledTimes(1);
   });
 
-  it('reports failed and never throws when the client throws', async () => {
-    mockCreate.mockRejectedValueOnce(new Error('network down'));
+  it('reports failed and logs on the SDK-caught network failure shape (application_error, statusCode null)', async () => {
+    mockCreate.mockResolvedValueOnce(
+      fail({
+        name: 'application_error',
+        message: 'Unable to fetch data. The request could not be resolved.',
+        statusCode: null,
+      }),
+    );
+    expect(await addResendContact({ email: 'jane@shop.co', name: 'Jane' })).toBe('failed');
+    expect(console.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports failed and never throws when the client throws (e.g. a malformed key)', async () => {
+    mockCreate.mockRejectedValueOnce(new Error('Headers.append: invalid header value'));
     await expect(addResendContact({ email: 'jane@shop.co', name: 'Jane' })).resolves.toBe('failed');
     expect(console.error).toHaveBeenCalledTimes(1);
   });
@@ -140,16 +173,37 @@ describe('removeResendContact', () => {
     expect(mockRemove).not.toHaveBeenCalled();
   });
 
+  it.each(['victim%40shop.co?@attacker.co', 'x#y@shop.co', '../domains/d?@attacker.co', 'a\\b@shop.co'])(
+    'refuses to put a URL-unsafe address in the delete path (%s)',
+    async (email) => {
+      expect(await removeResendContact(email)).toBe('failed');
+      expect(mockRemove).not.toHaveBeenCalled();
+      expect(console.error).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('treats an unknown contact as already gone', async () => {
     mockRemove.mockResolvedValueOnce(fail({ name: 'not_found', message: 'Contact not found', statusCode: 404 }));
     expect(await removeResendContact('gone@shop.co')).toBe('missing');
     expect(console.error).not.toHaveBeenCalled();
   });
 
-  it('reports failed and logs on any other error, and when the client throws', async () => {
+  it('reports failed and logs on the SDK-caught network failure shape (application_error, statusCode null)', async () => {
+    mockRemove.mockResolvedValueOnce(
+      fail({
+        name: 'application_error',
+        message: 'Unable to fetch data. The request could not be resolved.',
+        statusCode: null,
+      }),
+    );
+    expect(await removeResendContact('jane@shop.co')).toBe('failed');
+    expect(console.error).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports failed and logs on any other error, and when the client throws (e.g. a malformed key)', async () => {
     mockRemove.mockResolvedValueOnce(fail({ name: 'application_error', message: 'boom', statusCode: 500 }));
     expect(await removeResendContact('jane@shop.co')).toBe('failed');
-    mockRemove.mockRejectedValueOnce(new Error('network down'));
+    mockRemove.mockRejectedValueOnce(new Error('Headers.append: invalid header value'));
     expect(await removeResendContact('jane@shop.co')).toBe('failed');
     expect(console.error).toHaveBeenCalledTimes(2);
   });
