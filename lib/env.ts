@@ -13,6 +13,8 @@ const serverSchema = z.object({
   INITIAL_ADMIN_EMAIL: z.string().email().optional(),
   RESEND_API_KEY: z.string().min(1).optional(),
   RESEND_FROM: z.string().min(1).optional(),
+  /** Resend Segment new members join (and leave on deletion); unset = contact sync off. See lib/notifications/resendContacts.ts */
+  RESEND_SEGMENT_ID: z.string().min(1).optional(),
   APP_PUBLIC_URL: z.string().url(),
   // MCP endpoint (/api/mcp) for external AI clients. All optional and dark by
   // default; interpreted (with safe fallbacks) by lib/mcp/config.ts.
