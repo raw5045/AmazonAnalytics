@@ -573,6 +573,10 @@ function pushKcsPredicates(
   // trigram index, it is a per-row filter after the other predicates. The
   // covered path stands down (categoryPathIsCovered) while the avg-count
   // steering deliberately stays on (see countSteersOntoSortIndex).
+  // search_term_normalized is nullable by DDL (0037) but the refresh copies it
+  // from a NOT NULL column and production had 0 NULLs of 3.7M rows on
+  // 2026-09-28; a NULL row would be dropped here (NOT NULL = NULL), just as it
+  // would fail the include match.
   for (const term of filters.qExclude) {
     where.push(`NOT (kcs.search_term_normalized ~ ${next(wordPattern(term))})`);
   }

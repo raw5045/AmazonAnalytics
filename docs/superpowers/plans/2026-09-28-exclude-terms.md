@@ -799,3 +799,31 @@ On the owner's go: `node --env-file=.env.local --import tsx scripts/checkActiveJ
 - Excluding whole categories (already possible by not selecting them) or per-slot title exclusions.
 - A "Try asking" example on the Connect AI page for exclusions; the owner curates that list.
 - Any schema change: the normalized text column and its trigram index already exist.
+
+---
+
+## Results
+
+**Execution:** subagent-driven, 2026-09-28. Tasks 1–6 landed on local `main` after the plan commit 732f780 (parser 328f2da + nits 73347ce; predicates adffef7 + review fix b99ba2a; totals guards 455b6fe; saved views/export f0e60a3; sidebar 28f11b9 + review fix 07ed5f3; research ab8c5ad; guard-drift test and shared nits b903ee1; rank-count steering b7fe486 from the Task 7 probe). Every task had a spec review (all ✅) and a code review (all APPROVE / APPROVE WITH NITS, nits folded in).
+
+**Production probe (Task 7 Step 3, 2026-09-28, read-only EXPLAIN ANALYZE, snapshot 2026-09-19, first pass cold then a second pass):**
+
+| Shape | rows (cold / warm) | count (cold / warm) | Plan |
+|---|---|---|---|
+| Unfiltered landing + 5 excludes, rank sort | 0.51 s / 0.04 s | **before b7fe486: 25.1 s / 0.15 s** (Seq Scan, 188k pages); **after: 1.27 s / 0.06 s** | count now walks the rank index (steering extended to the rank sorts when only excludes narrow the landing) |
+| Landing + exclude, `rank_desc` | — | 1.09 s / 0.04 s | Index Scan Backward on the rank index |
+| `q=lamp` + exclude floor, table | 2.55 s / 0.07 s | window count inside the rows query | trigram bitmap + top-N sort, as without excludes |
+| Lighting leaf (Table Lamps) + exclude led | 0.23 s / 0.04 s | 0.06 s / 0.03 s | rows on the covering index, count on the leaf-path index |
+| `avg_reviews_desc` + exclude led | 0.32 s / 0.03 s | 1.33 s / 0.04 s | avg index walk; steering deliberately kept on |
+| Broad category (Apparel, the largest) + exclude led | 0.29 s / 0.04 s | 1.0 s / 0.98 s | rows on the rank index; the count seq-scans ~5k pages until 10,001 matches — the pre-existing "broad category + any narrowing filter" shape, unchanged by this work |
+
+Acceptance met: every rows query and every count ≤ 3 s warm; no shape that used an index before now seq-scans. The one first-pass failure (the exclude-only landing count) was fixed in b7fe486 and re-probed.
+
+**Final whole-diff review (Task 7 Step 2, 2026-09-28): APPROVE WITH NITS, nothing blocking.** Verified: every user string reaches SQL only as a bound parameter through `wordPattern`; the NOT is in rows and count on both classic paths and in the research compiler, absent from the gated covered path, args-prefix invariant pinned; the three totals guards, the covered gate and `filtersAreCustomized` treat the field as narrowing while the count steering does not; saved views, the API path, the export and the URL round trip are lossless; sidebar naming, `aria-describedby`, Reset and the normalised dirty check hold; the published MCP schema carries the field, pre-change cursors verify, and every surface states the same whole-word semantics; the guard-drift test perturbs all 26 fields; no stray edits.
+
+**Follow-ups noted, not in scope:**
+- The broad-category + narrowing-filter count (~1 s, seq scan of the first ~5k pages) predates this change.
+- The research compiler's unscoped exclude-only search under the default sort runs its capped count unsteered (the same cold seq-scan class the Explorer fix addressed; bounded by the 3 s count budget, which reports the total as unknown). Same class as today's `{}` search; a later change could extend the research steering to the rank/volume sorts.
+- The research contract trims but does not collapse inner whitespace in a term (`'ceiling   fan'` would never match), mirroring the include's `textFilterSchema`; the Explorer parser collapses it. Pre-existing asymmetry.
+- `kcs.search_term_normalized` is nullable by DDL; a NULL row would be dropped by the NOT (and would not match the include either). Production had 0 NULLs of 3,709,115 rows on 2026-09-28 and the refresh copies the value from a NOT NULL column, so it cannot occur today; noted in the `pushKcsPredicates` comment.
+- The sidebar draft is not re-synced from the URL after Apply for `q` either (the dirty check now normalises both, so "Filters applied" reads correctly); the overflow hint also fires when the sixth chunk is merely a duplicate.
