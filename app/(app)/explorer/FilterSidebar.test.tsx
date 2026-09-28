@@ -150,7 +150,7 @@ describe('exclude terms ("But not")', () => {
 
   it('renders under "Search term contains", applies without an include term, and warns about short chunks', () => {
     render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
-    const input = screen.getByRole('textbox', { name: 'But not' });
+    const input = screen.getByRole('textbox', { name: 'But not (excluded keywords)' });
     fireEvent.change(input, { target: { value: 'led, ab' } });
     expect(screen.getByText(/terms shorter than 3 characters are ignored/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /apply filters/i }));
@@ -160,21 +160,21 @@ describe('exclude terms ("But not")', () => {
 
   it('shows the overflow warning when more than five terms are typed', () => {
     render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
-    const input = screen.getByRole('textbox', { name: 'But not' });
+    const input = screen.getByRole('textbox', { name: 'But not (excluded keywords)' });
     fireEvent.change(input, { target: { value: 'a1a, b2b, c3c, d4d, e5e, f6f' } });
     expect(screen.getByText(/only the first 5 terms are used/i)).toBeInTheDocument();
   });
 
   it('Reset clears the exclude terms', () => {
     render(<FilterSidebar filters={{ ...EXPLORER_DEFAULTS, qExclude: ['floor'] }} categories={[]} leafCategories={[]} />);
-    expect(screen.getByRole('textbox', { name: 'But not' })).toHaveValue('floor');
+    expect(screen.getByRole('textbox', { name: 'But not (excluded keywords)' })).toHaveValue('floor');
     fireEvent.click(screen.getByRole('button', { name: /reset/i }));
-    expect(screen.getByRole('textbox', { name: 'But not' })).toHaveValue('');
+    expect(screen.getByRole('textbox', { name: 'But not (excluded keywords)' })).toHaveValue('');
   });
 
   it('reads as applied once the URL carries what the draft parses to', () => {
     const { rerender } = render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
-    fireEvent.change(screen.getByRole('textbox', { name: 'But not' }), { target: { value: 'led, ab' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'But not (excluded keywords)' }), { target: { value: 'led, ab' } });
     rerender(<FilterSidebar filters={{ ...EXPLORER_DEFAULTS, qExclude: ['led'] }} categories={[]} leafCategories={[]} />);
     expect(screen.getByRole('button', { name: /filters applied/i })).toBeInTheDocument();
   });
@@ -184,5 +184,20 @@ describe('exclude terms ("But not")', () => {
     const wordCount = screen.getByText('Word count');
     const titleGap = screen.getByText('Title-gap filter');
     expect(titleGap.compareDocumentPosition(wordCount) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('exclude terms hint lives in a tooltip and hidden text', () => {
+  it('names the input by its visible label, describes it via hover title and sr-only copy, and keeps warnings inline', () => {
+    render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
+    const input = screen.getByRole('textbox', { name: 'But not (excluded keywords)' });
+    expect(input.closest('label')).toHaveAttribute('title', expect.stringMatching(/does not drop/));
+    const hint = document.getElementById('exclude-terms-hint');
+    expect(hint).toHaveClass('sr-only');
+    expect(input).toHaveAccessibleDescription(/does not drop/);
+    expect(screen.queryByText(/drops keywords containing any of these/i, { selector: 'p:not(.sr-only)' })).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'led, ab' } });
+    expect(screen.getByText(/terms shorter than 3 characters are ignored/i)).toBeInTheDocument();
+    expect(input).toHaveAccessibleDescription(/shorter than 3 characters/);
   });
 });

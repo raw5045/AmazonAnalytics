@@ -78,6 +78,9 @@ function excludeHasOverflow(text: string): boolean {
   return parseExcludeTerms(text).length === MAX_EXCLUDE_TERMS && nonEmptyChunks > MAX_EXCLUDE_TERMS;
 }
 
+/** Hover title on the "But not" label and the input's screen-reader description; kept out of the visible copy to save space (owner request 2026-09-28). */
+const EXCLUDE_HINT = `Drops keywords containing any of these whole words or phrases. Up to ${MAX_EXCLUDE_TERMS}, comma-separated, ${MIN_EXCLUDE_TERM_LENGTH}+ characters each; works with or without a search term. Exact words only: “lamp” does not drop “lamps”, so list each form.`;
+
 const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
   { value: '', label: 'Show all (no title filter)' },
   { value: 'any', label: 'Missing from any selected' },
@@ -358,8 +361,8 @@ export function FilterSidebar({
           </p>
         )}
 
-        <label className="mt-3 block">
-          <span className="text-xs font-medium text-gray-700">But not</span>
+        <label className="mt-3 block" title={EXCLUDE_HINT}>
+          <span className="text-xs font-medium text-gray-700">But not (excluded keywords)</span>
           <input
             type="text"
             id="exclude-terms"
@@ -370,24 +373,24 @@ export function FilterSidebar({
             }}
             placeholder="e.g. floor, ceiling fan"
             className="filter-input mt-1"
-            aria-describedby="exclude-terms-hint"
+            aria-describedby="exclude-terms-hint exclude-terms-warning"
           />
         </label>
+        {/* The explanation lives in the label's hover title and in this hidden copy for
+            screen readers, not in visible text; the warnings below stay inline because
+            they only render when something needs correcting. */}
+        <p id="exclude-terms-hint" className="sr-only">
+          {EXCLUDE_HINT}
+        </p>
         {excludeHasShortChunk(pending.qExclude) ? (
-          <p id="exclude-terms-hint" className="text-xs text-amber-700 mt-1">
+          <p id="exclude-terms-warning" className="text-xs text-amber-700 mt-1">
             Terms shorter than {MIN_EXCLUDE_TERM_LENGTH} characters are ignored.
           </p>
         ) : excludeHasOverflow(pending.qExclude) ? (
-          <p id="exclude-terms-hint" className="text-xs text-amber-700 mt-1">
+          <p id="exclude-terms-warning" className="text-xs text-amber-700 mt-1">
             Only the first {MAX_EXCLUDE_TERMS} terms are used.
           </p>
-        ) : (
-          <p id="exclude-terms-hint" className="text-xs text-gray-500 mt-1">
-            Drops keywords containing any of these whole words or phrases. Up to {MAX_EXCLUDE_TERMS}, comma-separated,{' '}
-            {MIN_EXCLUDE_TERM_LENGTH}+ characters each; works with or without a search term. Exact words only:
-            &ldquo;lamp&rdquo; does not drop &ldquo;lamps&rdquo;, so list each form.
-          </p>
-        )}
+        ) : null}
       </FieldGroup>
 
       <FieldGroup label={pending.rangeMetric === 'rank' ? 'Rank range (1 = best)' : 'Search volume range (est. monthly)'}>
