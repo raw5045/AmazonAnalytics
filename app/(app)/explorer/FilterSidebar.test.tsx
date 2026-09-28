@@ -129,3 +129,33 @@ describe('sortHint', () => {
     }
   });
 });
+
+describe('exclude terms ("But not")', () => {
+  beforeEach(() => {
+    replace.mockClear();
+  });
+
+  it('round-trips through pending state as comma-separated text and emits one qx param', () => {
+    expect(filtersToPending({ ...EXPLORER_DEFAULTS, qExclude: ['floor', 'ceiling fan'] }).qExclude).toBe('floor, ceiling fan');
+    const params = pendingToParams({ ...filtersToPending(EXPLORER_DEFAULTS), qExclude: ' floor ,ceiling fan, ab, FLOOR ' });
+    expect(params.get('qx')).toBe('floor,ceiling fan');
+    expect(pendingToParams(filtersToPending(EXPLORER_DEFAULTS)).has('qx')).toBe(false);
+  });
+
+  it('renders under "Search term contains", applies without an include term, and warns about short chunks', () => {
+    render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
+    const input = screen.getByRole('textbox', { name: 'Exclude terms' });
+    fireEvent.change(input, { target: { value: 'led, ab' } });
+    expect(screen.getByText(/shorter than 3 characters are ignored/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /apply filters/i }));
+    const url = replace.mock.calls.at(-1)?.[0] as string;
+    expect(new URLSearchParams(url.split('?')[1]).get('qx')).toBe('led');
+  });
+
+  it('keeps the Word count card at the bottom of the filter list', () => {
+    render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
+    const wordCount = screen.getByText('Word count');
+    const titleGap = screen.getByText('Title-gap filter');
+    expect(titleGap.compareDocumentPosition(wordCount) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});

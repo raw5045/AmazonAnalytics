@@ -11,7 +11,7 @@ import type {
   TitleMatchMode,
   WindowKey,
 } from '@/lib/explorer/types';
-import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
+import { EXPLORER_DEFAULTS, MIN_EXCLUDE_TERM_LENGTH, parseExcludeTerms } from '@/lib/explorer/parseFilters';
 import { jumpPresetsFor, type JumpMetric } from '@/lib/explorer/jumpPresets';
 import { sortHidesRows, sortNullKeyColumn, sortUsesVolumeDelta } from '@/lib/explorer/sortRules';
 import { LeafCategoryTypeahead } from './LeafCategoryTypeahead';
@@ -64,6 +64,14 @@ export function sortHint(sort: SortKey): string | null {
   return sortHidesRows(sort) ? 'Keywords without the data this sort needs are hidden under it.' : null;
 }
 
+/** True when the "But not" text has a non-empty chunk under the minimum length (it will be ignored). */
+function excludeHasShortChunk(text: string): boolean {
+  return text.split(',').some((c) => {
+    const t = c.trim();
+    return t.length > 0 && t.length < MIN_EXCLUDE_TERM_LENGTH;
+  });
+}
+
 const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
   { value: '', label: 'Show all (no title filter)' },
   { value: 'any', label: 'Missing from any selected' },
@@ -75,6 +83,8 @@ interface PendingFilters {
   q: string;
   /** Whole-word (default, fast) vs broad substring (opt-in, slower). */
   qMode: 'word' | 'broad';
+  /** The "But not" text as typed (comma-separated); parsed on Apply. */
+  qExclude: string;
   rankBest: string;
   rankWorst: string;
   /**
@@ -115,6 +125,7 @@ export function filtersToPending(f: ExplorerFilters): PendingFilters {
     window: f.window,
     q: f.q ?? '',
     qMode: f.qMode,
+    qExclude: f.qExclude.join(', '),
     rankBest: f.rankMin?.toString() ?? '',
     rankWorst: f.rankMax?.toString() ?? '',
     rangeMetric: f.volMin !== null || f.volMax !== null ? 'volume' : 'rank',
@@ -147,6 +158,8 @@ export function pendingToParams(p: PendingFilters): URLSearchParams {
   if (p.q.trim().length >= 3) params.set('q', p.q.trim());
   // qmode only affects results alongside an active q; emit it only then to keep URLs clean.
   if (p.q.trim().length >= 3 && p.qMode === 'broad') params.set('qmode', 'broad');
+  const qx = parseExcludeTerms(p.qExclude);
+  if (qx.length > 0) params.set('qx', qx.join(','));
   if (p.rankBest) params.set('rank_min', p.rankBest);
   if (p.rankWorst) params.set('rank_max', p.rankWorst);
   if (p.volMin) params.set('vol_min', p.volMin);
@@ -329,6 +342,29 @@ export function FilterSidebar({
             Whole word matches the term as a full word (e.g. “air”, not “chair”). Fast.
           </p>
         )}
+
+        <label className="mt-3 block">
+          <span className="text-xs font-medium text-gray-700">But not</span>
+          <input
+            type="text"
+            value={pending.qExclude}
+            onChange={(e) => set('qExclude', e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') apply();
+            }}
+            placeholder="e.g. floor, ceiling fan"
+            className="filter-input mt-1"
+            aria-label="Exclude terms"
+          />
+        </label>
+        {excludeHasShortChunk(pending.qExclude) ? (
+          <p className="text-xs text-amber-700 mt-1">Chunks shorter than 3 characters are ignored.</p>
+        ) : (
+          <p className="text-xs text-gray-500 mt-1">
+            Drops keywords containing any of these whole words or phrases. Up to 5, comma-separated, 3+ characters
+            each; works with or without a search term.
+          </p>
+        )}
       </FieldGroup>
 
       <FieldGroup label={pending.rangeMetric === 'rank' ? 'Rank range (1 = best)' : 'Search volume range (est. monthly)'}>
@@ -448,34 +484,6 @@ export function FilterSidebar({
         </div>
         <p className="text-xs text-gray-500 mt-1">
           Mean review count of the top-3 clicked products. Excludes keywords without review data.
-        </p>
-      </FieldGroup>
-
-      <FieldGroup label="Word count">
-        <div className="flex gap-2">
-          <input
-            type="number"
-            min={1}
-            value={pending.wordsMin}
-            onChange={(e) => set('wordsMin', e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && apply()}
-            placeholder="Min"
-            className="filter-input flex-1"
-            aria-label="Minimum word count"
-          />
-          <input
-            type="number"
-            min={1}
-            value={pending.wordsMax}
-            onChange={(e) => set('wordsMax', e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && apply()}
-            placeholder="Max"
-            className="filter-input flex-1"
-            aria-label="Maximum word count"
-          />
-        </div>
-        <p className="text-xs text-gray-500 mt-1">
-          Words in the keyword — try min 3 to hunt long-tail terms.
         </p>
       </FieldGroup>
 
@@ -769,6 +777,34 @@ export function FilterSidebar({
             ))}
           </div>
         )}
+      </FieldGroup>
+
+      <FieldGroup label="Word count">
+        <div className="flex gap-2">
+          <input
+            type="number"
+            min={1}
+            value={pending.wordsMin}
+            onChange={(e) => set('wordsMin', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Min"
+            className="filter-input flex-1"
+            aria-label="Minimum word count"
+          />
+          <input
+            type="number"
+            min={1}
+            value={pending.wordsMax}
+            onChange={(e) => set('wordsMax', e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && apply()}
+            placeholder="Max"
+            className="filter-input flex-1"
+            aria-label="Maximum word count"
+          />
+        </div>
+        <p className="text-xs text-gray-500 mt-1">
+          Words in the keyword — try min 3 to hunt long-tail terms.
+        </p>
       </FieldGroup>
 
       </div>{/* close scrollable area */}

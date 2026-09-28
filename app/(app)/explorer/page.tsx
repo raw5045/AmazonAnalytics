@@ -358,6 +358,7 @@ function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boole
   return (
     f.window !== EXPLORER_DEFAULTS.window ||
     f.q !== null ||
+    f.qExclude.length > 0 ||
     f.rankMin !== null ||
     f.rankMax !== null ||
     f.volMin !== null ||
