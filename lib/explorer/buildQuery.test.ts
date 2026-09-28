@@ -1007,14 +1007,16 @@ describe('exclude terms (qExclude)', () => {
     expect(args).toContain('\\mfloor\\M');
     expect(args).toContain('\\mceiling fan\\M');
     expect(countArgs).toEqual(args.slice(0, countArgs.length));
+    expect(countArgs).toContain('\\mfloor\\M');
   });
 
   it('q path: the excludes sit next to the include match and the count comes from the rows window', () => {
-    const r = buildExplorerQuery({ ...baseFilters, q: 'lamp', qExclude: ['floor'] });
-    expect(norm(r.sql)).toContain('kcs.search_term_normalized ~ $');
-    expect(norm(r.sql).match(NOT_PREDICATE)).toHaveLength(1);
+    const r = buildExplorerQuery({ ...baseFilters, q: 'lamp', qExclude: ['floor', 'table'] });
+    expect(norm(r.sql).match(/kcs\.search_term_normalized ~ \$\d+/g)).toHaveLength(3);
+    expect(norm(r.sql).match(NOT_PREDICATE)).toHaveLength(2);
     expect(r.args).toContain('\\mlamp\\M');
     expect(r.args).toContain('\\mfloor\\M');
+    expect(r.args).toContain('\\mtable\\M');
     expect(r.countFromRows).toBe(true);
   });
 
@@ -1033,18 +1035,19 @@ describe('exclude terms (qExclude)', () => {
     expect(norm(sql).match(NOT_PREDICATE)).toHaveLength(1);
   });
 
-  it('switches off the avg-sort count steering, like every other narrowing filter', () => {
+  it('keeps the avg-sort count steering on: a NOT gives the planner no other index to prefer', () => {
     expect(countSteersOntoSortIndex({ ...baseFilters, sort: 'avg_price_desc' })).toBe(true);
-    expect(countSteersOntoSortIndex({ ...baseFilters, sort: 'avg_price_desc', qExclude: ['floor'] })).toBe(false);
+    expect(countSteersOntoSortIndex({ ...baseFilters, sort: 'avg_price_desc', qExclude: ['floor'] })).toBe(true);
     const { countSql } = buildExplorerQuery({ ...baseFilters, sort: 'avg_price_desc', qExclude: ['floor'] });
-    expect(norm(countSql)).not.toContain('ORDER BY');
+    expect(norm(countSql)).toContain('ORDER BY kcs.avg_price_cents DESC LIMIT 10001');
+    expect(norm(countSql).match(NOT_PREDICATE)).toHaveLength(1);
+    // Other narrowing filters still turn it off.
+    expect(countSteersOntoSortIndex({ ...baseFilters, sort: 'avg_price_desc', qExclude: ['floor'], reviewsMax: 500 })).toBe(false);
   });
 
-  it('binds nothing when the list is empty (existing shapes are byte-for-byte unchanged)', () => {
-    const before = buildExplorerQuery(baseFilters);
-    const after = buildExplorerQuery({ ...baseFilters, qExclude: [] });
-    expect(after.sql).toBe(before.sql);
-    expect(after.countSql).toBe(before.countSql);
-    expect(after.args).toEqual(before.args);
+  it('emits no NOT predicate when the list is empty', () => {
+    const { sql, countSql } = buildExplorerQuery(baseFilters);
+    expect(norm(sql)).not.toMatch(NOT_PREDICATE);
+    expect(norm(countSql)).not.toMatch(NOT_PREDICATE);
   });
 });

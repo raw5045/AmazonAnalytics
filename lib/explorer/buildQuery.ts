@@ -408,12 +408,18 @@ export const COUNT_CAP = 10_000;
  * ORDER BY can drag it into a BitmapAnd (the research compiler measured
  * 6.9 s for a category-scoped shape — lib/research/query.ts), so steering
  * stops as soon as anything narrows the shape.
+ *
+ * Exclude terms (qExclude) deliberately do NOT turn it off: a NOT predicate
+ * offers the planner no alternative index, so the steered index walk with a
+ * per-row NOT filter is strictly better than the seq scan it would fall back
+ * to; the leaf-path / trigram / range filters are different because each has
+ * its own index the ORDER BY could displace. Verified on production in the
+ * exclude-terms plan's Task 7 probe.
  */
 export function countSteersOntoSortIndex(f: ExplorerFilters): boolean {
   if (sortNullKeyColumn(f.sort) === null) return false;
   return (
     f.q === null &&
-    f.qExclude.length === 0 &&
     f.rankMin === null && f.rankMax === null &&
     f.volMin === null && f.volMax === null &&
     f.reviewsMin === null && f.reviewsMax === null &&
@@ -481,10 +487,11 @@ export function leafPathPredicate(filters: Pick<ExplorerFilters, 'leafPaths'>, n
 
 /**
  * Push every kcs WHERE predicate (current_week_end_date, rank, volume, reviews,
- * words, jump, category, leaf, severity, title-gap) onto a fresh clause list,
- * binding args via `next` in clause order. The `q` filter is NOT here —
- * the q-path appends its own match on kcs.search_term_normalized; the
- * legacy path has no q clause.
+ * words, jump, category, exclude terms (one whole-word NOT per term), leaf,
+ * severity, title-gap) onto a fresh clause list, binding args via `next` in
+ * clause order. The include `q` match is NOT here (the q-path appends its own
+ * match on kcs.search_term_normalized; the legacy path has no q clause), but
+ * the exclude NOTs ARE here, so both classic paths and their counts share them.
  */
 function pushKcsPredicates(
   filters: ExplorerFilters,
