@@ -59,6 +59,7 @@ export function canUseDefaultTotal(f: ExplorerFilters): boolean {
   return (
     !sortHidesRows(f.sort)
     && f.q === null
+    && f.qExclude.length === 0
     && f.rankMin === null
     && f.rankMax === null
     && f.volMin === null
@@ -86,6 +87,7 @@ export function canUseCategoryFacet(f: ExplorerFilters): boolean {
   return (
     !sortHidesRows(f.sort)
     && f.q === null
+    && f.qExclude.length === 0
     && f.rankMin === null
     && f.rankMax === null
     && f.volMin === null
@@ -114,6 +116,7 @@ export function canUseLeafCategoryFacet(f: ExplorerFilters): boolean {
   return (
     !sortHidesRows(f.sort)
     && f.q === null
+    && f.qExclude.length === 0
     && f.rankMin === null
     && f.rankMax === null
     && f.volMin === null

@@ -139,3 +139,18 @@ describe('count short-circuit guards under the null-key-excluding avg sorts', ()
     expect(canUseLeafCategoryFacet({ ...leafOnly, sort })).toBe(false);
   });
 });
+
+describe('exclude terms bypass every precomputed total', () => {
+  it('default landing', () => {
+    expect(canUseDefaultTotal({ ...EXPLORER_DEFAULTS, qExclude: [] })).toBe(true);
+    expect(canUseDefaultTotal({ ...EXPLORER_DEFAULTS, qExclude: ['floor'] })).toBe(false);
+  });
+  it('broad-category facet', () => {
+    expect(canUseCategoryFacet({ ...EXPLORER_DEFAULTS, category: 'Beauty' })).toBe(true);
+    expect(canUseCategoryFacet({ ...EXPLORER_DEFAULTS, category: 'Beauty', qExclude: ['floor'] })).toBe(false);
+  });
+  it('single leaf facet', () => {
+    expect(canUseLeafCategoryFacet({ ...EXPLORER_DEFAULTS, leafPaths: ['A › B'] })).toBe(true);
+    expect(canUseLeafCategoryFacet({ ...EXPLORER_DEFAULTS, leafPaths: ['A › B'], qExclude: ['floor'] })).toBe(false);
+  });
+});
