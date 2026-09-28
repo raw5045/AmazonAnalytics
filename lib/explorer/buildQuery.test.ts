@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered, rankSortUsesVolumeWalk, sortNullKeyColumn, sortHidesRows, countSteersOntoSortIndex } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered, rankSortUsesVolumeWalk, sortNullKeyColumn, sortHidesRows, countSteersOntoSortIndex, countSteerColumn } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters, WindowKey } from './types';
 
@@ -1049,5 +1049,20 @@ describe('exclude terms (qExclude)', () => {
     const { sql, countSql } = buildExplorerQuery(baseFilters);
     expect(norm(sql)).not.toMatch(NOT_PREDICATE);
     expect(norm(countSql)).not.toMatch(NOT_PREDICATE);
+  });
+
+  it('steers the rank-sorted count onto the rank index once excludes make it run', () => {
+    expect(countSteerColumn('rank')).toBe('current_rank');
+    expect(countSteerColumn('avg_reviews_asc')).toBe('avg_reviews');
+    expect(countSteerColumn('imp')).toBeNull();
+    expect(countSteersOntoSortIndex(baseFilters)).toBe(false); // no excludes: the precomputed total serves the landing
+    expect(countSteersOntoSortIndex({ ...baseFilters, qExclude: ['led'] })).toBe(true);
+    expect(countSteersOntoSortIndex({ ...baseFilters, qExclude: ['led'], rankMax: 1000 })).toBe(false); // another filter: planner's choice
+    const asc = buildExplorerQuery({ ...baseFilters, qExclude: ['led'] });
+    expect(norm(asc.countSql)).toContain('ORDER BY kcs.current_rank ASC LIMIT 10001');
+    expect(norm(asc.countSql).match(NOT_PREDICATE)).toHaveLength(1);
+    const desc = buildExplorerQuery({ ...baseFilters, sort: 'rank_desc', qExclude: ['led'] });
+    expect(norm(desc.countSql)).toContain('ORDER BY kcs.current_rank DESC LIMIT 10001');
+    expect(norm(buildExplorerQuery(baseFilters).countSql)).not.toContain('ORDER BY');
   });
 });

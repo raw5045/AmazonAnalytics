@@ -21,6 +21,7 @@ import type {
   BuiltExplorerQuery,
   ExplorerFilters,
   MatchMode,
+  SortKey,
   WindowKey,
 } from './types';
 import { findJumpPreset } from './jumpPresets';
@@ -365,12 +366,13 @@ export function buildExplorerQuery(
   // count up to COUNT_CAP+1 rows. If we hit the cap the UI shows "10,000+"
   // and pagination caps there. This (legacy, q=null) path's predicates are
   // all on kcs, so the count needs no search_terms join. On the unfiltered
-  // landing under an avg sort, ORDER BY the sort key inside the subquery so
-  // the planner walks the avg index instead of seq-scanning the (bloated,
-  // post-refresh cold) heap for the first 10,001 matches — see
+  // landing under an avg sort (or, once exclude terms force this count to
+  // run at all, under a rank sort), ORDER BY the sort key inside the
+  // subquery so the planner walks that sort's index instead of seq-scanning
+  // the (bloated, post-refresh cold) heap for the first 10,001 matches — see
   // countSteersOntoSortIndex.
   const countOrderBy = countSteersOntoSortIndex(filters)
-    ? `ORDER BY kcs.${sortNullKeyColumn(filters.sort)} ${filters.sort.endsWith('_desc') ? 'DESC' : 'ASC'}
+    ? `ORDER BY kcs.${countSteerColumn(filters.sort)} ${filters.sort.endsWith('_desc') ? 'DESC' : 'ASC'}
       `
     : '';
   const countSql = `
@@ -393,32 +395,58 @@ export function buildExplorerQuery(
 export const COUNT_CAP = 10_000;
 
 /**
+ * The kcs column the capped count's ORDER BY steers onto for `sort`: the
+ * null-key column for the four avg sorts, current_rank for the rank sorts
+ * (kcs_rank_idx / its stage twin), null for sorts with no steerable index
+ * (imp/decline order by an expression; title_gap and added_* have none).
+ */
+export function countSteerColumn(sort: SortKey): 'avg_price_cents' | 'avg_reviews' | 'current_rank' | null {
+  if (sort === 'rank' || sort === 'rank_desc') return 'current_rank';
+  return sortNullKeyColumn(sort);
+}
+
+/**
  * True when the capped footer count should be steered onto the sort's index
- * by ordering its bail-out subquery: only the four avg sorts, and only on the
- * unfiltered landing (default filters apart from sort, window and paging).
+ * by ordering its bail-out subquery: the four avg sorts on the unfiltered
+ * landing, and the two rank sorts once exclude terms are the only thing
+ * narrowing that landing (default filters apart from sort, window, paging
+ * and qExclude).
  *
- * Why: under an avg sort the count's only predicates are the week, the
- * default severity set and `<col> IS NOT NULL` (about 1.8M of 2.6M rows), so
- * the planner seq-scans kcs for the first 10,001 matches — cheap by its cost
- * model, but the heap is bloated by the weekly mass update and cold right
- * after it (24.7 s measured on production 2026-09-24; 0.13 s warm). An ORDER
- * BY on the sort key inside the subquery makes the planner walk the avg
- * index instead: ~10k index entries plus their heap rows. With any other
- * filter the planner's own bitmap / index choice is better and the extra
- * ORDER BY can drag it into a BitmapAnd (the research compiler measured
- * 6.9 s for a category-scoped shape — lib/research/query.ts), so steering
- * stops as soon as anything narrows the shape.
+ * Why (avg sorts): under an avg sort the count's only predicates are the
+ * week, the default severity set and `<col> IS NOT NULL` (about 1.8M of
+ * 2.6M rows), so the planner seq-scans kcs for the first 10,001 matches —
+ * cheap by its cost model, but the heap is bloated by the weekly mass
+ * update and cold right after it (24.7 s measured on production
+ * 2026-09-24; 0.13 s warm). An ORDER BY on the sort key inside the
+ * subquery makes the planner walk the avg index instead: ~10k index
+ * entries plus their heap rows. With any other filter the planner's own
+ * bitmap / index choice is better and the extra ORDER BY can drag it into
+ * a BitmapAnd (the research compiler measured 6.9 s for a category-scoped
+ * shape — lib/research/query.ts), so steering stops as soon as anything
+ * narrows the shape.
  *
- * Exclude terms (qExclude) deliberately do NOT turn it off: a NOT predicate
- * offers the planner no alternative index, so the steered index walk with a
- * per-row NOT filter is strictly better than the seq scan it would fall back
- * to; the leaf-path / trigram / range filters are different because each has
- * its own index the ORDER BY could displace. To be confirmed by the
- * exclude-terms plan's Task 7 probe.
+ * Exclude terms (qExclude) deliberately do NOT turn the avg case off: a NOT
+ * predicate offers the planner no alternative index, so the steered index
+ * walk with a per-row NOT filter is strictly better than the seq scan it
+ * would fall back to; the leaf-path / trigram / range filters are different
+ * because each has its own index the ORDER BY could displace.
+ *
+ * Why (rank sorts): the unfiltered landing normally serves its footer total
+ * from a precomputed value and never runs this count at all — but exclude
+ * terms correctly fall back to the live capped count (a NOT can't be
+ * answered by the precomputed total), and rank/rank_desc have their own
+ * index (kcs_rank_idx / its stage twin) the same steering trick applies to.
+ * Without it, the exclude-only landing count seq-scanned the bloated heap
+ * for the first 10,001 matches: 25.1 s cold / 153 ms warm, measured on
+ * production by the exclude-terms plan's Task 7 probe (2026-09-28). It is
+ * gated on qExclude.length > 0 because that's the only shape where this
+ * count runs at all unfiltered — without an exclude term the precomputed
+ * total short-circuits it first.
  */
 export function countSteersOntoSortIndex(f: ExplorerFilters): boolean {
-  if (sortNullKeyColumn(f.sort) === null) return false;
-  return (
+  const col = countSteerColumn(f.sort);
+  if (col === null) return false;
+  const unfilteredLanding = (
     f.q === null &&
     f.rankMin === null && f.rankMax === null &&
     f.volMin === null && f.volMax === null &&
@@ -431,6 +459,11 @@ export function countSteersOntoSortIndex(f: ExplorerFilters): boolean {
     f.titleMatchMode === null &&
     f.severities.includes('none') && f.severities.includes('warning')
   );
+  if (!unfilteredLanding) return false;
+  // Rank sorts only reach this count once exclude terms force the fallback —
+  // without one the precomputed total serves the unfiltered landing and this
+  // count never runs (see buildExplorerQuery's countOrderBy comment).
+  return col === 'current_rank' ? f.qExclude.length > 0 : true;
 }
 
 /**
