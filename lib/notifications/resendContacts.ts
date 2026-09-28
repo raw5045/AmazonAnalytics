@@ -73,9 +73,9 @@ function isNotAMember(email: string): boolean {
 /**
  * The SDK splices the address into `DELETE /contacts/<email>` unencoded: '?' or '#'
  * would cut the path, '/' or '\' would add segments ('../' walks to another resource)
- * and Resend decodes '%' ('%40' → '@'). All are legal in an RFC 5322 local part and
- * absent from real addresses, so refuse rather than encode (encoding would double up
- * if a later SDK minor starts encoding the path itself).
+ * and Resend decodes '%' ('%40' → '@'). All are legal (or quotable) in an RFC 5322
+ * local part and absent from real addresses, so refuse rather than encode (encoding
+ * would double up if a later SDK minor starts encoding the path itself).
  */
 const UNSAFE_IN_URL_PATH = /[/?#%\\]/;
 

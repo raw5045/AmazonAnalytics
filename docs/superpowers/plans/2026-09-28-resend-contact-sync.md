@@ -19,7 +19,7 @@
 | What is sent | `email`; `firstName` = first whitespace-separated token of `users.name`; `lastName` = the remaining tokens (omitted when there are none). Nothing else — no `unsubscribed`, no properties. |
 | Feature switch | `RESEND_SEGMENT_ID` unset (or empty) → silent no-op everywhere (local dev, unit tests, preview). Set but `RESEND_API_KEY` missing → one `console.warn`, no-op. The owner sets the var in Vercel; it is an identifier, not a secret, but is never pasted in chat. |
 | Who is skipped | Undeliverable addresses (`isUndeliverableEmail`: example.com & co) and the integration harness's synthetic users (`^(integration\|itest\|rw\|csmtest)_[0-9]+@`). The pattern moves out of `tests/integration/helpers.ts` into `lib/auth/syntheticEmail.ts` so production code can import it without depending on `tests/`. |
-| Failure policy | Fail-soft by contract, like `sendWelcomeEmail` and `bumpUserActivity`: never throws, one attempt, logged. A create answered with HTTP 409 or an "already exists" message is benign (`'exists'`); a remove answered `not_found`/404 is benign (`'missing'`). Anything else logs at error level and returns `'failed'`. |
+| Failure policy | Fail-soft by contract, like `sendWelcomeEmail` and `bumpUserActivity`: never throws, one attempt, logged. A create whose error message says "already exists" is benign (`'exists'`) — never keyed on the status alone, because Resend's `resource_locked` is a temporary 409 (Task 2 review); a remove answered `not_found`/404 is benign (`'missing'`). Anything else logs at error level and returns `'failed'`. `removeResendContact` refuses an address containing `/ ? # % \` — the SDK splices the email unencoded into the `DELETE /contacts/<email>` path, so those characters could redirect the delete — and logs it for manual removal (Task 2 review). |
 | Scheduling | Webhook: awaited inline (the Vercel function may freeze after it responds). On-demand (`getCurrentUser`): scheduled with `after()` so the member's first page render never waits on Resend. Same as the welcome email; the option is renamed from `welcome` to `sideEffects` because it now governs both. |
 | Deletion | On Clerk `user.deleted`: `DELETE … RETURNING email`, then remove that contact globally (all segments) — the account is gone. Fail-soft: a Resend failure is logged, never a 500 (the row is already deleted, so a Svix retry could not recover the email anyway). |
 | Consent | Never synced in either direction. A Resend broadcast unsubscribe and `weekly_digest_subscribed` stay independent; the helper never sends `unsubscribed`. |
@@ -200,7 +200,9 @@ EOF
 Facts about the installed SDK (`resend` 6.12.3, `node_modules/resend/dist/index.d.mts`), so nobody has to rediscover them:
 - `resend.contacts.create({ email, firstName?, lastName?, unsubscribed?, properties?, segments?: { id: string }[], topics? })` posts to `/contacts` (the overload with `audienceId` is deprecated and posts to `/audiences/{id}/contacts` — do not use it).
 - `resend.contacts.remove({ email })` (or `{ id }`, or a bare string) deletes `/contacts/<email>`.
-- Every call resolves to `{ data, error: null, headers } | { data: null, error: { name, message, statusCode }, headers }`; the SDK does not throw for API errors, but the underlying fetch can throw on a network failure.
+- Every call resolves to `{ data, error: null, headers } | { data: null, error: { name, message, statusCode }, headers }`; the SDK catches its own fetch, so a network failure comes back as `error.name === 'application_error'` with `statusCode: null` rather than a throw (Task 2 review corrected this bullet). The helper's try/catch guards `new Resend()`, which throws on a malformed key, and any future SDK change.
+
+> **Review amendment (Task 2, commit 284e04f):** the code blocks below are the versions the implementer transcribed; the review then (a) replaced the `statusCode === 409 ||` half of the duplicate check with a message-only check and a comment on `resource_locked`, (b) added the `UNSAFE_IN_URL_PATH` guard to `removeResendContact`, (c) documented what the try/catch guards, (d) added a "Logging" paragraph and removed the address from the "already gone" line, (e) trimmed both env reads. The committed file and its 32 tests are the source of truth.
 - Error names (`RESEND_ERROR_CODE_KEY`) include `not_found`, `validation_error`, `rate_limit_exceeded`, `application_error`; Resend documents no dedicated "contact already exists" error, hence the 409 / message check below.
 
 - [ ] **Step 1: Write the failing tests**
@@ -926,7 +928,7 @@ In this order:
 
 ## Not in scope
 
-- Propagating an email change (`user.updated`) to the Resend contact — the contact keeps the address it was created with. Rare; a follow-up if it bites.
+- Propagating an email change (`user.updated`) to the Resend contact — the contact keeps the address it was created with. Consequence (Task 4 review): a member who changed their address and later deletes their account is removed by the new address, Resend answers `not_found` (logged as already gone) and the original contact lingers. Rare; a follow-up if it bites.
 - Backfilling members who signed up between the CSV export and this deploy — an untracked one-off script, on the owner's go, if the gap matters.
 - Syncing Resend unsubscribes into `weekly_digest_subscribed` or the reverse; Resend webhooks.
 - Any schema change.
