@@ -5,6 +5,7 @@ import {
   keywordHistoryInputSchema,
   keywordDetailsInputSchema,
   searchToolInputSchema,
+  searchRequestSchema,
   emptyInputSchema,
   textFilterSchema,
   anyRange,
@@ -292,6 +293,7 @@ describe('parseSearchInput', () => {
         presetIds: [],
         filters: {
           text: { value: 'hair oil', mode: 'word' },
+          excludeTerms: [],
           estimatedMonthlySearches: null,
           averageReviews: null,
           rank: null,
@@ -374,5 +376,26 @@ describe('other tool inputs', () => {
     expect(keywordDetailsInputSchema.safeParse({ searchTermId: 'nope' }).success).toBe(false);
     expect(keywordHistoryInputSchema.parse({ searchTermId: '11111111-1111-4111-8111-111111111111' }).weeks).toBe(13);
     expect(keywordHistoryInputSchema.safeParse({ searchTermId: '11111111-1111-4111-8111-111111111111', weeks: 53 }).success).toBe(false);
+  });
+});
+
+describe('filters.excludeTerms', () => {
+  it('defaults to an empty list and keeps trimmed distinct terms', () => {
+    expect(filtersSchema.parse({}).excludeTerms).toEqual([]);
+    expect(filtersSchema.parse({ excludeTerms: [' floor ', 'ceiling fan'] }).excludeTerms).toEqual(['floor', 'ceiling fan']);
+  });
+
+  it('rejects a sixth term, a term under 3 characters, and case-insensitive duplicates', () => {
+    expect(filtersSchema.safeParse({ excludeTerms: ['a1a', 'b2b', 'c3c', 'd4d', 'e5e', 'f6f'] }).success).toBe(false);
+    expect(filtersSchema.safeParse({ excludeTerms: ['ab'] }).success).toBe(false);
+    expect(filtersSchema.safeParse({ excludeTerms: ['Floor', 'floor'] }).success).toBe(false);
+  });
+
+  it('works without a text filter, and a request from before the field existed still parses', () => {
+    const parsed = searchRequestSchema.parse({ schemaVersion: 1, filters: { excludeTerms: ['led'] } });
+    expect(parsed.filters.text).toBeNull();
+    expect(parsed.filters.excludeTerms).toEqual(['led']);
+    const legacy = searchRequestSchema.parse({ schemaVersion: 1, filters: { text: { value: 'lamp' } } });
+    expect(legacy.filters.excludeTerms).toEqual([]);
   });
 });

@@ -172,6 +172,14 @@ export const movementSchema = z
 
 export const filtersSchema = z.strictObject({
   text: textFilterSchema.nullable().default(null),
+  excludeTerms: z
+    .array(z.string().trim().min(3, 'each exclude term needs at least 3 characters').max(200))
+    .max(5, 'excludeTerms allows at most 5 terms')
+    .refine((t) => new Set(t.map((s) => s.toLowerCase())).size === t.length, 'excludeTerms must be distinct')
+    .default([])
+    .describe(
+      'Whole words or phrases a keyword must NOT contain (up to 5, 3+ characters each); a keyword is dropped if it contains any of them. Works with or without text and combines with every other filter (AND).',
+    ),
   estimatedMonthlySearches: nonNegativeRange.nullable().default(null),
   averageReviews: integerRange(0, INT4_MAX).nullable().default(null),
   rank: integerRange(1, INT4_MAX).nullable().default(null),

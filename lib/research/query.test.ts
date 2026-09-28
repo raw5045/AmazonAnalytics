@@ -249,3 +249,28 @@ describe('compileSearch — every filter kind at once (M3)', () => {
     expect(s).toContain('(kcs.keyword_in_title_1_loose_current = false OR kcs.keyword_in_title_3_loose_current = false)');
   });
 });
+
+describe('excludeTerms', () => {
+  const NOT_PREDICATE = /NOT \(kcs\.search_term_normalized ~ \$\d+\)/g;
+
+  it('adds one whole-word NOT per term to rows and count, whatever text.mode says', () => {
+    const c = compileSearch({ ...base, filters: F({ text: { value: 'lamp', mode: 'broad' }, excludeTerms: ['floor', 'ceiling fan'] }) });
+    expect(c.sql.match(NOT_PREDICATE)).toHaveLength(2);
+    expect(c.countSql.match(NOT_PREDICATE)).toHaveLength(2);
+    expect(c.args).toContain('\\mfloor\\M');
+    expect(c.args).toContain('\\mceiling fan\\M');
+    expect(c.args).toContain('%lamp%');
+    expect(c.args).not.toContain('%floor%');
+  });
+
+  it('works without text and keeps the volume-delta count steering on (a NOT offers no other index)', () => {
+    const c = compileSearch({
+      ...base,
+      sort: { field: 'volumeDelta', direction: 'desc' },
+      filters: F({ movement: { window: '4w', metric: 'volume', delta: { gt: 0 } }, excludeTerms: ['led'] }),
+    });
+    expect(c.sql).toContain('NOT (kcs.search_term_normalized ~ $');
+    expect(c.countSql).toContain('NOT (kcs.search_term_normalized ~ $');
+    expect(c.countSql).toContain('ORDER BY');
+  });
+});

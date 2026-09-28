@@ -210,4 +210,9 @@ describe('buildGuide', () => {
     expect(g.populationRules.some((r) => r.includes('excludes keywords with no value'))).toBe(true);
     expect(JSON.stringify(g)).not.toMatch(/@/);
   });
+
+  it('documents excludeTerms in the population rules', () => {
+    const g = buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS });
+    expect(g.populationRules.some((r) => r.includes('excludeTerms'))).toBe(true);
+  });
 });

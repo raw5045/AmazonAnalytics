@@ -151,6 +151,14 @@ export function compileSearch(input: CompileInput): CompiledSearch {
       ? `kcs.search_term_normalized LIKE ${next(broadPattern(f.text.value))}`
       : `kcs.search_term_normalized ~ ${next(wordPattern(f.text.value))}`);
   }
+  // Exclude terms: whole-word NOTs regardless of text.mode (owner decision
+  // 2026-09-28; the same rule as the Explorer's qExclude). A NOT cannot use the
+  // trigram index — it is a per-row filter after the other predicates — and it
+  // does NOT turn off the volume-delta count steering: a NOT offers the planner
+  // no alternative index (same reasoning as buildQuery's countSteersOntoSortIndex).
+  for (const term of f.excludeTerms) {
+    where.push(`NOT (kcs.search_term_normalized ~ ${next(wordPattern(term))})`);
+  }
   if (f.broadCategory) where.push(`kcs.top_clicked_category_1_current = ${next(f.broadCategory)}`);
   const leaf = leafPathPredicate({ leafPaths: input.leaves }, next);
   if (leaf) where.push(leaf);
