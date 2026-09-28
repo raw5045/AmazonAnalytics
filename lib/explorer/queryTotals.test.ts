@@ -7,7 +7,7 @@ import {
   extractCount,
   extractWindowTotal,
 } from './queryTotals';
-import { COUNT_CAP } from './buildQuery';
+import { buildExplorerQuery, COUNT_CAP } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters } from './types';
 
@@ -152,5 +152,43 @@ describe('exclude terms bypass every precomputed total', () => {
   it('single leaf facet', () => {
     expect(canUseLeafCategoryFacet({ ...EXPLORER_DEFAULTS, leafPaths: ['A › B'] })).toBe(true);
     expect(canUseLeafCategoryFacet({ ...EXPLORER_DEFAULTS, leafPaths: ['A › B'], qExclude: ['floor'] })).toBe(false);
+  });
+});
+
+describe('guard drift: any filter that changes the count SQL must also disable the precomputed default total', () => {
+  const WEEK = '2026-09-19';
+  const baseCountSql = buildExplorerQuery(EXPLORER_DEFAULTS, WEEK).countSql;
+  const perturbations: Array<[keyof ExplorerFilters, Partial<ExplorerFilters>]> = [
+    ['q', { q: 'lamp' }],
+    ['qMode', { qMode: 'broad' }],
+    ['qExclude', { qExclude: ['floor'] }],
+    ['rankMin', { rankMin: 10 }],
+    ['rankMax', { rankMax: 1000 }],
+    ['volMin', { volMin: 100 }],
+    ['volMax', { volMax: 5000 }],
+    ['reviewsMin', { reviewsMin: 10 }],
+    ['reviewsMax', { reviewsMax: 500 }],
+    ['wordsMin', { wordsMin: 2 }],
+    ['wordsMax', { wordsMax: 4 }],
+    ['jump', { jump: '500k_to_100k' }],
+    ['jumpMetric', { jumpMetric: 'volume' }],
+    ['jumpFrom', { jumpFrom: 1 }],
+    ['jumpTo', { jumpTo: 2 }],
+    ['category', { category: 'Beauty' }],
+    ['leafPaths', { leafPaths: ['A › B'] }],
+    ['customCategoryIds', { customCategoryIds: ['11111111-1111-1111-1111-111111111111'] }],
+    ['severities', { severities: ['critical'] }],
+    ['titleSlots', { titleSlots: [1] }],
+    ['titleMatchMode', { titleMatchMode: 'any' }],
+    ['matchMode', { matchMode: 'strict' }],
+    ['sort', { sort: 'avg_price_desc' }],
+    ['window', { window: '4w' }],
+    ['page', { page: 2 }],
+    ['perPage', { perPage: 50 }],
+  ];
+  it.each(perturbations)('%s', (_field, patch) => {
+    const f: ExplorerFilters = { ...EXPLORER_DEFAULTS, ...patch };
+    const countChanged = buildExplorerQuery(f, WEEK).countSql !== baseCountSql;
+    expect(canUseDefaultTotal(f)).toBe(!countChanged);
   });
 });

@@ -413,7 +413,7 @@ export const COUNT_CAP = 10_000;
  * offers the planner no alternative index, so the steered index walk with a
  * per-row NOT filter is strictly better than the seq scan it would fall back
  * to; the leaf-path / trigram / range filters are different because each has
- * its own index the ORDER BY could displace. Verified on production in the
+ * its own index the ORDER BY could displace. To be confirmed by the
  * exclude-terms plan's Task 7 probe.
  */
 export function countSteersOntoSortIndex(f: ExplorerFilters): boolean {
@@ -538,8 +538,8 @@ function pushKcsPredicates(
   // of qMode (the include's Broad toggle does not apply). Pushed here so both
   // classic paths carry it in rows AND the capped count; a NOT cannot use the
   // trigram index, it is a per-row filter after the other predicates. The
-  // covered path stands down (categoryPathIsCovered) and so does the avg-count
-  // steering (countSteersOntoSortIndex) — a narrowing filter like any other.
+  // covered path stands down (categoryPathIsCovered) while the avg-count
+  // steering deliberately stays on (see countSteersOntoSortIndex).
   for (const term of filters.qExclude) {
     where.push(`NOT (kcs.search_term_normalized ~ ${next(wordPattern(term))})`);
   }

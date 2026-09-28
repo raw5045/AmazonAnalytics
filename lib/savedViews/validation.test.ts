@@ -157,4 +157,7 @@ describe('exclude terms in saved views', () => {
     expect(filtersToSearchParams({ qExclude: [] }).qx).toBeUndefined();
     expect(filtersToSearchParams({ q: 'lamp' }).qx).toBeUndefined();
   });
+  it('the API path re-parses the terms too, dropping non-strings, short chunks and duplicates', () => {
+    expect(normalizeFilters({ qExclude: [' floor ', 'ab', 'FLOOR', 'led', 42, null] }).qExclude).toEqual(['floor', 'led']);
+  });
 });
