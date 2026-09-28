@@ -12,12 +12,23 @@ function readMigration() {
   return readFileSync(MIGRATION_PATH, 'utf8');
 }
 
-function createStatements(sql: string) {
+function statements(sql: string) {
   return sql
     .split('--> statement-breakpoint')
     .map((s) => s.trim())
-    .filter(Boolean)
-    .filter((s) => /^CREATE TABLE IF NOT EXISTS ask_/.test(s));
+    .filter(Boolean);
+}
+
+function createStatements(sql: string) {
+  return statements(sql).filter((s) => /^CREATE TABLE IF NOT EXISTS ask_/.test(s));
+}
+
+// CREATE INDEX statements live outside the owning table's CREATE chunk (Postgres has no inline
+// index syntax), so an index name is checked against just this table's own index statements —
+// found by table name, not against the whole migration file.
+function indexStatementsFor(sql: string, tableName: string) {
+  const onThisTable = new RegExp(`\\bON ${tableName}\\b`);
+  return statements(sql).filter((s) => /^CREATE INDEX IF NOT EXISTS /.test(s) && onThisTable.test(s));
 }
 
 describe('ask ai schema', () => {
@@ -55,17 +66,29 @@ describe('ask ai schema', () => {
 
     TABLES.forEach((table, i) => {
       const config = getTableConfig(table);
-      for (const column of config.columns) {
-        expect(creates[i]).toContain(column.name);
-      }
+
+      // Line-anchored set comparison: the first word of every column-def line in this table's
+      // own CREATE chunk (dropping the `CREATE TABLE ... (` header line) must be exactly the
+      // Drizzle column set, order aside. A `CONSTRAINT ...` line (inline check/unique) starts
+      // with an uppercase word so the lowercase-only regex drops it; the `--` comment line inside
+      // the ledger CREATE is dropped the same way since it starts with `--`; the closing `);` is
+      // dropped because it has no lowercase word at all.
+      const sqlCols = creates[i]
+        .split('\n')
+        .slice(1)
+        .map((l) => l.trim().split(/\s+/)[0])
+        .filter((w) => /^[a-z_0-9]+$/.test(w));
+      expect([...sqlCols].sort()).toEqual(config.columns.map((c) => c.name).sort());
+
       for (const c of config.checks) {
-        expect(sql).toContain(`CONSTRAINT ${c.name}`);
+        expect(creates[i]).toContain(`CONSTRAINT ${c.name}`);
       }
       for (const u of config.uniqueConstraints) {
-        expect(sql).toContain(`CONSTRAINT ${u.name}`);
+        expect(creates[i]).toContain(`CONSTRAINT ${u.name}`);
       }
       for (const idx of config.indexes) {
-        expect(sql).toContain(`CREATE INDEX IF NOT EXISTS ${idx.config.name}`);
+        const ownIndexes = indexStatementsFor(sql, getTableName(table));
+        expect(ownIndexes.some((s) => s.includes(`CREATE INDEX IF NOT EXISTS ${idx.config.name}`))).toBe(true);
       }
     });
   });

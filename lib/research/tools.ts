@@ -57,8 +57,9 @@ function searchDescription(limits: Pick<ResearchLimits, 'maxRowsPerSearch'>): st
  * Freezes one shared definition. `Object.freeze({...})` called directly on the object literal
  * would lose `ResearchToolDefinition`'s contextual type for that literal (`Object.freeze<T>`
  * infers `T` from its argument instead of receiving it), so each `run` callback's
- * `service`/`actor`/`args` parameters would silently fall back to `any` — routing through this
- * explicitly-typed helper keeps the contextual type and the parameter types it supplies.
+ * `service`/`actor`/`args` parameters would become implicit `any` (TS7006 under strict) —
+ * routing through this explicitly-typed helper keeps the contextual type and the parameter
+ * types it supplies.
  */
 function frozenTool(def: ResearchToolDefinition): ResearchToolDefinition {
   return Object.freeze(def);

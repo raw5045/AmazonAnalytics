@@ -17,6 +17,7 @@ describe('RESEARCH_TOOLS', () => {
       expect(t.requiresConfirmation).toBe(false);
       expect(t.title.length).toBeGreaterThan(0);
       expect(t.description(DEFAULT_LIMITS).length).toBeGreaterThan(20);
+      expect(Object.isFrozen(t)).toBe(true);
     }
     expect(Object.isFrozen(RESEARCH_TOOLS)).toBe(true);
   });

@@ -242,7 +242,9 @@ describe('the limits option', () => {
       await customServer.close().catch(() => {});
     }
   });
+});
 
+describe('parity with lib/research/tools.ts', () => {
   it('exposes exactly the shared module\'s names, titles, descriptions and annotations (spec §4 parity)', async () => {
     const limits = DEFAULT_LIMITS;
     const parityServer = new McpServer({ name: 'keywordquarry-test-parity', version: '0' });
