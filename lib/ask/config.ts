@@ -1,41 +1,15 @@
 import { env } from '@/lib/env';
+import { usdToMicro } from './models';
+
+export * from './models';
 
 /**
- * Ask AI configuration (spec §6, §10). Everything env-driven is read lazily and memoised per
- * process; a bad value never throws — it warns once and falls back — because the browser product
- * must keep serving even if a dial is mistyped in Vercel.
+ * Ask AI configuration (spec §6, §10): env-driven dials, read lazily and memoised per process. A
+ * bad value never throws — it warns once and falls back — because the browser product must keep
+ * serving even if a dial is mistyped in Vercel. Env-free constants (models, fixed limits) live in
+ * ./models and are re-exported above, so existing `@/lib/ask/config` imports keep working; client
+ * components should import `@/lib/ask/models` directly to avoid pulling in @/lib/env.
  */
-export const ASK_MODELS = [
-  { id: 'claude-sonnet-5', label: 'Standard (Sonnet 5)', note: null },
-  { id: 'claude-opus-5-5', label: 'Advanced (Opus 5.5)', note: 'uses about twice the usage' },
-  { id: 'claude-haiku-4-5', label: 'Quick (Haiku 4.5)', note: 'uses about half' },
-] as const;
-export type AskModelId = (typeof ASK_MODELS)[number]['id'];
-export const DEFAULT_MODEL: AskModelId = 'claude-sonnet-5';
-
-export function isAskModelId(v: unknown): v is AskModelId {
-  return typeof v === 'string' && ASK_MODELS.some((m) => m.id === v);
-}
-
-/** Fixed in code (spec §10). */
-export const ASK_LIMITS = Object.freeze({
-  maxChats: 5,
-  maxMessagesPerChat: 200,
-  maxMessageChars: 4000,
-  historyWindowMessages: 20,
-  historyWindowTokens: 60_000,
-  maxToolCallsPerTurn: 8,
-  /** eight tool-call steps + one answer step + one spare; the prompt says "at most eight tool calls" */
-  maxSteps: 10,
-  maxOutputTokens: 4096,
-  turnDeadlineMs: 240_000,
-  inFlightExpiryMinutes: 5,
-});
-
-export const MICRO = 1_000_000;
-export function usdToMicro(usd: number): number {
-  return Math.round(usd * MICRO);
-}
 
 export function askAiEnabled(): boolean {
   return env.ASK_AI_ENABLED === '1';
@@ -50,23 +24,43 @@ const DEFAULTS = { dailyMessageLimit: 100, globalMonthlyCeilingUsd: 200, default
 
 let memo: { daily: number; ceilingMicro: number; allowanceMicro: number } | null = null;
 
-function positiveNumber(name: string, raw: string | undefined, fallback: number, integer: boolean): number {
+function positiveSafeInteger(name: string, raw: string | undefined, fallback: number): number {
   if (raw === undefined || raw.trim() === '') return fallback;
   const n = Number(raw);
-  const ok = Number.isFinite(n) && n > 0 && (!integer || Number.isSafeInteger(n));
+  const ok = Number.isFinite(n) && Number.isSafeInteger(n) && n > 0;
   if (!ok) {
-    console.warn(`[ask config] ${name}=${JSON.stringify(raw)} is not a positive ${integer ? 'integer' : 'number'} — using ${fallback}`);
+    console.warn(`[ask config] ${name}=${JSON.stringify(raw)} is not a positive integer — using ${fallback}`);
     return fallback;
   }
   return n;
 }
 
+/**
+ * Parses a dollar-denominated dial and validates AFTER converting to micro-dollars, so a value
+ * that overflows or rounds away under conversion is refused even though it looked fine in
+ * dollars (e.g. "1e308" overflows to Infinity; "0.0000001" rounds to 0 despite being positive).
+ * Zero itself is accepted: a 0 ceiling pauses Ask AI for everyone, a 0 allowance grants access
+ * with no included usage.
+ */
+function nonNegativeMicroDial(name: string, raw: string | undefined, fallbackUsd: number): number {
+  const fallbackMicro = usdToMicro(fallbackUsd);
+  if (raw === undefined || raw.trim() === '') return fallbackMicro;
+  const n = Number(raw);
+  const micro = usdToMicro(n);
+  const ok = Number.isFinite(n) && Number.isSafeInteger(micro) && micro >= 0 && (n === 0 || micro > 0);
+  if (!ok) {
+    console.warn(`[ask config] ${name}=${JSON.stringify(raw)} is not a valid non-negative dollar amount — using ${fallbackUsd}`);
+    return fallbackMicro;
+  }
+  return micro;
+}
+
 function settings() {
   if (!memo) {
     memo = {
-      daily: positiveNumber('ASK_AI_DAILY_MESSAGE_LIMIT', env.ASK_AI_DAILY_MESSAGE_LIMIT, DEFAULTS.dailyMessageLimit, true),
-      ceilingMicro: usdToMicro(positiveNumber('ASK_AI_GLOBAL_MONTHLY_CEILING_USD', env.ASK_AI_GLOBAL_MONTHLY_CEILING_USD, DEFAULTS.globalMonthlyCeilingUsd, false)),
-      allowanceMicro: usdToMicro(positiveNumber('ASK_AI_DEFAULT_ALLOWANCE_USD', env.ASK_AI_DEFAULT_ALLOWANCE_USD, DEFAULTS.defaultAllowanceUsd, false)),
+      daily: positiveSafeInteger('ASK_AI_DAILY_MESSAGE_LIMIT', env.ASK_AI_DAILY_MESSAGE_LIMIT, DEFAULTS.dailyMessageLimit),
+      ceilingMicro: nonNegativeMicroDial('ASK_AI_GLOBAL_MONTHLY_CEILING_USD', env.ASK_AI_GLOBAL_MONTHLY_CEILING_USD, DEFAULTS.globalMonthlyCeilingUsd),
+      allowanceMicro: nonNegativeMicroDial('ASK_AI_DEFAULT_ALLOWANCE_USD', env.ASK_AI_DEFAULT_ALLOWANCE_USD, DEFAULTS.defaultAllowanceUsd),
     };
   }
   return memo;

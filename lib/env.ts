@@ -29,7 +29,8 @@ const serverSchema = z.object({
   RESEARCH_CURSOR_SECRET: z.string().optional(),
   RESEARCH_LIMITS_JSON: z.string().optional(),
   // Ask AI (arc 2, docs/superpowers/specs/2026-09-28-in-app-chat-design.md §10). All optional and
-  // dark by default; interpreted with safe fallbacks by lib/ask/config.ts.
+  // dark by default; the dials are interpreted with safe fallbacks by lib/ask/config.ts, and
+  // ASK_AI_PRICES_JSON by lib/ask/pricing.ts.
   ASK_AI_ENABLED: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   ASK_AI_DAILY_MESSAGE_LIMIT: z.string().optional(),
