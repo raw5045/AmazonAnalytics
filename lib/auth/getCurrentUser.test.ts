@@ -47,7 +47,7 @@ describe('getCurrentUser', () => {
     expect(mockProvision).not.toHaveBeenCalled();
   });
 
-  it('provisions the row on the spot (welcome deferred past the response) when Clerk has a session but no row exists', async () => {
+  it('provisions the row on the spot (signup side effects deferred past the response) when Clerk has a session but no row exists', async () => {
     mockAuth.mockResolvedValueOnce({ userId: 'user_1' });
     mockFindFirst.mockResolvedValueOnce(undefined);
     mockCurrentUser.mockResolvedValueOnce({
@@ -64,7 +64,7 @@ describe('getCurrentUser', () => {
     const u = await getCurrentUser();
     expect(mockProvision).toHaveBeenCalledWith(
       { clerkUserId: 'user_1', email: 'jane@shop.co', name: 'Jane Doe' },
-      { welcome: 'after' },
+      { sideEffects: 'after' },
     );
     expect(u).toEqual({ id: 'u1', clerkUserId: 'user_1', email: 'jane@shop.co' });
   });
@@ -83,7 +83,7 @@ describe('getCurrentUser', () => {
     await getCurrentUser();
     expect(mockProvision).toHaveBeenCalledWith(
       { clerkUserId: 'user_2', email: 'only@shop.co', name: null },
-      { welcome: 'after' },
+      { sideEffects: 'after' },
     );
   });
 

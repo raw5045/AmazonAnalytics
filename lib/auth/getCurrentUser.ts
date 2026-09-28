@@ -22,7 +22,7 @@ import { provisionUser } from './provisionUser';
  * /sign-in, whose Clerk widget bounced the still-signed-in member straight
  * back — an endless /sign-in ↔ /explorer loop (beta report, 2026-09-16). Now a
  * confirmed Clerk session with no row provisions the row on the spot from
- * Clerk's user record (welcome email deferred past the response); the
+ * Clerk's user record (welcome email and Resend contact deferred past the response); the
  * webhook's later upsert is a harmless update.
  *
  * Returns null only when there is no session. A session whose user cannot be
@@ -55,7 +55,7 @@ export const getCurrentUser = cache(async (): Promise<User | null> => {
   const name = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') || null;
 
   console.warn(`[getCurrentUser] no users row for ${clerkUserId} — provisioning on demand (webhook not landed yet?)`);
-  const { user } = await provisionUser({ clerkUserId, email, name }, { welcome: 'after' });
+  const { user } = await provisionUser({ clerkUserId, email, name }, { sideEffects: 'after' });
   return user;
 });
 
