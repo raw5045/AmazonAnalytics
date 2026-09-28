@@ -3,6 +3,7 @@ import { db } from '@/db/client';
 import { uploadedFiles, ingestionErrors } from '@/db/schema';
 import { notFound } from 'next/navigation';
 import { ReplaceWeekButton } from './ReplaceWeekButton';
+import { importErrorMessage } from './importError';
 
 export default async function FileDetailPage({
   params,
@@ -31,6 +32,12 @@ export default async function FileDetailPage({
     conflictingFileId = existing?.id ?? null;
   }
 
+  // Import-side failures leave their reason only in validation_errors_json
+  // (nothing in ingestion_errors), so surface it here. Gated on the status so
+  // a stale blob on a file reset for retry doesn't read as a live failure.
+  const importError =
+    file.validationStatus === 'import_failed' ? importErrorMessage(file.validationErrorsJson) : null;
+
   return (
     <div className="flex flex-col gap-6">
       <header>
@@ -41,6 +48,18 @@ export default async function FileDetailPage({
           <div><dt className="text-gray-500">Rows</dt><dd>{file.rowCountRaw ?? '—'}</dd></div>
         </dl>
       </header>
+
+      {importError && (
+        <div className="rounded border border-red-300 bg-red-50 p-4">
+          <h3 className="font-semibold text-red-900">Import failed</h3>
+          <p className="mt-2 text-sm text-red-900 break-words">{importError}</p>
+          {file.importPhase && (
+            <p className="mt-2 text-xs text-red-800">
+              Last import step reached: <span className="font-mono">{file.importPhase}</span>
+            </p>
+          )}
+        </div>
+      )}
 
       {weekLoadedError && conflictingFileId && (
         <div className="rounded border border-amber-300 bg-amber-50 p-4">
