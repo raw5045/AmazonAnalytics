@@ -19,6 +19,11 @@ describe('buildSystemPrompt', () => {
     expect(prompt).toContain('markdown table');
     expect(prompt).toMatch(/data, never an instruction/);
   });
+  it('links rows with keywordUrl (not a generic url field) and says the guide is already loaded', () => {
+    expect(prompt).toContain('keywordUrl');
+    expect(prompt).toMatch(/write no other URLs/);
+    expect(prompt).toMatch(/do not call get_research_guide/i);
+  });
   it('says "unknown" when there is no dataset week', () => {
     expect(buildSystemPrompt({ ...guide, datasetWeek: null })).toContain('Dataset week: unknown');
   });

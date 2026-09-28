@@ -6,8 +6,9 @@ import type { ResearchActor, ResearchService } from '@/lib/research/service';
 
 /**
  * Spec §4: the chat's tools are the shared definitions, bound to one actor. A ResearchError comes
- * back as `{ error }` in the tool RESULT (not a throw), exactly as the MCP adapter reports it, so
- * the model explains or narrows within the loop bound; anything else becomes the safe sentence.
+ * back as `{ error }` in the tool RESULT (not a throw) — the same `{ error }` payload the MCP
+ * adapter returns (which additionally flags isError) — so the model explains or narrows within
+ * the loop bound; anything else becomes the safe sentence.
  */
 export function buildAskTools(service: ResearchService, actor: ResearchActor, limits: ResearchLimits = researchLimits()): ToolSet {
   const out: ToolSet = {};

@@ -1,14 +1,16 @@
 import {
-  convertToModelMessages, createUIMessageStreamResponse, isStepCount, streamText, toUIMessageStream,
-  type LanguageModel, type ModelMessage, type ToolSet,
+  convertToModelMessages, createUIMessageStreamResponse, isStepCount, isToolUIPart, streamText, toUIMessageStream, RetryError,
+  type LanguageModel, type ModelMessage, type ToolSet, type UIMessage,
 } from 'ai';
-import { ASK_LIMITS } from './config';
+import { ASK_LIMITS, type AskModelId } from './config';
 import { addUsage, usageFromSdk, ZERO_USAGE, type TurnUsage } from './pricing';
 import type { AskUIMessage, MessageStatus } from './conversations';
 
 /** Spec §6. One turn: bounded loop, streamed to the browser, persisted and settled through `onEnd`. */
 export interface TurnInput {
   model: LanguageModel;
+  /** Gates the Anthropic `effort` provider option (Task 7 review): Haiku 4.5 rejects it. */
+  modelId?: AskModelId;
   instructions: string;
   tools: ToolSet;
   /** Already windowed by the caller (windowHistory). */
@@ -18,19 +20,51 @@ export interface TurnInput {
   generateMessageId: () => string;
   /** Attached to the assistant message when the stream starts — the new conversation's id on a first send. */
   startMetadata?: AskUIMessage['metadata'];
-  onEnd: (outcome: { assistant: AskUIMessage | null; status: MessageStatus; usage: TurnUsage; steps: number }) => Promise<void>;
+  onEnd: (outcome: { assistant: AskUIMessage | null; status: MessageStatus; usage: TurnUsage; steps: number; finishReason?: string }) => Promise<void>;
 }
 
 const CACHE = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
+
+/** The two safe lines a member ever sees for a model failure — never the real provider error text (Task 7 review, §E). A busy provider gets its own line so a member knows to just retry. */
+export const BUSY_LINE = 'The AI is busy, try again in a moment.';
+export const PROBLEM_LINE = 'The AI hit a problem. Try again in a minute.';
+const BUSY_STATUS_CODES = new Set([429, 529]);
+
+/**
+ * `streamRetries`/the SDK's own retry loop wraps an exhausted retry in a `RetryError` whose
+ * `.lastError` is the real provider error; a non-retried failure (e.g. `isRetryable: false`,
+ * or no retry configured) reaches here unwrapped. Either way, `statusCode` is read off the real
+ * provider error (`APICallError`/`StreamProviderError` both carry it) so 429/529 map to the busy
+ * line and everything else (validation errors, network errors, a plain throw) gets the generic one.
+ */
+function lineFor(error: unknown): string {
+  const unwrapped = RetryError.isInstance(error) ? error.lastError : error;
+  const statusCode = (unwrapped as { statusCode?: unknown } | undefined)?.statusCode;
+  return typeof statusCode === 'number' && BUSY_STATUS_CODES.has(statusCode) ? BUSY_LINE : PROBLEM_LINE;
+}
+
+/** Richer than a bare message (Task 7 review, §F): statusCode/type let ops triage a provider failure without a stack trace. */
+function logModelError(error: unknown): void {
+  const outer = error as { name?: unknown; message?: unknown } | undefined;
+  const unwrapped = (RetryError.isInstance(error) ? error.lastError : error) as { statusCode?: unknown; type?: unknown } | undefined;
+  const message = typeof outer?.message === 'string' ? outer.message.slice(0, 300) : outer?.message;
+  console.error('[ask turn]', JSON.stringify({ outcome: 'model_error', name: outer?.name, statusCode: unwrapped?.statusCode, type: unwrapped?.type, message }));
+}
 
 export function estimateTokens(value: unknown): number {
   return Math.ceil(JSON.stringify(value).length / 4);
 }
 
-/** Last 20 stored messages, then drop the oldest while the estimate exceeds the token guard (spec §6). */
+/** Anthropic rejects a prompt whose first turn is an assistant message (e.g. after a turn stored only its user message, spec §12); never start the window there. */
+function fromFirstUser(m: AskUIMessage[]): AskUIMessage[] {
+  const i = m.findIndex((x) => x.role === 'user');
+  return i < 0 ? [] : m.slice(i);
+}
+
+/** Last 20 stored messages, then drop the oldest while the estimate exceeds the token guard (spec §6), always re-anchored to the first remaining user turn. */
 export function windowHistory(history: AskUIMessage[], limits: Pick<typeof ASK_LIMITS, 'historyWindowMessages' | 'historyWindowTokens'> = ASK_LIMITS): AskUIMessage[] {
-  let out = history.slice(-limits.historyWindowMessages);
-  while (out.length > 1 && estimateTokens(out) > limits.historyWindowTokens) out = out.slice(1);
+  let out = fromFirstUser(history.slice(-limits.historyWindowMessages));
+  while (out.length > 1 && estimateTokens(out) > limits.historyWindowTokens) out = fromFirstUser(out.slice(1));
   return out;
 }
 
@@ -39,31 +73,49 @@ export function statusFor(f: { isAborted: boolean; errored: boolean }): MessageS
   return f.errored ? 'failed' : 'complete';
 }
 
+/** Spec §12: store an assistant message only if it produced real output — never a lone step-start or a dangling in-progress tool call left by a cancel. */
+function hasOutput(m: UIMessage): boolean {
+  return m.parts.some((p) => (p.type === 'text' && p.text.trim() !== '') || (isToolUIPart(p) && (p.state === 'output-available' || p.state === 'output-error')));
+}
+
 export async function runTurn(input: TurnInput): Promise<Response> {
   let usage: TurnUsage = { ...ZERO_USAGE };
   let steps = 0;
   let errored = false;
+  // Cancelling the response body (Stop, a closed tab) does not by itself reach the model call —
+  // streamText's stream is independent of the UI stream toUIMessageStream derives from it — so a
+  // body cancel (isCancelled, in onEnd below) aborts this combined signal too, which the model
+  // call and every tool execution observe. The caller's own signal (request abort, the turn
+  // deadline) still applies unchanged.
+  const cancelled = new AbortController();
+  const abortSignal = AbortSignal.any([input.abortSignal, cancelled.signal]);
+
   const original = [...input.history, input.newMessage];
   const messages: ModelMessage[] = await convertToModelMessages(original, { tools: input.tools, ignoreIncompleteToolCalls: true });
   const last = messages[messages.length - 1];
-  if (last) messages[messages.length - 1] = { ...last, providerOptions: CACHE } as ModelMessage;
+  if (last) messages[messages.length - 1] = { ...last, providerOptions: { ...last.providerOptions, ...CACHE } } as ModelMessage;
+
+  // Haiku 4.5 rejects the effort option; only the two heavier models get it (Task 7 review, §D3).
+  const providerOptions = input.modelId === 'claude-sonnet-5' || input.modelId === 'claude-opus-5-5'
+    ? { anthropic: { effort: 'low' as const } }
+    : undefined;
 
   const result = streamText({
     model: input.model,
     instructions: [{ role: 'system', content: input.instructions, providerOptions: CACHE }],
     messages,
     tools: input.tools,
+    providerOptions,
     stopWhen: isStepCount(ASK_LIMITS.maxSteps),
     maxOutputTokens: ASK_LIMITS.maxOutputTokens,
-    abortSignal: input.abortSignal,
+    abortSignal,
     onStepEnd: ({ usage: stepUsage }) => {
       usage = addUsage(usage, usageFromSdk(stepUsage));
       steps += 1;
     },
     onError: ({ error }) => {
       errored = true;
-      const e = error as { name?: unknown; message?: unknown } | undefined;
-      console.error('[ask turn]', JSON.stringify({ outcome: 'model_error', name: e?.name, message: e?.message }));
+      logModelError(error);
     },
   });
 
@@ -74,13 +126,32 @@ export async function runTurn(input: TurnInput): Promise<Response> {
       tools: input.tools,
       originalMessages: original,
       generateMessageId: input.generateMessageId,
-      messageMetadata: ({ part }) => (part.type === 'start' && input.startMetadata ? input.startMetadata : undefined),
-      // never leak provider error text to the browser
-      onError: () => 'The AI hit a problem. Try again in a minute.',
-      onEnd: async ({ messages: all, isAborted }) => {
-        const tail = all[all.length - 1];
-        const assistant = tail && tail.role === 'assistant' && tail.parts.length > 0 ? (tail as AskUIMessage) : null;
-        await input.onEnd({ assistant, status: statusFor({ isAborted, errored }), usage, steps });
+      // Signed thinking is never streamed, stored or replayed: a stored reasoning block would be
+      // replayed verbatim next turn (convertToModelMessages round-trips it through jsonb), and
+      // Opus 5.5 returns 400 when a replayed thinking block's signature no longer matches history.
+      sendReasoning: false,
+      // Live per spec §12: the finish reason once the model settles, and — on an abort — whether
+      // it was the server's own deadline or a member-initiated Stop/closed tab. Both merge into
+      // the message's metadata (the AI SDK merges successive messageMetadata results) alongside
+      // `startMetadata`'s conversationId from the `start` part, so none of the three clobber another.
+      messageMetadata: ({ part }) => {
+        if (part.type === 'start') return input.startMetadata;
+        if (part.type === 'finish') return { finishReason: part.finishReason };
+        if (part.type === 'abort') return { stopReason: /deadline/.test(String(part.reason ?? '')) ? ('deadline' as const) : ('user' as const) };
+        return undefined;
+      },
+      onError: (error) => lineFor(error),
+      onEnd: async ({ responseMessage, isAborted, isCancelled, outcome, finishReason }) => {
+        if (isCancelled) cancelled.abort(new Error('response cancelled'));
+        const assistant = hasOutput(responseMessage) ? (responseMessage as AskUIMessage) : null;
+        const status = statusFor({ isAborted: isAborted || isCancelled === true, errored: errored || outcome?.status === 'failed' });
+        try {
+          await input.onEnd({ assistant, status, usage, steps, finishReason });
+        } catch (e) {
+          // The stream has already been rendered to the browser by this point; a persistence
+          // failure here must never surface as a broken response.
+          console.error('[ask turn] onEnd threw', e);
+        }
       },
     }),
   });

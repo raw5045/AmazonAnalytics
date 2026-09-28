@@ -20,7 +20,7 @@ describe('ask config', () => {
     expect(isAskModelId(42)).toBe(false);
   });
   it('fixed limits match the spec §10', () => {
-    expect(ASK_LIMITS).toMatchObject({ maxChats: 5, maxMessagesPerChat: 200, maxMessageChars: 4000, historyWindowMessages: 20, historyWindowTokens: 60_000, maxToolCallsPerTurn: 8, maxSteps: 10, maxOutputTokens: 4096, turnDeadlineMs: 240_000, inFlightExpiryMinutes: 5 });
+    expect(ASK_LIMITS).toMatchObject({ maxChats: 5, maxMessagesPerChat: 200, maxMessageChars: 4000, historyWindowMessages: 20, historyWindowTokens: 60_000, maxToolCallsPerTurn: 8, maxSteps: 10, maxOutputTokens: 8192, turnDeadlineMs: 240_000, inFlightExpiryMinutes: 5 });
     expect(Object.isFrozen(ASK_LIMITS)).toBe(true);
   });
   it('converts dollars to micro-dollars with rounding', () => {

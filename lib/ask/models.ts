@@ -25,7 +25,8 @@ export const ASK_LIMITS = Object.freeze({
   maxToolCallsPerTurn: 8,
   /** eight tool-call steps + one answer step + one spare; the prompt says "at most eight tool calls" */
   maxSteps: 10,
-  maxOutputTokens: 4096,
+  /** Extended thinking (when the model uses it) counts against this budget too, not just the visible answer — raised from the plain-text-only 4096 (Task 7 review). */
+  maxOutputTokens: 8192,
   turnDeadlineMs: 240_000,
   inFlightExpiryMinutes: 5,
 });

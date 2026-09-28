@@ -9,8 +9,13 @@ export interface AskConversation {
 }
 export type MessageStatus = 'complete' | 'stopped' | 'failed';
 export type StoredMessage = { id: string; seq: number; role: 'user' | 'assistant'; parts: unknown[]; status: MessageStatus };
-/** Message metadata the page reads (`metadata.status`); the turn adds `conversationId` on a first send. */
-export interface AskMessageMetadata { status?: MessageStatus; conversationId?: string }
+/**
+ * Message metadata the page reads (`metadata.status`); the turn adds `conversationId` on a first
+ * send. `finishReason` and `stopReason` are set live as the turn streams (lib/ask/turn.ts) — the
+ * model's own finish reason on a `finish` part, or why an `abort` part happened (the turn deadline
+ * vs. a member-initiated Stop/closed tab), merged into the message's metadata as they arrive.
+ */
+export interface AskMessageMetadata { status?: MessageStatus; conversationId?: string; finishReason?: string; stopReason?: 'deadline' | 'user' }
 export type AskUIMessage = UIMessage<AskMessageMetadata>;
 export type DeleteOutcome = 'deleted' | 'busy' | 'missing';
 

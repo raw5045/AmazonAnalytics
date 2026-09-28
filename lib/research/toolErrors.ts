@@ -9,7 +9,7 @@ export const SAFE_TOOL_FAILURE: Readonly<ResearchErrorInfo> = Object.freeze({
 
 /**
  * Shared by the MCP adapter (lib/mcp/tools/toolResult.ts) and the chat adapter
- * (lib/ask/tools.ts, Task 7, not built yet): a ResearchError is already safe and passes through
+ * (lib/ask/tools.ts): a ResearchError is already safe and passes through
  * as its info; anything else is logged (`logPrefix`, then a JSON line with the tool, error name,
  * message, code, and the stack on a second line) and replaced by SAFE_TOOL_FAILURE.
  */
