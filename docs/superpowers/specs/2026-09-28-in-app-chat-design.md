@@ -240,7 +240,7 @@ Subscription becomes active → `grant` with `period_start` = the Stripe period 
 | `ASK_AI_ENABLED` | unset (off) | Kill switch. Off hides the tab; the page says it is switched off. |
 | `ANTHROPIC_API_KEY` | unset | Owner sets it in Vercel. On without it: one warning, members told "not configured yet". |
 | `ASK_AI_DAILY_MESSAGE_LIMIT` | 100 | Questions per member per UTC day. |
-| `ASK_AI_GLOBAL_MONTHLY_CEILING_USD` | 200 | Everyone stops when the month's cost reaches it. |
+| `ASK_AI_GLOBAL_MONTHLY_CEILING_USD` | 200 | TOTAL model cost across all members and admins in a month; everyone stops when it is reached. A fence against bugs and abuse, separate from the per-member allowance (§9.3): size it above the sum of granted allowances plus your own testing. |
 | `ASK_AI_PRICES_JSON` | unset | Rate overrides (§9.2). |
 | `ASK_AI_DEFAULT_ALLOWANCE_USD` | 10 | Allowance a new grant starts with. |
 
@@ -261,7 +261,7 @@ Empty state: the model picker (three radios with the labels from §6, Standard p
 
 Thread: member messages on one side; answers rendered as markdown with GFM tables. Keyword links are the tools' `url` values and open the detail page in the same tab. While the model works, one status line per active tool call: "Resolving categories", "Searching keywords", "Loading keyword details", "Loading history", "Reading the guide". When the answer lands they fold into "Used N tools" (a native `<details>`), which lists each call's tool and a compact view of its input (the filters), never the raw rows. A stopped answer ends with "Stopped." A failed one with the message from §12.
 
-Composer: textarea, Send, Stop while streaming, 4,000-character limit with a counter from 3,500, Enter sends, Shift+Enter breaks a line. Disabled states show the reason under the box.
+Composer: textarea, Send, Stop while streaming, 4,000-character limit with a counter from 3,500, Enter sends, Shift+Enter breaks a line. Disabled states show the reason under the box. Always visible under the box: "Answers can be wrong. Check the numbers on the keyword pages before acting." (Anthropic's commercial terms require telling users that factual assertions in outputs must be checked independently.)
 
 ### 11.4 Usage meter
 In the page header: a bar labelled "Usage this month" (allowance used ÷ allowance) and "about N questions left" for the open chat's model (balance ÷ that model's estimated cost per question; with credit: "about N questions left, including credit"). At zero: "You've used this month's usage. Ask through the Feedback button to add more." Admins see the bar plus "Admin: usage is metered but not limited."
@@ -269,10 +269,10 @@ In the page header: a bar labelled "Usage this month" (allowance used ÷ allowan
 After each turn the client calls `router.refresh()` so the server-rendered meter and rail update (the App Router only re-renders what the server re-renders; see the saved-views lesson).
 
 ### 11.5 Admin page (`/admin/ask-ai`, linked from the admin nav)
-Top: this month's spend against the ceiling, questions, model mix. Then a member table: email, access, allowance, used this period, credit, questions this month, last activity. Row actions: Grant (default allowance), Set allowance, Add credit (amount + note), Revoke. Grant by email lookup above the table. Every action confirms and re-renders. No transcripts, no message text anywhere on the page.
+Top: spend this month against the ceiling, the sum of remaining allowances of members with access (if that sum is above the ceiling, the ceiling is too low), questions, model mix. Then a member table: email, access, allowance, used this period, credit, questions this month, last activity. Row actions: Grant (default allowance), Set allowance, Add credit (amount + note), Revoke. Grant by email lookup above the table. Every action confirms and re-renders. No transcripts, no message text anywhere on the page.
 
 ### 11.6 Privacy and cross-links
-Privacy page, new paragraph (owner edits the wording): "Ask AI. When you use Ask AI, your questions, the answers, and the KeywordQuarry data the assistant looks up are stored with your account until you delete the chat or your account. To produce an answer we send your question, the chat's recent messages and that data to Anthropic, our AI provider, which processes it under its commercial terms." The owner confirms the training/retention sentence against Anthropic's current commercial terms before it goes live.
+Privacy page, new paragraph (owner may edit the wording; the facts are verified, §17): "Ask AI. When you use Ask AI, your questions, the answers, and the KeywordQuarry data the assistant looks up are stored with your account until you delete the chat or your account. To produce an answer we send your question, the recent messages of that chat and that data to Anthropic, our AI provider. Anthropic does not use it to train its models and deletes it from its systems within 30 days, unless its policies or the law require it to keep it longer."
 
 Connect AI page: one line for eligible accounts, "Prefer to chat here? Try Ask AI." linking to `/ask`.
 
@@ -340,6 +340,7 @@ Reviewers and implementers must not run integration tests or call Anthropic unle
 ## 17. Verified facts this design relies on (checked 2026-09-28)
 
 - Anthropic prices as in §9.2 (platform.claude.com pricing page; Sonnet 5's $2/$10 is now standard, not introductory). Cache reads: 0.1× input, except Opus 5.5 at 0.05×; 5-minute cache writes 1.25×.
+- Anthropic legal (checked 2026-09-28): Commercial Terms of Service (effective 2025-06-17) — "Anthropic may not train models on Customer Content from Services", and the customer "must notify its Users, that factual assertions in Outputs should not be relied upon without independently checking their accuracy" (hence the notice under the composer, §11.3); privacy article "How long do you store personal data" (updated 2026-07-01) — API inputs and outputs are deleted within 30 days except for usage-policy enforcement (up to 2 years), legal requirements, or a zero-data-retention agreement.
 - `ai` 7.0.118 (Node ≥ 22; zod ^4.1.8 — repo has zod 4.3.6), `@ai-sdk/anthropic` 4.0.65, `@ai-sdk/react` 4.0.121 (peer React `^19.2.1` — repo has 19.2.4), `@anthropic-ai/sdk` 0.128.0 (not used).
 - AI SDK 7 names: `tool({ description, inputSchema, execute })`, `execute(args, { toolCallId, messages, abortSignal })`, `stopWhen: isStepCount(n)` imported from `ai`, `onStepEnd({ stepNumber, text, toolCalls, toolResults, finishReason, usage })`, `usage.inputTokenDetails.{noCacheTokens, cacheReadTokens, cacheWriteTokens}`, `usage.outputTokens`, `onAbort`, `toUIMessageStream({ stream, originalMessages, generateMessageId, onEnd })` + `createUIMessageStreamResponse`, `useChat({ transport: new DefaultChatTransport({ api, prepareSendMessagesRequest }) })` with `sendMessage({ text })`, `status` ∈ submitted | streaming | ready | error, `stop()`; test helpers `MockLanguageModelV4` (`ai/test`) and `simulateReadableStream` (`ai`); Anthropic provider caching via `providerOptions.anthropic.cacheControl = { type: 'ephemeral' }`; model ids `claude-sonnet-5`, `claude-opus-5-5`, `claude-haiku-4-5`. Exact signatures are re-read from `node_modules` types when the plan is written.
 - Repo facts: `research_usage_buckets.channel` is `varchar(16)` with no check constraint; the hourly sweep deletes buckets older than one day; `user_activity_daily` stores metrics as rows keyed by name; the app has no server actions (mutations are route handlers under `app/api`); Vercel Pro (explorer route comment) allows `maxDuration` up to 300; `keywordUrlFor` builds the detail links every search row and details response already carry; the Clerk `user.deleted` handler deletes the user row and relies on FK cascades.
