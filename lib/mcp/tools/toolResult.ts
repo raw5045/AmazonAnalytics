@@ -1,6 +1,7 @@
 import type { AuthInfo, CallToolResult } from '@modelcontextprotocol/server';
-import { isResearchError, ResearchError } from '@/lib/research/errors';
+import { ResearchError } from '@/lib/research/errors';
 import type { ResearchActor } from '@/lib/research/service';
+import { classifyToolError } from '@/lib/research/toolErrors';
 import { mcpAuthExtra } from '@/lib/mcp/verifyMcpToken';
 
 /** The slice of the SDK's ServerContext the tools read. */
@@ -31,28 +32,7 @@ export function okResult(structured: object): CallToolResult {
 
 /** `tool` is the MCP tool name (registerResearchTools.ts's runTool caller), logged for a non-ResearchError so an unexpected failure can be traced back to which tool raised it. */
 export function errorResult(e: unknown, tool: string): CallToolResult {
-  if (isResearchError(e)) {
-    return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: e.toInfo() }) }] };
-  }
-  console.error(
-    '[mcp tool]',
-    JSON.stringify({
-      tool,
-      name: (e as { name?: unknown })?.name,
-      // Task 15 minor 2 (re-review): a non-Error throw (e.g. `throw 'boom'`) has no `.message`,
-      // so the old `(e as { message?: unknown })?.message` logged nothing but `tool` — the
-      // thrown value itself never reached the log. `instanceof Object` still reads the real
-      // `.message` off an Error (or any thrown object with one); a primitive throw falls back
-      // to String(e) so its value is always captured.
-      message: e instanceof Object ? (e as { message?: unknown }).message : String(e),
-      code: (e as { code?: unknown })?.code,
-    }),
-  );
-  const stack = (e as { stack?: unknown })?.stack;
-  if (typeof stack === 'string') console.error(stack);
-  // The client only ever sees this fixed, safe sentence — never `e`'s own message, which can
-  // carry SQL, a connection string, or other internals.
-  const info = { code: 'DATA_UNAVAILABLE', message: 'KeywordQuarry hit an unexpected problem; try again in a minute.', retryable: true };
+  const info = classifyToolError(e, tool, '[mcp tool]');
   return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: info }) }] };
 }
 

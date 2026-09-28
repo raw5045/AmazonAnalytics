@@ -1,0 +1,99 @@
+import type { z } from 'zod';
+import {
+  emptyInputSchema, keywordDetailsInputSchema, keywordHistoryInputSchema, PAGE_SIZE_MAX, resolveCategoriesInputSchema, searchToolInputSchema,
+} from './contracts';
+import { COUNT_CAP } from '@/lib/explorer/buildQuery';
+import type { ResearchLimits } from './limits';
+import type { ResearchActor, ResearchService } from './service';
+
+export const RESEARCH_TOOL_NAMES = ['get_research_guide', 'resolve_categories', 'search_keywords', 'get_keyword_details', 'get_keyword_history'] as const;
+export type ResearchToolName = (typeof RESEARCH_TOOL_NAMES)[number];
+
+export const READ_ONLY_ANNOTATIONS = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const);
+
+/**
+ * One research tool, provider-neutral (spec §4): the MCP registration and the in-app chat both
+ * build from this list, so names, descriptions, schemas and behaviour cannot drift between the
+ * two surfaces. `requiresConfirmation` is false for all five; a future write tool sets it true
+ * and the chat asks before running it.
+ */
+export interface ResearchToolDefinition {
+  name: ResearchToolName;
+  title: string;
+  description: (limits: ResearchLimits) => string;
+  inputSchema: z.ZodType;
+  run: (service: ResearchService, actor: ResearchActor, args: unknown) => Promise<object>;
+  annotations: typeof READ_ONLY_ANNOTATIONS;
+  requiresConfirmation: false;
+}
+
+/**
+ * `search_keywords`'s description, built from the operating constants rather than hand-copied
+ * numerals so it can never drift from the schema/service it describes (`PAGE_SIZE_MAX`,
+ * `COUNT_CAP`, `limits.maxRowsPerSearch`).
+ */
+function searchDescription(limits: Pick<ResearchLimits, 'maxRowsPerSearch'>): string {
+  return [
+    'Search current Amazon keywords with exact filters. Comparators are exact (gt 10000 excludes 10000); any bound excludes null values.',
+    'Resolve category words with resolve_categories first and pass its selection objects in filters.categories.selections (several = OR; all other filters = AND).',
+    `filters.excludeTerms drops keywords containing any of up to five whole words or phrases (3+ characters each) — use it for "lamps but not floor lamps"; it works with or without filters.text. Matching is exact whole words ('lamp' does not drop 'lamps'; list each form).`,
+    'A range is { gt?, gte?, lt?, lte? }. Sorts: estimatedMonthlySearches (default desc), rank, averageReviews, wordCount, volumeDelta. A volumeDelta sort without a movement filter includes never-observed keywords at a zero baseline (labelled not_observed); add movement with baseline observed_only to exclude them.',
+    `Next page: call again with { cursor } only. Pages return up to ${PAGE_SIZE_MAX} rows each (default 50) and are live; at most ${limits.maxRowsPerSearch.toLocaleString('en-US')} rows are reachable per search; totals above ${COUNT_CAP.toLocaleString('en-US')} are reported as at_least. Never present a capped page as everything.`,
+    'A follow-up (tighten a bound, drop a filter) is a new search with the complete filter set; the server keeps no conversation state. Zero rows is a true empty result: report it, do not widen the criteria unasked. There is no cost, PPC or profitability data.',
+    'estimatedMonthlySearches is an estimate from rank and calibration; averageReviews is the stored average over observed top-three products.',
+  ].join(' ');
+}
+
+export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.freeze([
+  {
+    name: 'get_research_guide',
+    title: 'Research guide',
+    description: () => 'Definitions, presets with exact thresholds, sorts, windows, category rules, population rules, limits and error codes for the KeywordQuarry research tools. Call once per conversation before searching.',
+    inputSchema: emptyInputSchema,
+    run: (service, actor) => service.guide(actor),
+    annotations: READ_ONLY_ANNOTATIONS,
+    requiresConfirmation: false,
+  },
+  {
+    name: 'resolve_categories',
+    title: 'Resolve categories',
+    description: () => "Find Amazon category paths (and this account's custom categories) matching words like \"lighting\"; returns ready-to-use selection objects for search_keywords. Broad words span several branches: ask the person which before searching. Browse with parentPath and an empty query; page with cursor.",
+    inputSchema: resolveCategoriesInputSchema,
+    run: (service, actor, args) => service.resolveCategories(actor, args),
+    annotations: READ_ONLY_ANNOTATIONS,
+    requiresConfirmation: false,
+  },
+  {
+    name: 'search_keywords',
+    title: 'Search keywords',
+    description: searchDescription,
+    inputSchema: searchToolInputSchema,
+    run: (service, actor, args) => service.search(actor, args),
+    annotations: READ_ONLY_ANNOTATIONS,
+    requiresConfirmation: false,
+  },
+  {
+    name: 'get_keyword_details',
+    title: 'Keyword details',
+    description: () => 'Current metrics, provenance and the top three clicked products (reviews, rating stars, price cents, click and conversion share percentages) for one keyword id from search results. A dormant keyword returns current=null. Missing values stay null.',
+    inputSchema: keywordDetailsInputSchema,
+    run: (service, actor, args) => service.details(actor, args),
+    annotations: READ_ONLY_ANNOTATIONS,
+    requiresConfirmation: false,
+  },
+  {
+    name: 'get_keyword_history',
+    title: 'Keyword history',
+    description: () => 'Weekly rank and estimated-volume points for one keyword over the last N calendar weeks (default 13, max 52) ending at the dataset week. Weeks without an observation are listed in missingWeeks, never filled with zeros.',
+    inputSchema: keywordHistoryInputSchema,
+    run: (service, actor, args) => service.history(actor, args),
+    annotations: READ_ONLY_ANNOTATIONS,
+    requiresConfirmation: false,
+  },
+]);
+
+export function researchToolByName(name: ResearchToolName): ResearchToolDefinition {
+  const t = RESEARCH_TOOLS.find((d) => d.name === name);
+  if (!t) throw new Error(`unknown research tool ${name}`);
+  return t;
+}
