@@ -213,6 +213,18 @@ describe('search: continuation and caps', () => {
     await svc.guide(chatActor);
     expect(deps.record).toHaveBeenNthCalledWith(3, 'u1', 0, 'chat');
   });
+  it('resolveCategories, details and history also record under the chat channel', async () => {
+    const deps = makeDeps({ loadDetails: detailsStub(), loadHistory: historyStub() } as Partial<ResearchServiceDeps>);
+    const svc = createResearchService(deps);
+    const chatActor: ResearchActor = { ...actor, clientId: 'ask-ai', channel: 'chat' };
+    const id = '11111111-1111-4111-8111-111111111111';
+    await svc.resolveCategories(chatActor, { query: 'a' });
+    expect(deps.record).toHaveBeenLastCalledWith('u1', 0, 'chat');
+    await svc.details(chatActor, { searchTermId: id });
+    expect(deps.record).toHaveBeenLastCalledWith('u1', 1, 'chat');
+    await svc.history(chatActor, { searchTermId: id, weeks: 4 });
+    expect(deps.record).toHaveBeenLastCalledWith('u1', 2, 'chat');
+  });
   it('I4e: an expired cursor is SEARCH_EXPIRED, and never reserves', async () => {
     const deps = makeDeps();
     const expired = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 1_000_000_000, uid: 'u1', ch: 'mcp', tm: { kind: 'unknown', value: null } }, 'test-secret');
@@ -294,6 +306,16 @@ describe('search: continuation and caps', () => {
   });
 });
 
+/** Shared by the "details and history validate..." test and the chat-channel recording test below; a fresh vi.fn() per call so each test's own call-count assertions never leak into the other's. */
+function detailsStub() {
+  return vi.fn(async () => ({ searchTermId: 'x', keyword: 'x', keywordUrl: 'u', status: 'dormant' as const, firstSeenWeek: 'a', lastSeenWeek: 'b', current: null, products: [], provenance: { datasetWeek: '', snapshotVersion: '', resultCapturedAt: '' }, warnings: [] }));
+}
+// I4a: 2 points, distinct from details' 1-row record, so the two record() calls can't be
+// confused by asserting the same ('u1', 1) shape for both.
+function historyStub() {
+  return vi.fn(async () => ({ searchTermId: 'x', keyword: 'x', windowStart: 'a', windowEnd: 'b', requestedWeeks: 4, points: [{ weekEndDate: 'a', rank: 2, estimatedMonthlySearches: null, volumeIsExtrapolated: false, severity: null }, { weekEndDate: 'b', rank: 1, estimatedMonthlySearches: null, volumeIsExtrapolated: false, severity: null }], missingWeeks: [], source: 'chart_series' as const, seriesUpdatedAt: null, warnings: [] }));
+}
+
 describe('the other tools', () => {
   it('resolveCategories mixes ranked taxonomy candidates with the account’s custom categories and pages the taxonomy part', async () => {
     const deps = makeDeps({ categories: { loadCatalog: async () => catalog, loadCustomRows: async () => [], listCustom: async () => [{ kind: 'custom', label: 'My niche', path: null, id: '11111111-1111-4111-8111-111111111111', terminal: true, descendantLeafCount: null, keywordCount: null, selection: { kind: 'custom', id: '11111111-1111-4111-8111-111111111111' } }] } });
@@ -315,10 +337,8 @@ describe('the other tools', () => {
     expect((await svc.resolveCategories(actor, { query: 'zzzz', source: 'taxonomy' })).noMatch).toBe(true);
   });
   it('details and history validate, reserve, delegate, and record', async () => {
-    const details = vi.fn(async () => ({ searchTermId: 'x', keyword: 'x', keywordUrl: 'u', status: 'dormant' as const, firstSeenWeek: 'a', lastSeenWeek: 'b', current: null, products: [], provenance: { datasetWeek: '', snapshotVersion: '', resultCapturedAt: '' }, warnings: [] }));
-    // I4a: 2 points, distinct from details' 1-row record, so the two record() calls can't be
-    // confused by asserting the same ('u1', 1) shape for both.
-    const history = vi.fn(async () => ({ searchTermId: 'x', keyword: 'x', windowStart: 'a', windowEnd: 'b', requestedWeeks: 4, points: [{ weekEndDate: 'a', rank: 2, estimatedMonthlySearches: null, volumeIsExtrapolated: false, severity: null }, { weekEndDate: 'b', rank: 1, estimatedMonthlySearches: null, volumeIsExtrapolated: false, severity: null }], missingWeeks: [], source: 'chart_series' as const, seriesUpdatedAt: null, warnings: [] }));
+    const details = detailsStub();
+    const history = historyStub();
     const deps = makeDeps({ loadDetails: details, loadHistory: history } as Partial<ResearchServiceDeps>);
     const svc = createResearchService(deps);
     await svc.details(actor, { searchTermId: '11111111-1111-4111-8111-111111111111' });

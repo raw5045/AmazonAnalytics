@@ -112,9 +112,9 @@ function reserveFor(deps: ResearchServiceDeps, actor: ResearchActor, rows: numbe
  * the caller just lost the race for a client, so `dataUnavailableError()`'s "dataset is being
  * refreshed" wording would misstate the cause). Anything else (a raw SQLSTATE, a compile-time
  * guard, a genuinely unexpected error) is rethrown unchanged, on purpose: both tool adapters
- * (MCP and chat, via classifyToolError) (Task 15) map an unrecognized error to a generic message
- * without ever echoing `e.message` to a client, so there is no safety reason to reclassify it
- * here too.
+ * (the MCP adapter from arc-1 Task 15 and the chat adapter, both via classifyToolError) map an
+ * unrecognized error to a generic message without ever echoing `e.message` to a client, so there
+ * is no safety reason to reclassify it here too.
  */
 async function guarded<T>(fn: () => Promise<T>): Promise<T> {
   try {
