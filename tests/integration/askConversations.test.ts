@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { grantAccess, getAccount } from '@/lib/ask/ledger';
-import { createConversationWithFirstMessage, deleteConversation, listConversations, acquireTurnLock, releaseTurnLock } from '@/lib/ask/conversations';
+import { createConversationWithFirstMessage, deleteConversation, listConversations, acquireTurnLock, releaseTurnLock, appendUserMessage, appendAssistantMessage, loadConversation } from '@/lib/ask/conversations';
 import { createTestUser, deleteTestUser } from './helpers';
 
 // Run (owner-gated, after migration 0048): cross-env RUN_INTEGRATION=1 pnpm vitest run tests/integration/askConversations.test.ts
@@ -33,9 +33,35 @@ describe('ask conversations (integration, real Postgres)', () => {
     expect(await acquireTurnLock(userId!, id)).toBe(true);
     expect(await acquireTurnLock(userId!, id)).toBe(false);
     expect(await deleteConversation(userId!, id)).toBe('busy');
+    expect((await getAccount(userId!))!.conversationCount).toBe(4);
     await releaseTurnLock(id);
     expect(await acquireTurnLock(userId!, id)).toBe(true);
     await releaseTurnLock(id);
+  });
+
+  it('appends messages up to and past the per-chat cap, and loadConversation returns them in order', async () => {
+    const id = (await listConversations(userId!))[0].id;
+    const now = new Date();
+    expect(await appendUserMessage({ conversationId: id, userId: userId!, message: msg(), now })).toEqual({ seq: 2 });
+    expect(await appendAssistantMessage({ conversationId: id, message: { id: crypto.randomUUID(), parts: [{ type: 'text' as const, text: 'here you go' }] }, status: 'stopped', now })).toBe(true);
+
+    const loaded = (await loadConversation(userId!, id))!;
+    expect(loaded.messages.map((m) => m.role)).toEqual(['user', 'user', 'assistant']);
+    expect(loaded.messages.map((m) => m.metadata?.status)).toEqual(['complete', 'complete', 'stopped']);
+    expect(loaded.messages[0].parts).toEqual([{ type: 'text', text: 'hello there' }]);
+    expect(loaded.messages[2].parts).toEqual([{ type: 'text', text: 'here you go' }]);
+    expect(loaded.conversation.messageCount).toBe(3);
+    expect(loaded.conversation.createdAt).toBeInstanceOf(Date);
+    expect(loaded.conversation.updatedAt).toBeInstanceOf(Date);
+
+    // Force the chat to the cap without going through 198 real appends.
+    await db.execute(sql`UPDATE ask_conversations SET message_count = 200 WHERE id = ${id}::uuid`);
+    expect(await appendUserMessage({ conversationId: id, userId: userId!, message: msg(), now })).toBe('full');
+    // The assistant's reply is never dropped for a full chat — it answers a message that was
+    // already accepted, so it lands past the cap (seq 201) instead of being refused.
+    expect(await appendAssistantMessage({ conversationId: id, message: { id: crypto.randomUUID(), parts: [{ type: 'text' as const, text: 'past the cap' }] }, status: 'complete', now })).toBe(true);
+    const last = await db.execute<{ seq: number }>(sql`SELECT seq FROM ask_messages WHERE conversation_id = ${id}::uuid ORDER BY seq DESC LIMIT 1`);
+    expect(last.rows[0].seq).toBe(201);
   });
 
   it('deleting the user cascades every ask_* row', async () => {

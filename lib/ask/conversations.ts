@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { UIMessage } from 'ai';
 import { db } from '@/db/client';
-import { ASK_LIMITS, type AskModelId } from './config';
+import { ASK_LIMITS, isAskModelId, type AskModelId } from './config';
 
 /** Spec §7. Single-statement writes (neon-http has no transactions). */
 export interface AskConversation {
@@ -15,16 +15,25 @@ export type AskUIMessage = UIMessage<AskMessageMetadata>;
 export type DeleteOutcome = 'deleted' | 'busy' | 'missing';
 
 type ConvRow = { id: string; user_id: string; title: string; model: string; message_count: number; in_flight_since: string | Date | null; created_at: string | Date; updated_at: string | Date };
-const toConv = (r: ConvRow): AskConversation => ({
-  id: r.id, userId: r.user_id, title: r.title, model: r.model as AskModelId, messageCount: Number(r.message_count),
-  inFlightSince: r.in_flight_since === null ? null : new Date(r.in_flight_since), createdAt: new Date(r.created_at), updatedAt: new Date(r.updated_at),
-});
-const CONV_COLUMNS = sql.raw('id, user_id, title, model, message_count, in_flight_since, created_at, updated_at');
 
+/** Throws on a model the code no longer recognizes: retiring a model id needs a data migration, not a silent pass-through. */
+function toConv(r: ConvRow): AskConversation {
+  if (!isAskModelId(r.model)) throw new Error(`ask_conversations ${r.id} has unknown model ${r.model}; retiring a model needs a data migration`);
+  return {
+    id: r.id, userId: r.user_id, title: r.title, model: r.model, messageCount: Number(r.message_count),
+    inFlightSince: r.in_flight_since === null ? null : new Date(r.in_flight_since), createdAt: new Date(r.created_at), updatedAt: new Date(r.updated_at),
+  };
+}
+const CONV_COLUMNS = sql.raw('id, user_id, title, model, message_count, in_flight_since, created_at, updated_at');
+/** Spec §7: a stale in-flight flag (the route crashed mid-turn) expires this long after it was set. */
+const IN_FLIGHT_EXPIRY = sql.raw(`interval '${ASK_LIMITS.inFlightExpiryMinutes} minutes'`);
+
+/** Collapses whitespace and cuts by Unicode code point (never mid-surrogate-pair — a lone surrogate is invalid UTF-8 and the Neon HTTP driver rejects it outright). */
 export function titleFrom(text: string): string {
   const t = text.replace(/\s+/g, ' ').trim();
   if (!t) return 'New chat';
-  return t.length > 60 ? `${t.slice(0, 60)}…` : t;
+  const cps = Array.from(t);
+  return cps.length > 60 ? `${cps.slice(0, 60).join('').trimEnd()}…` : t;
 }
 
 export function storedToUiMessage(m: StoredMessage): AskUIMessage {
@@ -36,26 +45,42 @@ export async function listConversations(userId: string): Promise<AskConversation
   return r.rows.map(toConv);
 }
 
-export async function loadConversation(userId: string, id: string): Promise<{ conversation: AskConversation; messages: AskUIMessage[] } | null> {
+/** Full history by default; pass `lastN` (Task 8 uses `ASK_LIMITS.historyWindowMessages`) to fetch only the newest N messages — the route's history window, not the page's, which always loads everything. */
+export async function loadConversation(userId: string, id: string, opts?: { lastN?: number }): Promise<{ conversation: AskConversation; messages: AskUIMessage[] } | null> {
   const c = await db.execute<ConvRow>(sql`SELECT ${CONV_COLUMNS} FROM ask_conversations WHERE id = ${id}::uuid AND user_id = ${userId}::uuid`);
   if (!c.rows[0]) return null;
-  const m = await db.execute<StoredMessage>(sql`SELECT id, seq, role, parts, status FROM ask_messages WHERE conversation_id = ${id}::uuid ORDER BY seq`);
-  return { conversation: toConv(c.rows[0]), messages: m.rows.map(storedToUiMessage) };
+  const lastN = opts?.lastN;
+  const m = lastN
+    ? await db.execute<StoredMessage>(sql`SELECT id, seq, role, parts, status FROM ask_messages WHERE conversation_id = ${id}::uuid ORDER BY seq DESC LIMIT ${lastN}`)
+    : await db.execute<StoredMessage>(sql`SELECT id, seq, role, parts, status FROM ask_messages WHERE conversation_id = ${id}::uuid ORDER BY seq`);
+  const rows = lastN ? [...m.rows].reverse() : m.rows;
+  return { conversation: toConv(c.rows[0]), messages: rows.map(storedToUiMessage) };
 }
 
 function firstText(message: Pick<AskUIMessage, 'parts'>): string {
   return message.parts.map((p) => (p.type === 'text' ? p.text : '')).join(' ');
 }
 
-/** Spec §7: created on the first send, in the same statement as its first message, only if the account row's conversation_count is under the cap. Returns 'cap' when at five. */
+/**
+ * Spec §7: created on the first send, in the same statement as its first message, only if the
+ * account row's conversation_count is under the cap. Returns 'cap' when at five, and also when no
+ * ask_accounts row exists at all — the route's gates (ledger.ensureAccount / the access checks)
+ * guarantee one exists before this is ever called, so a missing row is treated the same as a full
+ * one rather than crashing.
+ *
+ * Inserted already locked (`in_flight_since = now()`): the first send's own turn is about to start
+ * streaming, so there is no separate acquireTurnLock round trip and no window where the chat
+ * exists but is unlocked (Task 8's route relies on this — it creates and starts the turn without
+ * an extra lock call).
+ */
 export async function createConversationWithFirstMessage(a: { userId: string; model: AskModelId; message: Pick<AskUIMessage, 'id' | 'parts'>; now: Date }): Promise<{ conversationId: string } | 'cap'> {
   const r = await db.execute<{ id: string }>(sql`
     WITH acct AS (
       UPDATE ask_accounts SET conversation_count = conversation_count + 1, updated_at = now()
       WHERE user_id = ${a.userId}::uuid AND conversation_count < ${sql.raw(String(ASK_LIMITS.maxChats))} RETURNING user_id
     ), conv AS (
-      INSERT INTO ask_conversations (user_id, title, model, message_count, created_at, updated_at)
-      SELECT user_id, ${titleFrom(firstText(a.message))}, ${a.model}, 1, ${a.now.toISOString()}::timestamptz, ${a.now.toISOString()}::timestamptz FROM acct RETURNING id
+      INSERT INTO ask_conversations (user_id, title, model, message_count, in_flight_since, created_at, updated_at)
+      SELECT user_id, ${titleFrom(firstText(a.message))}, ${a.model}, 1, now(), ${a.now.toISOString()}::timestamptz, ${a.now.toISOString()}::timestamptz FROM acct RETURNING id
     ), msg AS (
       INSERT INTO ask_messages (id, conversation_id, seq, role, parts, status, created_at)
       SELECT ${a.message.id}::uuid, id, 1, 'user', ${JSON.stringify(a.message.parts)}::jsonb, 'complete', ${a.now.toISOString()}::timestamptz FROM conv RETURNING id
@@ -64,7 +89,12 @@ export async function createConversationWithFirstMessage(a: { userId: string; mo
   return r.rows[0] ? { conversationId: r.rows[0].id } : 'cap';
 }
 
-/** Appends under the per-chat cap; 'full' at 200. Owner-scoped. */
+/**
+ * Appends under the per-chat cap; 'full' at 200 — also for a chat that is missing or not owned by
+ * `userId`, since the route always loads and locks the chat before appending, so those cases are
+ * already ruled out by the time this runs and get the same "can't append" answer as a full chat.
+ * Owner-scoped.
+ */
 export async function appendUserMessage(a: { conversationId: string; userId: string; message: Pick<AskUIMessage, 'id' | 'parts'>; now: Date }): Promise<{ seq: number } | 'full'> {
   const r = await db.execute<{ seq: number }>(sql`
     WITH conv AS (
@@ -77,25 +107,40 @@ export async function appendUserMessage(a: { conversationId: string; userId: str
   return r.rows[0] ? { seq: Number(r.rows[0].seq) } : 'full';
 }
 
-/** The assistant's message is appended even past the cap (it answers a message that was accepted), and touches updated_at. */
-export async function appendAssistantMessage(a: { conversationId: string; message: Pick<AskUIMessage, 'id' | 'parts'>; status: MessageStatus; now: Date }): Promise<void> {
-  await db.execute(sql`
+/**
+ * The assistant's message is appended even past the cap (it answers a message that was accepted),
+ * and touches updated_at. Returns whether the chat still existed to receive it (false when the
+ * conversation was deleted while the turn was streaming) so the route can log an answer that could
+ * not be saved instead of silently dropping it.
+ */
+export async function appendAssistantMessage(a: { conversationId: string; message: Pick<AskUIMessage, 'id' | 'parts'>; status: MessageStatus; now: Date }): Promise<boolean> {
+  const r = await db.execute(sql`
     WITH conv AS (
       UPDATE ask_conversations SET message_count = message_count + 1, updated_at = now() WHERE id = ${a.conversationId}::uuid RETURNING id, message_count
     )
     INSERT INTO ask_messages (id, conversation_id, seq, role, parts, status, created_at)
     SELECT ${a.message.id}::uuid, id, message_count, 'assistant', ${JSON.stringify(a.message.parts)}::jsonb, ${a.status}, ${a.now.toISOString()}::timestamptz FROM conv RETURNING seq`);
+  return r.rows.length > 0;
 }
 
-/** Spec §7: one turn in flight per chat; a stale flag (crashed function) expires after five minutes. */
+/** Spec §7: one turn in flight per chat; a stale flag (crashed function) expires after ASK_LIMITS.inFlightExpiryMinutes. */
 export async function acquireTurnLock(userId: string, conversationId: string): Promise<boolean> {
   const r = await db.execute(sql`
     UPDATE ask_conversations SET in_flight_since = now()
     WHERE id = ${conversationId}::uuid AND user_id = ${userId}::uuid
-      AND (in_flight_since IS NULL OR in_flight_since < now() - interval '5 minutes')
+      AND (in_flight_since IS NULL OR in_flight_since < now() - ${IN_FLIGHT_EXPIRY})
     RETURNING id`);
   return r.rows.length > 0;
 }
+
+/**
+ * Unconditional: the lock carries no holder token, so this clears `in_flight_since` for whichever
+ * chat id it's given regardless of who set it — it does not check that the caller is still the
+ * turn that acquired it. That is safe only because the route's `maxDuration` (300s) cannot outlive
+ * the `ASK_LIMITS.inFlightExpiryMinutes`-minute expiry (5 minutes = 300s) acquireTurnLock enforces:
+ * the platform kills an overrunning turn no later than the moment its own lock would have gone
+ * stale anyway, so no other turn is ever still genuinely in flight when this runs.
+ */
 export async function releaseTurnLock(conversationId: string): Promise<void> {
   await db.execute(sql`UPDATE ask_conversations SET in_flight_since = NULL WHERE id = ${conversationId}::uuid`);
 }
@@ -113,7 +158,7 @@ export async function deleteConversation(userId: string, id: string): Promise<De
     WITH gone AS (
       DELETE FROM ask_conversations
       WHERE id = ${id}::uuid AND user_id = ${userId}::uuid
-        AND (in_flight_since IS NULL OR in_flight_since < now() - interval '5 minutes')
+        AND (in_flight_since IS NULL OR in_flight_since < now() - ${IN_FLIGHT_EXPIRY})
       RETURNING id, user_id
     ), acct AS (
       UPDATE ask_accounts SET conversation_count = GREATEST(0, conversation_count - 1), updated_at = now() WHERE user_id IN (SELECT user_id FROM gone) RETURNING user_id
