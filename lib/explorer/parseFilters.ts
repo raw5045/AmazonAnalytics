@@ -58,6 +58,8 @@ export const EXPLORER_DEFAULTS: ExplorerFilters = {
 export const MAX_LEAF_PATHS = 2000;
 export const MAX_LEAF_PATH_LENGTH = 256;
 export const MAX_CUSTOM_CATEGORY_IDS = 50;
+
+// Exclude-term caps (qx): up to 5 distinct whole-word terms of 3–200 chars; see parseExcludeTerms.
 export const MAX_EXCLUDE_TERMS = 5;
 export const MIN_EXCLUDE_TERM_LENGTH = 3;
 export const MAX_EXCLUDE_TERM_LENGTH = 200;

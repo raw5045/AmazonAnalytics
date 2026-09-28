@@ -367,4 +367,9 @@ describe('exclude terms (qx)', () => {
     expect(parseExplorerFilters({ qx: 'led' }).q).toBeNull();
     expect(parseExplorerFilters({ qx: 'led' }).qExclude).toEqual(['led']);
   });
+
+  it('keeps the cap across a repeated-param array boundary and keeps a term exactly at the length ceiling', () => {
+    expect(parseExcludeTerms(['one1,two2,three3', 'four4,five5,six6'])).toEqual(['one1', 'two2', 'three3', 'four4', 'five5']);
+    expect(parseExcludeTerms('x'.repeat(200))).toEqual(['x'.repeat(200)]);
+  });
 });
