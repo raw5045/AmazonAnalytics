@@ -65,6 +65,14 @@ function settings(): { apiKey: string; segmentId: string } | null {
   return { apiKey, segmentId };
 }
 
+/**
+ * A thrown error's message can embed the API key (undici's invalid-header-value
+ * TypeError quotes the whole `Bearer …` value), so never log one verbatim.
+ */
+function describeThrown(e: unknown): string {
+  return (e instanceof Error ? e.message : String(e)).replace(/re_[\w-]+/g, 're_***');
+}
+
 /** Never a real member: reserved test domains and the integration harness's synthetic users. */
 function isNotAMember(email: string): boolean {
   return isUndeliverableEmail(email) || isSyntheticTestEmail(email);
@@ -105,7 +113,7 @@ export async function addResendContact(input: { email: string; name: string | nu
     console.error(`${LOG} could not add ${input.email}:`, error);
     return 'failed';
   } catch (e) {
-    console.error(`${LOG} add threw for ${input.email}:`, e);
+    console.error(`${LOG} add threw for ${input.email}: ${describeThrown(e)}`);
     return 'failed';
   }
 }
@@ -124,13 +132,15 @@ export async function removeResendContact(email: string): Promise<RemoveContactR
     const { error } = await resend.contacts.remove({ email });
     if (!error) return 'removed';
     if (error.name === 'not_found' || error.statusCode === 404) {
-      console.warn(`${LOG} no contact to remove — already gone`);
+      // The message (no address in it) distinguishes a missing contact from a
+      // route that stopped existing — Resend's generic 404 text is the same code.
+      console.warn(`${LOG} no contact to remove — already gone (${error.message})`);
       return 'missing';
     }
     console.error(`${LOG} could not remove ${email}:`, error);
     return 'failed';
   } catch (e) {
-    console.error(`${LOG} remove threw for ${email}:`, e);
+    console.error(`${LOG} remove threw for ${email}: ${describeThrown(e)}`);
     return 'failed';
   }
 }

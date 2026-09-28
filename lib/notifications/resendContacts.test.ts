@@ -132,6 +132,16 @@ describe('addResendContact', () => {
     expect(console.error).toHaveBeenCalledTimes(1);
   });
 
+  it('never logs the API key when the client throws with it in the message', async () => {
+    mockCreate.mockRejectedValueOnce(
+      new Error('Headers.append: "Bearer re_secret_123" is an invalid header value.'),
+    );
+    expect(await addResendContact({ email: 'jane@shop.co', name: 'Jane' })).toBe('failed');
+    const logged = vi.mocked(console.error).mock.calls.flat().map(String).join(' ');
+    expect(logged).not.toContain('re_secret_123');
+    expect(logged).toContain('re_***');
+  });
+
   it('reports failed and logs on the SDK-caught network failure shape (application_error, statusCode null)', async () => {
     mockCreate.mockResolvedValueOnce(
       fail({
@@ -173,7 +183,16 @@ describe('removeResendContact', () => {
     expect(mockRemove).not.toHaveBeenCalled();
   });
 
-  it.each(['victim%40shop.co?@attacker.co', 'x#y@shop.co', '../domains/d?@attacker.co', 'a\\b@shop.co'])(
+  it.each([
+    'victim%40shop.co?@attacker.co',
+    'x#y@shop.co',
+    '../domains/d?@attacker.co',
+    'a\\b@shop.co',
+    // one character at a time, so dropping any one of them from the guard fails a test
+    'a%b@shop.co',
+    'a?b@shop.co',
+    'a/b@shop.co',
+  ])(
     'refuses to put a URL-unsafe address in the delete path (%s)',
     async (email) => {
       expect(await removeResendContact(email)).toBe('failed');
