@@ -4,7 +4,7 @@
 
 **Goal:** Let Explorer users and MCP clients exclude keywords that contain given whole words or phrases, applied inside the SQL WHERE so pages, footer totals, CSV exports and saved views all agree.
 
-**Architecture:** A new `qExclude: string[]` filter on `ExplorerFilters` (URL `qx=floor,ceiling fan`) becomes one `NOT (kcs.search_term_normalized ~ '\m…\M')` predicate per term inside `pushKcsPredicates`, which both classic query paths share (rows and the capped count); the 0046 covered path and the avg-count steering treat it as a narrowing filter and stand down; the precomputed totals do too. The MCP research contract gains `filters.excludeTerms` (same rule, same `wordPattern` helper) so Claude/ChatGPT can say "lamps but not floor lamps" and still get honest pages and totals. Whole-word only, up to 5 terms of 3+ characters, allowed without an include term. Design settled with the owner in chat on 2026-09-28.
+**Architecture:** A new `qExclude: string[]` filter on `ExplorerFilters` (URL `qx=floor,ceiling fan`) becomes one `NOT (kcs.search_term_normalized ~ '\m…\M')` predicate per term inside `pushKcsPredicates`, which both classic query paths share (rows and the capped count); the 0046 covered path and the precomputed totals treat it as a narrowing filter and stand down, while the avg-count steering deliberately stays on because a NOT offers the planner no alternative index (settled in the Task 2 review). The MCP research contract gains `filters.excludeTerms` (same rule, same `wordPattern` helper) so Claude/ChatGPT can say "lamps but not floor lamps" and still get honest pages and totals. Whole-word only, up to 5 terms of 3+ characters, allowed without an include term. Design settled with the owner in chat on 2026-09-28.
 
 **Tech Stack:** Next.js 16 App Router (client sidebar component), TypeScript, Postgres via `pg` (trigram-indexed `search_term_normalized`), zod 4 (research contract), Vitest 4 + Testing Library.
 
@@ -27,7 +27,7 @@
 |---|---|
 | `lib/explorer/types.ts` | `qExclude: string[]` on `ExplorerFilters`. |
 | `lib/explorer/parseFilters.ts` | `parseExcludeTerms()`, the `qx` URL param, `EXPLORER_DEFAULTS.qExclude`, the caps. |
-| `lib/explorer/buildQuery.ts` | The NOT predicates in `pushKcsPredicates`; `categoryPathIsCovered` and `countSteersOntoSortIndex` stand down when terms are set. |
+| `lib/explorer/buildQuery.ts` | The NOT predicates in `pushKcsPredicates`; `categoryPathIsCovered` stands down when terms are set; `countSteersOntoSortIndex` stays on (a NOT offers no alternative index). |
 | `lib/explorer/queryTotals.ts` | The three precomputed-total guards treat terms as narrowing. |
 | `lib/savedViews/validation.ts` | Blob normalisation and `filtersToSearchParams` (also feeds the CSV export via `lib/explorer/export/query.ts`). |
 | `app/(app)/explorer/FilterSidebar.tsx` | The "But not" input, pending-state round trip, the Word count move. |
@@ -157,7 +157,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - Modify: `lib/explorer/buildQuery.ts` (`categoryPathIsCovered`, `countSteersOntoSortIndex`, `pushKcsPredicates`)
 - Test: `lib/explorer/buildQuery.test.ts`
 
-Background: `pushKcsPredicates` builds the WHERE for the legacy path (q null) and the q path; both paths snapshot `countArgs` after it, so a predicate that binds its args there is present in rows AND count with the prefix invariant intact. The covered (0046) path builds its own WHERE from the covering index and cannot evaluate text predicates, so it must stand down. `countSteersOntoSortIndex` only steers on the unfiltered landing, so an exclude must switch it off too.
+Background: `pushKcsPredicates` builds the WHERE for the legacy path (q null) and the q path; both paths snapshot `countArgs` after it, so a predicate that binds its args there is present in rows AND count with the prefix invariant intact. The covered (0046) path builds its own WHERE from the covering index and cannot evaluate text predicates, so it must stand down.
+
+> **Amended after the Task 2 review (landed as b99ba2a):** `countSteersOntoSortIndex` does NOT stand down for exclude terms. Every other narrowing filter has its own index the steering ORDER BY could displace, but a NOT offers the planner no alternative, so the steered avg-index walk with a per-row NOT filter is strictly better than the seq scan it would otherwise fall back to. Step 3 item 2 below is therefore not applied, and the steering test asserts the opposite (steering stays on; a `reviewsMax` still turns it off). HEAD is authoritative over the snippets.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -327,6 +329,8 @@ git commit -m "feat(explorer): precomputed totals stand down when exclude terms 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
+> **Follow-up from the Task 3 review (landed as b903ee1):** a guard-drift test in `lib/explorer/queryTotals.test.ts` perturbs every `ExplorerFilters` field from the defaults and asserts `canUseDefaultTotal(f)` is false exactly when the perturbation changes the count SQL, so a future predicate cannot be added to `pushKcsPredicates` without its guard line. The same commit fixed two stale steering comments in `buildQuery.ts` and gave `lib/savedViews/validation.ts` an `excludeTermsInput()` helper shared by both directions (Task 4 review nits).
+
 ---
 
 ### Task 4: Saved views and the CSV export carry the terms
@@ -416,6 +420,9 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `app/(app)/explorer/FilterSidebar.tsx` (`PendingFilters`, `filtersToPending`, `pendingToParams`, the "Search term contains" `FieldGroup`, the "Word count" `FieldGroup`)
+- Modify: `app/(app)/explorer/page.tsx` — `filtersAreCustomized` gains `f.qExclude.length > 0 ||` after its `f.q !== null ||` line (found in the Task 3 review: the Reset links must show for a qx-only URL; landed with Task 5 as 28f11b9)
+
+> **Amended after the Task 5 review (landed as 07ed5f3):** the input is named by its visible "But not" label (no `aria-label`, which would have made assistive tech announce a different name), with `id="exclude-terms"` and `aria-describedby` pointing at whichever hint renders; the hint copy interpolates `MIN_EXCLUDE_TERM_LENGTH` / `MAX_EXCLUDE_TERMS` and says "Terms", not "Chunks"; a third hint warns when more than five terms are typed ("Only the first 5 terms are used."); and the sidebar's dirty signature normalises `q` (trimmed) and `qExclude` (parsed and re-joined) so an applied draft reads as "Filters applied". The test queries the textbox by the name "But not" and covers overflow, Reset and the applied state. HEAD is authoritative over the snippets below.
 - Test: `app/(app)/explorer/FilterSidebar.test.tsx`
 
 Background: the sidebar keeps a `PendingFilters` draft (strings for inputs), converts filters → pending on mount (`filtersToPending`) and pending → URL params on Apply (`pendingToParams`, then `router.replace`). The existing tests mock `next/navigation` with a hoisted `replace` spy and click the Apply button. `FieldGroup` renders its `label` prop as visible text.
@@ -598,14 +605,15 @@ describe('excludeTerms', () => {
     expect(c.args).not.toContain('%floor%');
   });
 
-  it('works without text and switches off the volume-delta count steering', () => {
+  it('works without text and keeps the volume-delta count steering on (a NOT offers no other index)', () => {
     const c = compileSearch({
       ...baseInput,
       sort: { field: 'volumeDelta', direction: 'desc' },
       filters: F({ movement: { window: '4w', metric: 'volume', delta: { gt: 0 } }, excludeTerms: ['led'] }),
     });
     expect(c.sql).toContain('NOT (kcs.search_term_normalized ~ $');
-    expect(c.countSql).not.toContain('ORDER BY');
+    expect(c.countSql).toContain('NOT (kcs.search_term_normalized ~ $');
+    expect(c.countSql).toContain('ORDER BY');
   });
 });
 ```
@@ -645,18 +653,15 @@ In `lib/research/query.ts`, in `compileSearch`, directly after the `if (f.text) 
 ```ts
   // Exclude terms: whole-word NOTs regardless of text.mode (owner decision
   // 2026-09-28; the same rule as the Explorer's qExclude). A NOT cannot use the
-  // trigram index — it is a per-row filter after the other predicates — so it
-  // also switches off the volume-delta count steering, like any narrowing filter.
+  // trigram index — it is a per-row filter after the other predicates — and it
+  // does NOT turn off the volume-delta count steering: a NOT offers the planner
+  // no alternative index (same reasoning as buildQuery's countSteersOntoSortIndex).
   for (const term of f.excludeTerms) {
     where.push(`NOT (kcs.search_term_normalized ~ ${next(wordPattern(term))})`);
   }
 ```
 
-and change the steering line to:
-
-```ts
-  const steerCount = sort.field === 'volumeDelta' && input.leaves.length === 0 && f.text === null && f.excludeTerms.length === 0;
-```
+Leave the volume-delta count steering line (`steerCount`) unchanged: exclude terms must NOT turn it off, for the same reason as the Explorer's `countSteersOntoSortIndex` (a NOT offers the planner no alternative index; the text filter's trigram index is why `f.text === null` stays in the condition).
 
 In `lib/research/catalog.ts`, in `populationRules`, directly after the `'Any bound on a metric excludes rows where that metric is null.',` entry:
 
@@ -737,7 +742,7 @@ async function main() {
       ...(leaf
         ? [{ name: 'lighting leaf + exclude led (leaf bitmap; covered path stood down)', filters: { ...EXPLORER_DEFAULTS, leafPaths: [leaf], qExclude: ['led'] } as ExplorerFilters, targets: ['rows', 'count'] as Target[] }]
         : []),
-      { name: 'avg_reviews_desc + exclude led (steering off)', filters: { ...EXPLORER_DEFAULTS, sort: 'avg_reviews_desc', qExclude: ['led'] }, targets: ['rows', 'count'] },
+      { name: 'avg_reviews_desc + exclude led (steering stays on)', filters: { ...EXPLORER_DEFAULTS, sort: 'avg_reviews_desc', qExclude: ['led'] }, targets: ['rows', 'count'] },
     ];
 
     for (const pass of ['cold', 'warm'] as const) {
