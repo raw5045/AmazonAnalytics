@@ -183,6 +183,8 @@ Drizzle: schema files under `db/schema/` for typing and queries only; the journa
 
 > **Plan amendment (Task 2, 2026-09-28):** `ask_accounts` gains `conversation_count integer NOT NULL DEFAULT 0`. neon-http has no transactions, so the five-chat cap is an atomic `UPDATE … WHERE conversation_count < 5 RETURNING` on the account row in the same statement that inserts the conversation; the advisory lock in §7 is not used. Admin metering rows are created with `access = false` and allowance 0 (admins are eligible by role, and their row only records usage).
 
+> **Plan amendment (Task 2 code review, 2026-09-28):** `ask_ledger.conversation_id` carries no foreign key (append-only audit; a chat deleted mid-answer must not abort the settlement), and `ask_ledger.created_by` gets a partial index for the SET NULL action on user deletion.
+
 ## 9. Money
 
 ### 9.1 Units

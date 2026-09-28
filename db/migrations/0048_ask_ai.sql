@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS ask_ledger (
   kind                  varchar(24) NOT NULL
                           CONSTRAINT ask_ledger_kind_check CHECK (kind IN ('allowance_reset','grant','credit','usage','adjustment','revoke')),
   amount_micro          bigint NOT NULL,
-  conversation_id       uuid REFERENCES ask_conversations(id) ON DELETE SET NULL,
+  -- no FK: append-only audit; a chat deleted mid-answer must never abort the settle (see spec §8 amendment)
+  conversation_id       uuid,
   message_id            uuid,
   model                 varchar(64),
   input_tokens          integer,
@@ -64,6 +65,8 @@ CREATE TABLE IF NOT EXISTS ask_ledger (
 CREATE INDEX IF NOT EXISTS ask_ledger_user_created_idx ON ask_ledger (user_id, created_at DESC);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS ask_ledger_created_idx ON ask_ledger (created_at);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS ask_ledger_created_by_idx ON ask_ledger (created_by) WHERE created_by IS NOT NULL;
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS ask_global_usage (
   month            date PRIMARY KEY,

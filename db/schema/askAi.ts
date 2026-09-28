@@ -1,11 +1,16 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, varchar, text, integer, bigint, boolean, date, jsonb, timestamp, index, check, unique } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, text, integer, bigint, bigserial, boolean, date, jsonb, timestamp, index, check, unique } from 'drizzle-orm/pg-core';
 import { users } from './users';
 
 /**
  * Ask AI (spec §8, migration 0048). Typing and reads only — every atomic write goes through
  * single-statement SQL in lib/ask/{ledger,conversations}.ts because neon-http has no transactions.
  * Money columns are integer micro-dollars (bigint in Postgres, read as JS numbers: well under 2^53).
+ *
+ * That JS-number mapping is Drizzle's own column read path — it does not apply to a raw
+ * `db.execute(sql\`...\`)` over neon-http, which returns `bigint` columns as strings and `date`
+ * columns as JS `Date` objects. Raw readers (lib/ask/ledger.ts) must cast explicitly: `Number(...)`
+ * for the bigint/micro-dollar columns, and `::text` in the SQL for a date column read raw.
  */
 export const askConversations = pgTable(
   'ask_conversations',
@@ -19,7 +24,7 @@ export const askConversations = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => ({ userUpdatedIdx: index('ask_conversations_user_updated_idx').on(t.userId, t.updatedAt) }),
+  (t) => ({ userUpdatedIdx: index('ask_conversations_user_updated_idx').on(t.userId, t.updatedAt.desc()) }),
 );
 export type AskConversationRow = typeof askConversations.$inferSelect;
 
@@ -49,6 +54,16 @@ export const askAccounts = pgTable('ask_accounts', {
   allowanceUsedMicro: bigint('allowance_used_micro', { mode: 'number' }).notNull().default(0),
   periodStart: date('period_start').notNull(),
   creditMicro: bigint('credit_micro', { mode: 'number' }).notNull().default(0),
+  /**
+   * Invariant: equals this member's row count in ask_conversations. Maintained only by
+   * lib/ask/conversations.ts (create and delete, Task 6) as part of the same single statement
+   * that inserts/deletes the conversation. A delete made outside that module (manual SQL, a
+   * future retention job) must repair it:
+   *   UPDATE ask_accounts a SET conversation_count = c.n FROM (
+   *     SELECT a2.user_id, count(c2.id)::int AS n FROM ask_accounts a2
+   *     LEFT JOIN ask_conversations c2 ON c2.user_id = a2.user_id GROUP BY 1
+   *   ) c WHERE c.user_id = a.user_id AND a.conversation_count <> c.n;
+   */
   conversationCount: integer('conversation_count').notNull().default(0),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -58,11 +73,12 @@ export type AskAccountRow = typeof askAccounts.$inferSelect;
 export const askLedger = pgTable(
   'ask_ledger',
   {
-    id: bigint('id', { mode: 'number' }).primaryKey().generatedByDefaultAsIdentity(),
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
     userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     kind: varchar('kind', { length: 24 }).notNull(),
     amountMicro: bigint('amount_micro', { mode: 'number' }).notNull(),
-    conversationId: uuid('conversation_id').references(() => askConversations.id, { onDelete: 'set null' }),
+    // no FK: append-only audit; a chat deleted mid-answer must never abort the settle (see spec §8 amendment)
+    conversationId: uuid('conversation_id'),
     messageId: uuid('message_id'),
     model: varchar('model', { length: 64 }),
     inputTokens: integer('input_tokens'),
@@ -77,8 +93,9 @@ export const askLedger = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    userCreatedIdx: index('ask_ledger_user_created_idx').on(t.userId, t.createdAt),
+    userCreatedIdx: index('ask_ledger_user_created_idx').on(t.userId, t.createdAt.desc()),
     createdIdx: index('ask_ledger_created_idx').on(t.createdAt),
+    createdByIdx: index('ask_ledger_created_by_idx').on(t.createdBy).where(sql`${t.createdBy} IS NOT NULL`),
     kindCheck: check('ask_ledger_kind_check', sql`${t.kind} IN ('allowance_reset','grant','credit','usage','adjustment','revoke')`),
   }),
 );
