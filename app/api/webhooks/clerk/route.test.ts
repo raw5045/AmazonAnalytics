@@ -194,7 +194,7 @@ describe('POST /api/webhooks/clerk', () => {
   });
 
   describe('user.deleted', () => {
-    const deleted = (id = 'user_del') => makeRequest({ type: 'user.deleted', data: { id, deleted: true } });
+    const deleted = () => makeRequest({ type: 'user.deleted', data: { id: 'user_del', deleted: true } });
 
     it('deletes the row and removes the Resend contact for its email', async () => {
       mockReturning.mockResolvedValueOnce([{ email: 'gone@shop.co' }]);
@@ -216,6 +216,7 @@ describe('POST /api/webhooks/clerk', () => {
       mockRemoveContact.mockResolvedValueOnce('failed');
       const res = await POST(deleted());
       expect(res.status).toBe(200);
+      expect(mockRemoveContact).toHaveBeenCalledWith('gone@shop.co');
     });
 
     it('returns 500 (so Svix retries) when the row delete itself throws, without touching Resend', async () => {
@@ -225,6 +226,18 @@ describe('POST /api/webhooks/clerk', () => {
       expect(res.status).toBe(500);
       expect(mockRemoveContact).not.toHaveBeenCalled();
       error.mockRestore();
+    });
+
+    it('awaits the removal before acknowledging', async () => {
+      mockReturning.mockResolvedValueOnce([{ email: 'gone@shop.co' }]);
+      let settle!: (v: string) => void;
+      mockRemoveContact.mockReturnValueOnce(new Promise<string>((r) => { settle = r; }));
+      let responded = false;
+      const pending = POST(deleted()).then((res) => { responded = true; return res; });
+      await vi.waitFor(() => expect(mockRemoveContact).toHaveBeenCalledWith('gone@shop.co'));
+      expect(responded).toBe(false);
+      settle('removed');
+      expect((await pending).status).toBe(200);
     });
   });
 

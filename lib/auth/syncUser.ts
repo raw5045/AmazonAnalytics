@@ -13,9 +13,9 @@ export interface SyncUserResult {
   user: User;
   /**
    * True only when THIS call inserted the row — the user's genuine first
-   * creation. Drives exactly-once side effects (the welcome email in
-   * provisionUser) across webhook retries, user.updated events, and the
-   * on-demand provisioning path racing the webhook.
+   * creation. Drives exactly-once side effects (the welcome email and the
+   * Resend contact in provisionUser) across webhook retries, user.updated
+   * events, and the on-demand provisioning path racing the webhook.
    */
   created: boolean;
 }

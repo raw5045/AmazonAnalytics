@@ -7,11 +7,14 @@ import { isUndeliverableEmail } from '@/lib/notifications/digest/recipients';
 export interface ProvisionOptions {
   /**
    * When to run the one-time signup side effects (welcome email, Resend
-   * contact). 'inline' (default): await them — right for the webhook, whose
-   * function may be frozen after it responds. 'after': schedule them with
-   * next/server's after() so they run once the response is done — right for
-   * the on-demand path, which sits inside a member's first page render and
-   * must not wait on Resend.
+   * contact). 'inline' (default): await them — right for the webhook, which
+   * must not respond while they are in flight (an un-awaited promise can be
+   * frozen with the Vercel function). 'after': schedule them with
+   * next/server's after(), which Vercel keeps alive past the response — right
+   * for the on-demand path, which sits inside a member's first page render
+   * and must not wait on Resend. Accepted trade-off, already taken for the
+   * welcome email: an after() task lost to a timeout, crash or redeploy is
+   * permanent, because the exactly-once gate closes behind it.
    */
   sideEffects?: 'inline' | 'after';
 }
@@ -39,7 +42,18 @@ export async function provisionUser(
     const email = result.user.email;
     const name = result.user.name ?? null;
     const onboard = async () => {
-      await Promise.all([sendWelcomeEmail({ to: email, name }), addResendContact({ email, name })]);
+      const outcomes = await Promise.allSettled([
+        sendWelcomeEmail({ to: email, name }),
+        addResendContact({ email, name }),
+      ]);
+      for (const o of outcomes) {
+        if (o.status === 'rejected') {
+          console.error(
+            '[provisionUser] a signup side effect threw despite its fail-soft contract:',
+            o.reason,
+          );
+        }
+      }
     };
     if (opts.sideEffects === 'after') after(onboard);
     else await onboard();

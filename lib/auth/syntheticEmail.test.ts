@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { TEST_USER_EMAIL_SQL_PATTERN, TEST_USER_PREFIXES, isSyntheticTestEmail } from './syntheticEmail';
+import {
+  TEST_USER_EMAIL_SQL_PATTERN,
+  TEST_USER_PREFIXES,
+  isSyntheticTestEmail,
+} from './syntheticEmail';
 
 describe('isSyntheticTestEmail', () => {
   it.each([
@@ -18,11 +22,17 @@ describe('isSyntheticTestEmail', () => {
     'itest_@example.com', // empty epoch
     'itest_1example.com', // no @ after the epoch
     'ITEST_1@example.com', // case-sensitive, like the SQL sweep
+    'itests_1@x.com', // the "_" must follow the prefix directly
+    'rw-1@x.com', // "-" is not "_"
+    'itest_1a@x.com', // the digits must run straight into "@"
   ])('rejects %s', (email) => {
     expect(isSyntheticTestEmail(email)).toBe(false);
   });
 
-  it('keeps the SQL sweep pattern and the prefix list in lockstep', () => {
+  // The string below is what sweepOrphanTestUsers passes to Postgres `~` to DELETE rows.
+  // Keep it free of backslashes and within syntax both engines read the same way
+  // ([0-9], not \d: Postgres \d is locale-dependent, JS \d is ASCII-only).
+  it('pins the exact Postgres pattern the production orphan sweep runs', () => {
     expect(TEST_USER_PREFIXES).toEqual(['integration', 'itest', 'rw', 'csmtest']);
     expect(TEST_USER_EMAIL_SQL_PATTERN).toBe('^(integration|itest|rw|csmtest)_[0-9]+@');
   });

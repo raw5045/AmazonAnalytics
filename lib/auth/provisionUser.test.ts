@@ -81,6 +81,29 @@ describe('provisionUser', () => {
     expect(mockAddContact).toHaveBeenCalledTimes(1);
   });
 
+  it('starts the add without waiting on the welcome, and resolves only once both settle', async () => {
+    created();
+    let releaseWelcome!: (v: boolean) => void;
+    mockWelcome.mockReturnValueOnce(new Promise<boolean>((r) => { releaseWelcome = r; }));
+    let settled = false;
+    const p = provisionUser(input).then(() => { settled = true; });
+    await vi.waitFor(() => expect(mockAddContact).toHaveBeenCalledTimes(1)); // concurrent, not sequential
+    expect(settled).toBe(false); // the webhook must not acknowledge early
+    releaseWelcome(true);
+    await p;
+    expect(settled).toBe(true);
+  });
+
+  it('never rejects, and still runs the other side effect, when one throws despite its contract', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    created();
+    mockWelcome.mockRejectedValueOnce(new Error('boom'));
+    await expect(provisionUser(input)).resolves.toMatchObject({ created: true });
+    expect(mockAddContact).toHaveBeenCalledTimes(1);
+    expect(error).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
+
   it('refuses an empty email without syncing', async () => {
     await expect(provisionUser({ clerkUserId: 'user_3', email: '', name: null })).rejects.toThrow(/email/);
     expect(mockSync).not.toHaveBeenCalled();

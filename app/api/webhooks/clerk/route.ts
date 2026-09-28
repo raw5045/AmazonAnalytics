@@ -24,8 +24,15 @@ interface ClerkSessionData {
   user_id: string;
 }
 
+/** Clerk's user.deleted payload carries no addresses — never pass it to extractEmail. */
+interface ClerkDeletedUserData {
+  id: string;
+  deleted?: boolean;
+}
+
 type ClerkEvent =
-  | { type: 'user.created' | 'user.updated' | 'user.deleted'; data: ClerkUserData }
+  | { type: 'user.created' | 'user.updated'; data: ClerkUserData }
+  | { type: 'user.deleted'; data: ClerkDeletedUserData }
   | { type: 'session.created'; data: ClerkSessionData };
 
 function extractEmail(data: ClerkUserData): string {
@@ -76,9 +83,10 @@ export async function POST(req: Request): Promise<Response> {
         .set({ lastLoginAt: new Date() })
         .where(eq(users.clerkUserId, event.data.user_id));
     } else if (event.type === 'user.created' || event.type === 'user.updated') {
-      // provisionUser = atomic upsert + one-time welcome email, exactly once
-      // across this webhook, its Svix retries, and getCurrentUser's on-demand
-      // provisioning (whichever call inserts the row sends the email).
+      // provisionUser = atomic upsert + the one-time signup side effects
+      // (welcome email, Resend contact), exactly once across this webhook,
+      // its Svix retries, and getCurrentUser's on-demand provisioning
+      // (whichever call inserts the row runs them).
       const email = extractEmail(event.data);
       if (!email) {
         // Nothing to provision without an address, and a Svix retry can't
@@ -91,9 +99,10 @@ export async function POST(req: Request): Promise<Response> {
       await provisionUser({ clerkUserId: event.data.id, email, name: extractName(event.data) });
     } else if (event.type === 'user.deleted') {
       // FK cleanup on user delete (verified Batch 4): saved_views,
-      // watchlist_items, weekly_digest_sends, custom_categories CASCADE and
-      // weekly_digest_runs.triggered_by SETs NULL — so a REGULAR user deletes
-      // cleanly. The 5 admin-provenance refs (audit_log, app_settings,
+      // watchlist_items, weekly_digest_sends, custom_categories,
+      // mcp_connections, research_usage_buckets and user_activity_daily
+      // CASCADE, and weekly_digest_runs.triggered_by SETs NULL — so a REGULAR
+      // user deletes cleanly. The 5 admin-provenance refs (audit_log, app_settings,
       // fake_volume_rules, upload_batches, schema_versions) are ON DELETE
       // RESTRICT by design (preserve history), so deleting an ADMIN who owns
       // such rows throws 23503 → caught below → 500 → Clerk retries. Accepted:
@@ -104,9 +113,10 @@ export async function POST(req: Request): Promise<Response> {
         .delete(users)
         .where(eq(users.clerkUserId, event.data.id))
         .returning({ email: users.email });
-      // The member is gone: drop their Resend contact too. Fail-soft — a
-      // Resend hiccup is logged, never a 500 (the row is already deleted, so
-      // a Svix retry could not recover the email anyway).
+      // The member is gone: drop their Resend contact too. DB first, so a DB
+      // failure leaves Resend untouched and the Svix retry redoes both steps.
+      // Fail-soft — a Resend hiccup is logged, never a 500 (the row is already
+      // deleted, so a retry could not recover the email anyway).
       if (gone) await removeResendContact(gone.email);
     }
   } catch (e) {
