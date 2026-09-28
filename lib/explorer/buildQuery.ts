@@ -147,6 +147,7 @@ export function categoryPathIsCovered(filters: ExplorerFilters): boolean {
   return (
     filters.leafPaths.length > 0
     && filters.q === null
+    && filters.qExclude.length === 0
     && filters.jump === null
     && filters.category === null
     && filters.titleMatchMode === null
@@ -412,6 +413,7 @@ export function countSteersOntoSortIndex(f: ExplorerFilters): boolean {
   if (sortNullKeyColumn(f.sort) === null) return false;
   return (
     f.q === null &&
+    f.qExclude.length === 0 &&
     f.rankMin === null && f.rankMax === null &&
     f.volMin === null && f.volMax === null &&
     f.reviewsMin === null && f.reviewsMax === null &&
@@ -523,6 +525,16 @@ function pushKcsPredicates(
   }
   if (filters.category) {
     where.push(`kcs.top_clicked_category_1_current = ${next(filters.category)}`);
+  }
+  // Exclude terms (owner decision 2026-09-28): one whole-word NOT per term, so a
+  // keyword is dropped if it contains ANY of them. Always whole-word regardless
+  // of qMode (the include's Broad toggle does not apply). Pushed here so both
+  // classic paths carry it in rows AND the capped count; a NOT cannot use the
+  // trigram index, it is a per-row filter after the other predicates. The
+  // covered path stands down (categoryPathIsCovered) and so does the avg-count
+  // steering (countSteersOntoSortIndex) — a narrowing filter like any other.
+  for (const term of filters.qExclude) {
+    where.push(`NOT (kcs.search_term_normalized ~ ${next(wordPattern(term))})`);
   }
   const leafPath = leafPathPredicate(filters, next);
   if (leafPath) where.push(leafPath);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered, rankSortUsesVolumeWalk, sortNullKeyColumn, sortHidesRows } from './buildQuery';
+import { buildExplorerQuery, sortUsesVolumeDelta, volumeDeltaEligibility, volumeDeltaExpr, wordCountExpr, categoryPathIsCovered, rankSortUsesVolumeWalk, sortNullKeyColumn, sortHidesRows, countSteersOntoSortIndex } from './buildQuery';
 import { EXPLORER_DEFAULTS } from './parseFilters';
 import type { ExplorerFilters, WindowKey } from './types';
 
@@ -994,5 +994,57 @@ describe('count steering onto the avg index (unfiltered landing under an avg sor
     const r = buildExplorerQuery({ ...baseFilters, sort: 'avg_price_desc', q: 'lamp' });
     expect(r.countFromRows).toBe(true);
     expect(norm(r.countSql)).not.toContain('ORDER BY kcs.avg_price_cents DESC LIMIT 10001');
+  });
+});
+
+describe('exclude terms (qExclude)', () => {
+  const NOT_PREDICATE = /NOT \(kcs\.search_term_normalized ~ \$\d+\)/g;
+
+  it('legacy path: one whole-word NOT predicate per term, in rows AND count, binding shared args', () => {
+    const { sql, countSql, args, countArgs } = buildExplorerQuery({ ...baseFilters, qExclude: ['floor', 'ceiling fan'] });
+    expect(norm(sql).match(NOT_PREDICATE)).toHaveLength(2);
+    expect(norm(countSql).match(NOT_PREDICATE)).toHaveLength(2);
+    expect(args).toContain('\\mfloor\\M');
+    expect(args).toContain('\\mceiling fan\\M');
+    expect(countArgs).toEqual(args.slice(0, countArgs.length));
+  });
+
+  it('q path: the excludes sit next to the include match and the count comes from the rows window', () => {
+    const r = buildExplorerQuery({ ...baseFilters, q: 'lamp', qExclude: ['floor'] });
+    expect(norm(r.sql)).toContain('kcs.search_term_normalized ~ $');
+    expect(norm(r.sql).match(NOT_PREDICATE)).toHaveLength(1);
+    expect(r.args).toContain('\\mlamp\\M');
+    expect(r.args).toContain('\\mfloor\\M');
+    expect(r.countFromRows).toBe(true);
+  });
+
+  it('stays whole-word even when the include is broad', () => {
+    const { args } = buildExplorerQuery({ ...baseFilters, q: 'lamp', qMode: 'broad', qExclude: ['floor'] });
+    expect(args).toContain('%lamp%');
+    expect(args).toContain('\\mfloor\\M');
+    expect(args).not.toContain('%floor%');
+  });
+
+  it('takes the covered category path out of play (the covering index cannot evaluate text)', () => {
+    const scoped = { ...baseFilters, leafPaths: ['Tools › Lighting › Lamps'], sort: 'rank' as const };
+    expect(categoryPathIsCovered(scoped)).toBe(true);
+    expect(categoryPathIsCovered({ ...scoped, qExclude: ['floor'] })).toBe(false);
+    const { sql } = buildExplorerQuery({ ...scoped, qExclude: ['floor'] });
+    expect(norm(sql).match(NOT_PREDICATE)).toHaveLength(1);
+  });
+
+  it('switches off the avg-sort count steering, like every other narrowing filter', () => {
+    expect(countSteersOntoSortIndex({ ...baseFilters, sort: 'avg_price_desc' })).toBe(true);
+    expect(countSteersOntoSortIndex({ ...baseFilters, sort: 'avg_price_desc', qExclude: ['floor'] })).toBe(false);
+    const { countSql } = buildExplorerQuery({ ...baseFilters, sort: 'avg_price_desc', qExclude: ['floor'] });
+    expect(norm(countSql)).not.toContain('ORDER BY');
+  });
+
+  it('binds nothing when the list is empty (existing shapes are byte-for-byte unchanged)', () => {
+    const before = buildExplorerQuery(baseFilters);
+    const after = buildExplorerQuery({ ...baseFilters, qExclude: [] });
+    expect(after.sql).toBe(before.sql);
+    expect(after.countSql).toBe(before.countSql);
+    expect(after.args).toEqual(before.args);
   });
 });
