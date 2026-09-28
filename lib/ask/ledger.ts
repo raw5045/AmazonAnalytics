@@ -66,13 +66,19 @@ export async function ensureAccount(userId: string, now: Date, opts: { access: b
  * the period, writing an allowance_reset entry — all in one statement. Returns the (possibly
  * unchanged) account, or null when there is no row.
  *
- * The final SELECT recomputes allowance_used_micro/period_start with the same CASE/GREATEST logic
- * the `due` CTE's UPDATE uses, instead of reading them back from ask_accounts: per Postgres docs
- * 7.8.4, every statement in a WITH query — including the primary query — runs against the SAME
- * snapshot taken at the start of the overall statement, so a plain `SELECT ... FROM ask_accounts`
- * here would be blind to `due`'s own UPDATE and return last month's stale allowance_used_micro/
- * period_start right after the reset (the bug this fixes: a caller gating on this result — Task
- * 8's gate — would wrongly refuse a member on their first question of a new month).
+ * The final SELECT mirrors `due`'s WHERE/SET — CASE WHEN period_start < month THEN 0 ELSE
+ * allowance_used_micro END, GREATEST(period_start, month) — instead of reading
+ * allowance_used_micro/period_start back from ask_accounts. Two reasons this form is required, not
+ * just tidier: (1) per Postgres docs 7.8.4, every statement in a WITH query — including the
+ * primary query — runs against the SAME snapshot taken at the start of the overall statement, so a
+ * plain `SELECT ... FROM ask_accounts` here would be blind to `due`'s own UPDATE and return last
+ * month's stale values right after the reset (the bug this fixes: a caller gating on this result —
+ * Task 8's gate — would wrongly refuse a member on their first question of a new month); (2) it is
+ * also correct for a caller that loses a race against a concurrent resetPeriodIfDue for the same
+ * user — its own snapshot may predate the winner's commit, but comparing the (possibly stale)
+ * period_start against the same `month` literal still derives the right answer, unlike trusting
+ * the raw column. Both reasons are why this mirrored form is preferred over re-reading the row
+ * after the statement.
  */
 export async function resetPeriodIfDue(userId: string, now: Date): Promise<AskAccount | null> {
   const month = monthStartUtc(now);
@@ -106,7 +112,7 @@ export interface SettleResult {
  * bare VALUES), so it only runs when `upd` actually produced a row. Without that, a data-modifying
  * CTE always runs to completion regardless of the other CTEs, so a missing account would still
  * bump the global counter even though the statement correctly returns no row and the caller
- * correctly sees "no ask_accounts row" — a real cost silently double-counted against no one.
+ * correctly sees "no ask_accounts row" — a real cost silently counted against no one.
  *
  * NOT idempotent — never retry a settle. An error thrown after this statement has committed (e.g.
  * the connection drops while the driver is still reading back the response) may already have
@@ -232,9 +238,9 @@ export async function markCeilingAlert(month: string, level: 80 | 100, now: Date
 
 /**
  * Admin page: the sum of remaining allowances of accounts with access. Admin metering rows are
- * NOT excluded here (unlike countMemberAccountsWithAccess below) — this is a raw money total, not
- * a member headcount. Treats a stale period as fully remaining (the lazy reset has not run for
- * them yet).
+ * created with access = false (see ensureAccount), so `WHERE access = true` already excludes them
+ * without any special-casing here — what this counts is any account explicitly granted access,
+ * admin or not. Treats a stale period as fully remaining (the lazy reset has not run for them yet).
  */
 export async function sumRemainingAllowances(now: Date): Promise<number> {
   const month = monthStartUtc(now);

@@ -11,7 +11,11 @@ import { createTestUser, deleteTestUser } from './helpers';
 // later run's "exact totals" assertions.
 const TEST_MONTHS = ['2030-03-01', '2031-01-01'];
 async function clearTestGlobalUsageMonths() {
-  await db.execute(sql`DELETE FROM ask_global_usage WHERE month = ANY(${TEST_MONTHS}::date[])`);
+  // Not `= ANY(${TEST_MONTHS}::date[])`: drizzle renders an interpolated JS array as a
+  // parenthesised list, so that would become `ANY(($1, $2)::date[])` — a row constructor, which
+  // Postgres refuses to cast to date[] ("cannot cast type record to date[]"). `IN` renders the
+  // same parenthesised list as a plain `IN (...)`, which is exactly what that list means here.
+  await db.execute(sql`DELETE FROM ask_global_usage WHERE month IN ${TEST_MONTHS}`);
 }
 
 describe('ask ledger (integration, real Postgres)', () => {

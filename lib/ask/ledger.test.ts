@@ -44,13 +44,16 @@ describe('ledger', () => {
     expect(a?.allowanceUsedMicro).toBe(0);
     expect(sqlOf()).toContain('period_start < ');
     expect(sqlOf()).toContain("'allowance_reset'");
-    // A data-modifying CTE's effects are invisible to the primary query's own snapshot (Postgres
-    // docs 7.8.4), so the final SELECT must recompute allowance_used_micro/period_start with the
-    // same CASE/GREATEST logic the `due` CTE's UPDATE used, rather than reading them back from
-    // ask_accounts — a plain re-read would return last month's stale values right after the reset.
-    // This is only pinned at the SQL-text level: the mock just returns whatever row it's given, so
-    // it can't prove the CASE logic is correct at runtime — the integration test is the real proof.
+    // The final SELECT mirrors `due`'s WHERE/SET rather than reading allowance_used_micro/
+    // period_start back from ask_accounts: per Postgres docs 7.8.4 a data-modifying CTE's effects
+    // are invisible to the primary query's own snapshot, so a plain re-read would return last
+    // month's stale values right after the reset — and the same mirrored form is also correct for
+    // a caller that loses a race against a concurrent reset for the same user, since its snapshot
+    // may predate the winner's commit. This is only pinned at the SQL-text level: the mock just
+    // returns whatever row it's given, so it can't prove the CASE logic is correct at runtime —
+    // the integration test is the real proof.
     expect(sqlOf()).toContain('CASE WHEN period_start <');
+    expect(sqlOf()).toContain('GREATEST(period_start, ');
   });
   it('settleTurn is one statement: split, update, ledger, global counter', async () => {
     execute.mockResolvedValueOnce({ rows: [{ from_allowance: '24500', from_credit: '0', global_cost_micro: '124500', global_questions: 7 }] });
