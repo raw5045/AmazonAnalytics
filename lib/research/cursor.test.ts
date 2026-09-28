@@ -105,6 +105,13 @@ describe('verifyCursor field hardening beyond the base spec', () => {
     rejects({ req: { schemaVersion: 1, pageSize: 999 } });
   });
 
+  it('verifies a cursor minted before excludeTerms existed, defaulting req.filters.excludeTerms to [] (compileSearch\'s for…of stays safe)', () => {
+    const legacyFilters: Record<string, unknown> = { ...payload.req.filters };
+    delete legacyFilters.excludeTerms;
+    const result = verifyCursor(sign({ req: { ...payload.req, filters: legacyFilters } }), 'secret-a', NOW);
+    expect(result.req.filters.excludeTerms).toEqual([]);
+  });
+
   it('rejects a tm that is not an object, or whose kind is not one of the three documented TotalMatches kinds', () => {
     rejects({ tm: 'exact' });
     rejects({ tm: null });

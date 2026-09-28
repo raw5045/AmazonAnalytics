@@ -384,7 +384,8 @@ export function FilterSidebar({
         ) : (
           <p id="exclude-terms-hint" className="text-xs text-gray-500 mt-1">
             Drops keywords containing any of these whole words or phrases. Up to {MAX_EXCLUDE_TERMS}, comma-separated,{' '}
-            {MIN_EXCLUDE_TERM_LENGTH}+ characters each; works with or without a search term.
+            {MIN_EXCLUDE_TERM_LENGTH}+ characters each; works with or without a search term. Exact words only:
+            &ldquo;lamp&rdquo; does not drop &ldquo;lamps&rdquo;, so list each form.
           </p>
         )}
       </FieldGroup>

@@ -227,25 +227,27 @@ describe('mapSearchRow', () => {
 });
 
 describe('compileSearch — every filter kind at once (M3)', () => {
-  it('pins the full args order across text, broadCategory, two leaves, titleGap, a volume-movement delta, and severities', () => {
+  it('pins the full args order across text, excludeTerms, broadCategory, two leaves, titleGap, a volume-movement delta, and severities', () => {
     const c = compileSearch({
       ...base,
       leaves: ['A › B', 'A › C'],
       filters: F({
         text: { value: 'Hair Oil' },
+        excludeTerms: ['floor'],
         broadCategory: 'Beauty',
         titleGap: { slots: [1, 3] },
         movement: { window: '4w', metric: 'volume', delta: { gt: 0 } },
         severities: ['critical'],
       }),
     });
-    expect(c.args).toEqual(['2026-09-12', '\\mhair oil\\M', 'Beauty', 'A › B', 'A › C', 0, 'critical', 51, 0]);
+    expect(c.args).toEqual(['2026-09-12', '\\mhair oil\\M', '\\mfloor\\M', 'Beauty', 'A › B', 'A › C', 0, 'critical', 51, 0]);
     const s = norm(c.sql);
     expect(s).toContain('kcs.search_term_normalized ~ $2');
-    expect(s).toContain('kcs.top_clicked_category_1_current = $3');
-    expect(s).toContain('kcs.top_clicked_category_path IN ($4, $5)');
-    expect(s).toContain(`${ELIG_4W} AND kcs.rank_4w_ago IS NOT NULL AND ${DELTA_4W} > $6`);
-    expect(s).toContain('kcs.fake_volume_severity_current IN ($7)');
+    expect(s).toContain('NOT (kcs.search_term_normalized ~ $3)');
+    expect(s).toContain('kcs.top_clicked_category_1_current = $4');
+    expect(s).toContain('kcs.top_clicked_category_path IN ($5, $6)');
+    expect(s).toContain(`${ELIG_4W} AND kcs.rank_4w_ago IS NOT NULL AND ${DELTA_4W} > $7`);
+    expect(s).toContain('kcs.fake_volume_severity_current IN ($8)');
     expect(s).toContain('(kcs.keyword_in_title_1_loose_current = false OR kcs.keyword_in_title_3_loose_current = false)');
   });
 });

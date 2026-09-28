@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_EXCLUDE_TERM_LENGTH, MAX_EXCLUDE_TERMS, MIN_EXCLUDE_TERM_LENGTH } from '@/lib/explorer/parseFilters';
 import { ResearchError, invalidCursorError } from './errors';
 import type { ResearchLimits } from './limits';
 
@@ -173,12 +174,12 @@ export const movementSchema = z
 export const filtersSchema = z.strictObject({
   text: textFilterSchema.nullable().default(null),
   excludeTerms: z
-    .array(z.string().trim().min(3, 'each exclude term needs at least 3 characters').max(200))
-    .max(5, 'excludeTerms allows at most 5 terms')
-    .refine((t) => new Set(t.map((s) => s.toLowerCase())).size === t.length, 'excludeTerms must be distinct')
+    .array(z.string().trim().min(MIN_EXCLUDE_TERM_LENGTH, `each exclude term needs at least ${MIN_EXCLUDE_TERM_LENGTH} characters`).max(MAX_EXCLUDE_TERM_LENGTH))
+    .max(MAX_EXCLUDE_TERMS, `excludeTerms allows at most ${MAX_EXCLUDE_TERMS} terms`)
+    .refine((t) => new Set(t.map((s) => s.toLowerCase())).size === t.length, 'excludeTerms must be distinct (case-insensitive)')
     .default([])
     .describe(
-      'Whole words or phrases a keyword must NOT contain (up to 5, 3+ characters each); a keyword is dropped if it contains any of them. Works with or without text and combines with every other filter (AND).',
+      `Whole words or phrases a keyword must NOT contain (up to ${MAX_EXCLUDE_TERMS}, ${MIN_EXCLUDE_TERM_LENGTH}+ characters each); a keyword is dropped if it contains any of them. Works with or without text and combines with every other filter (AND). Exact whole words: 'lamp' does not drop 'lamps'; list each form you want excluded.`,
     ),
   estimatedMonthlySearches: nonNegativeRange.nullable().default(null),
   averageReviews: integerRange(0, INT4_MAX).nullable().default(null),

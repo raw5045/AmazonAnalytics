@@ -148,6 +148,9 @@ describe('research tools over an in-memory MCP connection', () => {
     const movementDescription = movementNode.description ?? movementNode.anyOf?.find((v) => v.description)?.description;
     expect(movementDescription).toBeTruthy();
 
+    // excludeTerms' published schema carries the whole-word disclosure (Task 6 review).
+    expect(filtersNode.properties.excludeTerms).toMatchObject({ type: 'array', maxItems: 5, description: expect.stringContaining('whole words') });
+
     // Cap text is built from the operating constants, not hand-copied numerals.
     expect(search.description).toContain(String(PAGE_SIZE_MAX));
     expect(search.description).toContain(COUNT_CAP.toLocaleString('en-US'));
