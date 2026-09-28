@@ -32,3 +32,4 @@ export * from './userActivityDaily';
 export * from './appActivityDaily';
 export * from './researchUsageBuckets';
 export * from './mcpConnections';
+export * from './askAi';

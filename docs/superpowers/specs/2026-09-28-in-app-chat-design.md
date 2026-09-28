@@ -181,6 +181,8 @@ CREATE TABLE ask_global_usage (
 
 Drizzle: schema files under `db/schema/` for typing and queries only; the journal stays frozen (no `db:generate`/`db:migrate`). The untracked `scripts/applyMigration0048.ts` follows the 0047 pattern (guarded by an explicit env, asserts the tables afterwards).
 
+> **Plan amendment (Task 2, 2026-09-28):** `ask_accounts` gains `conversation_count integer NOT NULL DEFAULT 0`. neon-http has no transactions, so the five-chat cap is an atomic `UPDATE … WHERE conversation_count < 5 RETURNING` on the account row in the same statement that inserts the conversation; the advisory lock in §7 is not used. Admin metering rows are created with `access = false` and allowance 0 (admins are eligible by role, and their row only records usage).
+
 ## 9. Money
 
 ### 9.1 Units
