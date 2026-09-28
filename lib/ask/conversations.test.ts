@@ -23,9 +23,9 @@ describe('conversations', () => {
     const long = 'a'.repeat(80);
     expect(titleFrom(long)).toBe('a'.repeat(60) + '…');
     expect(titleFrom('')).toBe('New chat');
-    // A cut that lands inside a surrogate pair would produce a lone surrogate, which the Neon HTTP
-    // driver cannot send (a 500 on a member's first send) — cutting by Array.from's code points
-    // keeps the emoji whole instead of splitting it.
+    // A cut that lands inside a surrogate pair would produce a lone surrogate: a lone surrogate
+    // cannot be stored as UTF-8; expect the statement to be rejected. Cutting by Array.from's code
+    // points keeps the emoji whole instead of splitting it.
     expect(titleFrom('a'.repeat(59) + '🔦 lights')).toBe('a'.repeat(59) + '🔦…');
   });
   it('lists newest first, scoped to the owner', async () => {
@@ -58,12 +58,20 @@ describe('conversations', () => {
     expect(sqlOf(1)).toContain('ORDER BY seq DESC LIMIT $2');
     expect(paramsOf(1)).toContain(2);
   });
+  it('loadConversation rejects a non-positive or non-integer lastN before any DB call', async () => {
+    await expect(loadConversation('u1', 'c1', { lastN: 0 })).rejects.toThrow(/positive safe integer/);
+    await expect(loadConversation('u1', 'c1', { lastN: 1.5 })).rejects.toThrow(/positive safe integer/);
+    expect(execute).not.toHaveBeenCalled();
+  });
   it('creates the conversation and its first message in one already-locked statement, bounded by conversation_count < 5', async () => {
     execute.mockResolvedValueOnce({ rows: [{ id: 'c9' }] });
     await expect(createConversationWithFirstMessage({ userId: 'u1', model: 'claude-opus-5-5', message: userMsg, now: new Date() })).resolves.toEqual({ conversationId: 'c9' });
     const s = sqlOf();
     expect(s).toContain('conversation_count < 5');
     expect(s).toContain('message_count, in_flight_since, created_at, updated_at');
+    // Pins the created-locked value itself: message_count 1, in_flight_since set from the DB's own
+    // now() (not a bound parameter), then the bound created_at timestamptz right after it.
+    expect(s).toContain('1, now(), $4::timestamptz');
     expect(s).toContain('INSERT INTO ask_conversations');
     expect(s).toContain('INSERT INTO ask_messages');
     expect(execute).toHaveBeenCalledTimes(1);

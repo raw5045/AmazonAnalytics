@@ -33,7 +33,7 @@ const CONV_COLUMNS = sql.raw('id, user_id, title, model, message_count, in_fligh
 /** Spec §7: a stale in-flight flag (the route crashed mid-turn) expires this long after it was set. */
 const IN_FLIGHT_EXPIRY = sql.raw(`interval '${ASK_LIMITS.inFlightExpiryMinutes} minutes'`);
 
-/** Collapses whitespace and cuts by Unicode code point (never mid-surrogate-pair — a lone surrogate is invalid UTF-8 and the Neon HTTP driver rejects it outright). */
+/** Collapses whitespace and cuts by Unicode code point (never mid-surrogate-pair — a lone surrogate cannot be stored as UTF-8; expect the statement to be rejected). */
 export function titleFrom(text: string): string {
   const t = text.replace(/\s+/g, ' ').trim();
   if (!t) return 'New chat';
@@ -52,9 +52,12 @@ export async function listConversations(userId: string): Promise<AskConversation
 
 /** Full history by default; pass `lastN` (Task 8 uses `ASK_LIMITS.historyWindowMessages`) to fetch only the newest N messages — the route's history window, not the page's, which always loads everything. */
 export async function loadConversation(userId: string, id: string, opts?: { lastN?: number }): Promise<{ conversation: AskConversation; messages: AskUIMessage[] } | null> {
+  const lastN = opts?.lastN;
+  if (lastN !== undefined && (!Number.isSafeInteger(lastN) || lastN <= 0)) {
+    throw new Error('loadConversation: lastN must be a positive safe integer');
+  }
   const c = await db.execute<ConvRow>(sql`SELECT ${CONV_COLUMNS} FROM ask_conversations WHERE id = ${id}::uuid AND user_id = ${userId}::uuid`);
   if (!c.rows[0]) return null;
-  const lastN = opts?.lastN;
   const m = lastN
     ? await db.execute<StoredMessage>(sql`SELECT id, seq, role, parts, status FROM ask_messages WHERE conversation_id = ${id}::uuid ORDER BY seq DESC LIMIT ${lastN}`)
     : await db.execute<StoredMessage>(sql`SELECT id, seq, role, parts, status FROM ask_messages WHERE conversation_id = ${id}::uuid ORDER BY seq`);

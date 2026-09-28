@@ -20,6 +20,14 @@ describe('ask conversations (integration, real Postgres)', () => {
     expect(results.filter((r) => r === 'cap')).toHaveLength(3);
     expect((await listConversations(userId))).toHaveLength(5);
     expect((await getAccount(userId))!.conversationCount).toBe(5);
+
+    // Every chat from createConversationWithFirstMessage is born locked (in_flight_since = now()),
+    // so it cannot be re-acquired or deleted until its first turn's onEnd releases it.
+    const created = results.filter((r): r is { conversationId: string } => r !== 'cap');
+    expect(await acquireTurnLock(userId, created[0].conversationId)).toBe(false); // born locked
+    expect(await deleteConversation(userId, created[0].conversationId)).toBe('busy');
+    for (const c of created) await releaseTurnLock(c.conversationId); // as the first turn's onEnd would
+
     const first = (await listConversations(userId))[0];
     expect(await deleteConversation(userId, first.id)).toBe('deleted');
     expect((await getAccount(userId))!.conversationCount).toBe(4);

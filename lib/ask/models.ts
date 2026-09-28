@@ -2,6 +2,7 @@
  * Env-free constants shared with client components; never import @/lib/env here.
  */
 
+/** Removing an id here requires migrating every `ask_conversations.model` that still references it in the same deploy — `lib/ask/conversations.ts`'s `toConv` throws on a stored model this list no longer recognizes, rather than silently passing it through. */
 export const ASK_MODELS = [
   { id: 'claude-sonnet-5', label: 'Standard (Sonnet 5)', note: null },
   { id: 'claude-opus-5-5', label: 'Advanced (Opus 5.5)', note: 'uses about twice the usage' },
