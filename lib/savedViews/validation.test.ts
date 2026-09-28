@@ -142,3 +142,19 @@ describe('search-volume range round-trip', () => {
     expect(filtersToSearchParams({ rankMax: 5 })).not.toHaveProperty('vol_max');
   });
 });
+
+describe('exclude terms in saved views', () => {
+  it('rehydrates a stored list through the same parser as the URL (trim, min length, cap)', () => {
+    expect(normalizeFiltersBlob({ qExclude: [' floor ', 'ab', 'ceiling fan'] }).qExclude).toEqual(['floor', 'ceiling fan']);
+    expect(normalizeFiltersBlob({ qExclude: 'floor,led' }).qExclude).toEqual(['floor', 'led']);
+  });
+  it('treats a pre-existing view without the field as no exclusions', () => {
+    expect(normalizeFiltersBlob({ q: 'lamp' }).qExclude).toEqual([]);
+    expect(normalizeFiltersBlob({ qExclude: 42 }).qExclude).toEqual([]);
+  });
+  it('serialises the terms as one comma-joined qx param, and omits it when empty', () => {
+    expect(filtersToSearchParams({ qExclude: ['floor', 'ceiling fan'] }).qx).toBe('floor,ceiling fan');
+    expect(filtersToSearchParams({ qExclude: [] }).qx).toBeUndefined();
+    expect(filtersToSearchParams({ q: 'lamp' }).qx).toBeUndefined();
+  });
+});

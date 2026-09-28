@@ -75,6 +75,12 @@ describe('filtersToQueryString', () => {
     expect(params.has('page')).toBe(false);
     expect(params.has('per_page')).toBe(false);
   });
+
+  it('carries the exclude terms into the export query string', () => {
+    const qs = new URLSearchParams(filtersToQueryString({ ...EXPLORER_DEFAULTS, q: 'lamp', qExclude: ['floor', 'ceiling fan'] }));
+    expect(qs.get('q')).toBe('lamp');
+    expect(qs.get('qx')).toBe('floor,ceiling fan');
+  });
 });
 
 describe('search-volume range in the export query string', () => {

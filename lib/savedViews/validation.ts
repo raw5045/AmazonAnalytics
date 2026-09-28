@@ -6,7 +6,7 @@
  * the default in that function, so we don't need separate schema
  * validation. Name validation is straightforward.
  */
-import { parseExplorerFilters, type SearchParamsLike } from '@/lib/explorer/parseFilters';
+import { parseExplorerFilters, parseExcludeTerms, type SearchParamsLike } from '@/lib/explorer/parseFilters';
 import type { ExplorerFilters } from '@/lib/explorer/types';
 import { findJumpPreset } from '@/lib/explorer/jumpPresets';
 
@@ -77,8 +77,15 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     q: typeof f.q === 'string' ? f.q : null,
     // Default to whole-word for views saved before qMode existed.
     qMode: f.qMode === 'broad' ? 'broad' : 'word',
-    // Placeholder until Task 4 maps the stored exclude-terms field.
-    qExclude: [],
+    // Stored as an array; run it through the URL parser so a hand-edited or
+    // pre-cap blob still obeys the same trim / min-length / cap rules.
+    qExclude: parseExcludeTerms(
+      Array.isArray(f.qExclude)
+        ? (f.qExclude as unknown[]).filter((t): t is string => typeof t === 'string')
+        : typeof f.qExclude === 'string'
+          ? f.qExclude
+          : undefined,
+    ),
     rankMin: typeof f.rankMin === 'number' ? f.rankMin : null,
     rankMax: typeof f.rankMax === 'number' ? f.rankMax : null,
     volMin: typeof f.volMin === 'number' ? f.volMin : null,
@@ -114,6 +121,7 @@ export function filtersToSearchParams(f: Partial<ExplorerFilters> | Record<strin
   if (typeof f.window === 'string') p.window = f.window;
   if (typeof f.q === 'string' && f.q.length > 0) p.q = f.q;
   if (f.qMode === 'broad') p.qmode = 'broad';
+  if (Array.isArray(f.qExclude) && f.qExclude.length > 0) p.qx = (f.qExclude as string[]).join(',');
   if (typeof f.rankMin === 'number') p.rank_min = String(f.rankMin);
   if (typeof f.rankMax === 'number') p.rank_max = String(f.rankMax);
   if (typeof f.volMin === 'number') p.vol_min = String(f.volMin);
