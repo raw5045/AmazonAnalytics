@@ -1,0 +1,53 @@
+import { describe, it, expect, afterAll } from 'vitest';
+import { sql } from 'drizzle-orm';
+import { db } from '@/db/client';
+import { ensureAccount, settleTurn, getAccount, balanceMicro, resetPeriodIfDue, grantAccess, addCredit } from '@/lib/ask/ledger';
+import { createTestUser, deleteTestUser } from './helpers';
+
+// Run (owner-gated, after migration 0048 is applied): cross-env RUN_INTEGRATION=1 pnpm vitest run tests/integration/askLedger.test.ts
+describe('ask ledger (integration, real Postgres)', () => {
+  let userId: string | undefined;
+  afterAll(async () => { await deleteTestUser(userId); });
+
+  it('settles concurrent turns atomically: allowance first, then credit, overshoot absorbed', async () => {
+    userId = (await createTestUser('itest')).id;
+    const now = new Date('2030-03-15T00:00:00Z');
+    await grantAccess({ userId, allowanceMicro: 100, adminId: userId, now });
+    await addCredit({ userId, amountMicro: 50, adminId: userId, note: 'test', now });
+    const conv = await db.execute<{ id: string }>(sql`INSERT INTO ask_conversations (user_id, title, model) VALUES (${userId}::uuid, 't', 'claude-sonnet-5') RETURNING id`);
+    const conversationId = conv.rows[0].id;
+    const usage = { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 };
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () => settleTurn({ userId: userId!, conversationId, messageId: crypto.randomUUID(), model: 'claude-sonnet-5', usage, costMicro: 60, now })),
+    );
+    const totals = results.reduce((t, r) => ({ a: t.a + r.fromAllowanceMicro, c: t.c + r.fromCreditMicro, x: t.x + r.absorbedMicro }), { a: 0, c: 0, x: 0 });
+    expect(totals).toEqual({ a: 100, c: 50, x: 90 }); // 240 charged: 100 allowance + 50 credit + 90 absorbed
+    const acct = (await getAccount(userId))!;
+    expect(acct.allowanceUsedMicro).toBe(100);
+    expect(acct.creditMicro).toBe(0);
+    expect(balanceMicro(acct)).toBe(0);
+    expect(Math.max(...results.map((r) => r.globalQuestions))).toBeGreaterThanOrEqual(4);
+  });
+
+  it('resets the period once when the month moves on', async () => {
+    const later = new Date('2030-04-02T00:00:00Z');
+    const a = (await resetPeriodIfDue(userId!, later))!;
+    expect(a.allowanceUsedMicro).toBe(0);
+    expect(a.periodStart).toBe('2030-04-01');
+    const again = (await resetPeriodIfDue(userId!, later))!;
+    expect(again.periodStart).toBe('2030-04-01');
+    const entries = await db.execute<{ n: string }>(sql`SELECT count(*)::text AS n FROM ask_ledger WHERE user_id = ${userId}::uuid AND kind = 'allowance_reset'`);
+    expect(Number(entries.rows[0].n)).toBe(1);
+  });
+
+  it('ensureAccount is idempotent', async () => {
+    const other = await createTestUser('itest');
+    try {
+      const a = await ensureAccount(other.id, new Date('2030-01-01T00:00:00Z'), { access: false, allowanceMicro: 0 });
+      const b = await ensureAccount(other.id, new Date('2030-01-01T00:00:00Z'), { access: true, allowanceMicro: 5 });
+      expect(a).toEqual(b);
+    } finally {
+      await deleteTestUser(other.id);
+    }
+  });
+});
