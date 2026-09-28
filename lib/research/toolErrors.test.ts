@@ -15,6 +15,8 @@ describe('classifyToolError', () => {
     const e = Object.assign(new Error('connection string postgres://secret'), { code: '08006' });
     const info = classifyToolError(e, 'get_keyword_details', '[test]');
     expect(info).toEqual(SAFE_TOOL_FAILURE);
+    expect(info).not.toBe(SAFE_TOOL_FAILURE);
+    expect(Object.isFrozen(SAFE_TOOL_FAILURE)).toBe(true);
     expect(info.message).not.toContain('postgres://');
     expect(error.mock.calls[0][0]).toBe('[test]');
     expect(JSON.parse(error.mock.calls[0][1] as string)).toMatchObject({ tool: 'get_keyword_details', name: 'Error', message: 'connection string postgres://secret', code: '08006' });

@@ -12,25 +12,34 @@ export type ResearchToolName = (typeof RESEARCH_TOOL_NAMES)[number];
 export const READ_ONLY_ANNOTATIONS = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const);
 
 /**
- * One research tool, provider-neutral (spec §4): the MCP registration and the in-app chat both
- * build from this list, so names, descriptions, schemas and behaviour cannot drift between the
- * two surfaces. `requiresConfirmation` is false for all five; a future write tool sets it true
- * and the chat asks before running it.
+ * One research tool, provider-neutral (spec `docs/superpowers/specs/2026-09-28-in-app-chat-design.md`
+ * §4): the MCP registration and the in-app chat both build from this list, so names,
+ * descriptions, schemas and behaviour cannot drift between the two surfaces.
+ * `requiresConfirmation` is false for all five; a future write tool sets it true and the chat
+ * asks before running it. Every field is `readonly` and every entry in `RESEARCH_TOOLS` below is
+ * individually `Object.freeze`d (in addition to the array itself), so no caller can mutate a
+ * shared definition out from under another.
  */
 export interface ResearchToolDefinition {
-  name: ResearchToolName;
-  title: string;
-  description: (limits: ResearchLimits) => string;
-  inputSchema: z.ZodType;
-  run: (service: ResearchService, actor: ResearchActor, args: unknown) => Promise<object>;
-  annotations: typeof READ_ONLY_ANNOTATIONS;
-  requiresConfirmation: false;
+  readonly name: ResearchToolName;
+  readonly title: string;
+  readonly description: (limits: ResearchLimits) => string;
+  /** All five schemas in contracts.ts are `z.strictObject(...)` — a plain `ZodObject`, narrower than `z.ZodType` so `registerTool`'s JSON-Schema conversion always sees an object shape. */
+  readonly inputSchema: z.ZodObject<z.ZodRawShape>;
+  readonly run: (service: ResearchService, actor: ResearchActor, args: unknown) => Promise<object>;
+  readonly annotations: typeof READ_ONLY_ANNOTATIONS;
+  readonly requiresConfirmation: false;
 }
 
 /**
  * `search_keywords`'s description, built from the operating constants rather than hand-copied
- * numerals so it can never drift from the schema/service it describes (`PAGE_SIZE_MAX`,
- * `COUNT_CAP`, `limits.maxRowsPerSearch`).
+ * numerals so it can never drift from the schema/service it describes: `PAGE_SIZE_MAX`
+ * (contracts.ts — the literal cap `searchToolInputSchema.pageSize` itself enforces), `COUNT_CAP`
+ * (lib/explorer/buildQuery.ts — the totals-reporting threshold `lib/research/search.ts`'s count
+ * query shares with the Explorer), and `limits.maxRowsPerSearch` (lib/research/limits.ts — the
+ * cursor's own reachable-rows ceiling, env-overridable). `searchToolInputSchema` itself now
+ * carries the field-by-field shape with its own per-field descriptions, so this text no longer
+ * repeats it as a `{ ... }` sketch.
  */
 function searchDescription(limits: Pick<ResearchLimits, 'maxRowsPerSearch'>): string {
   return [
@@ -44,8 +53,19 @@ function searchDescription(limits: Pick<ResearchLimits, 'maxRowsPerSearch'>): st
   ].join(' ');
 }
 
+/**
+ * Freezes one shared definition. `Object.freeze({...})` called directly on the object literal
+ * would lose `ResearchToolDefinition`'s contextual type for that literal (`Object.freeze<T>`
+ * infers `T` from its argument instead of receiving it), so each `run` callback's
+ * `service`/`actor`/`args` parameters would silently fall back to `any` — routing through this
+ * explicitly-typed helper keeps the contextual type and the parameter types it supplies.
+ */
+function frozenTool(def: ResearchToolDefinition): ResearchToolDefinition {
+  return Object.freeze(def);
+}
+
 export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.freeze([
-  {
+  frozenTool({
     name: 'get_research_guide',
     title: 'Research guide',
     description: () => 'Definitions, presets with exact thresholds, sorts, windows, category rules, population rules, limits and error codes for the KeywordQuarry research tools. Call once per conversation before searching.',
@@ -53,8 +73,8 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
     run: (service, actor) => service.guide(actor),
     annotations: READ_ONLY_ANNOTATIONS,
     requiresConfirmation: false,
-  },
-  {
+  }),
+  frozenTool({
     name: 'resolve_categories',
     title: 'Resolve categories',
     description: () => "Find Amazon category paths (and this account's custom categories) matching words like \"lighting\"; returns ready-to-use selection objects for search_keywords. Broad words span several branches: ask the person which before searching. Browse with parentPath and an empty query; page with cursor.",
@@ -62,8 +82,8 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
     run: (service, actor, args) => service.resolveCategories(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
     requiresConfirmation: false,
-  },
-  {
+  }),
+  frozenTool({
     name: 'search_keywords',
     title: 'Search keywords',
     description: searchDescription,
@@ -71,8 +91,8 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
     run: (service, actor, args) => service.search(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
     requiresConfirmation: false,
-  },
-  {
+  }),
+  frozenTool({
     name: 'get_keyword_details',
     title: 'Keyword details',
     description: () => 'Current metrics, provenance and the top three clicked products (reviews, rating stars, price cents, click and conversion share percentages) for one keyword id from search results. A dormant keyword returns current=null. Missing values stay null.',
@@ -80,8 +100,8 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
     run: (service, actor, args) => service.details(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
     requiresConfirmation: false,
-  },
-  {
+  }),
+  frozenTool({
     name: 'get_keyword_history',
     title: 'Keyword history',
     description: () => 'Weekly rank and estimated-volume points for one keyword over the last N calendar weeks (default 13, max 52) ending at the dataset week. Weeks without an observation are listed in missingWeeks, never filled with zeros.',
@@ -89,7 +109,7 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
     run: (service, actor, args) => service.history(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
     requiresConfirmation: false,
-  },
+  }),
 ]);
 
 export function researchToolByName(name: ResearchToolName): ResearchToolDefinition {

@@ -11,6 +11,7 @@ const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientI
 describe('RESEARCH_TOOLS', () => {
   it('lists the five tools in the MCP order, read-only, none needing confirmation', () => {
     expect(RESEARCH_TOOL_NAMES).toEqual(['get_research_guide', 'resolve_categories', 'search_keywords', 'get_keyword_details', 'get_keyword_history']);
+    expect(RESEARCH_TOOLS.map((t) => t.name)).toEqual([...RESEARCH_TOOL_NAMES]);
     for (const t of RESEARCH_TOOLS) {
       expect(t.annotations).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
       expect(t.requiresConfirmation).toBe(false);
@@ -41,7 +42,10 @@ describe('RESEARCH_TOOLS', () => {
     await expect(researchToolByName('search_keywords').run(service, actor, { filters: {} })).resolves.toEqual({ s: 1 });
     await expect(researchToolByName('get_keyword_details').run(service, actor, { searchTermId: 'id' })).resolves.toEqual({ d: 1 });
     await expect(researchToolByName('get_keyword_history').run(service, actor, { searchTermId: 'id', weeks: 4 })).resolves.toEqual({ h: 1 });
-    expect(service.search).toHaveBeenCalledWith(actor, { filters: {} });
     expect(service.guide).toHaveBeenCalledWith(actor);
+    expect(service.resolveCategories).toHaveBeenCalledWith(actor, { query: 'x' });
+    expect(service.search).toHaveBeenCalledWith(actor, { filters: {} });
+    expect(service.details).toHaveBeenCalledWith(actor, { searchTermId: 'id' });
+    expect(service.history).toHaveBeenCalledWith(actor, { searchTermId: 'id', weeks: 4 });
   });
 });

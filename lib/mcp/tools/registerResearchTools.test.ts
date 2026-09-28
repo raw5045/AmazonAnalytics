@@ -19,6 +19,7 @@ import { ResearchError } from '@/lib/research/errors';
 import { PAGE_SIZE_MAX } from '@/lib/research/contracts';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { COUNT_CAP } from '@/lib/explorer/buildQuery';
+import { RESEARCH_TOOLS } from '@/lib/research/tools';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
@@ -239,6 +240,25 @@ describe('the limits option', () => {
     } finally {
       await customClient.close().catch(() => {});
       await customServer.close().catch(() => {});
+    }
+  });
+
+  it('exposes exactly the shared module\'s names, titles, descriptions and annotations (spec §4 parity)', async () => {
+    const limits = DEFAULT_LIMITS;
+    const parityServer = new McpServer({ name: 'keywordquarry-test-parity', version: '0' });
+    registerResearchTools(parityServer, service, { actorFor: () => actor, limits });
+    const parityClient = new Client({ name: 'test-parity', version: '0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await parityServer.connect(serverTransport);
+    await parityClient.connect(clientTransport);
+    try {
+      const { tools } = await parityClient.listTools();
+      expect(tools.map((t) => [t.name, t.title, t.description, t.annotations])).toEqual(
+        RESEARCH_TOOLS.map((d) => [d.name, d.title, d.description(limits), d.annotations]),
+      );
+    } finally {
+      await parityClient.close().catch(() => {});
+      await parityServer.close().catch(() => {});
     }
   });
 });
