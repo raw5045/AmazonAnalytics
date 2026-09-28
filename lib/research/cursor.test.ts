@@ -32,6 +32,11 @@ describe('cursor', () => {
     expect(token).toMatch(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     expect(verifyCursor(token, 'secret-a', NOW)).toEqual(payload);
   });
+  it('round-trips a payload with ch: chat', () => {
+    const chatPayload: CursorPayload = { ...payload, ch: 'chat' };
+    const token = signCursor(chatPayload, 'secret-a');
+    expect(verifyCursor(token, 'secret-a', NOW)).toEqual(chatPayload);
+  });
   it('rejects a forged-but-parseable body under the original MAC, a wrong secret, and garbage as INVALID_CURSOR', () => {
     const token = signCursor(payload, 'secret-a');
     const [, mac] = token.split('.');

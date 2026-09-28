@@ -20,7 +20,7 @@ export interface ReserveArgs {
    * front, reserved before any work runs — not what it ends up delivering. The
    * delivered count (which can be smaller than reserved, e.g. a capped or
    * payload-shrunk search page) is reported separately, after the fact, to
-   * `recordMcpActivity`.
+   * `recordResearchActivity`.
    */
   rows: number;
   /** Injected by the service (never read from `new Date()` in here), so a caller controls the bucket and the retry-after math precisely. */

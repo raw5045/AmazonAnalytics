@@ -4,6 +4,7 @@ import { env } from '@/lib/env';
 import { searchRequestSchema, MAX_CURSOR_LENGTH, PAGE_SIZE_MAX, TOTAL_MATCHES_KINDS } from './contracts';
 import type { SearchRequest, TotalMatches } from './contracts';
 import { ResearchError, invalidCursorError, searchExpiredError } from './errors';
+import type { ResearchChannel } from './usage';
 
 /**
  * Stateless continuation (amendment §5.3): the cursor carries everything a
@@ -23,7 +24,7 @@ export interface CursorPayload {
   exp: number;
   /** Owner (local user id) and channel. */
   uid: string;
-  ch: 'mcp';
+  ch: ResearchChannel;
   /** Count computed on the first page, carried so later pages do not recount. */
   tm: TotalMatches;
 }
@@ -48,7 +49,7 @@ const cursorPayloadSchema = z.strictObject({
   ps: z.int().min(1).max(PAGE_SIZE_MAX),
   exp: z.int().positive(),
   uid: z.string().min(1),
-  ch: z.literal('mcp'),
+  ch: z.enum(['mcp', 'chat']),
   tm: z.strictObject({ kind: z.enum(TOTAL_MATCHES_KINDS), value: z.int().min(0).nullable() }),
 });
 

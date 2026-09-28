@@ -184,6 +184,17 @@ describe('search: continuation and caps', () => {
     const foreign = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 9_999_999_999, uid: 'someone-else', ch: 'mcp', tm: { kind: 'unknown', value: null } }, 'test-secret');
     await expect(createResearchService(deps).search(actor, { cursor: foreign })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
   });
+  it('a cursor signed for a different channel (same account) is INVALID_CURSOR, and never reserves', async () => {
+    const deps = makeDeps();
+    const chatCursor = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 9_999_999_999, uid: 'u1', ch: 'chat', tm: { kind: 'unknown', value: null } }, 'test-secret');
+    await expect(createResearchService(deps).search(actor, { cursor: chatCursor })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
+    expect(deps.reserve).not.toHaveBeenCalled();
+
+    const chatActor: ResearchActor = { ...actor, channel: 'chat' };
+    const mcpCursor = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 9_999_999_999, uid: 'u1', ch: 'mcp', tm: { kind: 'unknown', value: null } }, 'test-secret');
+    await expect(createResearchService(deps).search(chatActor, { cursor: mcpCursor })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
+    expect(deps.reserve).not.toHaveBeenCalled();
+  });
   it('I4e: an expired cursor is SEARCH_EXPIRED, and never reserves', async () => {
     const deps = makeDeps();
     const expired = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 1_000_000_000, uid: 'u1', ch: 'mcp', tm: { kind: 'unknown', value: null } }, 'test-secret');

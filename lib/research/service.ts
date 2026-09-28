@@ -259,12 +259,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       let cursorTooLarge = false;
       if (hasNext && returnedCount > 0) {
         try {
-          // Task 4 deviation (see plan blockquote under ### Task 4): CursorPayload.ch
-          // (lib/research/cursor.ts, out of scope for this task) is still typed and
-          // schema-validated as the literal 'mcp' only. Cast only, so an 'mcp' actor's
-          // cursor is byte-for-byte unchanged; runtime value still comes from
-          // actor.channel either way, this only satisfies the type checker.
-          nextCursor = signCursor({ v: 1, req: request, snap: run.meta.snapshotVersion, off: offset + returnedCount, ps: pageSize, exp, uid: actor.localUserId, ch: actor.channel as CursorPayload['ch'], tm: totalMatches }, deps.cursorSecret);
+          nextCursor = signCursor({ v: 1, req: request, snap: run.meta.snapshotVersion, off: offset + returnedCount, ps: pageSize, exp, uid: actor.localUserId, ch: actor.channel, tm: totalMatches }, deps.cursorSecret);
         } catch (e) {
           // C5 (Task 7 review): a cursor too large to sign (mainly filters.categories.leafPaths
           // pushing the token past cursor.ts's MAX_CURSOR_LENGTH) must never discard the page
