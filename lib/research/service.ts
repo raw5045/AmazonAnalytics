@@ -23,11 +23,11 @@ import { countMatches, runSearch } from './search';
 import { loadSnapshotMetaHttp, type SnapshotMeta } from './snapshot';
 import { recordResearchActivity, reserveResearchRequest, type ResearchChannel } from './usage';
 
-/** Supplied by a trusted adapter (the MCP gate), never by tool arguments. */
+/** Identity comes from a trusted adapter — the MCP gate, or the Ask AI route (a session-derived `chat` actor) — never from tool arguments. */
 export interface ResearchActor { localUserId: string; clerkUserId: string; clientId: string; channel: ResearchChannel }
 
 /**
- * The five MCP research tools, each independently callable. Every method validates its own
+ * The five research tools (MCP and the in-app chat), each independently callable. Every method validates its own
  * `input` (an `unknown` from the wire) and rejects with a `ResearchError` — see `guarded()`
  * below for how a non-`ResearchError` failure (a raw DB/pool error) is classified before it
  * ever reaches a caller.
@@ -111,9 +111,10 @@ function reserveFor(deps: ResearchServiceDeps, actor: ResearchActor, rows: numbe
  * `poolBusyError()` (I2: its own message and a short 5s retry — the pool itself is healthy and
  * the caller just lost the race for a client, so `dataUnavailableError()`'s "dataset is being
  * refreshed" wording would misstate the cause). Anything else (a raw SQLSTATE, a compile-time
- * guard, a genuinely unexpected error) is rethrown unchanged, on purpose: the MCP tool layer
- * (Task 15) maps an unrecognized error to a generic message without ever echoing `e.message` to
- * a client, so there is no safety reason to reclassify it here too.
+ * guard, a genuinely unexpected error) is rethrown unchanged, on purpose: both tool adapters
+ * (MCP and chat, via classifyToolError) (Task 15) map an unrecognized error to a generic message
+ * without ever echoing `e.message` to a client, so there is no safety reason to reclassify it
+ * here too.
  */
 async function guarded<T>(fn: () => Promise<T>): Promise<T> {
   try {
@@ -354,7 +355,8 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       noMatch: candidates.length === 0,
     };
     // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
-    // (mcp_request counter) must count this the same as search/details/history.
+    // (the request counter of the actor's channel: mcp_request or ask_tool_call) must count this
+    // the same as search/details/history.
     deps.record(actor.localUserId, RESERVE_NO_ROWS, actor.channel);
     return response;
   }
@@ -382,7 +384,8 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     const meta = await deps.meta();
     const response = buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: deps.audience(), limits: deps.limits });
     // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
-    // (mcp_request counter) must count this the same as search/details/history.
+    // (the request counter of the actor's channel: mcp_request or ask_tool_call) must count this
+    // the same as search/details/history.
     deps.record(actor.localUserId, RESERVE_NO_ROWS, actor.channel);
     return response;
   }

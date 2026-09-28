@@ -1,10 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { env } from '@/lib/env';
-import { searchRequestSchema, MAX_CURSOR_LENGTH, PAGE_SIZE_MAX, TOTAL_MATCHES_KINDS } from './contracts';
-import type { SearchRequest, TotalMatches } from './contracts';
+import { searchRequestSchema, MAX_CURSOR_LENGTH, PAGE_SIZE_MAX, RESEARCH_CHANNELS, TOTAL_MATCHES_KINDS } from './contracts';
+import type { ResearchChannel, SearchRequest, TotalMatches } from './contracts';
 import { ResearchError, invalidCursorError, searchExpiredError } from './errors';
-import type { ResearchChannel } from './usage';
 
 /**
  * Stateless continuation (amendment §5.3): the cursor carries everything a
@@ -49,7 +48,7 @@ const cursorPayloadSchema = z.strictObject({
   ps: z.int().min(1).max(PAGE_SIZE_MAX),
   exp: z.int().positive(),
   uid: z.string().min(1),
-  ch: z.enum(['mcp', 'chat']),
+  ch: z.enum(RESEARCH_CHANNELS),
   tm: z.strictObject({ kind: z.enum(TOTAL_MATCHES_KINDS), value: z.int().min(0).nullable() }),
 });
 

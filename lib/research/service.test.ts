@@ -195,6 +195,24 @@ describe('search: continuation and caps', () => {
     await expect(createResearchService(deps).search(chatActor, { cursor: mcpCursor })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
     expect(deps.reserve).not.toHaveBeenCalled();
   });
+  it('a chat actor goes through the whole path under its own channel (search page 1+2, guide)', async () => {
+    const deps = makeDeps();
+    const svc = createResearchService(deps);
+    const chatActor: ResearchActor = { ...actor, clientId: 'ask-ai', channel: 'chat' };
+
+    const first = await svc.search(chatActor, { schemaVersion: 1 });
+    expect(deps.reserve).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', channel: 'chat', rows: 50 }));
+    const cursor = verifyCursor(first.pagination.nextCursor!, 'test-secret', 0);
+    expect(cursor.ch).toBe('chat');
+
+    const second = await svc.search(chatActor, { cursor: first.pagination.nextCursor });
+    expect(second.pagination.offset).toBe(50);
+    expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', first.rows.length, 'chat');
+    expect(deps.record).toHaveBeenNthCalledWith(2, 'u1', second.rows.length, 'chat');
+
+    await svc.guide(chatActor);
+    expect(deps.record).toHaveBeenNthCalledWith(3, 'u1', 0, 'chat');
+  });
   it('I4e: an expired cursor is SEARCH_EXPIRED, and never reserves', async () => {
     const deps = makeDeps();
     const expired = signCursor({ v: 1, req: { schemaVersion: 1, presetIds: [], filters: {} as never, sort: { field: 'rank', direction: 'asc' }, pageSize: 50 } as never, snap: 'snap-a', off: 50, ps: 50, exp: 1_000_000_000, uid: 'u1', ch: 'mcp', tm: { kind: 'unknown', value: null } }, 'test-secret');

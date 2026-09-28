@@ -1,15 +1,17 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { bumpUserActivityBy } from '@/lib/activity/bump';
+import { bumpUserActivityBy, type UserActivityMetric } from '@/lib/activity/bump';
+import type { ResearchChannel } from './contracts';
 import { ResearchError } from './errors';
 import type { ResearchLimits } from './limits';
+
+/** Single source of truth is contracts.ts; re-exported here so `./usage`'s existing consumers are unaffected. */
+export type { ResearchChannel };
 
 /** Floors `d` to the start of its UTC minute — the key of the per-minute usage bucket it falls in. */
 export function minuteFloor(d: Date): Date {
   return new Date(Math.floor(d.getTime() / 60_000) * 60_000);
 }
-
-export type ResearchChannel = 'mcp' | 'chat';
 
 export interface ReserveArgs {
   userId: string;
@@ -77,13 +79,19 @@ export async function reserveResearchRequest(args: ReserveArgs): Promise<Reserve
   return { requests: row.requests, rows: row.rows };
 }
 
+/** The digest metric pair (request counter, rows counter) each channel bumps — a third channel added to ResearchChannel fails this `satisfies` check until it is mapped here too. */
+const METRICS_BY_CHANNEL = {
+  mcp: ['mcp_request', 'mcp_rows'],
+  chat: ['ask_tool_call', 'ask_rows'],
+} as const satisfies Record<ResearchChannel, readonly [UserActivityMetric, UserActivityMetric]>;
+
 /** Daily digest counters; fire-and-forget. `mcp` → mcp_request/mcp_rows (unchanged); `chat` → ask_tool_call/ask_rows (spec §5). */
 export function recordResearchActivity(userId: string, rowsReturned: number, channel: ResearchChannel): void {
-  const [request, rows] = channel === 'chat' ? (['ask_tool_call', 'ask_rows'] as const) : (['mcp_request', 'mcp_rows'] as const);
+  const [request, rows] = METRICS_BY_CHANNEL[channel];
   void bumpUserActivityBy(userId, request, 1);
   if (rowsReturned > 0) void bumpUserActivityBy(userId, rows, rowsReturned);
 }
-/** Back-compat name used by existing tests/callers; identical to recordResearchActivity(…, 'mcp'). */
+/** Back-compat name, kept for existing tests; no production caller remains; identical to recordResearchActivity(…, 'mcp'). */
 export function recordMcpActivity(userId: string, rowsReturned: number): void {
   recordResearchActivity(userId, rowsReturned, 'mcp');
 }

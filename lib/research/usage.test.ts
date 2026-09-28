@@ -47,6 +47,11 @@ describe('reserveResearchRequest', () => {
     await expect(reserveResearchRequest({ ...args, rows: 1.5 })).rejects.toThrow(/non-negative safe integer/);
     expect(execute).not.toHaveBeenCalled();
   });
+  it('reserveResearchRequest accepts the chat channel and writes it to the bucket', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ requests: 1, rows: 50 }] });
+    await reserveResearchRequest({ ...args, channel: 'chat' });
+    expect(JSON.stringify(execute.mock.calls[0][0])).toContain('chat');
+  });
 });
 
 describe('recordMcpActivity', () => {
@@ -61,6 +66,7 @@ describe('recordMcpActivity', () => {
   it('is fire-and-forget: returns undefined synchronously, not a Promise', () => {
     const result = recordMcpActivity('u1', 1);
     expect(result).toBeUndefined();
+    expect(recordResearchActivity('u1', 1, 'chat')).toBeUndefined();
   });
 });
 
@@ -74,10 +80,5 @@ describe('recordResearchActivity', () => {
     recordResearchActivity('u1', 0, 'mcp');
     expect(bumpBy).toHaveBeenCalledWith('u1', 'mcp_request', 1);
     expect(bumpBy).toHaveBeenCalledTimes(1);
-  });
-  it('reserveResearchRequest accepts the chat channel and writes it to the bucket', async () => {
-    execute.mockResolvedValueOnce({ rows: [{ requests: 1, rows: 50 }] });
-    await reserveResearchRequest({ ...args, channel: 'chat' });
-    expect(JSON.stringify(execute.mock.calls[0][0])).toContain('chat');
   });
 });

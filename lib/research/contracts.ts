@@ -14,6 +14,8 @@ export const PRESET_IDS = ['high_demand_v1', 'low_review_competition_v1', 'growi
 export type PresetId = (typeof PRESET_IDS)[number];
 export const TOTAL_MATCHES_KINDS = ['exact', 'at_least', 'unknown'] as const;
 export type TotalMatchesKind = (typeof TOTAL_MATCHES_KINDS)[number];
+export const RESEARCH_CHANNELS = ['mcp', 'chat'] as const;
+export type ResearchChannel = (typeof RESEARCH_CHANNELS)[number];
 /** Ceiling shared by searchRequestSchema.pageSize and cursor.ts's cursorPayloadSchema.ps — a cursor's page size can never exceed what a request could ever specify. */
 export const PAGE_SIZE_MAX = 100;
 
