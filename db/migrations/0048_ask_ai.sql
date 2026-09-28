@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS ask_accounts (
   credit_micro             bigint NOT NULL DEFAULT 0,
   conversation_count       integer NOT NULL DEFAULT 0,
   created_at               timestamptz NOT NULL DEFAULT now(),
-  updated_at               timestamptz NOT NULL DEFAULT now()
+  updated_at               timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT ask_accounts_nonnegative_check CHECK (credit_micro >= 0 AND allowance_used_micro >= 0 AND monthly_allowance_micro >= 0 AND conversation_count >= 0)
 );
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS ask_ledger (

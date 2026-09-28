@@ -1,13 +1,26 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { ensureAccount, settleTurn, getAccount, balanceMicro, resetPeriodIfDue, grantAccess, addCredit } from '@/lib/ask/ledger';
+import { ensureAccount, settleTurn, getAccount, balanceMicro, resetPeriodIfDue, grantAccess, addCredit, globalUsageForMonth } from '@/lib/ask/ledger';
 import { createTestUser, deleteTestUser } from './helpers';
 
 // Run (owner-gated, after migration 0048 is applied): cross-env RUN_INTEGRATION=1 pnpm vitest run tests/integration/askLedger.test.ts
+
+// Fixed test months this file settles against — cleared before AND after the run so a killed
+// process (which skips afterAll) can never leave a prior run's cost/questions counted into a
+// later run's "exact totals" assertions.
+const TEST_MONTHS = ['2030-03-01', '2031-01-01'];
+async function clearTestGlobalUsageMonths() {
+  await db.execute(sql`DELETE FROM ask_global_usage WHERE month = ANY(${TEST_MONTHS}::date[])`);
+}
+
 describe('ask ledger (integration, real Postgres)', () => {
   let userId: string | undefined;
-  afterAll(async () => { await deleteTestUser(userId); });
+  beforeAll(clearTestGlobalUsageMonths);
+  afterAll(async () => {
+    await deleteTestUser(userId);
+    await clearTestGlobalUsageMonths();
+  });
 
   it('settles concurrent turns atomically: allowance first, then credit, overshoot absorbed', async () => {
     userId = (await createTestUser('itest')).id;
@@ -27,6 +40,9 @@ describe('ask ledger (integration, real Postgres)', () => {
     expect(acct.creditMicro).toBe(0);
     expect(balanceMicro(acct)).toBe(0);
     expect(Math.max(...results.map((r) => r.globalQuestions))).toBeGreaterThanOrEqual(4);
+    // The global counter was cleared for this month in beforeAll, so these four settles are the
+    // only contributors — exact, not just "at least".
+    await expect(globalUsageForMonth('2030-03-01')).resolves.toMatchObject({ costMicro: 240, questions: 4 });
   });
 
   it('resets the period once when the month moves on', async () => {
@@ -48,6 +64,28 @@ describe('ask ledger (integration, real Postgres)', () => {
       expect(a).toEqual(b);
     } finally {
       await deleteTestUser(other.id);
+    }
+  });
+
+  it('settleTurn rejects a user with no ask_accounts row, and never touches the global counter (Task 5 code review: the all-or-nothing fix)', async () => {
+    const ghost = await createTestUser('itest');
+    try {
+      await expect(
+        settleTurn({
+          userId: ghost.id,
+          conversationId: crypto.randomUUID(),
+          messageId: crypto.randomUUID(),
+          model: 'claude-sonnet-5',
+          usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 },
+          costMicro: 1,
+          now: new Date('2031-01-15T00:00:00Z'),
+        }),
+      ).rejects.toThrow(/no ask_accounts row/);
+      // Before the fix, the bare `INSERT ... VALUES` in settleTurn's `glob` CTE ran unconditionally
+      // even though `upd` (and thus `led`) produced no row — this month must still read zero.
+      await expect(globalUsageForMonth('2031-01-01')).resolves.toEqual({ month: '2031-01-01', costMicro: 0, questions: 0, alerted80At: null, alerted100At: null });
+    } finally {
+      await deleteTestUser(ghost.id);
     }
   });
 });

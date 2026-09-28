@@ -5,6 +5,12 @@ import { ASK_MODELS, isAskModelId, type AskModelId } from './config';
 /** Micro-dollars per token — numerically equal to Anthropic's "$ per million tokens" (spec §9.1). */
 export interface ModelRates {
   input: number;
+  /**
+   * The 5-minute-TTL cache-write rate. Anthropic bills a 1-hour TTL write at 2× the input rate
+   * instead, but the SDK's `usage.inputTokenDetails.cacheWriteTokens` does not split by TTL, so a
+   * 1-hour write is currently costed at this (5-minute) rate — undercounted if 1-hour caching is
+   * ever turned on here. Revisit if that changes.
+   */
   cacheWrite: number;
   cacheRead: number;
   output: number;
@@ -14,10 +20,10 @@ export interface ModelRates {
 
 export const PRICES_AS_OF = '2026-09-28';
 
-export const DEFAULT_RATES: Readonly<Record<AskModelId, ModelRates>> = Object.freeze({
-  'claude-sonnet-5': { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10, estimatePerQuestionMicro: 40_000 },
-  'claude-opus-5-5': { input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20, estimatePerQuestionMicro: 80_000 },
-  'claude-haiku-4-5': { input: 1, cacheWrite: 1.25, cacheRead: 0.1, output: 5, estimatePerQuestionMicro: 15_000 },
+export const DEFAULT_RATES: Readonly<Record<AskModelId, Readonly<ModelRates>>> = Object.freeze({
+  'claude-sonnet-5': Object.freeze({ input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10, estimatePerQuestionMicro: 40_000 }),
+  'claude-opus-5-5': Object.freeze({ input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20, estimatePerQuestionMicro: 80_000 }),
+  'claude-haiku-4-5': Object.freeze({ input: 1, cacheWrite: 1.25, cacheRead: 0.1, output: 5, estimatePerQuestionMicro: 15_000 }),
 });
 
 export interface TurnUsage {
@@ -45,12 +51,18 @@ export function usageFromSdk(u: LanguageModelUsage): TurnUsage {
   return { noCacheTokens: noCache, cacheWriteTokens: cacheWrite, cacheReadTokens: cacheRead, outputTokens: u.outputTokens ?? 0 };
 }
 
-export function costMicro(model: AskModelId, usage: TurnUsage, rates: Readonly<Record<AskModelId, ModelRates>> = effectiveRates()): number {
+export function costMicro(model: AskModelId, usage: TurnUsage, rates: Readonly<Record<AskModelId, Readonly<ModelRates>>> = effectiveRates()): number {
   const r = rates[model];
   return Math.round(usage.noCacheTokens * r.input + usage.cacheWriteTokens * r.cacheWrite + usage.cacheReadTokens * r.cacheRead + usage.outputTokens * r.output);
 }
 
-const RATE_KEYS = ['input', 'cacheWrite', 'cacheRead', 'output', 'estimatePerQuestionMicro'] as const;
+/** The four per-token rates, in micro-dollars per token — bounded to [MIN_RATE_MICRO, MAX_RATE_MICRO]. */
+const PRICE_KEYS = ['input', 'cacheWrite', 'cacheRead', 'output'] as const;
+const RATE_KEYS = [...PRICE_KEYS, 'estimatePerQuestionMicro'] as const;
+/** A sane bound on a per-token rate override: catches an obvious typo (a dollar figure instead of
+ * micro-dollars, a stray extra zero) without hard-coding today's actual prices as a ceiling. */
+const MIN_RATE_MICRO = 0.01;
+const MAX_RATE_MICRO = 1000;
 
 /** ASK_AI_PRICES_JSON: `{ "<model id>": { input?, cacheWrite?, cacheRead?, output?, estimatePerQuestionMicro? } }`; every rejection warns and keeps the default. Never throws. */
 export function parseRateOverrides(raw: string | undefined): Record<AskModelId, ModelRates> {
@@ -81,8 +93,13 @@ export function parseRateOverrides(raw: string | undefined): Record<AskModelId, 
         console.warn(`[ask pricing] ${model}.${key} is not a rate — ignored`);
         continue;
       }
-      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-        console.warn(`[ask pricing] ${model}.${key}=${JSON.stringify(value)} must be a positive number — default kept`);
+      if ((PRICE_KEYS as readonly string[]).includes(key)) {
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < MIN_RATE_MICRO || value > MAX_RATE_MICRO) {
+          console.warn(`[ask pricing] ${model}.${key}=${JSON.stringify(value)} must be a number between ${MIN_RATE_MICRO} and ${MAX_RATE_MICRO} (micro-dollars per token) — default kept`);
+          continue;
+        }
+      } else if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+        console.warn(`[ask pricing] ${model}.${key}=${JSON.stringify(value)} must be a positive integer — default kept`);
         continue;
       }
       out[model][key as (typeof RATE_KEYS)[number]] = value;
@@ -91,9 +108,18 @@ export function parseRateOverrides(raw: string | undefined): Record<AskModelId, 
   return out;
 }
 
-let cached: Record<AskModelId, ModelRates> | null = null;
-export function effectiveRates(): Readonly<Record<AskModelId, ModelRates>> {
-  if (!cached) cached = parseRateOverrides(env.ASK_AI_PRICES_JSON);
+let cached: Readonly<Record<AskModelId, Readonly<ModelRates>>> | null = null;
+/**
+ * Reads ASK_AI_PRICES_JSON once per process and memoises the result — an env change needs a
+ * redeploy to take effect; it is never re-read mid-process. Returns a deep-frozen snapshot (each
+ * model's rates frozen, then the outer map), so nothing downstream can mutate the shared cache.
+ */
+export function effectiveRates(): Readonly<Record<AskModelId, Readonly<ModelRates>>> {
+  if (!cached) {
+    const parsed = parseRateOverrides(env.ASK_AI_PRICES_JSON);
+    for (const { id } of ASK_MODELS) Object.freeze(parsed[id]);
+    cached = Object.freeze(parsed);
+  }
   return cached;
 }
 export function resetPricingForTests(): void {

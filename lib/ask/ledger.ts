@@ -61,7 +61,19 @@ export async function ensureAccount(userId: string, now: Date, opts: { access: b
   return toAccount(r.rows[0]);
 }
 
-/** Spec §9.3: when period_start is before the current UTC month, zero the used allowance and move the period, writing an allowance_reset entry — all in one statement. Returns the (possibly unchanged) account, or null when there is no row. */
+/**
+ * Spec §9.3: when period_start is before the current UTC month, zero the used allowance and move
+ * the period, writing an allowance_reset entry — all in one statement. Returns the (possibly
+ * unchanged) account, or null when there is no row.
+ *
+ * The final SELECT recomputes allowance_used_micro/period_start with the same CASE/GREATEST logic
+ * the `due` CTE's UPDATE uses, instead of reading them back from ask_accounts: per Postgres docs
+ * 7.8.4, every statement in a WITH query — including the primary query — runs against the SAME
+ * snapshot taken at the start of the overall statement, so a plain `SELECT ... FROM ask_accounts`
+ * here would be blind to `due`'s own UPDATE and return last month's stale allowance_used_micro/
+ * period_start right after the reset (the bug this fixes: a caller gating on this result — Task
+ * 8's gate — would wrongly refuse a member on their first question of a new month).
+ */
 export async function resetPeriodIfDue(userId: string, now: Date): Promise<AskAccount | null> {
   const month = monthStartUtc(now);
   const r = await db.execute<AccountRow>(sql`
@@ -73,7 +85,11 @@ export async function resetPeriodIfDue(userId: string, now: Date): Promise<AskAc
       INSERT INTO ask_ledger (user_id, kind, amount_micro, note)
       SELECT user_id, 'allowance_reset', monthly_allowance_micro, ${'period ' + month} FROM due RETURNING id
     )
-    SELECT ${ACCOUNT_COLUMNS} FROM ask_accounts WHERE user_id = ${userId}::uuid`);
+    SELECT user_id, access, monthly_allowance_micro,
+           CASE WHEN period_start < ${month}::date THEN 0 ELSE allowance_used_micro END AS allowance_used_micro,
+           GREATEST(period_start, ${month}::date)::text AS period_start,
+           credit_micro, conversation_count
+    FROM ask_accounts WHERE user_id = ${userId}::uuid`);
   return r.rows[0] ? toAccount(r.rows[0]) : null;
 }
 
@@ -84,8 +100,20 @@ export interface SettleResult {
   fromAllowanceMicro: number; fromCreditMicro: number; absorbedMicro: number; globalCostMicro: number; globalQuestions: number;
 }
 
-/** Spec §9.4: allowance first, then credit, overshoot absorbed; ledger entry and the global monthly counter in the same statement. */
+/**
+ * Spec §9.4: allowance first, then credit, overshoot absorbed; ledger entry and the global monthly
+ * counter in the same statement — all-or-nothing: `glob`'s INSERT is sourced `FROM upd` (not a
+ * bare VALUES), so it only runs when `upd` actually produced a row. Without that, a data-modifying
+ * CTE always runs to completion regardless of the other CTEs, so a missing account would still
+ * bump the global counter even though the statement correctly returns no row and the caller
+ * correctly sees "no ask_accounts row" — a real cost silently double-counted against no one.
+ *
+ * NOT idempotent — never retry a settle. An error thrown after this statement has committed (e.g.
+ * the connection drops while the driver is still reading back the response) may already have
+ * billed; retrying would charge the same turn's cost twice.
+ */
 export async function settleTurn(a: SettleArgs): Promise<SettleResult> {
+  if (!Number.isSafeInteger(a.costMicro) || a.costMicro < 0) throw new Error('settleTurn: costMicro must be a non-negative integer');
   const month = monthStartUtc(a.now);
   const r = await db.execute<{ from_allowance: string; from_credit: string; global_cost_micro: string; global_questions: number }>(sql`
     WITH acct AS (
@@ -107,7 +135,8 @@ export async function settleTurn(a: SettleArgs): Promise<SettleResult> {
              from_allowance, from_credit, ${a.costMicro}::bigint - from_allowance - from_credit
       FROM upd RETURNING id
     ), glob AS (
-      INSERT INTO ask_global_usage (month, cost_micro, questions) VALUES (${month}::date, ${a.costMicro}::bigint, 1)
+      INSERT INTO ask_global_usage (month, cost_micro, questions)
+      SELECT ${month}::date, ${a.costMicro}::bigint, 1 FROM upd
       ON CONFLICT (month) DO UPDATE SET cost_micro = ask_global_usage.cost_micro + EXCLUDED.cost_micro, questions = ask_global_usage.questions + 1
       RETURNING cost_micro, questions
     )
@@ -123,6 +152,7 @@ interface AdminArgs { userId: string; adminId: string; now: Date }
 
 /** Spec §9.7 grant: creates or re-enables the account at `allowanceMicro`, period = current UTC month. */
 export async function grantAccess(a: AdminArgs & { allowanceMicro: number }): Promise<AskAccount> {
+  if (!Number.isSafeInteger(a.allowanceMicro) || a.allowanceMicro < 0) throw new Error('grantAccess: allowance must be a non-negative integer');
   const month = monthStartUtc(a.now);
   const r = await db.execute<AccountRow>(sql`
     WITH up AS (
@@ -200,7 +230,12 @@ export async function markCeilingAlert(month: string, level: 80 | 100, now: Date
   return r.rows.length > 0;
 }
 
-/** Admin page: the sum of remaining allowances of accessible member accounts, treating a stale period as fully remaining (the lazy reset has not run for them yet). */
+/**
+ * Admin page: the sum of remaining allowances of accounts with access. Admin metering rows are
+ * NOT excluded here (unlike countMemberAccountsWithAccess below) — this is a raw money total, not
+ * a member headcount. Treats a stale period as fully remaining (the lazy reset has not run for
+ * them yet).
+ */
 export async function sumRemainingAllowances(now: Date): Promise<number> {
   const month = monthStartUtc(now);
   const r = await db.execute<{ total: string }>(sql`
@@ -209,7 +244,11 @@ export async function sumRemainingAllowances(now: Date): Promise<number> {
   return num(r.rows[0]?.total);
 }
 
-/** Spec §11.2: zero → the page shows the "Admin preview" chip to admins. */
+/**
+ * Spec §11.2: zero → the page shows the "Admin preview" chip to admins. Excludes admin accounts
+ * (`u.role <> 'admin'`) — an admin's own metering row exists to track their usage, but they never
+ * count as a "real" member for this check.
+ */
 export async function countMemberAccountsWithAccess(): Promise<number> {
   const r = await db.execute<{ n: string }>(sql`
     SELECT count(*)::text AS n FROM ask_accounts a JOIN users u ON u.id = a.user_id WHERE a.access = true AND u.role <> 'admin'`);

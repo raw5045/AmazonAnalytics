@@ -38,11 +38,45 @@ describe('pricing', () => {
     expect(parseRateOverrides('not json')).toEqual(DEFAULT_RATES);
     expect(parseRateOverrides(undefined)).toEqual(DEFAULT_RATES);
   });
+  it('rejects a per-token rate outside the 0.01-1000 micro-dollar bound, keeping the default', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const rates = parseRateOverrides('{"claude-sonnet-5":{"input":0.001,"output":5000}}');
+    expect(rates['claude-sonnet-5'].input).toBe(DEFAULT_RATES['claude-sonnet-5'].input);
+    expect(rates['claude-sonnet-5'].output).toBe(DEFAULT_RATES['claude-sonnet-5'].output);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+  it('accepts a per-token rate at the 0.01 and 1000 boundary (inclusive)', () => {
+    const rates = parseRateOverrides('{"claude-sonnet-5":{"input":0.01,"output":1000}}');
+    expect(rates['claude-sonnet-5'].input).toBe(0.01);
+    expect(rates['claude-sonnet-5'].output).toBe(1000);
+  });
+  it('requires estimatePerQuestionMicro to be a positive safe integer, keeping the default otherwise', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(parseRateOverrides('{"claude-haiku-4-5":{"estimatePerQuestionMicro":0.5}}')['claude-haiku-4-5'].estimatePerQuestionMicro).toBe(DEFAULT_RATES['claude-haiku-4-5'].estimatePerQuestionMicro);
+    expect(parseRateOverrides('{"claude-haiku-4-5":{"estimatePerQuestionMicro":-5}}')['claude-haiku-4-5'].estimatePerQuestionMicro).toBe(DEFAULT_RATES['claude-haiku-4-5'].estimatePerQuestionMicro);
+    expect(parseRateOverrides('{"claude-haiku-4-5":{"estimatePerQuestionMicro":0}}')['claude-haiku-4-5'].estimatePerQuestionMicro).toBe(DEFAULT_RATES['claude-haiku-4-5'].estimatePerQuestionMicro);
+    expect(warn).toHaveBeenCalledTimes(3);
+    expect(parseRateOverrides('{"claude-haiku-4-5":{"estimatePerQuestionMicro":20000}}')['claude-haiku-4-5'].estimatePerQuestionMicro).toBe(20_000);
+  });
+  it('DEFAULT_RATES is deep-frozen — the outer map and every model entry', () => {
+    expect(Object.isFrozen(DEFAULT_RATES)).toBe(true);
+    expect(Object.isFrozen(DEFAULT_RATES['claude-sonnet-5'])).toBe(true);
+    expect(() => {
+      (DEFAULT_RATES['claude-sonnet-5'] as { input: number }).input = 999;
+    }).toThrow();
+  });
   it('effectiveRates reads ASK_AI_PRICES_JSON once per process', () => {
     envMock.env.ASK_AI_PRICES_JSON = '{"claude-haiku-4-5":{"output":6}}';
     expect(effectiveRates()['claude-haiku-4-5'].output).toBe(6);
     envMock.env.ASK_AI_PRICES_JSON = '{"claude-haiku-4-5":{"output":7}}';
     expect(effectiveRates()['claude-haiku-4-5'].output).toBe(6);
+  });
+  it('effectiveRates returns a deep-frozen memo — the outer map and every model entry', () => {
+    const rates = effectiveRates();
+    expect(Object.isFrozen(rates)).toBe(true);
+    expect(Object.isFrozen(rates['claude-sonnet-5'])).toBe(true);
+    expect(Object.isFrozen(rates['claude-opus-5-5'])).toBe(true);
+    expect(Object.isFrozen(rates['claude-haiku-4-5'])).toBe(true);
   });
   it('estimates questions left from the balance and the model estimate', () => {
     expect(estimatedQuestionsLeft(10_000_000, 'claude-sonnet-5')).toBe(250);

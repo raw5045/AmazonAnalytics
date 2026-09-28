@@ -47,27 +47,39 @@ export const askMessages = pgTable(
 );
 export type AskMessageRow = typeof askMessages.$inferSelect;
 
-export const askAccounts = pgTable('ask_accounts', {
-  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
-  access: boolean('access').notNull().default(true),
-  monthlyAllowanceMicro: bigint('monthly_allowance_micro', { mode: 'number' }).notNull().default(10_000_000),
-  allowanceUsedMicro: bigint('allowance_used_micro', { mode: 'number' }).notNull().default(0),
-  periodStart: date('period_start').notNull(),
-  creditMicro: bigint('credit_micro', { mode: 'number' }).notNull().default(0),
-  /**
-   * Invariant: equals this member's row count in ask_conversations. Maintained only by
-   * lib/ask/conversations.ts (create and delete, Task 6) as part of the same single statement
-   * that inserts/deletes the conversation. A delete made outside that module (manual SQL, a
-   * future retention job) must repair it:
-   *   UPDATE ask_accounts a SET conversation_count = c.n FROM (
-   *     SELECT a2.user_id, count(c2.id)::int AS n FROM ask_accounts a2
-   *     LEFT JOIN ask_conversations c2 ON c2.user_id = a2.user_id GROUP BY 1
-   *   ) c WHERE c.user_id = a.user_id AND a.conversation_count <> c.n;
-   */
-  conversationCount: integer('conversation_count').notNull().default(0),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const askAccounts = pgTable(
+  'ask_accounts',
+  {
+    userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+    access: boolean('access').notNull().default(true),
+    monthlyAllowanceMicro: bigint('monthly_allowance_micro', { mode: 'number' }).notNull().default(10_000_000),
+    allowanceUsedMicro: bigint('allowance_used_micro', { mode: 'number' }).notNull().default(0),
+    periodStart: date('period_start').notNull(),
+    creditMicro: bigint('credit_micro', { mode: 'number' }).notNull().default(0),
+    /**
+     * Invariant: equals this member's row count in ask_conversations. Maintained only by
+     * lib/ask/conversations.ts (create and delete, Task 6) as part of the same single statement
+     * that inserts/deletes the conversation. A delete made outside that module (manual SQL, a
+     * future retention job) must repair it:
+     *   UPDATE ask_accounts a SET conversation_count = c.n FROM (
+     *     SELECT a2.user_id, count(c2.id)::int AS n FROM ask_accounts a2
+     *     LEFT JOIN ask_conversations c2 ON c2.user_id = a2.user_id GROUP BY 1
+     *   ) c WHERE c.user_id = a.user_id AND a.conversation_count <> c.n;
+     */
+    conversationCount: integer('conversation_count').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    // Task 5 code review: no SQL path (settleTurn's split, an admin op, a future retention job)
+    // can drive the ledger negative — belt-and-suspenders alongside the application-level guards
+    // in lib/ask/ledger.ts (settleTurn, grantAccess, setAllowance, addCredit all validate first).
+    nonnegativeCheck: check(
+      'ask_accounts_nonnegative_check',
+      sql`${t.creditMicro} >= 0 AND ${t.allowanceUsedMicro} >= 0 AND ${t.monthlyAllowanceMicro} >= 0 AND ${t.conversationCount} >= 0`,
+    ),
+  }),
+);
 export type AskAccountRow = typeof askAccounts.$inferSelect;
 
 export const askLedger = pgTable(
@@ -76,6 +88,15 @@ export const askLedger = pgTable(
     id: bigserial('id', { mode: 'number' }).primaryKey(),
     userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
     kind: varchar('kind', { length: 24 }).notNull(),
+    /**
+     * Semantics depend on `kind` — never sum this column blindly across kinds:
+     * - 'usage', 'credit': a DELTA (usage is negative, the cost just charged; credit is positive,
+     *   the amount just added to credit_micro).
+     * - 'grant', 'adjustment', 'allowance_reset': a LEVEL (the resulting monthly_allowance_micro
+     *   value — grant/adjustment set it directly, allowance_reset records what the new period
+     *   starts with), not a change relative to the previous value.
+     * - 'revoke': always 0, a marker with no amount of its own.
+     */
     amountMicro: bigint('amount_micro', { mode: 'number' }).notNull(),
     // no FK: append-only audit; a chat deleted mid-answer must never abort the settle (see spec §8 amendment)
     conversationId: uuid('conversation_id'),

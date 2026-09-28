@@ -185,6 +185,8 @@ Drizzle: schema files under `db/schema/` for typing and queries only; the journa
 
 > **Plan amendment (Task 2 code review, 2026-09-28):** `ask_ledger.conversation_id` carries no foreign key (append-only audit; a chat deleted mid-answer must not abort the settlement), and `ask_ledger.created_by` gets a partial index for the SET NULL action on user deletion.
 
+> **Plan amendment (Task 5 code review, 2026-09-28):** `ask_accounts` gets `ask_accounts_nonnegative_check` (credit, used allowance, allowance and conversation_count all ≥ 0), so no SQL path can drive the ledger negative.
+
 ## 9. Money
 
 ### 9.1 Units
