@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockSyncUser, mockSendWelcome } = vi.hoisted(() => ({
+const { mockSyncUser, mockSendWelcome, mockAddContact, mockRemoveContact } = vi.hoisted(() => ({
   mockSyncUser: vi.fn().mockResolvedValue({
     user: { id: 'uuid', clerkUserId: 'user_123', email: 'test@x.com', name: 'Test User' },
     created: true,
   }),
   mockSendWelcome: vi.fn().mockResolvedValue(true),
+  mockAddContact: vi.fn().mockResolvedValue('added'),
+  mockRemoveContact: vi.fn().mockResolvedValue('removed'),
 }));
 
 vi.mock('svix', () => ({
@@ -26,14 +28,23 @@ vi.mock('@/lib/notifications/sendWelcomeEmail', () => ({
   sendWelcomeEmail: mockSendWelcome,
 }));
 
+vi.mock('@/lib/notifications/resendContacts', () => ({
+  addResendContact: mockAddContact,
+  removeResendContact: mockRemoveContact,
+}));
+
 vi.mock('@/lib/env', () => ({
   env: { CLERK_WEBHOOK_SIGNING_SECRET: 'whsec_test' },
 }));
 
-// Mock the db client for user.deleted handling
-const { mockDbDelete } = vi.hoisted(() => ({
-  mockDbDelete: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-}));
+// Mock the db client for user.deleted handling: delete → where → returning
+const { mockDbDelete, mockReturning } = vi.hoisted(() => {
+  const mockReturning = vi.fn().mockResolvedValue([]);
+  return {
+    mockReturning,
+    mockDbDelete: vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: mockReturning }) }),
+  };
+});
 
 vi.mock('@/db/client', () => ({
   db: { delete: mockDbDelete },
@@ -97,6 +108,7 @@ describe('POST /api/webhooks/clerk', () => {
     const res = await POST(req);
     expect(res.status).toBe(200);
     expect(mockSendWelcome).toHaveBeenCalledWith({ to: 'test@x.com', name: 'Test User' });
+    expect(mockAddContact).toHaveBeenCalledWith({ email: 'test@x.com', name: 'Test User' });
   });
 
   it('does not send the welcome email on a webhook retry (row already existed)', async () => {
@@ -115,6 +127,7 @@ describe('POST /api/webhooks/clerk', () => {
     const res = await POST(req);
     expect(res.status).toBe(200);
     expect(mockSendWelcome).not.toHaveBeenCalled();
+    expect(mockAddContact).not.toHaveBeenCalled();
   });
 
   it('does not send the welcome email on user.updated when the row already existed', async () => {
@@ -178,6 +191,41 @@ describe('POST /api/webhooks/clerk', () => {
     const res = await POST(req);
     expect(res.status).toBe(200);
     expect(mockSendWelcome).not.toHaveBeenCalled();
+  });
+
+  describe('user.deleted', () => {
+    const deleted = (id = 'user_del') => makeRequest({ type: 'user.deleted', data: { id, deleted: true } });
+
+    it('deletes the row and removes the Resend contact for its email', async () => {
+      mockReturning.mockResolvedValueOnce([{ email: 'gone@shop.co' }]);
+      const res = await POST(deleted());
+      expect(res.status).toBe(200);
+      expect(mockDbDelete).toHaveBeenCalledTimes(1);
+      expect(mockRemoveContact).toHaveBeenCalledWith('gone@shop.co');
+    });
+
+    it('removes nothing from Resend when no row matched (already gone)', async () => {
+      mockReturning.mockResolvedValueOnce([]);
+      const res = await POST(deleted());
+      expect(res.status).toBe(200);
+      expect(mockRemoveContact).not.toHaveBeenCalled();
+    });
+
+    it('still acknowledges with 200 when the Resend removal reports failure (fail-soft)', async () => {
+      mockReturning.mockResolvedValueOnce([{ email: 'gone@shop.co' }]);
+      mockRemoveContact.mockResolvedValueOnce('failed');
+      const res = await POST(deleted());
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 500 (so Svix retries) when the row delete itself throws, without touching Resend', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      mockReturning.mockRejectedValueOnce(new Error('neon blip'));
+      const res = await POST(deleted());
+      expect(res.status).toBe(500);
+      expect(mockRemoveContact).not.toHaveBeenCalled();
+      error.mockRestore();
+    });
   });
 
   it('rejects requests missing svix headers', async () => {

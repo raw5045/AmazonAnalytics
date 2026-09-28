@@ -1,6 +1,7 @@
 import { Webhook } from 'svix';
 import { env } from '@/lib/env';
 import { provisionUser } from '@/lib/auth/provisionUser';
+import { removeResendContact } from '@/lib/notifications/resendContacts';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -99,7 +100,14 @@ export async function POST(req: Request): Promise<Response> {
       // admins aren't deleted via Clerk in practice. Follow-up if that changes:
       // a set-null migration on those refs (upload_batches.created_by_user_id
       // is NOT NULL, so that one also needs its NOT NULL dropped).
-      await db.delete(users).where(eq(users.clerkUserId, event.data.id));
+      const [gone] = await db
+        .delete(users)
+        .where(eq(users.clerkUserId, event.data.id))
+        .returning({ email: users.email });
+      // The member is gone: drop their Resend contact too. Fail-soft — a
+      // Resend hiccup is logged, never a 500 (the row is already deleted, so
+      // a Svix retry could not recover the email anyway).
+      if (gone) await removeResendContact(gone.email);
     }
   } catch (e) {
     console.error(
