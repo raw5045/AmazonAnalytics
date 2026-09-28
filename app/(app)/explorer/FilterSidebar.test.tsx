@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
+import { EXPLORER_DEFAULTS, parseExcludeTerms } from '@/lib/explorer/parseFilters';
 import { FilterSidebar, filtersToPending, pendingToParams, sortHint } from './FilterSidebar';
 import { sortHidesRows } from '@/lib/explorer/sortRules';
 import type { SortKey } from '@/lib/explorer/types';
@@ -140,16 +140,43 @@ describe('exclude terms ("But not")', () => {
     const params = pendingToParams({ ...filtersToPending(EXPLORER_DEFAULTS), qExclude: ' floor ,ceiling fan, ab, FLOOR ' });
     expect(params.get('qx')).toBe('floor,ceiling fan');
     expect(pendingToParams(filtersToPending(EXPLORER_DEFAULTS)).has('qx')).toBe(false);
+    expect(
+      parseExcludeTerms(
+        pendingToParams(filtersToPending({ ...EXPLORER_DEFAULTS, qExclude: ['floor', 'ceiling fan'] })).get('qx') ??
+          undefined,
+      ),
+    ).toEqual(['floor', 'ceiling fan']);
   });
 
   it('renders under "Search term contains", applies without an include term, and warns about short chunks', () => {
     render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
-    const input = screen.getByRole('textbox', { name: 'Exclude terms' });
+    const input = screen.getByRole('textbox', { name: 'But not' });
     fireEvent.change(input, { target: { value: 'led, ab' } });
-    expect(screen.getByText(/shorter than 3 characters are ignored/i)).toBeInTheDocument();
+    expect(screen.getByText(/terms shorter than 3 characters are ignored/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /apply filters/i }));
     const url = replace.mock.calls.at(-1)?.[0] as string;
     expect(new URLSearchParams(url.split('?')[1]).get('qx')).toBe('led');
+  });
+
+  it('shows the overflow warning when more than five terms are typed', () => {
+    render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
+    const input = screen.getByRole('textbox', { name: 'But not' });
+    fireEvent.change(input, { target: { value: 'a1a, b2b, c3c, d4d, e5e, f6f' } });
+    expect(screen.getByText(/only the first 5 terms are used/i)).toBeInTheDocument();
+  });
+
+  it('Reset clears the exclude terms', () => {
+    render(<FilterSidebar filters={{ ...EXPLORER_DEFAULTS, qExclude: ['floor'] }} categories={[]} leafCategories={[]} />);
+    expect(screen.getByRole('textbox', { name: 'But not' })).toHaveValue('floor');
+    fireEvent.click(screen.getByRole('button', { name: /reset/i }));
+    expect(screen.getByRole('textbox', { name: 'But not' })).toHaveValue('');
+  });
+
+  it('reads as applied once the URL carries what the draft parses to', () => {
+    const { rerender } = render(<FilterSidebar filters={EXPLORER_DEFAULTS} categories={[]} leafCategories={[]} />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'But not' }), { target: { value: 'led, ab' } });
+    rerender(<FilterSidebar filters={{ ...EXPLORER_DEFAULTS, qExclude: ['led'] }} categories={[]} leafCategories={[]} />);
+    expect(screen.getByRole('button', { name: /filters applied/i })).toBeInTheDocument();
   });
 
   it('keeps the Word count card at the bottom of the filter list', () => {

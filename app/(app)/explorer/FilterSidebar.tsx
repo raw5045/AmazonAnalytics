@@ -11,7 +11,7 @@ import type {
   TitleMatchMode,
   WindowKey,
 } from '@/lib/explorer/types';
-import { EXPLORER_DEFAULTS, MIN_EXCLUDE_TERM_LENGTH, parseExcludeTerms } from '@/lib/explorer/parseFilters';
+import { EXPLORER_DEFAULTS, MAX_EXCLUDE_TERMS, MIN_EXCLUDE_TERM_LENGTH, parseExcludeTerms } from '@/lib/explorer/parseFilters';
 import { jumpPresetsFor, type JumpMetric } from '@/lib/explorer/jumpPresets';
 import { sortHidesRows, sortNullKeyColumn, sortUsesVolumeDelta } from '@/lib/explorer/sortRules';
 import { LeafCategoryTypeahead } from './LeafCategoryTypeahead';
@@ -70,6 +70,12 @@ function excludeHasShortChunk(text: string): boolean {
     const t = c.trim();
     return t.length > 0 && t.length < MIN_EXCLUDE_TERM_LENGTH;
   });
+}
+
+/** True when more non-empty chunks were typed than fit under MAX_EXCLUDE_TERMS (the extras are silently dropped). */
+function excludeHasOverflow(text: string): boolean {
+  const nonEmptyChunks = text.split(',').filter((c) => c.trim().length > 0).length;
+  return parseExcludeTerms(text).length === MAX_EXCLUDE_TERMS && nonEmptyChunks > MAX_EXCLUDE_TERMS;
 }
 
 const TITLE_MODES: Array<{ value: TitleMatchMode | ''; label: string }> = [
@@ -238,8 +244,17 @@ export function FilterSidebar({
   };
 
   // rangeMetric is presentational (it never reaches the URL), so a bare
-  // Rank | Volume switch must not light up Apply.
-  const signature = (p: PendingFilters) => JSON.stringify({ ...p, rangeMetric: undefined });
+  // Rank | Volume switch must not light up Apply. q and qExclude are
+  // normalised to what they'd parse to — a whitespace-only edit, or an
+  // exclude draft that re-sorts/re-spaces to the same applied terms,
+  // shouldn't count as dirty either.
+  const signature = (p: PendingFilters) =>
+    JSON.stringify({
+      ...p,
+      rangeMetric: undefined,
+      q: p.q.trim(),
+      qExclude: parseExcludeTerms(p.qExclude).join(','),
+    });
   const dirty = signature(filtersToPending(filters)) !== signature(pending);
 
   const set = <K extends keyof PendingFilters>(key: K, value: PendingFilters[K]) => {
@@ -347,6 +362,7 @@ export function FilterSidebar({
           <span className="text-xs font-medium text-gray-700">But not</span>
           <input
             type="text"
+            id="exclude-terms"
             value={pending.qExclude}
             onChange={(e) => set('qExclude', e.target.value)}
             onKeyDown={(e) => {
@@ -354,15 +370,21 @@ export function FilterSidebar({
             }}
             placeholder="e.g. floor, ceiling fan"
             className="filter-input mt-1"
-            aria-label="Exclude terms"
+            aria-describedby="exclude-terms-hint"
           />
         </label>
         {excludeHasShortChunk(pending.qExclude) ? (
-          <p className="text-xs text-amber-700 mt-1">Chunks shorter than 3 characters are ignored.</p>
+          <p id="exclude-terms-hint" className="text-xs text-amber-700 mt-1">
+            Terms shorter than {MIN_EXCLUDE_TERM_LENGTH} characters are ignored.
+          </p>
+        ) : excludeHasOverflow(pending.qExclude) ? (
+          <p id="exclude-terms-hint" className="text-xs text-amber-700 mt-1">
+            Only the first {MAX_EXCLUDE_TERMS} terms are used.
+          </p>
         ) : (
-          <p className="text-xs text-gray-500 mt-1">
-            Drops keywords containing any of these whole words or phrases. Up to 5, comma-separated, 3+ characters
-            each; works with or without a search term.
+          <p id="exclude-terms-hint" className="text-xs text-gray-500 mt-1">
+            Drops keywords containing any of these whole words or phrases. Up to {MAX_EXCLUDE_TERMS}, comma-separated,{' '}
+            {MIN_EXCLUDE_TERM_LENGTH}+ characters each; works with or without a search term.
           </p>
         )}
       </FieldGroup>
