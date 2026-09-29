@@ -237,6 +237,8 @@ There is **no pre-reservation**. The worst-case overshoot of one turn is bounded
 ### 9.6 Ceiling alerts
 When a settlement crosses 80% or 100% of the ceiling and the matching `alerted_*_at` is null, one email goes to `INITIAL_ADMIN_EMAIL` through the existing Resend send path (fire-and-forget, `after()`; when that env is unset the crossing is only logged), and the timestamp is set in the same transaction so it sends once per month.
 
+> **Amendment (Task 10 review, 2026-09-29):** The alert is awaited, not fire-and-forget via `after()` — `maybeAlertCeiling` is started un-awaited from the chat route's `onEnd` `finally` (after the settle, the answer save and the lock release) and bounded to a 10-second timeout internally, so a stalled Resend call can extend the turn's `after()`-covered lifetime by at most that long without ever delaying the member's stream, the save, or the lock release. `markCeilingAlert` is its own single UPDATE statement, not part of a transaction with the settlement — neon-http has none (§8) — so a concurrent settlement crossing the same threshold simply loses the race harmlessly: the column's `IS NULL` guard means only the first caller's mark succeeds and only that caller sends. The admin page (`/admin/ask-ai`) also checks `requireAdmin()` itself, at the top of the page component, rather than relying solely on `app/admin/layout.tsx`'s check (see the §11.5 amendment).
+
 ### 9.7 Admin operations (`/api/admin/ask-ai/accounts`, admin role, same-origin)
 `grant` (creates the row with the default allowance, `access = true`), `set_allowance` (any non-negative amount; 0 keeps access but no allowance), `add_credit` (positive amount, note required), `revoke` (`access = false`; the row and history stay). Each writes a ledger entry with `created_by`.
 
@@ -280,6 +282,8 @@ After each turn the client calls `router.refresh()` so the server-rendered meter
 
 ### 11.5 Admin page (`/admin/ask-ai`, linked from the admin nav)
 Top: spend this month against the ceiling, the sum of remaining allowances of members with access (if that sum is above the ceiling, the ceiling is too low), questions, model mix. Then a member table: email, access, allowance, used this period, credit, questions this month, last activity. Row actions: Grant (default allowance), Set allowance, Add credit (amount + note), Revoke. Grant by email lookup above the table. Every action confirms and re-renders. No transcripts, no message text anywhere on the page.
+
+> **Amendment (Task 10 review, 2026-09-29):** The top block also shows a model-mix line with spend per model, and alert-sent timestamps for the month. Per member, "used this period" reads $0 once `period_start` has rolled over to a new month, mirroring the lazy period-reset rule (§9.3), instead of showing last month's figure until that member's next question re-triggers the reset; a "spend this period" column (from the ledger, not the account row) is shown alongside it. The "ceiling too low" check also counts spendable credit on accounts with access, not just committed allowances. `AskAiAdminPage` calls `requireAdmin()` itself before any data read, rather than relying only on `app/admin/layout.tsx`: Next 16 renders layouts and pages in parallel, and a crafted `Next-Router-State-Tree` can claim the `/admin` layout already ran, so the layout's check is not a guaranteed gate on its own (vendored docs, `01-app/02-guides/authentication.md`, "Layouts and auth checks"). Every other `/admin` page still relies on the layout alone — recorded as a follow-up, §16. Row actions: Revoke and Add credit require a one-step inline confirm before the request goes out; every action shows a brief success line.
 
 ### 11.6 Privacy and cross-links
 Privacy page, new paragraph (owner may edit the wording; the facts are verified, §17): "Ask AI. When you use Ask AI, your questions, the answers, and the KeywordQuarry data the assistant looks up are stored with your account until you delete the chat or your account. To produce an answer we send your question, the recent messages of that chat and that data to Anthropic, our AI provider. Anthropic does not use it to train its models and deletes it from its systems within 30 days, unless its policies or the law require it to keep it longer."
@@ -350,6 +354,8 @@ Reviewers and implementers must not run integration tests or call Anthropic unle
 - Rename chats; regenerate an answer.
 - Terms wording for allowance and credit rules (with the Stripe arc).
 - Write tools with a confirmation step (`requiresConfirmation`).
+- Every other `/admin` page relies on `app/admin/layout.tsx`'s `requireAdmin()` alone — the same page-level gating gap fixed on `/admin/ask-ai` (Task 10 review, S1).
+- `lib/notifications/sendFeedbackEmail.ts` logs the raw Resend error object on failure, unlike `sendAskAiCeilingEmail.ts`'s coded-fields-only logging (Task 10 review).
 
 ## 17. Verified facts this design relies on (checked 2026-09-28)
 

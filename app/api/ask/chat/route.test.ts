@@ -246,38 +246,47 @@ describe('POST /api/ask/chat', () => {
     // (Task 8 re-review, 5c) — not just "eventually", but by the time runTurn sees it.
     expect(turn.runTurn.mock.calls[0][0].abortSignal.aborted).toBe(true);
   });
-  it('finishTurn() resolves the after()-lifetime promise only once onEnd completes, not before — on Vercel, skipping this would pin the function alive until maxDuration (Task 8 re-review, nit 1)', async () => {
+  it('finishTurn() resolves the after()-lifetime promise only once the un-awaited alert settles, not just once onEnd returns (Task 10 review, C4) — on Vercel, skipping this would pin the function alive until maxDuration', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let resolveAlert!: () => void;
+    alerts.maybeAlertCeiling.mockImplementationOnce(() => new Promise((resolve) => { resolveAlert = resolve; }));
     const res = await post(newChat);
     expect(res.status).toBe(200);
     const registered = nextServerMock.after.mock.calls[0][0] as () => Promise<void>;
     const p = registered();
+    const { onEnd } = turn.runTurn.mock.calls[0][0];
+    // onEnd itself completes even though the alert (deferred above) has not settled — it is started
+    // un-awaited (C4) so the stream can close and the lock stays released without waiting on Resend.
+    await onEnd({ assistant: null, status: 'complete', usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }, steps: 1 });
     const PENDING = Symbol('pending');
     const raced = await Promise.race([
       p.then(() => 'resolved' as const),
       new Promise((resolve) => setTimeout(() => resolve(PENDING), 20)),
     ]);
     expect(raced).toBe(PENDING);
-    const { onEnd } = turn.runTurn.mock.calls[0][0];
-    await onEnd({ assistant: null, status: 'complete', usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }, steps: 1 });
+    resolveAlert();
     await expect(p).resolves.toBeUndefined();
     log.mockRestore();
     error.mockRestore();
   });
 
   describe('onEnd: settlement, ceiling alert, persistence and lock release', () => {
-    it('settles BEFORE saving the answer, alerts the ceiling with the settled global cost, and logs answer_not_saved when the chat vanished underneath it', async () => {
+    it('settles BEFORE saving the answer, starts the ceiling alert with the settled global cost AFTER releasing the lock, and logs answer_not_saved when the chat vanished underneath it', async () => {
       await post(newChat);
       const { onEnd } = turn.runTurn.mock.calls[0][0];
       const assistant = { id: '22222222-2222-4222-8222-222222222222', role: 'assistant', parts: [{ type: 'text', text: 'Hi' }] };
       const order: string[] = [];
       ledger.settleTurn.mockImplementationOnce(async () => { order.push('settle'); return { fromAllowanceMicro: 5, fromCreditMicro: 0, absorbedMicro: 0, globalCostMicro: 5, globalQuestions: 1 }; });
       conv.appendAssistantMessage.mockImplementationOnce(async () => { order.push('append'); return false; });
+      conv.releaseTurnLock.mockImplementationOnce(async () => { order.push('release'); });
+      alerts.maybeAlertCeiling.mockImplementationOnce(async () => { order.push('alert'); });
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
       const log = vi.spyOn(console, 'log').mockImplementation(() => {});
       await onEnd({ assistant, status: 'complete', usage: { noCacheTokens: 5000, cacheWriteTokens: 1000, cacheReadTokens: 10000, outputTokens: 1000 }, steps: 2 });
-      expect(order).toEqual(['settle', 'append']);
+      // Task 10 review, C4: the alert now starts AFTER the lock is released, not from inside the
+      // settle's own try — order of mock calls is the actual proof, not just that it was called.
+      expect(order).toEqual(['settle', 'append', 'release', 'alert']);
       expect(ledger.settleTurn).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', conversationId: 'c9', messageId: assistant.id, model: 'claude-sonnet-5', costMicro: 24_500 }));
       expect(alerts.maybeAlertCeiling).toHaveBeenCalledWith(5, expect.any(Date), 1);
       expect(conv.appendAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'c9', status: 'complete', message: assistant }));
@@ -290,7 +299,7 @@ describe('POST /api/ask/chat', () => {
       error.mockRestore();
       log.mockRestore();
     });
-    it('a settle failure is logged as settle_failed with enough to reconcile by hand, but the answer is still saved and the lock still released', async () => {
+    it('a settle failure is logged as settle_failed with enough to reconcile by hand, but the answer is still saved, the lock still released, and no alert attempted for an unbilled turn', async () => {
       await post(newChat);
       const { onEnd } = turn.runTurn.mock.calls[0][0];
       const assistant = { id: '22222222-2222-4222-8222-222222222222', role: 'assistant', parts: [{ type: 'text', text: 'Hi' }] };
@@ -303,6 +312,7 @@ describe('POST /api/ask/chat', () => {
       expect(logged).toMatchObject({ outcome: 'settle_failed', userId: 'u1', conversationId: 'c9', messageId: assistant.id, model: 'claude-sonnet-5', status: 'complete' });
       expect(conv.appendAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({ message: assistant }));
       expect(conv.releaseTurnLock).toHaveBeenCalledWith('c9');
+      expect(alerts.maybeAlertCeiling).not.toHaveBeenCalled();
       error.mockRestore();
     });
     it('an alert failure is logged as alert_failed, separate from settle_failed, since the settle already succeeded', async () => {
@@ -311,6 +321,9 @@ describe('POST /api/ask/chat', () => {
       alerts.maybeAlertCeiling.mockRejectedValueOnce(new Error('resend down'));
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
       await onEnd({ assistant: null, status: 'failed', usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }, steps: 1 });
+      // The alert is started un-awaited (C4) — its .catch() handler runs on a later microtask than
+      // onEnd's own return, so give it a macrotask tick to fire before asserting the log line.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const found = outcomesLogged(error);
       expect(found).toContain('alert_failed');
       expect(found).not.toContain('settle_failed');

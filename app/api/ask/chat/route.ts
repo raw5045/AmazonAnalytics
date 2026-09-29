@@ -201,22 +201,19 @@ export async function POST(req: Request) {
       startMetadata: created ? { conversationId: cid } : undefined,
       onEnd: async ({ assistant, status, usage, steps }) => {
         clearTimeout(timer);
+        // One timestamp for both the settle and the alert (Task 10 review, C-m2): a month-boundary
+        // crossing mid-onEnd could otherwise settle into one month but mark/alert the next.
+        const settledAt = new Date();
         let cost: number | undefined;
+        let settledResult: Awaited<ReturnType<typeof settleTurn>> | undefined;
         // Money first (spec §8 amendment): the settle must never depend on the answer being saved.
         try {
           cost = costMicro(chosen, usage);
-          const settled = await settleTurn({ userId: user.id, conversationId: cid, messageId: assistant?.id ?? null, model: chosen, usage, costMicro: cost, now: new Date() });
+          settledResult = await settleTurn({ userId: user.id, conversationId: cid, messageId: assistant?.id ?? null, model: chosen, usage, costMicro: cost, now: settledAt });
           console.log('[ask turn]', JSON.stringify({
             outcome: status, userId: user.id, conversationId: cid, model: chosen, steps, ...usage, costMicro: cost,
-            absorbedMicro: settled.absorbedMicro, globalCostMicro: settled.globalCostMicro, durationMs: Date.now() - turnStartedAt,
+            absorbedMicro: settledResult.absorbedMicro, globalCostMicro: settledResult.globalCostMicro, durationMs: Date.now() - turnStartedAt,
           }));
-          // Its own try: an alert failure (Resend, Task 10) must never read as an unbilled turn on
-          // the settle_failed line above (Task 8 review, M1) — the settle already succeeded.
-          try {
-            await maybeAlertCeiling(settled.globalCostMicro, new Date(), settled.globalQuestions);
-          } catch (e) {
-            console.error('[ask turn]', JSON.stringify({ outcome: 'alert_failed', userId: user.id, conversationId: cid, ...errFields(e) }));
-          }
         } catch (e) {
           // Everything needed to reconcile this turn by hand, since it was never billed.
           console.error('[ask turn]', JSON.stringify({
@@ -232,7 +229,14 @@ export async function POST(req: Request) {
           console.error('[ask turn]', JSON.stringify({ outcome: 'save_failed', userId: user.id, conversationId: cid, ...errFields(e) }));
         } finally {
           await releaseTurnLock(cid).catch(() => {});
-          finishTurn();
+          // Task 10 review, C4: the alert is started un-awaited so onEnd can return right after the
+          // lock is released — the AI SDK waits for onEnd before closing the member's stream, and a
+          // stalled Resend call (no built-in timeout in resend 6.12.3) must not delay the stream,
+          // the save above, or this lock release. The route's own after(() => turnFinished) keeps
+          // the function alive until the alert settles (bounded to 10s inside maybeAlertCeiling
+          // itself, S6), which is why finishTurn is chained here instead of called directly.
+          const alert = settledResult ? maybeAlertCeiling(settledResult.globalCostMicro, settledAt, settledResult.globalQuestions) : Promise.resolve();
+          void alert.catch((e) => console.error('[ask turn]', JSON.stringify({ outcome: 'alert_failed', userId: user.id, conversationId: cid, ...errFields(e) }))).finally(finishTurn);
         }
       },
     };
