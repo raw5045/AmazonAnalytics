@@ -21,21 +21,26 @@ describe('Connect AI page credentials', () => {
     envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all' };
   });
 
-  it('shows each client its ID and secret inline and drops the "ask us" line when both are configured', async () => {
+  it('shows ChatGPT its ID and secret inline and drops the "ask us" line when the secret is configured', async () => {
     envMock.env.MCP_CLIENT_SECRET_CLAUDE = 'claude-secret-123';
     envMock.env.MCP_CLIENT_SECRET_CHATGPT = 'chatgpt-secret-456';
     render(await ConnectAiPage());
-    expect(screen.getByText('16oat62Xksi7U2Ri')).toBeInTheDocument();
-    expect(screen.getByText('claude-secret-123')).toBeInTheDocument();
     expect(screen.getByText('WzrKBzjxqjhn2pUR')).toBeInTheDocument();
     expect(screen.getByText('chatgpt-secret-456')).toBeInTheDocument();
     expect(screen.queryByText(/ask through the feedback button/i)).not.toBeInTheDocument();
   });
 
-  it('falls back to the "ask us" line for a client whose secret is not configured', async () => {
+  it('never shows the Claude credentials any more (Claude signs in on its own)', async () => {
     envMock.env.MCP_CLIENT_SECRET_CLAUDE = 'claude-secret-123';
+    envMock.env.MCP_CLIENT_SECRET_CHATGPT = 'chatgpt-secret-456';
     render(await ConnectAiPage());
-    expect(screen.getByText('claude-secret-123')).toBeInTheDocument();
+    expect(screen.queryByText('16oat62Xksi7U2Ri')).toBeNull();
+    expect(screen.queryByText('claude-secret-123')).toBeNull();
+    expect(screen.queryByText(/Advanced settings/)).toBeNull();
+  });
+
+  it('falls back to the "ask us" line when the ChatGPT secret is not configured', async () => {
+    render(await ConnectAiPage());
     expect(screen.getByText('WzrKBzjxqjhn2pUR')).toBeInTheDocument();
     expect(screen.getByText(/ask through the feedback button/i)).toBeInTheDocument();
   });
@@ -70,31 +75,15 @@ describe('Connect AI page setup steps', () => {
     envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all' };
   });
 
-  it('walks the chat door (Connectors) with Advanced settings left empty and points at the Code tab', async () => {
+  it('gives Claude four steps (name, URL, Add, Connect) and says the desktop app works the same', async () => {
     render(await ConnectAiPage());
-    expect(screen.getByRole('heading', { name: /^Claude \(claude\.ai or the desktop app/ })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Claude (claude.ai or the desktop app)' })).toBeInTheDocument();
     expect(screen.getByText('Customize → Connectors → + → Add custom connector.')).toBeInTheDocument();
-    expect(screen.getByText(/Leave Advanced settings empty/)).toBeInTheDocument();
-    expect(screen.getByText(/also shows up in the desktop app.s Code tab, under \+ → Connectors/)).toBeInTheDocument();
-  });
-
-  it('keeps the pre-registered credentials only behind an optional disclosure', async () => {
-    envMock.env.MCP_CLIENT_SECRET_CLAUDE = 'claude-secret-123';
-    render(await ConnectAiPage());
-    const summary = screen.getByText('Advanced settings (optional, older setups)');
-    const details = summary.closest('details');
-    expect(details).not.toBeNull();
-    expect(details).toContainElement(screen.getByText('16oat62Xksi7U2Ri'));
-    expect(details).toContainElement(screen.getByText('claude-secret-123'));
-  });
-
-  it('walks the Code tab door: Connectors for the desktop app, claude mcp add for the terminal, the custom MCP form if present', async () => {
-    render(await ConnectAiPage());
-    expect(screen.getByRole('heading', { name: /^Claude Code \(the desktop app/ })).toBeInTheDocument();
-    expect(screen.getByText(/Desktop app: add KeywordQuarry under Customize → Connectors as above/)).toBeInTheDocument();
-    expect(screen.getByText('claude mcp add --transport http keywordquarry https://keywordquarry.com/api/mcp')).toBeInTheDocument();
-    expect(screen.getByText(/Type Streamable HTTP, URL above, leave the bearer token and headers empty, Save/)).toBeInTheDocument();
-    expect(screen.getAllByText('/mcp').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('Name it KeywordQuarry, paste the server URL above, and click Add.')).toBeInTheDocument();
+    expect(screen.getByText('Connect, then approve the KeywordQuarry sign-in screen.')).toBeInTheDocument();
+    expect(screen.getByText(/Works the same in the desktop app.s Chat and Code tabs/)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /^Claude Code/ })).toBeNull();
+    expect(screen.queryByText(/claude mcp add/)).toBeNull();
   });
 
   it('shows the troubleshooting card with the status page first', async () => {
