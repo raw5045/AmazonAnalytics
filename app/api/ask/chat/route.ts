@@ -213,7 +213,7 @@ export async function POST(req: Request) {
           // Its own try: an alert failure (Resend, Task 10) must never read as an unbilled turn on
           // the settle_failed line above (Task 8 review, M1) — the settle already succeeded.
           try {
-            await maybeAlertCeiling(settled.globalCostMicro, new Date());
+            await maybeAlertCeiling(settled.globalCostMicro, new Date(), settled.globalQuestions);
           } catch (e) {
             console.error('[ask turn]', JSON.stringify({ outcome: 'alert_failed', userId: user.id, conversationId: cid, ...errFields(e) }));
           }

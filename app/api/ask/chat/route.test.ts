@@ -279,7 +279,7 @@ describe('POST /api/ask/chat', () => {
       await onEnd({ assistant, status: 'complete', usage: { noCacheTokens: 5000, cacheWriteTokens: 1000, cacheReadTokens: 10000, outputTokens: 1000 }, steps: 2 });
       expect(order).toEqual(['settle', 'append']);
       expect(ledger.settleTurn).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', conversationId: 'c9', messageId: assistant.id, model: 'claude-sonnet-5', costMicro: 24_500 }));
-      expect(alerts.maybeAlertCeiling).toHaveBeenCalledWith(5, expect.any(Date));
+      expect(alerts.maybeAlertCeiling).toHaveBeenCalledWith(5, expect.any(Date), 1);
       expect(conv.appendAssistantMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'c9', status: 'complete', message: assistant }));
       expect(outcomesLogged(error)).toContain('answer_not_saved');
       // The success line (settle worked) is console.log, not console.error, and carries a duration.
