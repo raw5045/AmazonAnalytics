@@ -1,4 +1,6 @@
 // app/admin/digests/page.tsx
+import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
+import { redirect } from 'next/navigation';
 import { loadDigestWeeks, countSubscribedRecipients } from '@/lib/notifications/digest/loadDigestData';
 import { SendDigestButton } from './SendDigestButton';
 
@@ -23,6 +25,16 @@ function isStaleSending(runStatus: string | null, startedAt: string | null): boo
 }
 
 export default async function AdminDigestsPage() {
+  // Page-level gate, mirroring app/admin/ask-ai/page.tsx: Next 16 renders layouts and pages in
+  // parallel, and a client-sent Next-Router-State-Tree can claim the /admin layout already ran, so
+  // app/admin/layout.tsx's requireAdmin() is not a guaranteed gate on its own (vendored docs,
+  // 01-app/02-guides/authentication.md, "Layouts and auth checks"). Checked here before any data read.
+  try {
+    await requireAdmin();
+  } catch (e) {
+    if (e instanceof AuthError) redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/explorer');
+    throw e;
+  }
   const weeks = await loadDigestWeeks();
   const recipientCount = await countSubscribedRecipients();
   const currentWeek = weeks.find((w) => w.isCurrent)?.weekEndDate ?? null;

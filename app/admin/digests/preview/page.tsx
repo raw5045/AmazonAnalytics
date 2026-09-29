@@ -5,7 +5,8 @@
  * own watched keywords (falling back to a sample set if they watch none);
  * ?variant=broadcast renders the broadcast variant.
  */
-import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
+import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
+import { redirect } from 'next/navigation';
 import { buildDigestEmail } from '@/lib/notifications/digest/buildDigestEmail';
 import { signUnsubToken } from '@/lib/notifications/digest/unsubToken';
 import { loadWatchlistRowsByUser, getCurrentDigestWeek } from '@/lib/notifications/digest/loadDigestData';
@@ -24,10 +25,19 @@ export default async function DigestPreviewPage({
 }: {
   searchParams: Promise<{ variant?: string }>;
 }) {
+  // Page-level gate, mirroring app/admin/ask-ai/page.tsx: Next 16 renders layouts and pages in
+  // parallel, and a client-sent Next-Router-State-Tree can claim the /admin layout already ran, so
+  // app/admin/layout.tsx's requireAdmin() is not a guaranteed gate on its own (vendored docs,
+  // 01-app/02-guides/authentication.md, "Layouts and auth checks"). Checked here before any data read; the
+  // admin it resolves also signs their own preview unsub token below.
+  let user;
+  try {
+    user = await requireAdmin();
+  } catch (e) {
+    if (e instanceof AuthError) redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/explorer');
+    throw e;
+  }
   const { variant } = await searchParams;
-  // Admin-gating is enforced by app/admin/layout.tsx (requireAdmin); here
-  // we only need the current user to sign their own preview unsub token.
-  const user = await requireAuthenticatedUser();
   const appUrl = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
   const weekEndDate = (await getCurrentDigestWeek()) ?? '2026-01-01';
   const unsubscribeUrl = `${appUrl}/api/notifications/unsubscribe?token=${signUnsubToken(user.id)}`;

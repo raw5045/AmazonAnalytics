@@ -1,10 +1,21 @@
 import { eq } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { uploadedFiles, schemaVersions } from '@/db/schema';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
+import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { ApproveSchemaButton } from './ApproveSchemaButton';
 
 export default async function RubricDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  // Page-level gate, mirroring app/admin/ask-ai/page.tsx: Next 16 renders layouts and pages in
+  // parallel, and a client-sent Next-Router-State-Tree can claim the /admin layout already ran, so
+  // app/admin/layout.tsx's requireAdmin() is not a guaranteed gate on its own (vendored docs,
+  // 01-app/02-guides/authentication.md, "Layouts and auth checks"). Checked here before any data read.
+  try {
+    await requireAdmin();
+  } catch (e) {
+    if (e instanceof AuthError) redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/explorer');
+    throw e;
+  }
   const { id } = await params;
   const file = await db.query.uploadedFiles.findFirst({
     where: eq(uploadedFiles.id, id),

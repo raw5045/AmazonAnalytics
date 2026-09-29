@@ -2,10 +2,12 @@
 /**
  * Non-sending browser preview of the daily abuse-digest email, for any ET
  * day (?day=YYYY-MM-DD, default yesterday), plus a Send-now button that
- * force-sends the displayed day to all admins. Admin-gating is enforced by
- * app/admin/layout.tsx (requireAdmin).
+ * force-sends the displayed day to all admins. Admin-gating: app/admin/layout.tsx
+ * plus the page's own requireAdmin() below.
  */
 import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { etDay, previousEtDay } from '@/lib/activity/etDay';
 import { loadAbuseDigestData } from '@/lib/notifications/abuseDigest/loadAbuseDigestData';
 import { evaluateFlags } from '@/lib/notifications/abuseDigest/evaluateFlags';
@@ -21,6 +23,16 @@ export default async function AbuseDigestPreviewPage({
 }: {
   searchParams: Promise<{ day?: string }>;
 }) {
+  // Page-level gate, mirroring app/admin/ask-ai/page.tsx: Next 16 renders layouts and pages in
+  // parallel, and a client-sent Next-Router-State-Tree can claim the /admin layout already ran, so
+  // app/admin/layout.tsx's requireAdmin() is not a guaranteed gate on its own (vendored docs,
+  // 01-app/02-guides/authentication.md, "Layouts and auth checks"). Checked here before any data read.
+  try {
+    await requireAdmin();
+  } catch (e) {
+    if (e instanceof AuthError) redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/explorer');
+    throw e;
+  }
   const sp = await searchParams;
   const yesterday = previousEtDay(new Date());
   const today = etDay(new Date());

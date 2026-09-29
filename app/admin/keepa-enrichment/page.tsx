@@ -1,3 +1,5 @@
+import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
+import { redirect } from 'next/navigation';
 import { db } from '@/db/client';
 import { keywordCurrentSummaryMeta, keepaEnrichmentRuns } from '@/db/schema';
 import { desc } from 'drizzle-orm';
@@ -6,6 +8,16 @@ import { KeepaEnrichmentButton } from './KeepaEnrichmentButton';
 export const dynamic = 'force-dynamic';
 
 export default async function KeepaEnrichmentAdminPage() {
+  // Page-level gate, mirroring app/admin/ask-ai/page.tsx: Next 16 renders layouts and pages in
+  // parallel, and a client-sent Next-Router-State-Tree can claim the /admin layout already ran, so
+  // app/admin/layout.tsx's requireAdmin() is not a guaranteed gate on its own (vendored docs,
+  // 01-app/02-guides/authentication.md, "Layouts and auth checks"). Checked here before any data read.
+  try {
+    await requireAdmin();
+  } catch (e) {
+    if (e instanceof AuthError) redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/explorer');
+    throw e;
+  }
   const [meta] = await db.select().from(keywordCurrentSummaryMeta).limit(1);
   const recentRuns = await db
     .select()
