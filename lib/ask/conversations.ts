@@ -46,14 +46,21 @@ export function storedToUiMessage(m: StoredMessage): AskUIMessage {
 }
 
 /**
- * Strips U+0000 and repairs lone surrogates in every string value before a parts array is stored
- * as jsonb — Postgres rejects both outright (Task 8 review, I1/M6c). The chat route's own zod
- * schema already sanitises the member's message text the same way, but appendAssistantMessage's
- * parts come straight from the model's output with nothing upstream of it to clean them, so both
- * append functions do this at the DB boundary rather than trusting a caller.
+ * Strips U+0000 and repairs lone surrogates before something is stored — Postgres rejects both
+ * outright (Task 8 review, I1/M6c). The chat route's own zod schema already sanitises the member's
+ * first-turn message text in the request body the same way, but nothing upstream cleans an
+ * assistant message's parts (they come straight from the model's output) or the title text
+ * re-derived from a first message here, so this file cleans at the DB boundary rather than
+ * trusting a caller (Task 8 re-review): `cleanPartsJson` for a parts array
+ * (createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage all use it),
+ * `cleanString` for the plain text a title is cut from.
  */
+function cleanString(s: string): string {
+  return s.replaceAll('\u0000', '').toWellFormed();
+}
+
 function cleanPartsJson(parts: unknown[]): string {
-  return JSON.stringify(parts, (_k, v) => (typeof v === 'string' ? v.replaceAll('\u0000', '').toWellFormed() : v));
+  return JSON.stringify(parts, (_k, v) => (typeof v === 'string' ? cleanString(v) : v));
 }
 
 export async function listConversations(userId: string): Promise<AskConversation[]> {
@@ -99,10 +106,10 @@ export async function createConversationWithFirstMessage(a: { userId: string; mo
       WHERE user_id = ${a.userId}::uuid AND conversation_count < ${sql.raw(String(ASK_LIMITS.maxChats))} RETURNING user_id
     ), conv AS (
       INSERT INTO ask_conversations (user_id, title, model, message_count, in_flight_since, created_at, updated_at)
-      SELECT user_id, ${titleFrom(firstText(a.message))}, ${a.model}, 1, now(), ${a.now.toISOString()}::timestamptz, ${a.now.toISOString()}::timestamptz FROM acct RETURNING id
+      SELECT user_id, ${titleFrom(cleanString(firstText(a.message)))}, ${a.model}, 1, now(), ${a.now.toISOString()}::timestamptz, ${a.now.toISOString()}::timestamptz FROM acct RETURNING id
     ), msg AS (
       INSERT INTO ask_messages (id, conversation_id, seq, role, parts, status, created_at)
-      SELECT ${a.message.id}::uuid, id, 1, 'user', ${JSON.stringify(a.message.parts)}::jsonb, 'complete', ${a.now.toISOString()}::timestamptz FROM conv RETURNING id
+      SELECT ${a.message.id}::uuid, id, 1, 'user', ${cleanPartsJson(a.message.parts)}::jsonb, 'complete', ${a.now.toISOString()}::timestamptz FROM conv RETURNING id
     )
     SELECT conv.id FROM conv, msg`);
   return r.rows[0] ? { conversationId: r.rows[0].id } : 'cap';

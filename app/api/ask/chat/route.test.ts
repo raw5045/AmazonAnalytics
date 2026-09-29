@@ -90,6 +90,14 @@ describe('POST /api/ask/chat', () => {
     expect(await (await post({ ...newChat, model: 'claude-fable-5-1' })).json()).toEqual({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' });
     expect(await (await post('{not json')).json()).toEqual({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' });
   });
+  it('rejects unknown body keys, top-level and nested inside message, with 400 and the generic bad-request message (Task 8 re-review)', async () => {
+    const top = await post({ ...newChat, extra: 'nope' });
+    expect(top.status).toBe(400);
+    expect(await top.json()).toEqual({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' });
+    const nested = await post({ ...newChat, message: { ...newChat.message, extra: 'nope' } });
+    expect(nested.status).toBe(400);
+    expect(await nested.json()).toEqual({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' });
+  });
   it('a NUL-only message is empty once sanitised and gets the same 400 as an empty message (Task 8 review, I1)', async () => {
     const res = await post({ ...newChat, message: { text: '\u0000\u0000' } });
     expect(res.status).toBe(400);
@@ -216,6 +224,11 @@ describe('POST /api/ask/chat', () => {
     expect(conv.releaseTurnLock).toHaveBeenCalledWith('c9');
     expect(conv.acquireTurnLock).not.toHaveBeenCalled();
     expect(outcomesLogged(error)).toContain('setup_failed');
+    // The setup catch aborts the turn's own controller unconditionally (Task 8 review, I3c); the
+    // signal handed to runTurn is the same object, so by the time the catch has run it must read
+    // as aborted too — confirming the abort actually reaches whatever the turn was doing, not just
+    // that the route logged and answered 503 (Task 8 re-review, 5c).
+    expect(turn.runTurn.mock.calls[0][0].abortSignal.aborted).toBe(true);
     error.mockRestore();
   });
   it('an already-aborted request signal cancels the returned stream body once runTurn resolves, and after() was registered once', async () => {
@@ -228,6 +241,29 @@ describe('POST /api/ask/chat', () => {
     expect(res.status).toBe(200);
     expect(cancelSpy).toHaveBeenCalledTimes(1);
     expect(nextServerMock.after).toHaveBeenCalledTimes(1);
+    // The request signal was already aborted before POST ever ran, so the aborted-already check
+    // must have propagated it onto the route's own controller before runTurn was ever called
+    // (Task 8 re-review, 5c) — not just "eventually", but by the time runTurn sees it.
+    expect(turn.runTurn.mock.calls[0][0].abortSignal.aborted).toBe(true);
+  });
+  it('finishTurn() resolves the after()-lifetime promise only once onEnd completes, not before — on Vercel, skipping this would pin the function alive until maxDuration (Task 8 re-review, nit 1)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await post(newChat);
+    expect(res.status).toBe(200);
+    const registered = nextServerMock.after.mock.calls[0][0] as () => Promise<void>;
+    const p = registered();
+    const PENDING = Symbol('pending');
+    const raced = await Promise.race([
+      p.then(() => 'resolved' as const),
+      new Promise((resolve) => setTimeout(() => resolve(PENDING), 20)),
+    ]);
+    expect(raced).toBe(PENDING);
+    const { onEnd } = turn.runTurn.mock.calls[0][0];
+    await onEnd({ assistant: null, status: 'complete', usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }, steps: 1 });
+    await expect(p).resolves.toBeUndefined();
+    log.mockRestore();
+    error.mockRestore();
   });
 
   describe('onEnd: settlement, ceiling alert, persistence and lock release', () => {

@@ -78,6 +78,17 @@ describe('conversations', () => {
     execute.mockResolvedValueOnce({ rows: [] });
     await expect(createConversationWithFirstMessage({ userId: 'u1', model: 'claude-opus-5-5', message: userMsg, now: new Date() })).resolves.toBe('cap');
   });
+  it('createConversationWithFirstMessage strips U+0000 and repairs a lone surrogate in both the stored parts and the derived title (Task 8 re-review)', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ id: 'c9' }] });
+    const dirty = { id: userMsg.id, parts: [{ type: 'text' as const, text: 'a\u0000b\ud800c' }] };
+    await createConversationWithFirstMessage({ userId: 'u1', model: 'claude-sonnet-5', message: dirty, now: new Date() });
+    const params = paramsOf();
+    expect(params).toContain('ab�c');
+    const storedParts = params.find((p) => typeof p === 'string' && p.includes('"text"')) as string;
+    expect(storedParts).not.toContain('\u0000');
+    expect(storedParts).not.toContain('\ud800');
+    expect(JSON.parse(storedParts)).toEqual([{ type: 'text', text: 'ab�c' }]);
+  });
   it('appends a user message only under the 200 cap, bumping message_count, owner-scoped', async () => {
     execute.mockResolvedValueOnce({ rows: [{ seq: 3 }] });
     await expect(appendUserMessage({ conversationId: 'c1', userId: 'u1', message: userMsg, now: new Date() })).resolves.toEqual({ seq: 3 });

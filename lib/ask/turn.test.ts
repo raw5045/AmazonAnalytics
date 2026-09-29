@@ -171,7 +171,10 @@ describe('runTurn', () => {
       generateMessageId: () => 'a1', onEnd,
     });
     await expect(new Response(res.body).text()).resolves.toContain('hi there');
-    expect(log.mock.calls.some((c) => c[0] === '[ask turn] onEnd threw')).toBe(true);
+    const line = log.mock.calls.find((c) => c[0] === '[ask turn]');
+    expect(line).toBeDefined();
+    const logged = JSON.parse(line![1] as string) as { outcome?: string; error?: string; detail?: string };
+    expect(logged).toMatchObject({ outcome: 'on_end_threw', error: 'Error', detail: 'db down' });
     log.mockRestore();
   });
 });

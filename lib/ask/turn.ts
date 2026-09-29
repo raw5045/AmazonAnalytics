@@ -3,6 +3,7 @@ import {
   type LanguageModel, type ModelMessage, type ToolSet, type UIMessage,
 } from 'ai';
 import { ASK_LIMITS, type AskModelId } from './config';
+import { errFields } from './logSafe';
 import { BUSY_LINE, PROBLEM_LINE } from './messages';
 import { addUsage, usageFromSdk, ZERO_USAGE, type TurnUsage } from './pricing';
 import type { AskUIMessage, MessageStatus } from './conversations';
@@ -152,8 +153,10 @@ export async function runTurn(input: TurnInput): Promise<Response> {
           await input.onEnd({ assistant, status, usage, steps, finishReason });
         } catch (e) {
           // The stream has already been rendered to the browser by this point; a persistence
-          // failure here must never surface as a broken response.
-          console.error('[ask turn] onEnd threw', e);
+          // failure here must never surface as a broken response. Log-safe (Task 8 re-review): the
+          // raw error object used to be passed straight to console.error, which — for a
+          // DrizzleQueryError — would print its bound SQL params (possibly message text).
+          console.error('[ask turn]', JSON.stringify({ outcome: 'on_end_threw', ...errFields(e) }));
         }
       },
     }),

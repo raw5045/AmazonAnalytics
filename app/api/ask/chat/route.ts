@@ -72,7 +72,7 @@ function json(body: unknown, status: number, extra: Record<string, string> = {})
 let warnedNoKey = false;
 
 export async function POST(req: Request) {
-  if (!askAiEnabled()) return new NextResponse(null, { status: 404 });
+  if (!askAiEnabled()) return new NextResponse(null, { status: 404, headers: NO_STORE });
   if (!isSameOrigin(req)) return json({ error: CROSS_SITE_MESSAGE }, 403);
   let user;
   try {
@@ -109,7 +109,7 @@ export async function POST(req: Request) {
   const gate = await runGates({ user, now });
   if (!gate.ok) {
     const { status, code, message, retryAfterSeconds } = gate.refusal;
-    if (status === 404) return new NextResponse(null, { status: 404 });
+    if (status === 404) return new NextResponse(null, { status: 404, headers: NO_STORE });
     return json({ error: message, code }, status, retryAfterSeconds ? { 'retry-after': String(retryAfterSeconds) } : {});
   }
   const apiKey = anthropicApiKey();
@@ -139,7 +139,7 @@ export async function POST(req: Request) {
     created = true;
   } else {
     const loaded = await loadConversation(user.id, body.data.conversationId, { lastN: ASK_LIMITS.historyWindowMessages });
-    if (!loaded) return new NextResponse(null, { status: 404 });
+    if (!loaded) return new NextResponse(null, { status: 404, headers: NO_STORE });
     if (loaded.conversation.messageCount >= ASK_LIMITS.maxMessagesPerChat) return json({ error: CHAT_FULL_MESSAGE, code: 'chat_full' }, 409);
     if (!(await acquireTurnLock(user.id, loaded.conversation.id))) return json({ error: BUSY_MESSAGE, code: 'busy' }, 409);
     // The lock is held from here on in this branch: a throw or a full chat must release it before
@@ -167,15 +167,18 @@ export async function POST(req: Request) {
   // Everything from here until the stream starts runs with the lock held: release it on any
   // failure, including a throw from runTurn itself before it begins streaming. See the file header
   // for why after() is registered exactly here.
-  const { promise: turnFinished, resolve: finishTurn } = Promise.withResolvers<void>();
-  after(() => turnFinished);
   let streaming = false;
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
+  const { promise: turnFinished, resolve: finishTurn } = Promise.withResolvers<void>();
   try {
-    // Attached before any await, so a disconnect during gates/setup (already missed, since those
-    // ran earlier) is at least caught from this point on; the aborted-already check covers a
-    // disconnect that raced the listener itself (Task 8 review, I3a).
+    // Registered as the first statement inside the try (not before it): a throw from after()
+    // itself — e.g. a host without waitUntil support — must still reach the catch below and
+    // release the lock, rather than escaping the function with the lock held (Task 8 re-review).
+    after(() => turnFinished);
+    // The listener only catches an abort from this point forward; a disconnect that already
+    // happened earlier (during gates/setup) is not missed — it is caught by the aborted-already
+    // check on the next line instead (Task 8 review, I3a).
     req.signal.addEventListener('abort', () => controller.abort(req.signal.reason), { once: true });
     if (req.signal.aborted) controller.abort(req.signal.reason);
     const actor: ResearchActor = { localUserId: user.id, clerkUserId: user.clerkUserId, clientId: 'ask-ai', channel: 'chat' };

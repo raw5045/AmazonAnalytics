@@ -26,10 +26,9 @@ describe('messages', () => {
     expect(CUT_OFF_MESSAGE).toBe('The answer was cut off because it got too long. Ask for a shorter version.');
     expect(STOPPED_LINE).toBe('Stopped.');
   });
-  it('stays env-free: no import from ./config, @/lib/env or the ai package', () => {
+  it('stays env-free: imports only from ./models (Task 8 re-review — an allowlist catches any future import, not just the three denylisted here before)', () => {
     const src = source();
-    expect(src).not.toMatch(/from ['"]\.\/config['"]/);
-    expect(src).not.toMatch(/from ['"]@\/lib\/env['"]/);
-    expect(src).not.toMatch(/from ['"]ai['"]/);
+    const specifiers = new Set([...src.matchAll(/from ['"]([^'"]+)['"]/g)].map((m) => m[1]));
+    expect(specifiers).toEqual(new Set(['./models']));
   });
 });
