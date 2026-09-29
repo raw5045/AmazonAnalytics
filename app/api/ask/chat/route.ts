@@ -138,13 +138,33 @@ export async function POST(req: Request) {
     conversationId = r.conversationId;
     created = true;
   } else {
-    const loaded = await loadConversation(user.id, body.data.conversationId, { lastN: ASK_LIMITS.historyWindowMessages });
-    if (!loaded) return new NextResponse(null, { status: 404, headers: NO_STORE });
-    if (loaded.conversation.messageCount >= ASK_LIMITS.maxMessagesPerChat) return json({ error: CHAT_FULL_MESSAGE, code: 'chat_full' }, 409);
-    if (!(await acquireTurnLock(user.id, loaded.conversation.id))) return json({ error: BUSY_MESSAGE, code: 'busy' }, 409);
-    // The lock is held from here on in this branch: a throw or a full chat must release it before
+    const id = body.data.conversationId;
+    // Lock before load (Minor 8, final review): loading the history window first and acquiring the
+    // lock second let a resend right after the 2s Stop cooldown read a window that was still missing
+    // the previous turn's partial answer — that answer's own onEnd was still saving it under the very
+    // lock this acquire is about to take. Acquiring first means the history load below always sees
+    // whatever the previous turn managed to save before it released the lock.
+    if (!(await acquireTurnLock(user.id, id))) {
+      // Not acquired means either busy (another turn holds it) or the conversation doesn't exist /
+      // isn't owned by this user — a cheap single-row lookup (not the full history window) tells
+      // them apart without paying for the common busy case's full load.
+      const exists = await loadConversation(user.id, id, { lastN: 1 });
+      if (!exists) return new NextResponse(null, { status: 404, headers: NO_STORE });
+      return json({ error: BUSY_MESSAGE, code: 'busy' }, 409);
+    }
+    // The lock is held from here on in this branch: every exit below must release it before
     // returning (Task 8 review, I1 — appendUserMessage used to run outside this try and could
     // leave the chat locked for the full 5-minute expiry on something as simple as a bad character).
+    const loaded = await loadConversation(user.id, id, { lastN: ASK_LIMITS.historyWindowMessages });
+    if (!loaded) {
+      // Deleted in the gap between the acquire above and this load — nothing left to answer into.
+      await releaseTurnLock(id).catch(() => {});
+      return new NextResponse(null, { status: 404, headers: NO_STORE });
+    }
+    if (loaded.conversation.messageCount >= ASK_LIMITS.maxMessagesPerChat) {
+      await releaseTurnLock(loaded.conversation.id).catch(() => {});
+      return json({ error: CHAT_FULL_MESSAGE, code: 'chat_full' }, 409);
+    }
     try {
       const appended = await appendUserMessage({ conversationId: loaded.conversation.id, userId: user.id, message: userMessage, now });
       if (appended === 'full') {
@@ -199,7 +219,7 @@ export async function POST(req: Request) {
       abortSignal: controller.signal,
       generateMessageId: () => randomUUID(),
       startMetadata: created ? { conversationId: cid } : undefined,
-      onEnd: async ({ assistant, status, usage, steps }) => {
+      onEnd: async ({ assistant, status, usage, steps, finishReason, stopReason }) => {
         clearTimeout(timer);
         // One timestamp for both the settle and the alert (Task 10 review, C-m2): a month-boundary
         // crossing mid-onEnd could otherwise settle into one month but mark/alert the next.
@@ -210,8 +230,12 @@ export async function POST(req: Request) {
         try {
           cost = costMicro(chosen, usage);
           settledResult = await settleTurn({ userId: user.id, conversationId: cid, messageId: assistant?.id ?? null, model: chosen, usage, costMicro: cost, now: settledAt });
+          // finishReason/stopReason (Minor 7, final review) let ops tell a deadline stop from a
+          // member Stop and spot a cut-off answer (finishReason: 'length') without opening the chat
+          // — JSON.stringify drops each key when it's undefined, so stopReason only appears when the
+          // turn actually stopped.
           console.log('[ask turn]', JSON.stringify({
-            outcome: status, userId: user.id, conversationId: cid, model: chosen, steps, ...usage, costMicro: cost,
+            outcome: status, userId: user.id, conversationId: cid, model: chosen, steps, finishReason, stopReason, ...usage, costMicro: cost,
             absorbedMicro: settledResult.absorbedMicro, globalCostMicro: settledResult.globalCostMicro, durationMs: Date.now() - turnStartedAt,
           }));
         } catch (e) {

@@ -4,7 +4,7 @@ vi.mock('@/lib/env', () => ({ env: {} }));
 import { z } from 'zod';
 import { simulateReadableStream, tool, APICallError } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
-import { runTurn, windowHistory, estimateTokens, statusFor, TURN_DEADLINE } from './turn';
+import { runTurn, windowHistory, trimHistoryForReplay, estimateTokens, statusFor, TURN_DEADLINE } from './turn';
 import { BUSY_LINE, PROBLEM_LINE } from './messages';
 import type { AskUIMessage } from './conversations';
 
@@ -177,6 +177,42 @@ describe('runTurn', () => {
     expect(logged).toMatchObject({ outcome: 'on_end_threw', error: 'Error', detail: 'db down' });
     log.mockRestore();
   });
+  it('trims a stored history assistant message to its last text before replay: no dangling tool_use reaches the model ahead of the new question (Important 2, final review)', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('Next answer') });
+    const toolPart = (toolCallId: string, state: 'output-available' | 'output-error' | 'input-available') => (
+      state === 'output-available' ? { type: 'tool-get_research_guide' as const, toolCallId, state, input: {}, output: { ok: true } }
+        : state === 'output-error' ? { type: 'tool-get_research_guide' as const, toolCallId, state, input: {}, errorText: 'boom' }
+          : { type: 'tool-get_research_guide' as const, toolCallId, state, input: {} }
+    );
+    // Three different ways a stored assistant message can end mid-tool-loop: a completed step, an
+    // errored step, and an incomplete (never-resolved) one — spec'd in Important 2 as the three
+    // shapes that need the same fix.
+    const history: AskUIMessage[] = [
+      user('q1', 'u1'),
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'Checked A.' }, toolPart('c1', 'output-available')] },
+      user('q2', 'u2'),
+      { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'Checked B.' }, toolPart('c2', 'output-error')] },
+      user('q3', 'u3'),
+      { id: 'a3', role: 'assistant', parts: [{ type: 'text', text: 'Checking C...' }, toolPart('c3', 'input-available')] },
+    ];
+    await run(model, { history });
+    const prompt = model.doStreamCalls[0].prompt;
+    let assistantSeen = false;
+    for (const m of prompt) {
+      if (m.role !== 'assistant') continue;
+      assistantSeen = true;
+      const content = m.content;
+      // The last content block of every replayed assistant message is text — a completed tool
+      // step, an errored one, and an incomplete input-available one all trim down the same way, so
+      // none of them leaves a dangling tool_use ahead of the final user question.
+      expect(content[content.length - 1]?.type).toBe('text');
+      expect(content.some((c) => c.type === 'tool-call')).toBe(false);
+    }
+    expect(assistantSeen).toBe(true);
+    // No separate tool-result carrier message either — the whole trailing tool part was dropped,
+    // not just its call block.
+    expect(prompt.some((m) => m.role === 'tool')).toBe(false);
+  });
 });
 
 describe('runTurn — stop, abort, provider errors', () => {
@@ -237,7 +273,9 @@ describe('runTurn — stop, abort, provider errors', () => {
     expect(rest).toContain('"stopReason":"deadline"');
     expect(rest).toContain('"status":"stopped"');
     const out = t.onEnd.mock.calls[0][0];
-    expect(out).toMatchObject({ status: 'stopped', steps: 0 });
+    // Minor 7, final review: stopReason now reaches the onEnd payload too (not just the streamed
+    // metadata above), so the route's log line can carry it.
+    expect(out).toMatchObject({ status: 'stopped', steps: 0, stopReason: 'deadline' });
     expect(out.assistant?.parts.some((p) => p.type === 'text' && p.text === 'Hello ')).toBe(true);
   });
 
@@ -249,7 +287,8 @@ describe('runTurn — stop, abort, provider errors', () => {
     for (;;) { const { value, done } = await reader.read(); if (done) break; rest += new TextDecoder().decode(value); }
     expect(rest).toContain('"stopReason":"user"');
     expect(rest).toContain('"status":"stopped"');
-    expect(t.onEnd.mock.calls[0][0]).toMatchObject({ status: 'stopped' });
+    // Minor 7, final review: same payload field, the other stopReason value.
+    expect(t.onEnd.mock.calls[0][0]).toMatchObject({ status: 'stopped', stopReason: 'user' });
   });
 
   it('a provider failure before any output is failed, stores nothing, never leaks the provider text, and logs under [ask turn]', async () => {
@@ -320,5 +359,37 @@ describe('helpers', () => {
     const h: AskUIMessage[] = [];
     for (let i = 1; i <= 12; i++) { h.push(user(`q${i}`, `u${i}`)); if (i !== 5) h.push(assistantMsg(`a${i}`)); }
     expect(windowHistory(h)[0].role).toBe('user');
+  });
+  describe('trimHistoryForReplay', () => {
+    const toolPart = (id: string) => ({ type: 'tool-get_research_guide' as const, toolCallId: id, state: 'output-available' as const, input: {}, output: { ok: true } });
+    it('[text, tool] -> [text]: drops a trailing tool part after the last text', () => {
+      const m: AskUIMessage = { id: 'a', role: 'assistant', parts: [{ type: 'text', text: 'hi' }, toolPart('c1')] };
+      expect(trimHistoryForReplay([m])).toEqual([{ id: 'a', role: 'assistant', parts: [{ type: 'text', text: 'hi' }] }]);
+    });
+    it('[tool, text, tool] -> [tool, text]: keeps everything up to and including the last text', () => {
+      const m: AskUIMessage = { id: 'a', role: 'assistant', parts: [toolPart('c1'), { type: 'text', text: 'hi' }, toolPart('c2')] };
+      expect(trimHistoryForReplay([m])).toEqual([{ id: 'a', role: 'assistant', parts: [toolPart('c1'), { type: 'text', text: 'hi' }] }]);
+    });
+    it('[tool only] -> dropped: a history assistant message with no non-empty text part at all is removed entirely', () => {
+      const m: AskUIMessage = { id: 'a', role: 'assistant', parts: [toolPart('c1')] };
+      expect(trimHistoryForReplay([m])).toEqual([]);
+    });
+    it('also drops an assistant message whose only text part is empty or whitespace', () => {
+      const m: AskUIMessage = { id: 'a', role: 'assistant', parts: [{ type: 'text', text: '   ' }, toolPart('c1')] };
+      expect(trimHistoryForReplay([m])).toEqual([]);
+    });
+    it('leaves user messages untouched', () => {
+      const u = user('hi there', 'u1');
+      expect(trimHistoryForReplay([u])).toEqual([u]);
+    });
+    it('an assistant message that already ends in text (nothing trailing to cut) is returned as the same object, not a copy', () => {
+      const m = assistantMsg('a1', 'plain answer');
+      expect(trimHistoryForReplay([m])[0]).toBe(m);
+    });
+    it('never re-anchors to a user message: called on a lone/leading assistant message (not windowHistory\'s job here), the trimmed message is kept as-is', () => {
+      const stray: AskUIMessage = { id: 'a0', role: 'assistant', parts: [{ type: 'text', text: 'stray' }] };
+      const q = user('q', 'u1');
+      expect(trimHistoryForReplay([stray, q])).toEqual([stray, q]);
+    });
   });
 });

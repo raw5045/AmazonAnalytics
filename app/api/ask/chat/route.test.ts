@@ -154,7 +154,11 @@ describe('POST /api/ask/chat', () => {
     const res = await post({ ...newChat, conversationId: existingId, model: undefined });
     expect(res.status).toBe(200);
     expect(conv.loadConversation).toHaveBeenCalledWith('u1', existingId, { lastN: 20 });
-    expect(conv.acquireTurnLock).toHaveBeenCalledWith('u1', 'c1');
+    // acquireTurnLock now runs BEFORE the load (Minor 8), so it only ever has the raw request id to
+    // give it — not loaded.conversation.id, which isn't known yet at that point. The two are always
+    // the same row in reality (loadConversation's own WHERE clause guarantees it); this fixture just
+    // uses a distinct 'c1' for the loaded row to keep the two apart in assertions below.
+    expect(conv.acquireTurnLock).toHaveBeenCalledWith('u1', existingId);
     expect(conv.appendUserMessage).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'c1', userId: 'u1', message: expect.objectContaining({ role: 'user', parts: [{ type: 'text', text: 'Show me lighting keywords' }] }), now: expect.any(Date) }));
     expect(turn.runTurn.mock.calls[0][0].history).toEqual([{ id: 'm1', role: 'user', parts: [] }]);
     expect(turn.runTurn.mock.calls[0][0].model).toEqual({ modelId: 'claude-opus-5-5' });
@@ -163,18 +167,47 @@ describe('POST /api/ask/chat', () => {
     expect(activity.bumpUserActivity).toHaveBeenCalledTimes(1);
     expect(activity.bumpUserActivity).toHaveBeenCalledWith('u1', 'ask_question');
   });
-  it('a foreign or missing conversation is 404; a chat at the message cap is 409; busy is 409 and never releases (no holder token to release with)', async () => {
-    conv.loadConversation.mockResolvedValueOnce(null);
-    expect((await post({ ...newChat, conversationId: existingId })).status).toBe(404);
-    conv.loadConversation.mockResolvedValueOnce({ conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 200 }, messages: [] });
-    expect((await post({ ...newChat, conversationId: existingId })).status).toBe(409);
-    conv.loadConversation.mockResolvedValueOnce({ conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 2 }, messages: [] });
+  it('locks before loading the follow-up history window (Minor 8, final review): a resend right after the Stop cooldown must see whatever the previous turn already saved under the lock', async () => {
+    const order: string[] = [];
+    conv.acquireTurnLock.mockImplementationOnce(async () => { order.push('acquire'); return true; });
+    conv.loadConversation.mockImplementationOnce(async () => { order.push('load'); return { conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 4 }, messages: [{ id: 'm1', role: 'user', parts: [] }] }; });
+    const res = await post({ ...newChat, conversationId: existingId, model: undefined });
+    expect(res.status).toBe(200);
+    expect(order).toEqual(['acquire', 'load']);
+  });
+  it('a missing or foreign conversation on a follow-up is 404, decided by a cheap single-row check after a failed acquire — no lock was ever held, so nothing is released', async () => {
     conv.acquireTurnLock.mockResolvedValueOnce(false);
+    conv.loadConversation.mockResolvedValueOnce(null);
+    const res = await post({ ...newChat, conversationId: existingId });
+    expect(res.status).toBe(404);
+    expect(conv.loadConversation).toHaveBeenCalledWith('u1', existingId, { lastN: 1 });
+    expect(conv.releaseTurnLock).not.toHaveBeenCalled();
+  });
+  it('busy is 409 and never releases (no holder token to release with) — the same cheap single-row check tells busy from missing by finding the chat does exist', async () => {
+    conv.acquireTurnLock.mockResolvedValueOnce(false);
+    conv.loadConversation.mockResolvedValueOnce({ conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 2 }, messages: [] });
     const busy = await post({ ...newChat, conversationId: existingId });
     expect(busy.status).toBe(409);
     expect(await busy.json()).toEqual({ error: BUSY_MESSAGE, code: 'busy' });
+    expect(conv.loadConversation).toHaveBeenCalledWith('u1', existingId, { lastN: 1 });
     expect(conv.releaseTurnLock).not.toHaveBeenCalled();
     expect(activity.bumpUserActivity).not.toHaveBeenCalled();
+  });
+  it('a conversation deleted between acquiring the lock and loading its history window is 404 and releases the lock (Minor 8 reorder — this race was unreachable before the lock moved first)', async () => {
+    conv.loadConversation.mockResolvedValueOnce(null);
+    const res = await post({ ...newChat, conversationId: existingId });
+    expect(res.status).toBe(404);
+    expect(conv.loadConversation).toHaveBeenCalledWith('u1', existingId, { lastN: 20 });
+    expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+    expect(turn.runTurn).not.toHaveBeenCalled();
+  });
+  it('a follow-up chat at the message cap is 409 and releases the lock it had already acquired (Minor 8 reorder — the lock is now taken before the cap is known)', async () => {
+    conv.loadConversation.mockResolvedValueOnce({ conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 200 }, messages: [] });
+    const res = await post({ ...newChat, conversationId: existingId });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: CHAT_FULL_MESSAGE, code: 'chat_full' });
+    expect(conv.releaseTurnLock).toHaveBeenCalledWith('c1');
+    expect(turn.runTurn).not.toHaveBeenCalled();
   });
   it('appendUserMessage returning \'full\' (the chat filled up between the load and the append) is 409 and releases the lock', async () => {
     conv.loadConversation.mockResolvedValueOnce({ conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 2 }, messages: [] });
@@ -302,6 +335,34 @@ describe('POST /api/ask/chat', () => {
       expect(conv.releaseTurnLock).toHaveBeenCalledWith('c9');
       error.mockRestore();
       log.mockRestore();
+    });
+    it('the success log line carries finishReason and stopReason from the turn (Minor 7, final review) so ops can tell a deadline stop from a member Stop and spot a cut-off answer', async () => {
+      await post(newChat);
+      const { onEnd } = turn.runTurn.mock.calls[0][0];
+      const assistant = { id: '22222222-2222-4222-8222-222222222222', role: 'assistant', parts: [{ type: 'text', text: 'Hi' }] };
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await onEnd({
+        assistant, status: 'stopped', usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }, steps: 1,
+        finishReason: 'length', stopReason: 'user',
+      });
+      const success = log.mock.calls.map((c) => { try { return JSON.parse(String(c[1])); } catch { return undefined; } }).find((o) => o?.outcome === 'stopped');
+      expect(success).toMatchObject({ finishReason: 'length', stopReason: 'user' });
+      log.mockRestore();
+      error.mockRestore();
+    });
+    it('stopReason is simply absent from the success log line (not a literal "undefined") when the turn completed normally', async () => {
+      await post(newChat);
+      const { onEnd } = turn.runTurn.mock.calls[0][0];
+      const assistant = { id: '22222222-2222-4222-8222-222222222222', role: 'assistant', parts: [{ type: 'text', text: 'Hi' }] };
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      await onEnd({ assistant, status: 'complete', usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }, steps: 1, finishReason: 'stop' });
+      const success = log.mock.calls.map((c) => { try { return JSON.parse(String(c[1])); } catch { return undefined; } }).find((o) => o?.outcome === 'complete');
+      expect(success).toMatchObject({ finishReason: 'stop' });
+      expect(success).not.toHaveProperty('stopReason');
+      log.mockRestore();
+      error.mockRestore();
     });
     it('a settle failure is logged as settle_failed with enough to reconcile by hand, but the answer is still saved, the lock still released, and no alert attempted for an unbilled turn', async () => {
       await post(newChat);

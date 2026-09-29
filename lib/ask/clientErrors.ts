@@ -1,4 +1,5 @@
-import { BUSY_LINE, FAILED_MESSAGE, PROBLEM_LINE } from './messages';
+import { APICallError } from 'ai';
+import { BUSY_LINE, CHAT_GONE_MESSAGE, FAILED_MESSAGE, PROBLEM_LINE } from './messages';
 
 export const GENERIC_ERROR = FAILED_MESSAGE;
 
@@ -10,6 +11,13 @@ export const GENERIC_ERROR = FAILED_MESSAGE;
  * would risk echoing an unrelated thrown message (e.g. a network error) back to the member as if
  * it were one of the two safe lines. The turn-deadline case no longer arrives as an error string
  * at all — it is `metadata.stopReason === 'deadline'` on the assistant message (see Thread.tsx).
+ *
+ * A bodyless 404 (Minor 9, final review — a follow-up's chat deleted in another tab, or access
+ * revoked, since the member opened it) has no `{ error }` to surface: the AI SDK's transport fills
+ * in its own generic fallback text for an empty response body (`createUIApiCallError` in
+ * node_modules/ai/dist/index.js), which would otherwise fall through to GENERIC_ERROR below. Checked
+ * last, after the JSON-body case, so a 404 that DOES carry `{ error }` (a real gate refusal) still
+ * wins.
  */
 export function describeChatError(e: unknown): string {
   const text = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
@@ -18,5 +26,7 @@ export function describeChatError(e: unknown): string {
     const parsed = JSON.parse(text) as { error?: unknown };
     if (parsed && typeof parsed.error === 'string' && parsed.error) return parsed.error;
   } catch {}
-  return text === BUSY_LINE || text === PROBLEM_LINE ? text : GENERIC_ERROR;
+  if (text === BUSY_LINE || text === PROBLEM_LINE) return text;
+  if (APICallError.isInstance(e) && e.statusCode === 404) return CHAT_GONE_MESSAGE;
+  return GENERIC_ERROR;
 }

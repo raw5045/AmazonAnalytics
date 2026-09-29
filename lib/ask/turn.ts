@@ -25,7 +25,7 @@ export interface TurnInput {
   generateMessageId: () => string;
   /** Attached to the assistant message when the stream starts — the new conversation's id on a first send. */
   startMetadata?: AskUIMessage['metadata'];
-  onEnd: (outcome: { assistant: AskUIMessage | null; status: MessageStatus; usage: TurnUsage; steps: number; finishReason?: string }) => Promise<void>;
+  onEnd: (outcome: { assistant: AskUIMessage | null; status: MessageStatus; usage: TurnUsage; steps: number; finishReason?: string; stopReason?: 'deadline' | 'user' }) => Promise<void>;
 }
 
 const CACHE = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
@@ -70,6 +70,38 @@ export function windowHistory(history: AskUIMessage[], limits: Pick<typeof ASK_L
   return out;
 }
 
+/**
+ * A stored assistant message can end mid-tool-loop — a completed tool step (Stop right after a
+ * tool resolved), a mid-loop failure with output, ran-out-of-steps, or the turn deadline (spec §12:
+ * `hasOutput` below allows storing all of these). Replaying it as-is sends `assistant[tool_use]`
+ * followed by `user[tool_result, new question]` with no thinking block ahead of it — reasoning is
+ * never stored (see `sendReasoning: false` below) — which the Anthropic API can reject once adaptive
+ * thinking is active (Sonnet 5 / Opus 5.5), and then EVERY later question in that chat fails until
+ * the message ages out of the 20-message window (Important 2, final review). Fix: cut each HISTORY
+ * assistant message's parts after its last non-empty text part (dropping any trailing tool parts or
+ * step-start), and drop a history assistant message that has no non-empty text part at all.
+ *
+ * Purely a trim: user messages are untouched (never dropped, never edited) and the new turn's own
+ * message is never passed to this helper. That alone keeps the user-first invariant intact for the
+ * one caller this has (runTurn, on windowHistory's already-anchored output): since index 0 of a
+ * non-empty window is always a user message and this function never touches user messages, index 0
+ * of the result is that exact same message, untouched — never re-derived here with `fromFirstUser`,
+ * which would incorrectly discard a message passed in isolation (see the [text, tool] -> [text] unit
+ * tests below, which call this directly on a lone assistant message with no user message at all).
+ */
+export function trimHistoryForReplay(messages: AskUIMessage[]): AskUIMessage[] {
+  return messages.flatMap((m) => {
+    if (m.role !== 'assistant') return [m];
+    let cut = -1;
+    for (let i = m.parts.length - 1; i >= 0; i--) {
+      const p = m.parts[i];
+      if (p.type === 'text' && p.text.trim() !== '') { cut = i; break; }
+    }
+    if (cut < 0) return [];
+    return [cut === m.parts.length - 1 ? m : { ...m, parts: m.parts.slice(0, cut + 1) }];
+  });
+}
+
 export function statusFor(f: { isAborted: boolean; errored: boolean }): MessageStatus {
   if (f.isAborted) return 'stopped';
   return f.errored ? 'failed' : 'complete';
@@ -94,7 +126,7 @@ export async function runTurn(input: TurnInput): Promise<Response> {
   const cancelled = new AbortController();
   const abortSignal = AbortSignal.any([input.abortSignal, cancelled.signal]);
 
-  const original = [...input.history, input.newMessage];
+  const original = [...trimHistoryForReplay(input.history), input.newMessage];
   const messages: ModelMessage[] = await convertToModelMessages(original, { tools: input.tools, ignoreIncompleteToolCalls: true });
   const last = messages[messages.length - 1];
   if (last) messages[messages.length - 1] = { ...last, providerOptions: { ...last.providerOptions, ...CACHE } } as ModelMessage;
@@ -154,10 +186,15 @@ export async function runTurn(input: TurnInput): Promise<Response> {
       onError: (error) => lineFor(error),
       onEnd: async ({ responseMessage, isAborted, isCancelled, outcome, finishReason }) => {
         if (isCancelled) cancelled.abort(new Error('response cancelled'));
-        const assistant = hasOutput(responseMessage) ? (responseMessage as AskUIMessage) : null;
+        const finalMessage = responseMessage as AskUIMessage;
+        const assistant = hasOutput(responseMessage) ? finalMessage : null;
         const status = statusFor({ isAborted: isAborted || isCancelled === true, errored: errored || outcome?.status === 'failed' });
+        // Read off the message's own metadata rather than recomputing it: messageMetadata's 'abort'
+        // branch above already set it there, and the AI SDK merges it in regardless of whether
+        // hasOutput ends up keeping or discarding the message for storage (Minor 7, final review —
+        // ops needs stopReason on the log line even for a stop that produced no storable output).
         try {
-          await input.onEnd({ assistant, status, usage, steps, finishReason });
+          await input.onEnd({ assistant, status, usage, steps, finishReason, stopReason: finalMessage.metadata?.stopReason });
         } catch (e) {
           // The stream has already been rendered to the browser by this point; a persistence
           // failure here must never surface as a broken response. Log-safe (Task 8 re-review): the

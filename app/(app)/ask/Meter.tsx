@@ -2,7 +2,9 @@ import type { MeterData } from '@/lib/ask/meter';
 import { ADMIN_METER, NO_BALANCE_MESSAGE } from '@/lib/ask/messages';
 
 export function Meter({ meter }: { meter: MeterData }) {
-  const text = meter.admin ? ADMIN_METER : meter.exhausted ? NO_BALANCE_MESSAGE : `about ${meter.questionsLeft} questions left${meter.hasCredit ? ', including credit' : ''}`;
+  // Only 1 is ever singular (Minor 10, final review) — same rule as dailyLimitMessage in messages.ts.
+  const questionWord = meter.questionsLeft === 1 ? 'question' : 'questions';
+  const text = meter.admin ? ADMIN_METER : meter.exhausted ? NO_BALANCE_MESSAGE : `about ${meter.questionsLeft} ${questionWord} left${meter.hasCredit ? ', including credit' : ''}`;
   return (
     <div className="flex items-center gap-3 text-sm">
       <span className="text-slate-600">Usage this month</span>
