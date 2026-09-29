@@ -62,14 +62,18 @@ export async function setMcpConnectionStatus(userId: string, status: McpConnecti
 const lastTouch = new Map<string, number>();
 
 /** Fire-and-forget last-seen stamp for the Connect AI page; never changes status; at most once a minute per account. */
+/** `last_client_id` is varchar(128); a Client ID Metadata Document id is a URL, so clamp rather than fail the write. */
+const LAST_CLIENT_ID_MAX = 128;
+
 export function touchMcpConnection(userId: string, clientId: string, nowMs = Date.now()): void {
   if (nowMs - (lastTouch.get(userId) ?? 0) < 60_000) return;
   lastTouch.set(userId, nowMs);
   const at = new Date(nowMs);
+  const lastClientId = clientId.slice(0, LAST_CLIENT_ID_MAX);
   void db
     .insert(mcpConnections)
-    .values({ userId, status: 'enabled', lastRequestAt: at, lastClientId: clientId, updatedAt: at })
-    .onConflictDoUpdate({ target: mcpConnections.userId, set: { lastRequestAt: at, lastClientId: clientId, updatedAt: at } })
+    .values({ userId, status: 'enabled', lastRequestAt: at, lastClientId, updatedAt: at })
+    .onConflictDoUpdate({ target: mcpConnections.userId, set: { lastRequestAt: at, lastClientId, updatedAt: at } })
     .catch((e: unknown) => console.warn('[mcp connections] touch failed:', e instanceof Error ? e.message : e));
 }
 

@@ -68,6 +68,15 @@ describe('connections', () => {
     expect(set).toMatchObject({ lastClientId: 'client_a' });
   });
 
+  it('clamps a URL-style client id to the 128-character column instead of failing the write', () => {
+    const c = chain([]);
+    const long = `https://chatgpt.com/oauth/${'x'.repeat(200)}/client.json`;
+    touchMcpConnection('u3', long, 2_000_000);
+    const set = c.onConflictDoUpdate.mock.calls[0][0].set;
+    expect(set.lastClientId).toBe(long.slice(0, 128));
+    expect((set.lastClientId as string).length).toBe(128);
+  });
+
   it('touches two different users at the same instant independently (throttle is per user, not global)', () => {
     const c = chain([]);
     touchMcpConnection('u1', 'client_a', 4_000_000);

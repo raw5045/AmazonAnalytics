@@ -64,3 +64,43 @@ describe('Connect AI page example questions', () => {
     expect(tryAsking.compareDocumentPosition(serverUrl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });
+
+describe('Connect AI page setup steps', () => {
+  beforeEach(() => {
+    envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all' };
+  });
+
+  it('walks the chat door (Connectors) with Advanced settings left empty and points at the Code tab', async () => {
+    render(await ConnectAiPage());
+    expect(screen.getByRole('heading', { name: /^Claude \(claude\.ai or the desktop app/ })).toBeInTheDocument();
+    expect(screen.getByText('Customize → Connectors → + → Add custom connector.')).toBeInTheDocument();
+    expect(screen.getByText(/Leave Advanced settings empty/)).toBeInTheDocument();
+    expect(screen.getByText(/also shows up in the desktop app.s Code tab, under \+ → Connectors/)).toBeInTheDocument();
+  });
+
+  it('keeps the pre-registered credentials only behind an optional disclosure', async () => {
+    envMock.env.MCP_CLIENT_SECRET_CLAUDE = 'claude-secret-123';
+    render(await ConnectAiPage());
+    const summary = screen.getByText('Advanced settings (optional, older setups)');
+    const details = summary.closest('details');
+    expect(details).not.toBeNull();
+    expect(details).toContainElement(screen.getByText('16oat62Xksi7U2Ri'));
+    expect(details).toContainElement(screen.getByText('claude-secret-123'));
+  });
+
+  it('walks the Code tab door: the custom MCP form, empty token and headers, then /mcp to authenticate', async () => {
+    render(await ConnectAiPage());
+    expect(screen.getByRole('heading', { name: /^Claude Code \(the desktop app/ })).toBeInTheDocument();
+    expect(screen.getByText('In the Code tab: Plugins → Add → Add MCP server → Connect to a custom MCP.')).toBeInTheDocument();
+    expect(screen.getByText(/Type: Streamable HTTP\. URL: the server URL above\. Leave the bearer token and/)).toBeInTheDocument();
+    expect(screen.getByText('claude mcp add --transport http keywordquarry https://keywordquarry.com/api/mcp')).toBeInTheDocument();
+    expect(screen.getAllByText('/mcp').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('shows the troubleshooting card with the status page first', async () => {
+    render(await ConnectAiPage());
+    expect(screen.getByRole('heading', { name: "If it won\u2019t connect" })).toBeInTheDocument();
+    expect(screen.getByText(/Check status\.claude\.com or status\.openai\.com first/)).toBeInTheDocument();
+    expect(screen.getByText(/The connection only works for KeywordQuarry/)).toBeInTheDocument();
+  });
+});

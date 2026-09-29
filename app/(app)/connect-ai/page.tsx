@@ -50,8 +50,8 @@ export default async function ConnectAiPage() {
     <div className="mx-auto max-w-3xl px-6 py-8 text-slate-800">
       <h1 className="text-2xl font-bold">Connect your AI</h1>
       <p className="mt-2 text-sm text-slate-600">
-        Let ChatGPT or Claude read KeywordQuarry directly while you chat. The connection is read-only: search,
-        categories, keyword details and history. Beta, free while it lasts.
+        Let Claude, Claude Code or ChatGPT read KeywordQuarry directly while you work. The connection is
+        read-only: search, categories, keyword details and history. Beta, free while it lasts.
       </p>
 
       {!enabled ? (
@@ -72,16 +72,40 @@ export default async function ConnectAiPage() {
           </section>
 
           <section className={card}>
-            <h2 className="font-semibold">Claude (claude.ai)</h2>
+            <h2 className="font-semibold">Claude (claude.ai or the desktop app&rsquo;s Chat tab)</h2>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">
               <li>Customize → Connectors → + → Add custom connector.</li>
-              <li>Name it KeywordQuarry and paste the server URL above.</li>
-              <li>
-                Open Advanced settings and enter this client ID and secret:
-                <ClientCredentials clientId={claude.clientId} clientSecret={claude.clientSecret} />
-              </li>
+              <li>Name it KeywordQuarry and paste the server URL above. Leave Advanced settings empty.</li>
               <li>Add, then Connect, and approve the KeywordQuarry sign-in screen.</li>
               <li>In a chat, open the + menu, enable the connector, and ask: &ldquo;run get_research_guide&rdquo;.</li>
+              <li>The connector also shows up in the desktop app&rsquo;s Code tab, under + → Connectors.</li>
+            </ol>
+            <details className="mt-2 text-sm">
+              <summary className="cursor-pointer text-slate-600">Advanced settings (optional, older setups)</summary>
+              <p className="mt-1 text-slate-600">
+                Claude signs in on its own now. If a setup still asks for a client ID and secret, use these:
+              </p>
+              <ClientCredentials clientId={claude.clientId} clientSecret={claude.clientSecret} />
+            </details>
+          </section>
+
+          <section className={card}>
+            <h2 className="font-semibold">Claude Code (the desktop app&rsquo;s Code tab, or the terminal)</h2>
+            <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">
+              <li>In the Code tab: Plugins → Add → Add MCP server → Connect to a custom MCP.</li>
+              <li>
+                Name: KeywordQuarry. Type: Streamable HTTP. URL: the server URL above. Leave the bearer token and
+                headers empty. Save.
+              </li>
+              <li>
+                In a session, type <code className={mono}>/mcp</code>, choose KeywordQuarry, then Authenticate, and
+                approve the KeywordQuarry sign-in screen in your browser.
+              </li>
+              <li>
+                From a terminal instead:{' '}
+                <code className={mono}>claude mcp add --transport http keywordquarry {endpoint}</code>, then{' '}
+                <code className={mono}>/mcp</code>.
+              </li>
             </ol>
           </section>
 
@@ -104,6 +128,22 @@ export default async function ConnectAiPage() {
           </section>
 
           <section className={card}>
+            <h2 className="font-semibold">If it won&rsquo;t connect</h2>
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
+              <li>
+                Check status.claude.com or status.openai.com first. An outage there shows up as &ldquo;Connection
+                issue&rdquo; on this connector too.
+              </li>
+              <li>
+                Sign in with the email you use for KeywordQuarry. The connection only works for KeywordQuarry
+                accounts.
+              </li>
+              <li>Remove the connector and add it again.</li>
+              <li>Still stuck? Tell us through the Feedback button.</li>
+            </ul>
+          </section>
+
+          <section className={card}>
             <h2 className="font-semibold">Status</h2>
             <p className="mt-1 text-sm">Last request: {last}</p>
             <div className="mt-3">
@@ -118,7 +158,7 @@ export default async function ConnectAiPage() {
           <h2 className="font-semibold">Admin</h2>
           <p className="mt-1">
             Audience: <strong>{audience}</strong>. Allowed client ids:{' '}
-            {mcpAllowedClientIds().length > 0 ? mcpAllowedClientIds().join(', ') : 'any (not pinned yet)'}.
+            {mcpAllowedClientIds().length > 0 ? mcpAllowedClientIds().join(', ') : 'any client of our sign-in server'}.
           </p>
         </section>
       )}

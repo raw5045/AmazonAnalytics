@@ -64,6 +64,11 @@ const CHATGPT_CLIENT_ID = 'WzrKBzjxqjhn2pUR';
 const CLIENT_LABELS: Record<string, string> = {
   [CLAUDE_CLIENT_ID]: 'Claude',
   [CHATGPT_CLIENT_ID]: 'ChatGPT',
+  // Client ID Metadata Document ids (the client identifies itself with the URL of its published metadata;
+  // verified 2026-09-29): one per app, shared by every user of that app.
+  'https://claude.ai/oauth/claude-code-client-metadata': 'Claude Code',
+  'https://claude.ai/oauth/mcp-oauth-client-metadata': 'Claude',
+  'https://chatgpt.com/oauth/client.json': 'ChatGPT',
 };
 
 export interface McpClientCredentials {
@@ -94,7 +99,12 @@ export function mcpClientCredentials(): McpClientCredentials[] {
 /** Human-readable name for a client id shown on the Connect AI page; falls back to the raw id, or "unknown client" for null. */
 export function mcpClientLabel(clientId: string | null): string {
   if (clientId === null) return 'unknown client';
-  return CLIENT_LABELS[clientId] ?? clientId;
+  const known = CLIENT_LABELS[clientId];
+  if (known) return known;
+  // ChatGPT also uses per-connection ids under the same path; anything else under claude.ai is a Claude app.
+  if (clientId.startsWith('https://chatgpt.com/oauth/')) return 'ChatGPT';
+  if (clientId.startsWith('https://claude.ai/')) return 'Claude';
+  return clientId;
 }
 
 /**

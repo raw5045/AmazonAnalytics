@@ -114,6 +114,15 @@ describe('mcp config', () => {
     expect(mcpClientLabel('some_other_client_id')).toBe('some_other_client_id');
     expect(mcpClientLabel(null)).toBe('unknown client');
   });
+
+  it('labels the published Client ID Metadata Document ids by app, including ChatGPT per-connection variants', () => {
+    expect(mcpClientLabel('https://claude.ai/oauth/claude-code-client-metadata')).toBe('Claude Code');
+    expect(mcpClientLabel('https://claude.ai/oauth/mcp-oauth-client-metadata')).toBe('Claude');
+    expect(mcpClientLabel('https://chatgpt.com/oauth/client.json')).toBe('ChatGPT');
+    expect(mcpClientLabel('https://chatgpt.com/oauth/abc123/client.json')).toBe('ChatGPT');
+    expect(mcpClientLabel('https://claude.ai/oauth/some-future-client-metadata')).toBe('Claude');
+    expect(mcpClientLabel('https://cursor.example/client.json')).toBe('https://cursor.example/client.json');
+  });
 });
 
 describe('mcpClientCredentials', () => {
