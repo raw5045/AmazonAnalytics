@@ -171,18 +171,29 @@ describe('Thread', () => {
     });
 
     it('M4: skips the refresh (but keeps the interval running) while the tab is hidden', () => {
-      const original = Object.getOwnPropertyDescriptor(document, 'hidden');
-      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      // `hidden` lives on Document.prototype, not as document's own property — redefining it with
+      // Object.defineProperty(document, 'hidden', ...) shadows the prototype getter with an own
+      // property that a later `if (original) Object.defineProperty(...)` restore would never see
+      // (there is no ORIGINAL own property to restore; the shadow just lingers). vi.spyOn's own
+      // mockRestore() correctly removes exactly the shadow it added instead (nits round hygiene).
+      const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
       try {
         render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: true }} />);
         act(() => { vi.advanceTimersByTime(8000); });
         expect(router.refresh).not.toHaveBeenCalled();
-        Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+        hidden.mockReturnValue(false);
         act(() => { vi.advanceTimersByTime(4000); });
         expect(router.refresh).toHaveBeenCalledTimes(1);
       } finally {
-        if (original) Object.defineProperty(document, 'hidden', original);
+        hidden.mockRestore();
       }
+    });
+
+    it('nits round: does not refresh while this tab is itself streaming the answer (a mid-turn refresh reporting this turn\'s own lock must not poll on top of it)', () => {
+      chat.status = 'streaming';
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: true }} />);
+      act(() => { vi.advanceTimersByTime(8000); });
+      expect(router.refresh).not.toHaveBeenCalled();
     });
   });
 

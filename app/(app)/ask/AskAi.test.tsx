@@ -82,4 +82,20 @@ describe('AskAi', () => {
       expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
     });
   });
+
+  it('nits round: "New chat" resets an unsaved chat even while already on /ask, where the URL does not change', () => {
+    // Already on /ask with no chat open (`open` stays null throughout — its href is /ask, the same
+    // page, so a real app would not necessarily get a fresh server render from this click alone).
+    chat.status = 'streaming';
+    render(<AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} />);
+    fireEvent.change(screen.getByLabelText('Your question'), { target: { value: 'a question' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(chat.stop).toHaveBeenCalledTimes(1);
+    chat.status = 'ready';
+    // Clicking "New chat" must remount the 'new' thread (Thread-owned state, e.g. the Stop
+    // cooldown, resets immediately instead of waiting out its real 2s window) purely from the
+    // newNonce bump — nothing here changes `open` or the URL.
+    fireEvent.click(screen.getByRole('link', { name: 'New chat' }));
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+  });
 });

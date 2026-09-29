@@ -55,6 +55,20 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
     setWasBusy(busy);
     if (wasBusy) setEpoch((e) => e + 1); // bump only on busy -> idle
   }
+  /**
+   * Nits round: "New chat" while already on /ask (`open` is already null) does not change the
+   * URL — its href is `/ask`, the same page — so without this, the 'new' key never changes and an
+   * unsaved chat that already picked up messages (an error, a partial answer from Stop) would
+   * stick around instead of resetting. `onNavigate` already fires on that click (it also closes
+   * the narrow-screen drawer); bumping this nonce there too, and folding it into the 'new' key,
+   * remounts Thread even though the URL didn't. Bumping it on an existing chat's link is harmless
+   * — `open` becomes non-null once that navigation lands, and the key no longer reads the nonce.
+   */
+  const [newNonce, setNewNonce] = useState(0);
+  const onRailNavigate = () => {
+    setRailOpen(false);
+    setNewNonce((n) => n + 1);
+  };
   return (
     <div className="mx-auto max-w-6xl px-6 py-6 text-slate-800">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -81,10 +95,10 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
       </button>
       <div className="mt-4 grid gap-6 md:mt-6 md:grid-cols-[16rem_1fr]">
         <div id="ask-ai-rail" className={`${railOpen ? 'block' : 'hidden'} md:block`}>
-          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={() => setRailOpen(false)} />
+          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={onRailNavigate} />
         </div>
         <Thread
-          key={open ? `${open.id}:${epoch}` : 'new'}
+          key={open ? `${open.id}:${epoch}` : `new:${newNonce}`}
           open={open}
           defaultModel={DEFAULT_MODEL}
           cantSendReason={cantSendReason}

@@ -111,21 +111,6 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       if (navTimer.current !== null) clearTimeout(navTimer.current);
     };
   }, []);
-  // Busy-to-idle (item 1 / N1): while the server says this chat is genuinely locked elsewhere,
-  // poll for the saved answer instead of leaving the member looking at a static line forever —
-  // bounded by the lock's own server-side expiry. router.refresh() is not a state update, so this
-  // effect body (start/clear an interval) is exactly the exception the hard rules note allows.
-  useEffect(() => {
-    if (!open?.inFlight) return;
-    const id = setInterval(() => {
-      // M4 (round-3): skip the network round trip while the tab is in the background — nothing is
-      // shown to refresh for, and the interval resumes refreshing as soon as the tab is visible
-      // again (no separate visibilitychange listener needed — the next tick just checks afresh).
-      if (typeof document !== 'undefined' && document.hidden) return;
-      router.refresh();
-    }, BUSY_REFRESH_MS);
-    return () => clearInterval(id);
-  }, [open?.inFlight, router]);
   const { messages, sendMessage, status, stop, error, setMessages } = useChat<AskUIMessage>({
     id: open?.id ?? 'new',
     messages: open?.messages ?? [],
@@ -206,6 +191,27 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
     },
   });
   const streaming = status === 'submitted' || status === 'streaming';
+  // Busy-to-idle (item 1 / N1): while the server says this chat is genuinely locked elsewhere,
+  // poll for the saved answer instead of leaving the member looking at a static line forever —
+  // bounded by the lock's own server-side expiry. router.refresh() is not a state update, so this
+  // effect body (start/clear an interval) is exactly the exception the hard rules note allows.
+  // Skips while `streaming` (nits round): after a mid-turn refresh reports this tab's OWN lock as
+  // busy, polling would otherwise re-render the whole page every 4s for the rest of the member's
+  // own turn; worse, a poll landing in the gap between another turn releasing the lock and this
+  // tab's own send acquiring it could flip busy->idle and remount mid-send, aborting it. The
+  // post-turn refresh (onFinish's moveOn) still performs the real busy->idle remount once this
+  // turn ends, so nothing is lost by not polling while it's this tab doing the streaming.
+  useEffect(() => {
+    if (!open?.inFlight || streaming) return;
+    const id = setInterval(() => {
+      // M4 (round-3): skip the network round trip while the tab is in the background — nothing is
+      // shown to refresh for, and the interval resumes refreshing as soon as the tab is visible
+      // again (no separate visibilitychange listener needed — the next tick just checks afresh).
+      if (typeof document !== 'undefined' && document.hidden) return;
+      router.refresh();
+    }, BUSY_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [open?.inFlight, streaming, router]);
   // The chat id learned from a stream chunk before `open` (the server-rendered prop) catches up —
   // used both to send a follow-up under the right id (item 3 / N3's neighbouring fix) and, below,
   // to decide the chat-cap reason and the "Open this chat" recovery link (item 6).
