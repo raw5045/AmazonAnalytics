@@ -12,12 +12,13 @@ export const GENERIC_ERROR = FAILED_MESSAGE;
  * it were one of the two safe lines. The turn-deadline case no longer arrives as an error string
  * at all — it is `metadata.stopReason === 'deadline'` on the assistant message (see Thread.tsx).
  *
- * A bodyless 404 (Minor 9, final review — a follow-up's chat deleted in another tab, or access
- * revoked, since the member opened it) has no `{ error }` to surface: the AI SDK's transport fills
+ * A bodyless 404 (Minor 9, final review) has no `{ error }` to surface: the AI SDK's transport fills
  * in its own generic fallback text for an empty response body (`createUIApiCallError` in
  * node_modules/ai/dist/index.js), which would otherwise fall through to GENERIC_ERROR below. Checked
  * last, after the JSON-body case, so a 404 that DOES carry `{ error }` (a real gate refusal) still
- * wins.
+ * wins. CHAT_GONE_MESSAGE's copy stays neutral (nit 3, final re-review) because the route answers a
+ * bodyless 404 for more than a follow-up's deleted/access-revoked chat — the kill switch going off
+ * mid-session and ineligibility on a FIRST send (no chat exists yet) take this same path.
  */
 export function describeChatError(e: unknown): string {
   const text = e instanceof Error ? e.message : typeof e === 'string' ? e : '';

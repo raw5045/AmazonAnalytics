@@ -213,6 +213,32 @@ describe('runTurn', () => {
     // not just its call block.
     expect(prompt.some((m) => m.role === 'tool')).toBe(false);
   });
+  it('keeps earlier, resolved tool steps intact when trimming: only content AFTER the last text part is ever cut (nit 4, final re-review)', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('Next answer') });
+    const history: AskUIMessage[] = [
+      user('q1', 'u1'),
+      {
+        id: 'a1', role: 'assistant',
+        parts: [
+          { type: 'step-start' },
+          { type: 'tool-get_research_guide', toolCallId: 'c1', state: 'output-available', input: {}, output: { ok: true } },
+          { type: 'step-start' },
+          { type: 'text', text: 'Here is what I found.' },
+        ],
+      },
+    ];
+    await run(model, { history });
+    const prompt = model.doStreamCalls[0].prompt as unknown as Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
+    // A completed multi-step turn stored with its step boundaries — the trim only ever cuts content
+    // AFTER the last text part, and here nothing follows it, so the earlier (already-resolved) tool
+    // step must replay exactly as convertToModelMessages splits it at those step-start boundaries:
+    // assistant[tool-call] -> tool[result] -> assistant[text]. Nothing here is dropped or reordered.
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant', 'user']);
+    const [, , toolCallMsg, toolResultMsg, textMsg] = prompt;
+    expect(toolCallMsg.content.map((c) => c.type)).toEqual(['tool-call']);
+    expect(toolResultMsg.content.map((c) => c.type)).toEqual(['tool-result']);
+    expect(textMsg.content).toEqual([{ type: 'text', text: 'Here is what I found.' }]);
+  });
 });
 
 describe('runTurn — stop, abort, provider errors', () => {
@@ -261,6 +287,11 @@ describe('runTurn — stop, abort, provider errors', () => {
     expect(out.assistant?.parts.some((p) => p.type === 'tool-get_research_guide')).toBe(true);
     expect(out.assistant?.parts.some((p) => p.type === 'text' && p.text.startsWith('Hello'))).toBe(true);
     expect(out.status).toBe('stopped');
+    // Nit 2, final re-review: a cancelled body reaches onEnd through toUIMessageStream's own
+    // cancel() handling, before any 'abort' part (and hence metadata.stopReason) ever exists — this
+    // is still a member Stop, so the onEnd payload must say so via the isCancelled fallback, not
+    // leave stopReason undefined.
+    expect(out.stopReason).toBe('user');
   });
 
   it('the turn deadline aborts with stopReason "deadline" (the route aborts with new Error(TURN_DEADLINE), matched by that exact sentinel, not a /deadline/ regex)', async () => {

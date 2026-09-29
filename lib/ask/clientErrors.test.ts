@@ -15,7 +15,7 @@ describe('describeChatError', () => {
     expect(describeChatError(new Error(`${PROBLEM_LINE} extra`))).toBe(GENERIC_ERROR);
     expect(describeChatError(new Error(BUSY_LINE.slice(0, 10)))).toBe(GENERIC_ERROR);
   });
-  it('a bodyless 404 (chat deleted in another tab, or access revoked) gets CHAT_GONE_MESSAGE, not the generic sentence (Minor 9)', () => {
+  it('a bodyless 404 gets CHAT_GONE_MESSAGE, not the generic sentence (Minor 9) — its copy stays neutral (nit 3, final re-review) since a follow-up chat deleted elsewhere is only one of several routes to a bodyless 404', () => {
     // Mirrors what the AI SDK transport actually throws for an empty response body:
     // createUIApiCallError fills in its own fallback text and sets statusCode from the response.
     const err = new APICallError({

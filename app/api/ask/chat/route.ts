@@ -155,7 +155,17 @@ export async function POST(req: Request) {
     // The lock is held from here on in this branch: every exit below must release it before
     // returning (Task 8 review, I1 — appendUserMessage used to run outside this try and could
     // leave the chat locked for the full 5-minute expiry on something as simple as a bad character).
-    const loaded = await loadConversation(user.id, id, { lastN: ASK_LIMITS.historyWindowMessages });
+    let loaded: Awaited<ReturnType<typeof loadConversation>>;
+    try {
+      loaded = await loadConversation(user.id, id, { lastN: ASK_LIMITS.historyWindowMessages });
+    } catch (e) {
+      // A transient Neon error, or toConv() throwing on a model id the code no longer recognizes,
+      // used to escape unhandled here (Must-fix 1, final re-review) — with the lock never released,
+      // every retry for up to 5 minutes got 409 busy instead of ever reaching a real answer.
+      console.error('[ask chat]', JSON.stringify({ outcome: 'load_failed', userId: user.id, conversationId: id, ...errFields(e) }));
+      await releaseTurnLock(id).catch(() => {});
+      return json({ error: FAILED_MESSAGE, code: 'setup_failed' }, 503);
+    }
     if (!loaded) {
       // Deleted in the gap between the acquire above and this load — nothing left to answer into.
       await releaseTurnLock(id).catch(() => {});

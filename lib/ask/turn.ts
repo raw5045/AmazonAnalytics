@@ -189,12 +189,17 @@ export async function runTurn(input: TurnInput): Promise<Response> {
         const finalMessage = responseMessage as AskUIMessage;
         const assistant = hasOutput(responseMessage) ? finalMessage : null;
         const status = statusFor({ isAborted: isAborted || isCancelled === true, errored: errored || outcome?.status === 'failed' });
-        // Read off the message's own metadata rather than recomputing it: messageMetadata's 'abort'
-        // branch above already set it there, and the AI SDK merges it in regardless of whether
-        // hasOutput ends up keeping or discarding the message for storage (Minor 7, final review —
-        // ops needs stopReason on the log line even for a stop that produced no storable output).
+        // Read off the message's own metadata first — messageMetadata's 'abort' branch above already
+        // set it there for a live abort part, merged in regardless of whether hasOutput ends up
+        // keeping or discarding the message for storage (Minor 7, final review — ops needs stopReason
+        // on the log line even for a stop that produced no storable output). But a cancelled body
+        // (Stop, a closed tab) reaches onEnd through toUIMessageStream's own cancel() handling, which
+        // runs BEFORE any 'abort' part is ever emitted — so metadata.stopReason is still undefined on
+        // that path, even though it is just as much a member Stop as the abort-part path is (a member
+        // Stop on Vercel can land as either, per Task 9 review). Fall back to 'user' whenever isCancelled
+        // is what triggered the stop (nit 2, final re-review).
         try {
-          await input.onEnd({ assistant, status, usage, steps, finishReason, stopReason: finalMessage.metadata?.stopReason });
+          await input.onEnd({ assistant, status, usage, steps, finishReason, stopReason: finalMessage.metadata?.stopReason ?? (isCancelled ? 'user' : undefined) });
         } catch (e) {
           // The stream has already been rendered to the browser by this point; a persistence
           // failure here must never surface as a broken response. Log-safe (Task 8 re-review): the

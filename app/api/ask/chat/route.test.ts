@@ -201,6 +201,18 @@ describe('POST /api/ask/chat', () => {
     expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
     expect(turn.runTurn).not.toHaveBeenCalled();
   });
+  it('a transient failure loading the follow-up history window releases the lock and answers 503, not an unhandled 500 that leaves the chat locked (Must-fix 1, final re-review)', async () => {
+    conv.loadConversation.mockRejectedValueOnce(new Error('neon reset'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await post({ ...newChat, conversationId: existingId });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed' });
+    expect(conv.releaseTurnLock).toHaveBeenCalledTimes(1);
+    expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+    expect(turn.runTurn).not.toHaveBeenCalled();
+    expect(outcomesLogged(error)).toContain('load_failed');
+    error.mockRestore();
+  });
   it('a follow-up chat at the message cap is 409 and releases the lock it had already acquired (Minor 8 reorder — the lock is now taken before the cap is known)', async () => {
     conv.loadConversation.mockResolvedValueOnce({ conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 200 }, messages: [] });
     const res = await post({ ...newChat, conversationId: existingId });
