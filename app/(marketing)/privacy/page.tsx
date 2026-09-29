@@ -6,8 +6,9 @@
  * virtual-mailbox provider — deliberate). Every system claim in here is accurate
  * to the stack as built: Clerk holds all credentials (Google sign-in users
  * have no password anywhere), we store emails/names/in-app data/usage
- * counters, essential cookies only, processors listed exhaustively. Keep
- * this page truthful when the stack changes.
+ * counters, essential cookies only, processors listed exhaustively
+ * (including Anthropic for Ask AI answers). Keep this page truthful when
+ * the stack changes.
  */
 import type { Metadata } from 'next';
 import Link from 'next/link';
@@ -30,7 +31,7 @@ export default function PrivacyPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-14 sm:px-6">
       <h1 className="text-3xl font-semibold tracking-tight text-gray-900">Privacy Policy</h1>
-      <p className="mt-2 text-sm text-gray-500">Last updated: September 8, 2026</p>
+      <p className="mt-2 text-sm text-gray-500">Last updated: September 29, 2026</p>
 
       <Section n={1} title="What we collect">
         <p>
@@ -44,6 +45,11 @@ export default function PrivacyPage() {
         <p>
           <strong>Data you create in the app.</strong> Watchlists, saved
           views, and custom categories.
+        </p>
+        <p>
+          <strong>Ask AI chats.</strong> If you use Ask AI, your questions, the
+          answers, and the KeywordQuarry data the assistant looks up are stored
+          with your account until you delete the chat or your account.
         </p>
         <p>
           <strong>Usage data.</strong> Coarse activity counts (for example,
@@ -81,6 +87,14 @@ export default function PrivacyPage() {
           <li>Resend — email delivery</li>
           <li>Cloudflare — DNS and email routing for our support inbox</li>
           <li>Keepa — product-data enrichment (receives no personal data)</li>
+          <li>
+            Anthropic — AI answers. To produce an Ask AI answer we send your
+            question, the recent messages of that chat, and the data the
+            assistant looked up to Anthropic, which processes it under its
+            commercial terms, does not use it to train its models, and
+            deletes it from its systems within 30 days unless its policies
+            or the law require it to keep it longer.
+          </li>
         </ul>
         <p>
           The tutorial videos on our{' '}

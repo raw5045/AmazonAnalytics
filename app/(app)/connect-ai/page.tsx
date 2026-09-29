@@ -1,9 +1,14 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { mcpAllowedClientIds, mcpAudience, mcpClientLabel, mcpEnabled, mcpResourceUrl } from '@/lib/mcp/config';
 import { connectAiEligible } from '@/lib/mcp/eligibility';
 import { getMcpConnection } from '@/lib/mcp/connections';
+import { askAiEnabled } from '@/lib/ask/config';
+import { askAiEligible } from '@/lib/ask/eligibility';
+import { getAccount } from '@/lib/ask/ledger';
+import { errFields } from '@/lib/ask/logSafe';
 import { ConnectionControls } from './ConnectionControls';
 import { ExampleQuestions } from './ExampleQuestions';
 
@@ -31,6 +36,19 @@ export default async function ConnectAiPage() {
         Let Claude or ChatGPT read KeywordQuarry directly while you work. The connection is read-only: search,
         categories, keyword details and history. Beta, free while it lasts.
       </p>
+
+      {/* Cross-link to the in-app chat (spec §11.6). Guarded like the tab check in
+          app/(app)/layout.tsx: a failed account read must not break this page, so it is
+          caught and logged log-safe (errFields never surfaces a DrizzleQueryError's own
+          .message, which can embed bound SQL params) and treated as "not eligible". */}
+      {askAiEnabled() && askAiEligible(user.role, await getAccount(user.id).catch((e) => {
+        console.error('[connect-ai page]', JSON.stringify({ outcome: 'account_read_failed', ...errFields(e) }));
+        return null;
+      })) && (
+        <p className="mt-2 text-sm">
+          <Link href="/ask" className="text-blue-700 underline">Prefer to chat here? Try Ask AI.</Link>
+        </p>
+      )}
 
       {!enabled ? (
         <section className={card}>

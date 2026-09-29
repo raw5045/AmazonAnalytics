@@ -100,9 +100,11 @@ export async function POST(req: Request): Promise<Response> {
     } else if (event.type === 'user.deleted') {
       // FK cleanup on user delete (verified Batch 4): saved_views,
       // watchlist_items, weekly_digest_sends, custom_categories,
-      // mcp_connections, research_usage_buckets and user_activity_daily
-      // CASCADE, and weekly_digest_runs.triggered_by SETs NULL — so a REGULAR
-      // user deletes cleanly. The 5 admin-provenance refs (audit_log, app_settings,
+      // mcp_connections, research_usage_buckets, user_activity_daily,
+      // ask_conversations (and ask_messages through it), ask_accounts and
+      // ask_ledger CASCADE, and weekly_digest_runs.triggered_by and
+      // ask_ledger.created_by SET NULL — so a REGULAR user deletes cleanly.
+      // The 5 admin-provenance refs (audit_log, app_settings,
       // fake_volume_rules, upload_batches, schema_versions) are ON DELETE
       // RESTRICT by design (preserve history), so deleting an ADMIN who owns
       // such rows throws 23503 → caught below → 500 → Clerk retries. Accepted:

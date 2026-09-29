@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 const envMock = vi.hoisted(() => ({ env: {} as Record<string, string | undefined> }));
+const authMock = vi.hoisted(() => ({ role: 'user' }));
 vi.mock('@/lib/env', () => envMock);
 vi.mock('@/lib/auth/requireAuthenticatedUser', () => ({
-  requireAuthenticatedUser: async () => ({ id: 'user-1', role: 'user', email: 'member@example.com' }),
+  requireAuthenticatedUser: async () => ({ id: 'user-1', role: authMock.role, email: 'member@example.com' }),
 }));
 vi.mock('@/lib/mcp/connections', () => ({ getMcpConnection: async () => null }));
+vi.mock('@/lib/ask/ledger', () => ({ getAccount: async () => null }));
 vi.mock('next/navigation', () => ({
   notFound: () => {
     throw new Error('notFound');
@@ -87,5 +89,29 @@ describe('Connect AI page setup steps', () => {
     expect(screen.getByRole('heading', { name: "If it won\u2019t connect" })).toBeInTheDocument();
     expect(screen.getByText(/Check status\.claude\.com or status\.openai\.com first/)).toBeInTheDocument();
     expect(screen.getByText(/The connection only works for KeywordQuarry/)).toBeInTheDocument();
+  });
+});
+
+describe('Connect AI page → Ask AI link', () => {
+  beforeEach(() => {
+    envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all', ASK_AI_ENABLED: '1' };
+    authMock.role = 'admin';
+  });
+
+  it('shows the link to an eligible admin account when Ask AI is on', async () => {
+    render(await ConnectAiPage());
+    expect(screen.getByRole('link', { name: 'Prefer to chat here? Try Ask AI.' })).toHaveAttribute('href', '/ask');
+  });
+
+  it('hides the link for a plain user with no ask account', async () => {
+    authMock.role = 'user';
+    render(await ConnectAiPage());
+    expect(screen.queryByRole('link', { name: 'Prefer to chat here? Try Ask AI.' })).toBeNull();
+  });
+
+  it('hides the link for an admin when Ask AI is switched off', async () => {
+    envMock.env.ASK_AI_ENABLED = '0';
+    render(await ConnectAiPage());
+    expect(screen.queryByRole('link', { name: 'Prefer to chat here? Try Ask AI.' })).toBeNull();
   });
 });
