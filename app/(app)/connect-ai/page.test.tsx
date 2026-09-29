@@ -88,12 +88,12 @@ describe('Connect AI page setup steps', () => {
     expect(details).toContainElement(screen.getByText('claude-secret-123'));
   });
 
-  it('walks the Code tab door: the custom MCP form, empty token and headers, then /mcp to authenticate', async () => {
+  it('walks the Code tab door: Connectors for the desktop app, claude mcp add for the terminal, the custom MCP form if present', async () => {
     render(await ConnectAiPage());
     expect(screen.getByRole('heading', { name: /^Claude Code \(the desktop app/ })).toBeInTheDocument();
-    expect(screen.getByText('In the Code tab: Plugins → Add → Add MCP server → Connect to a custom MCP.')).toBeInTheDocument();
-    expect(screen.getByText(/Type: Streamable HTTP\. URL: the server URL above\. Leave the bearer token and/)).toBeInTheDocument();
+    expect(screen.getByText(/Desktop app: add KeywordQuarry under Customize → Connectors as above/)).toBeInTheDocument();
     expect(screen.getByText('claude mcp add --transport http keywordquarry https://keywordquarry.com/api/mcp')).toBeInTheDocument();
+    expect(screen.getByText(/Type Streamable HTTP, URL above, leave the bearer token and headers empty, Save/)).toBeInTheDocument();
     expect(screen.getAllByText('/mcp').length).toBeGreaterThanOrEqual(2);
   });
 

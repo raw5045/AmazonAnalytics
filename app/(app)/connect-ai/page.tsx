@@ -92,19 +92,20 @@ export default async function ConnectAiPage() {
           <section className={card}>
             <h2 className="font-semibold">Claude Code (the desktop app&rsquo;s Code tab, or the terminal)</h2>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">
-              <li>In the Code tab: Plugins → Add → Add MCP server → Connect to a custom MCP.</li>
               <li>
-                Name: KeywordQuarry. Type: Streamable HTTP. URL: the server URL above. Leave the bearer token and
-                headers empty. Save.
+                Desktop app: add KeywordQuarry under Customize → Connectors as above. Code sessions get it right away
+                (the + menu → Connectors), and typing <code className={mono}>/mcp</code> there opens that same
+                Connectors screen.
               </li>
               <li>
-                In a session, type <code className={mono}>/mcp</code>, choose KeywordQuarry, then Authenticate, and
-                approve the KeywordQuarry sign-in screen in your browser.
+                Terminal: <code className={mono}>claude mcp add --transport http keywordquarry {endpoint}</code>,
+                then type <code className={mono}>/mcp</code>, choose KeywordQuarry, Authenticate, and approve the
+                KeywordQuarry sign-in in your browser.
               </li>
               <li>
-                From a terminal instead:{' '}
-                <code className={mono}>claude mcp add --transport http keywordquarry {endpoint}</code>, then{' '}
-                <code className={mono}>/mcp</code>.
+                If your build shows a &ldquo;Connect to a custom MCP&rdquo; form (Plugins → Add MCP server): Name
+                KeywordQuarry, Type Streamable HTTP, URL above, leave the bearer token and headers empty, Save, then
+                sign in with your KeywordQuarry account when Claude asks.
               </li>
             </ol>
           </section>
