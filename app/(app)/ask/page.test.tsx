@@ -43,11 +43,11 @@ describe('Ask AI page', () => {
     render(await AskPage({ searchParams: Promise.resolve({ c: '11111111-1111-4111-8111-111111111111' }) }));
     expect(conv.loadConversation).toHaveBeenCalledWith('u1', '11111111-1111-4111-8111-111111111111');
   });
-  it('strips tool part outputs from the messages passed to AskAi, and passes inFlightSince as an ISO string or null (item 1, item 6)', async () => {
+  it('strips tool part outputs from the messages passed to AskAi (item 6)', async () => {
     conv.loadConversation.mockResolvedValueOnce({
       conversation: {
         id: 'c1', userId: 'u1', title: 'Chat', model: 'claude-sonnet-5', messageCount: 1,
-        inFlightSince: new Date('2026-09-28T18:00:00.000Z'), createdAt: new Date(), updatedAt: new Date(),
+        inFlightSince: null, createdAt: new Date(), updatedAt: new Date(),
       },
       messages: [{
         id: 'm1', role: 'assistant',
@@ -60,10 +60,29 @@ describe('Ask AI page', () => {
     // ignores whatever `messages` Thread is initialised with, so nothing about it is observable
     // through the rendered DOM.
     const element = await AskPage({ searchParams: Promise.resolve({ c: '11111111-1111-4111-8111-111111111111' }) });
-    const openProp = (element as unknown as { props: { open: { messages: Array<{ parts: Array<{ toolCallId?: string; output?: unknown }> }>; inFlightSince: string | null } } }).props.open;
-    expect(openProp.inFlightSince).toBe('2026-09-28T18:00:00.000Z');
+    const openProp = (element as unknown as { props: { open: { messages: Array<{ parts: Array<{ toolCallId?: string; output?: unknown }> }> } } }).props.open;
     const part = openProp.messages[0].parts[0];
     expect(part.output).toBeUndefined();
     expect(part.toolCallId).toBe('t1');
+  });
+  it('computes inFlight server-side from inFlightSince, never passing the raw timestamp to the client (item 1 / N1)', async () => {
+    const conversation = (inFlightSince: Date | null) => ({
+      id: 'c1', userId: 'u1', title: 'Chat', model: 'claude-sonnet-5' as const, messageCount: 1, inFlightSince, createdAt: new Date(), updatedAt: new Date(),
+    });
+    conv.loadConversation.mockResolvedValueOnce({ conversation: conversation(new Date(Date.now() - 60_000)), messages: [] }); // 1 minute ago
+    let element = await AskPage({ searchParams: Promise.resolve({ c: '11111111-1111-4111-8111-111111111111' }) });
+    let openProp = (element as unknown as { props: { open: { inFlight: boolean; inFlightSince?: unknown } } }).props.open;
+    expect(openProp.inFlight).toBe(true);
+    expect(openProp.inFlightSince).toBeUndefined();
+
+    conv.loadConversation.mockResolvedValueOnce({ conversation: conversation(new Date(Date.now() - 6 * 60_000)), messages: [] }); // stale (> 5 min)
+    element = await AskPage({ searchParams: Promise.resolve({ c: '11111111-1111-4111-8111-111111111111' }) });
+    openProp = (element as unknown as { props: { open: { inFlight: boolean } } }).props.open;
+    expect(openProp.inFlight).toBe(false);
+
+    conv.loadConversation.mockResolvedValueOnce({ conversation: conversation(null), messages: [] });
+    element = await AskPage({ searchParams: Promise.resolve({ c: '11111111-1111-4111-8111-111111111111' }) });
+    openProp = (element as unknown as { props: { open: { inFlight: boolean } } }).props.open;
+    expect(openProp.inFlight).toBe(false);
   });
 });

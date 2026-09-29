@@ -19,7 +19,7 @@ const appOrigin = 'https://keywordquarry.com';
  */
 function Harness({ initialDraft = '', ...rest }: Partial<React.ComponentProps<typeof Thread>> & { initialDraft?: string }) {
   const [draft, setDraft] = useState(initialDraft);
-  return <Thread open={null} defaultModel="claude-sonnet-5" canSend cantSendReason={null} appOrigin={appOrigin} {...rest} draft={draft} onDraftChange={setDraft} />;
+  return <Thread open={null} defaultModel="claude-sonnet-5" cantSendReason={null} atCap={false} appOrigin={appOrigin} {...rest} draft={draft} onDraftChange={setDraft} />;
 }
 
 describe('Thread', () => {
@@ -38,7 +38,7 @@ describe('Thread', () => {
       { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
       { id: 'm2', role: 'assistant', parts: [{ type: 'tool-search_keywords', toolCallId: 't', state: 'output-available', input: {} }, { type: 'text', text: '**Done**' }], metadata: { status: 'stopped' } },
     ];
-    render(<Harness open={{ id: 'c1', model: 'claude-haiku-4-5', messageCount: 2, messages: chat.messages as never, inFlightSince: null }} />);
+    render(<Harness open={{ id: 'c1', model: 'claude-haiku-4-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
     expect(screen.getByText('Quick (Haiku 4.5)')).toBeInTheDocument();
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(screen.getByText('Used 1 tool')).toBeInTheDocument();
@@ -52,7 +52,7 @@ describe('Thread', () => {
         { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
         { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'partial' }], metadata: { status: 'stopped', stopReason: 'deadline' } },
       ];
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlightSince: null }} />);
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
       expect(screen.getByText('That took too long. Try a narrower question.')).toBeInTheDocument();
       expect(screen.queryByText('Stopped.')).toBeNull();
     });
@@ -62,7 +62,7 @@ describe('Thread', () => {
         { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
         { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'partial answer' }], metadata: { finishReason: 'length' } },
       ];
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlightSince: null }} />);
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
       expect(screen.getByText('The answer was cut off because it got too long. Ask for a shorter version.')).toBeInTheDocument();
     });
 
@@ -71,14 +71,14 @@ describe('Thread', () => {
         { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
         { id: 'm2', role: 'assistant', parts: [{ type: 'tool-search_keywords', toolCallId: 't', state: 'output-available', input: {} }], metadata: { status: 'complete' } },
       ];
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlightSince: null }} />);
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlight: false }} />);
       expect(screen.getByText('I ran out of steps before finishing. Try a narrower question.')).toBeInTheDocument();
     });
 
     it('does not show the ran-out line for the message currently streaming (no text yet just means mid-answer)', () => {
       chat.status = 'streaming';
       chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }, { id: 'm2', role: 'assistant', parts: [] }];
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlightSince: null }} />);
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlight: false }} />);
       expect(screen.queryByText('I ran out of steps before finishing. Try a narrower question.')).toBeNull();
     });
 
@@ -86,77 +86,122 @@ describe('Thread', () => {
       chat.status = 'error';
       chat.error = new Error('The AI is busy, try again in a moment.');
       chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }, { id: 'm2', role: 'assistant', parts: [] }];
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlightSince: null }} />);
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlight: false }} />);
       expect(screen.getByRole('alert')).toHaveTextContent('The AI is busy, try again in a moment.');
       expect(screen.queryByText(/ran out of steps/)).toBeNull();
+    });
+
+    it('an OLDER no-text message keeps its own ran-out line even while a LATER turn is in an error state (item 5 minor)', () => {
+      chat.status = 'error';
+      chat.error = new Error('The AI hit a problem. Try again in a minute.');
+      chat.messages = [
+        { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'first' }] },
+        { id: 'm2', role: 'assistant', parts: [{ type: 'tool-search_keywords', toolCallId: 't', state: 'output-available', input: {} }], metadata: { status: 'complete' } },
+        { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'second' }] },
+        { id: 'm4', role: 'assistant', parts: [] },
+      ];
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 4, messages: [], inFlight: false }} />);
+      expect(screen.getByText('I ran out of steps before finishing. Try a narrower question.')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toBeInTheDocument();
     });
 
     it('shows the server error line (JSON body) on error', () => {
       chat.status = 'error';
       chat.error = new Error(JSON.stringify({ error: 'Wait for the current answer to finish.' }));
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlightSince: null }} />);
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlight: false }} />);
       expect(screen.getByRole('alert')).toHaveTextContent('Wait for the current answer to finish.');
     });
   });
 
   describe('bottom-of-thread line (item 1 — never RAN_OUT_MESSAGE here)', () => {
-    it('STOPPED_LINE when Stop landed before any assistant message existed', () => {
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlightSince: null }} />);
-      const opts = chat.lastOptions as { onFinish: (e: { message: { id: string; role: string; metadata?: unknown }; isAbort: boolean; isError: boolean }) => void };
+    it('STOPPED_LINE when Stop landed before any assistant message existed (N3: keyed off onFinish\'s messages argument, not message.role)', () => {
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} />);
+      const opts = chat.lastOptions as { onFinish: (e: { message: { id: string; role: string; metadata?: unknown }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
       chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
       chat.status = 'ready';
-      act(() => { opts.onFinish({ message: { id: 'm1', role: 'user' }, isAbort: true, isError: false }); });
+      // onFinish's `message` is always an assistant-shaped shell with a fresh id, even when
+      // nothing was ever shown — the real signal is whether that id made it into `messages`.
+      act(() => { opts.onFinish({ message: { id: 'a-shell', role: 'assistant' }, messages: chat.messages, isAbort: true, isError: false }); });
       expect(screen.getByText('Stopped.')).toBeInTheDocument();
     });
 
-    it('BUSY_MESSAGE when the chat was locked recently (within the 5-minute expiry), and Composer shows the same line as its disabled reason', () => {
+    it('BUSY_MESSAGE while open.inFlight, without disabling the textarea or Send (item 1 / N1)', () => {
       chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
       chat.status = 'ready';
-      const recentIso = new Date(Date.now() - 60_000).toISOString();
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlightSince: recentIso }} />);
-      expect(screen.getAllByText('Wait for the current answer to finish.')).toHaveLength(2);
-      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: true }} initialDraft="another question" />);
+      expect(screen.getByText('Wait for the current answer to finish.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+      expect(screen.getByLabelText('Your question')).toBeEnabled();
     });
 
     it('NO_ANSWER_MESSAGE when nothing else explains the missing answer', () => {
       chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
       chat.status = 'ready';
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlightSince: null }} />);
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} />);
       expect(screen.getByText('No answer was saved for this question. Try asking again.')).toBeInTheDocument();
     });
+  });
 
-    it('a stale inFlightSince (older than the 5-minute expiry) does not read as busy', () => {
-      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
-      chat.status = 'ready';
-      const staleIso = new Date(Date.now() - 6 * 60_000).toISOString();
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlightSince: staleIso }} />);
-      expect(screen.getByText('No answer was saved for this question. Try asking again.')).toBeInTheDocument();
+  describe('server-computed busy state auto-refresh (item 1 / N1)', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('starts a 4s refresh interval while inFlight and stops it once inFlight clears', () => {
+      const { rerender } = render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: true }} />);
+      act(() => { vi.advanceTimersByTime(4000); });
+      expect(router.refresh).toHaveBeenCalledTimes(1);
+      act(() => { vi.advanceTimersByTime(4000); });
+      expect(router.refresh).toHaveBeenCalledTimes(2);
+      rerender(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} />);
+      act(() => { vi.advanceTimersByTime(8000); });
+      expect(router.refresh).toHaveBeenCalledTimes(2);
+    });
+
+    it('never starts the interval for an idle chat', () => {
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} />);
+      act(() => { vi.advanceTimersByTime(10_000); });
+      expect(router.refresh).not.toHaveBeenCalled();
+    });
+
+    it('stops the interval on unmount', () => {
+      const { unmount } = render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: true }} />);
+      unmount();
+      act(() => { vi.advanceTimersByTime(8000); });
+      expect(router.refresh).not.toHaveBeenCalled();
     });
   });
 
   describe('onFinish navigation (item 2, item 3, item 10 M4)', () => {
     it('a first send moves the URL via replace only — no extra refresh (M4: not both)', () => {
       render(<Harness />);
-      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; isAbort: boolean; isError: boolean }) => void };
-      act(() => { opts.onFinish({ message: { metadata: { conversationId: 'c9' } }, isAbort: false, isError: false }); });
+      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
+      act(() => { opts.onFinish({ message: { metadata: { conversationId: 'c9' } }, messages: [], isAbort: false, isError: false }); });
       expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
       expect(router.refresh).not.toHaveBeenCalled();
     });
 
     it('a follow-up refreshes only — there is no new id to move to', () => {
-      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlightSince: null }} />);
-      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; isAbort: boolean; isError: boolean }) => void };
-      act(() => { opts.onFinish({ message: { metadata: {} }, isAbort: false, isError: false }); });
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlight: false }} />);
+      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
+      act(() => { opts.onFinish({ message: { metadata: {} }, messages: [], isAbort: false, isError: false }); });
       expect(router.refresh).toHaveBeenCalled();
       expect(router.replace).not.toHaveBeenCalled();
     });
 
     it('a first-send error refreshes but never navigates away (item 3) — the live error line stays visible', () => {
       render(<Harness />);
-      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; isAbort: boolean; isError: boolean }) => void };
-      act(() => { opts.onFinish({ message: { metadata: { conversationId: 'c9' } }, isAbort: false, isError: true }); });
+      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
+      act(() => { opts.onFinish({ message: { metadata: { conversationId: 'c9' } }, messages: [], isAbort: false, isError: true }); });
       expect(router.replace).not.toHaveBeenCalled();
       expect(router.refresh).toHaveBeenCalled();
+    });
+
+    it('N2: Send stays disabled once onFinish learns a new chat id, so a quick follow-up cannot race the page change', () => {
+      render(<Harness initialDraft="another question" />);
+      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
+      expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+      act(() => { opts.onFinish({ message: { metadata: { conversationId: 'c9' } }, messages: [], isAbort: false, isError: false }); });
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     });
 
     describe('a Stop-driven finish delays the move by 1.5s', () => {
@@ -165,8 +210,8 @@ describe('Thread', () => {
 
       it('so the server save of the partial answer lands first', () => {
         render(<Harness />);
-        const opts = chat.lastOptions as { onFinish: (e: { message: { id: string; role: string; metadata?: { conversationId?: string } }; isAbort: boolean; isError: boolean }) => void };
-        act(() => { opts.onFinish({ message: { id: 'a1', role: 'assistant', metadata: { conversationId: 'c9' } }, isAbort: true, isError: false }); });
+        const opts = chat.lastOptions as { onFinish: (e: { message: { id: string; role: string; metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
+        act(() => { opts.onFinish({ message: { id: 'a1', role: 'assistant', metadata: { conversationId: 'c9' } }, messages: [{ id: 'a1', role: 'assistant' }], isAbort: true, isError: false }); });
         expect(router.replace).not.toHaveBeenCalled();
         act(() => { vi.advanceTimersByTime(1499); });
         expect(router.replace).not.toHaveBeenCalled();
@@ -176,8 +221,8 @@ describe('Thread', () => {
 
       it('is cancelled if the member navigates away before it fires (item 2)', () => {
         const { unmount } = render(<Harness />);
-        const opts = chat.lastOptions as { onFinish: (e: { message: { id: string; role: string; metadata?: { conversationId?: string } }; isAbort: boolean; isError: boolean }) => void };
-        act(() => { opts.onFinish({ message: { id: 'a1', role: 'assistant', metadata: { conversationId: 'c9' } }, isAbort: true, isError: false }); });
+        const opts = chat.lastOptions as { onFinish: (e: { message: { id: string; role: string; metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
+        act(() => { opts.onFinish({ message: { id: 'a1', role: 'assistant', metadata: { conversationId: 'c9' } }, messages: [{ id: 'a1', role: 'assistant' }], isAbort: true, isError: false }); });
         unmount();
         act(() => { vi.advanceTimersByTime(2000); });
         expect(router.replace).not.toHaveBeenCalled();
@@ -197,24 +242,107 @@ describe('Thread', () => {
     expect(chat.sendMessage).toHaveBeenCalledWith({ text: 'second' }, { body: { conversationId: 'c9' } });
   });
 
-  it('an HTTP refusal (a statusCode error) removes the optimistic user message and restores its text to the draft (item 10 M6)', () => {
-    const { rerender } = render(<Harness />);
-    chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'a question' }] }];
-    rerender(<Harness />);
-    const opts = chat.lastOptions as { onError: (e: unknown) => void };
-    const err = new APICallError({ message: JSON.stringify({ error: 'Wait for the current answer to finish.', code: 'busy' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 409 });
-    act(() => { opts.onError(err); });
-    expect(chat.setMessages).toHaveBeenCalledTimes(1);
-    const updater = chat.setMessages.mock.calls[0][0] as (msgs: unknown[]) => unknown[];
-    expect(updater(chat.messages)).toEqual([]);
-    expect(screen.getByLabelText('Your question')).toHaveValue('a question');
+  describe('onError (item 4, item 10 M6, item 5 minors)', () => {
+    it('an HTTP refusal with no conversationId in the body removes the optimistic message and restores its text to the draft (draft was empty)', () => {
+      const { rerender } = render(<Harness />);
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'a question' }] }];
+      rerender(<Harness />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      const err = new APICallError({ message: JSON.stringify({ error: 'Wait for the current answer to finish.', code: 'busy' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 409 });
+      act(() => { opts.onError(err); });
+      expect(chat.setMessages).toHaveBeenCalledTimes(1);
+      const updater = chat.setMessages.mock.calls[0][0] as (msgs: unknown[]) => unknown[];
+      let stripped: unknown[] = [];
+      act(() => { stripped = updater(chat.messages); });
+      expect(stripped).toEqual([]);
+      expect(screen.getByLabelText('Your question')).toHaveValue('a question');
+    });
+
+    it('keeps the optimistic bubble and leaves a non-empty draft untouched (item 5 minor)', () => {
+      const { rerender } = render(<Harness initialDraft="something else I typed" />);
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'a question' }] }];
+      rerender(<Harness initialDraft="something else I typed" />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      const err = new APICallError({ message: JSON.stringify({ error: 'Wait for the current answer to finish.', code: 'busy' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 409 });
+      act(() => { opts.onError(err); });
+      const updater = chat.setMessages.mock.calls[0][0] as (msgs: unknown[]) => unknown[];
+      let result: unknown[] = [];
+      act(() => { result = updater(chat.messages); });
+      expect(result).toBe(chat.messages);
+      expect(screen.getByLabelText('Your question')).toHaveValue('something else I typed');
+    });
+
+    it('a refusal body carrying conversationId navigates to the now-known chat instead of restoring the draft (item 4)', () => {
+      const { rerender } = render(<Harness />);
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'a question' }] }];
+      rerender(<Harness />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      const err = new APICallError({
+        message: JSON.stringify({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed', conversationId: 'c9' }),
+        url: '/api/ask/chat', requestBodyValues: {}, statusCode: 503,
+      });
+      act(() => { opts.onError(err); });
+      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
+      expect(chat.setMessages).not.toHaveBeenCalled();
+      expect(screen.getByLabelText('Your question')).toHaveValue('');
+    });
+
+    it('does not navigate on a conversationId-carrying refusal for a FOLLOW-UP (open already known) — that path is unaffected', () => {
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlight: false }} />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      const err = new APICallError({
+        message: JSON.stringify({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed' }),
+        url: '/api/ask/chat', requestBodyValues: {}, statusCode: 503,
+      });
+      act(() => { opts.onError(err); });
+      expect(router.replace).not.toHaveBeenCalled();
+    });
+
+    it('leaves a stream-embedded error alone (no statusCode) — nothing to strip, it never had an optimistic message of its own', () => {
+      render(<Harness />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      act(() => { opts.onError(new Error('The AI is busy, try again in a moment.')); });
+      expect(chat.setMessages).not.toHaveBeenCalled();
+      expect(router.replace).not.toHaveBeenCalled();
+    });
   });
 
-  it('leaves a stream-embedded error alone (no statusCode) — nothing to strip, it never had an optimistic message of its own', () => {
-    render(<Harness />);
-    const opts = chat.lastOptions as { onError: (e: unknown) => void };
-    act(() => { opts.onError(new Error('The AI is busy, try again in a moment.')); });
-    expect(chat.setMessages).not.toHaveBeenCalled();
+  describe('chat cap after a first-send error (item 6, spec re-review)', () => {
+    it('does not show the cap message once a chat id is known — from a streamed conversationId even though open is still null', () => {
+      chat.status = 'error';
+      chat.error = new Error('The AI is busy, try again in a moment.');
+      chat.messages = [
+        { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+        { id: 'm2', role: 'assistant', parts: [], metadata: { conversationId: 'c9' } },
+      ];
+      render(<Harness open={null} atCap cantSendReason={null} initialDraft="another try" />);
+      expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+      expect(screen.queryByText('You have 5 chats. Delete one to start another.')).toBeNull();
+    });
+
+    it('shows the cap message when genuinely no chat id is known yet', () => {
+      render(<Harness open={null} atCap cantSendReason={null} />);
+      expect(screen.getByRole('status')).toHaveTextContent('You have 5 chats. Delete one to start another.');
+    });
+
+    it('shows an "Open this chat" link under the error alert when a streamed id is known and there is no open', () => {
+      chat.status = 'error';
+      chat.error = new Error('The AI is busy, try again in a moment.');
+      chat.messages = [
+        { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+        { id: 'm2', role: 'assistant', parts: [], metadata: { conversationId: 'c9' } },
+      ];
+      render(<Harness open={null} />);
+      expect(screen.getByRole('link', { name: 'Open this chat' })).toHaveAttribute('href', '/ask?c=c9');
+    });
+
+    it('does not show the link once the chat is open (no first-send ambiguity left)', () => {
+      chat.status = 'error';
+      chat.error = new Error('The AI is busy, try again in a moment.');
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} />);
+      expect(screen.queryByRole('link', { name: 'Open this chat' })).toBeNull();
+    });
   });
 
   describe('Stop cooldown (item 10 M5 — disables only Send, not the textarea)', () => {

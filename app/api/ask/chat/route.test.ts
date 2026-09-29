@@ -205,6 +205,10 @@ describe('POST /api/ask/chat', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const res = await post(newChat);
     expect(res.status).toBe(503);
+    // Task 9 fix round 2, item 4: a first send's setup_failed body carries the id of the chat that
+    // was already created and stored, so the client can stay in it instead of resending with
+    // conversationId: null and creating an orphaned second chat.
+    expect(await res.json()).toEqual({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed', conversationId: 'c9' });
     expect(conv.releaseTurnLock).toHaveBeenCalledWith('c9');
     expect(turn.runTurn).not.toHaveBeenCalled();
     expect(outcomesLogged(error)).toContain('setup_failed');

@@ -36,12 +36,21 @@ describe('AskAi', () => {
     rerender(
       <AskAi
         conversations={[{ id: 'c1', title: 'Chat', model: 'claude-sonnet-5', updatedAt: '2026-09-28T10:00:00.000Z' }]}
-        open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlightSince: null }}
+        open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }}
         meter={meter}
         preview={false}
         appOrigin={appOrigin}
       />,
     );
     expect(screen.getByLabelText('Your question')).toHaveValue('still typing');
+  });
+
+  it('closes the drawer once a chat is picked (fix round 2, item 5 minor)', () => {
+    const conversations = [{ id: 'c1', title: 'Chat', model: 'claude-sonnet-5' as const, updatedAt: '2026-09-28T10:00:00.000Z' }];
+    render(<AskAi conversations={conversations} open={null} meter={meter} preview={false} appOrigin={appOrigin} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Chats' }));
+    expect(screen.getByRole('button', { name: 'Chats' })).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('link', { name: 'Chat' }));
+    expect(screen.getByRole('button', { name: 'Chats' })).toHaveAttribute('aria-expanded', 'false');
   });
 });

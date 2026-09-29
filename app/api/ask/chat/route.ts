@@ -252,7 +252,11 @@ export async function POST(req: Request) {
     controller.abort();
     console.error('[ask chat]', JSON.stringify({ outcome: 'setup_failed', userId: user.id, conversationId: cid, ...errFields(e) }));
     await releaseTurnLock(cid).catch(() => {});
-    return json({ error: FAILED_MESSAGE, code: 'setup_failed' }, 503);
+    // On a first send (Task 9 fix round 2, item 4) the chat and its question were already stored
+    // before this failure — the id goes in the body so the client can stay in that chat instead of
+    // resending with conversationId: null and creating an orphaned second one. A follow-up already
+    // has the id client-side (it's `open`), so its body is unchanged.
+    return json({ error: FAILED_MESSAGE, code: 'setup_failed', ...(created ? { conversationId: cid } : {}) }, 503);
   } finally {
     if (!streaming) finishTurn();
   }

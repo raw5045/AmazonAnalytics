@@ -1,13 +1,14 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useChat } from '@ai-sdk/react';
 import { APICallError, isToolUIPart, type ToolUIPart } from 'ai';
-import { ASK_LIMITS, ASK_MODELS, type AskModelId } from '@/lib/ask/models';
+import { ASK_MODELS, type AskModelId } from '@/lib/ask/models';
 import type { AskUIMessage } from '@/lib/ask/conversations';
 import { EXAMPLE_QUESTIONS } from '@/lib/ask/examples';
 import {
-  BUSY_MESSAGE, CUT_OFF_MESSAGE, FAILED_MESSAGE, NO_ANSWER_MESSAGE, RAN_OUT_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE,
+  BUSY_MESSAGE, CHAT_CAP_MESSAGE, CUT_OFF_MESSAGE, FAILED_MESSAGE, NO_ANSWER_MESSAGE, RAN_OUT_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE,
 } from '@/lib/ask/messages';
 import { describeChatError } from '@/lib/ask/clientErrors';
 import { createAskTransport } from '@/lib/ask/transport';
@@ -18,54 +19,66 @@ import { ToolActivity } from './ToolActivity';
 
 export interface OpenConversation {
   id: string; model: AskModelId; messageCount: number; messages: AskUIMessage[];
-  /** ISO string or null (Task 9 fix round, item 1) — page.tsx reads it off the conversation row. */
-  inFlightSince: string | null;
+  /**
+   * Server-computed per request (Task 9 fix round 2, item 1 / N1) — never a client-side clock.
+   * A client-side "is this recent" comparison, frozen at Thread's own mount time, could read a
+   * lock that had already gone stale server-side as still "busy" forever; page.tsx recomputes this
+   * fresh on every request instead (it is force-dynamic), so a plain `router.refresh()` is always
+   * enough to pick up the true current state.
+   */
+  inFlight: boolean;
 }
 
 /** How long the server may still be settling/saving a stopped turn under the lock (Task 8 review's "Notes for later tasks"): an immediate resend inside this window can get a 409 busy. Task 9 D6. */
 const STOP_COOLDOWN_MS = 2000;
 /** On an aborted first send, delay the URL move so the server's save of the partial answer lands before the page reloads the chat (Task 9 D7). */
 const ABORT_NAV_DELAY_MS = 1500;
+/** While `open.inFlight`, how often to ask the server for fresh data (item 1 / N1) — bounded by the lock's own server-side expiry, so this can never poll forever. */
+const BUSY_REFRESH_MS = 4000;
 
 function hasVisibleText(m: AskUIMessage): boolean {
   return m.parts.some((p) => p.type === 'text' && p.text.trim().length > 0);
 }
 
 /**
- * One status line per assistant message (Task 9 fix round, item 1 — supersedes the D4 version).
- * `stopReason`/`finishReason` are live-only, set as the turn streams and never persisted
+ * One status line per assistant message (Task 9 fix round, item 1; `isLast` added in fix round 2,
+ * item 5). `stopReason`/`finishReason` are live-only, set as the turn streams and never persisted
  * (lib/ask/conversations.ts's `storedToUiMessage` reconstructs only `{ status }`), so a Stop the
  * member's own browser triggered is also tracked locally in `stoppedIds` (set in onFinish) — the
  * browser disconnects on Stop and never receives the server's own abort part. Order matters: a
  * deadline stop, then any stop, then a failure, then the two live-only finish reasons, then the
  * "no text produced" heuristic (kept for a reload, where finishReason/stopReason are gone) — but
- * never that last one for the message currently streaming (no text yet just means mid-answer) or
- * while the whole chat status is 'error' (the alert already explains it; showing this too would be
- * two lines for one situation).
+ * never that last one for the message currently streaming (no text yet just means mid-answer), and
+ * the chat-status-is-'error' suppression applies only to the LAST message, not every no-text
+ * message in the chat — an older, genuinely ran-out message earlier on must keep its own line even
+ * while a later turn is the one showing the alert (fix round 2, item 5 minor).
  */
-function statusLineFor(m: AskUIMessage, isLive: boolean, chatStatus: string, stoppedIds: ReadonlySet<string>): string | null {
+function statusLineFor(m: AskUIMessage, isLive: boolean, isLast: boolean, chatStatus: string, stoppedIds: ReadonlySet<string>): string | null {
   const meta = m.metadata;
   if (meta?.stopReason === 'deadline') return TOO_LONG_TURN_MESSAGE;
   if (meta?.stopReason === 'user' || meta?.status === 'stopped' || stoppedIds.has(m.id)) return STOPPED_LINE;
   if (meta?.status === 'failed') return FAILED_MESSAGE;
   if (meta?.finishReason === 'length') return CUT_OFF_MESSAGE;
   if (meta?.finishReason === 'tool-calls') return RAN_OUT_MESSAGE;
-  if (!hasVisibleText(m) && !isLive && chatStatus !== 'error') return RAN_OUT_MESSAGE;
+  if (!hasVisibleText(m) && !isLive && !(isLast && chatStatus === 'error')) return RAN_OUT_MESSAGE;
   return null;
 }
 
 /**
- * Spec §11.3. One hook instance per chat (AskAi keys this component by the open chat's id). The
- * transport (lib/ask/transport.ts) sends only the new message text plus the chat id (and the model
- * on a first send) — the server loads history itself (spec §13). A first send learns the new
- * chat's id from the assistant message metadata and moves the URL there.
+ * Spec §11.3. One hook instance per chat (AskAi keys this component by the open chat's id, and by
+ * busy/idle — item 1). The transport (lib/ask/transport.ts) sends only the new message text plus
+ * the chat id (and the model on a first send) — the server loads history itself (spec §13). A
+ * first send learns the new chat's id from the assistant message metadata and moves the URL there.
  *
  * `draft` is owned by AskAi, not this component (Task 9 fix round, item 8 / M1): a first send
  * changes the URL to `?c=<id>`, and since Thread is keyed by the open chat's id, that remounts it
  * — anything the member had queued mid-answer would otherwise vanish.
  */
-export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin, draft, onDraftChange }: {
-  open: OpenConversation | null; defaultModel: AskModelId; canSend: boolean; cantSendReason: string | null; appOrigin: string;
+export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, draft, onDraftChange }: {
+  open: OpenConversation | null; defaultModel: AskModelId;
+  /** The server-computed reason (no balance / chat full), or null — the cap case is decided below, since only this component knows about a chat id already learned from the stream (item 6). */
+  cantSendReason: string | null;
+  atCap: boolean; appOrigin: string;
   draft: string; onDraftChange: (v: string) => void;
 }) {
   const router = useRouter();
@@ -73,11 +86,11 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
   const [cooldown, setCooldown] = useState(false);
   const [stoppedIds, setStoppedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [stoppedBeforeAnswer, setStoppedBeforeAnswer] = useState(false);
+  // item 2 / N2: once onFinish has learned a first send's new chat id, Send stays disabled until
+  // this component unmounts (which happens when the URL replace lands and AskAi re-renders with
+  // `open` set) — otherwise a quick second send in that window is racing the page change itself.
+  const [leaving, setLeaving] = useState(false);
   const [transport] = useState(() => createAskTransport());
-  // Captured once at mount (a lazy useState initialiser, not a direct Date.now() call in the
-  // render body, which the React Compiler's purity rule rejects as an impure render call) — used
-  // only for the "is inFlightSince recent" comparison below; it does not need to keep ticking.
-  const [mountedAt] = useState(() => Date.now());
   // Delayed navigation after unmount (item 2): the member can leave the page within the 1.5s
   // ABORT_NAV_DELAY_MS window (useChat's own unmount cleanup calls stop(), which fires onFinish
   // with isAbort), and without this guard the pending router.replace would pull them back to the
@@ -92,6 +105,15 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
       if (navTimer.current !== null) clearTimeout(navTimer.current);
     };
   }, []);
+  // Busy-to-idle (item 1 / N1): while the server says this chat is genuinely locked elsewhere,
+  // poll for the saved answer instead of leaving the member looking at a static line forever —
+  // bounded by the lock's own server-side expiry. router.refresh() is not a state update, so this
+  // effect body (start/clear an interval) is exactly the exception the hard rules note allows.
+  useEffect(() => {
+    if (!open?.inFlight) return;
+    const id = setInterval(() => router.refresh(), BUSY_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [open?.inFlight, router]);
   const { messages, sendMessage, status, stop, error, setMessages } = useChat<AskUIMessage>({
     id: open?.id ?? 'new',
     messages: open?.messages ?? [],
@@ -100,15 +122,18 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
     // 4.0.121 exposes this as `throttle` — `experimental_throttle` still works but is its
     // deprecated alias (see node_modules/@ai-sdk/react/dist/index.d.ts), so `throttle` is used.
     throttle: 50,
-    onFinish: ({ message, isAbort, isError }) => {
-      // item 3: a first-send error must not navigate away — that would replace the live error
-      // line the member is looking at with a freshly (and wrongly) loaded chat.
+    onFinish: ({ message, messages: finishedMessages, isAbort, isError }) => {
+      // item 3 (N3): `message` is always a fresh assistant-shaped shell, even when Stop landed
+      // before anything was ever shown — whether its id made it into the visible `messages` list
+      // (the second onFinish argument) is what actually distinguishes "stopped with something
+      // shown" from "stopped before any answer", not `message.role` (always 'assistant').
       if (isError) { router.refresh(); return; }
       if (isAbort) {
-        if (message.role === 'assistant') setStoppedIds((prev) => new Set(prev).add(message.id));
-        else setStoppedBeforeAnswer(true); // Stop landed before any assistant message existed
+        if (finishedMessages.some((m) => m.id === message.id)) setStoppedIds((prev) => new Set(prev).add(message.id));
+        else setStoppedBeforeAnswer(true);
       }
       const cid = message.metadata?.conversationId;
+      if (!open && cid) setLeaving(true); // item 2 (N2)
       const moveOn = () => {
         if (!alive.current) return;
         // item 10 M4: replace OR refresh, never both — a force-dynamic route already fetches
@@ -120,26 +145,53 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
       else moveOn();
     },
     onError: (err) => {
-      // item 10 M6: an HTTP refusal (busy/full/no-balance/cross-site/...) carries a statusCode —
-      // put the optimistic user message's text back in the draft and drop the message itself so a
-      // resend does not show the same question twice. A stream-embedded error (the model itself
-      // failing mid-turn) is a plain Error with no statusCode and is left alone.
       if (!APICallError.isInstance(err) || typeof err.statusCode !== 'number') return;
-      const trailing = messages[messages.length - 1];
-      if (trailing?.role !== 'user') return;
-      onDraftChange(trailing.parts.map((p) => (p.type === 'text' ? p.text : '')).join(''));
-      setMessages((msgs) => (msgs[msgs.length - 1]?.role === 'user' ? msgs.slice(0, -1) : msgs));
+      let refusedConversationId: string | null = null;
+      try {
+        const body = JSON.parse(err.message) as { conversationId?: unknown };
+        if (typeof body.conversationId === 'string') refusedConversationId = body.conversationId;
+      } catch {}
+      // item 4: a first-send setup failure after the chat and its question were already stored
+      // carries the new chat's id — move there (the question is already saved in it) instead of
+      // stripping the optimistic bubble below, which would let a resend create a second, orphaned
+      // chat (conversationId: null again, since `open` is still null here).
+      if (!open && refusedConversationId) {
+        router.replace(`/ask?c=${encodeURIComponent(refusedConversationId)}`);
+        return;
+      }
+      // item 10 M6, refined by item 5 minors: an HTTP refusal (busy/full/no-balance/...) after the
+      // optimistic user message was added. The trailing message is read inside the updater (not
+      // the render closure, which can be stale by the time this fires) so the decision always sees
+      // the current messages. The refused text is restored into the draft — and the bubble removed
+      // — only when the draft is empty; if the member already typed something else meanwhile, the
+      // bubble stays and nothing is overwritten or lost.
+      setMessages((msgs) => {
+        const trailing = msgs[msgs.length - 1];
+        if (trailing?.role !== 'user' || draft !== '') return msgs;
+        onDraftChange(trailing.parts.map((p) => (p.type === 'text' ? p.text : '')).join(''));
+        return msgs.slice(0, -1);
+      });
     },
   });
   const streaming = status === 'submitted' || status === 'streaming';
+  // The chat id learned from a stream chunk before `open` (the server-rendered prop) catches up —
+  // used both to send a follow-up under the right id (item 3 / N3's neighbouring fix) and, below,
+  // to decide the chat-cap reason and the "Open this chat" recovery link (item 6).
+  const streamedCid = messages.find((m) => m.metadata?.conversationId)?.metadata?.conversationId ?? null;
+  const knownChatId = open?.id ?? streamedCid;
+  /**
+   * item 6 (spec re-review): the cap message only makes sense when no chat id is known at all —
+   * once one is (`open`, or a first send whose stream already assigned one), the member is
+   * effectively already in a chat, so showing "you have 5 chats" while they are looking at their
+   * (about to be) sixth would be wrong, most visibly right after a first-send error (no navigation
+   * on isError leaves `open` null even though the chat now exists).
+   */
+  const cantSendReasonEffective = cantSendReason ?? (knownChatId === null && atCap ? CHAT_CAP_MESSAGE : null);
+  const canSend = cantSendReasonEffective === null;
   const send = (text: string) => {
     onDraftChange('');
     setStoppedBeforeAnswer(false);
-    // item 3: once the stream's start chunk has assigned a conversation id, use it even though
-    // `open` (the server-rendered prop) has not caught up yet — otherwise a second send before the
-    // URL replace lands (or right after an early Stop) would create a second chat.
-    const cid = open?.id ?? messages.find((m) => m.metadata?.conversationId)?.metadata?.conversationId ?? null;
-    void sendMessage({ text }, { body: { conversationId: cid, ...(cid ? {} : { model }) } });
+    void sendMessage({ text }, { body: { conversationId: knownChatId, ...(knownChatId ? {} : { model }) } });
   };
   const onStop = () => {
     stop();
@@ -151,14 +203,13 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
    * Bottom-of-thread line (item 1): only when the last message is the member's own and the chat
    * is settled — an assistant message always exists once anything at all streamed back (the
    * server's first chunk carries its id), so this only fires when NOTHING did: a Stop before the
-   * first chunk, a turn still genuinely running elsewhere (a recent inFlightSince), or something
-   * that leaves neither (a crashed function, a failed save, a reload mid-answer). Never
-   * RAN_OUT_MESSAGE here — none of those are "ran out of steps".
+   * first chunk, a turn still genuinely running elsewhere (`open.inFlight`), or something that
+   * leaves neither (a crashed function, a failed save, a reload mid-answer). Never RAN_OUT_MESSAGE
+   * here — none of those are "ran out of steps". While busy, the box and Send stay enabled (an
+   * early send just gets the server's 409, handled the same as any other busy refusal above).
    */
   const showBottomLine = status === 'ready' && last?.role === 'user';
-  const recentlyInFlight = open?.inFlightSince != null && mountedAt - new Date(open.inFlightSince).getTime() < ASK_LIMITS.inFlightExpiryMinutes * 60_000;
-  const bottomLine = !showBottomLine ? null : stoppedBeforeAnswer ? STOPPED_LINE : recentlyInFlight ? BUSY_MESSAGE : NO_ANSWER_MESSAGE;
-  const busyInFlight = bottomLine === BUSY_MESSAGE;
+  const bottomLine = !showBottomLine ? null : stoppedBeforeAnswer ? STOPPED_LINE : open?.inFlight ? BUSY_MESSAGE : NO_ANSWER_MESSAGE;
   const empty = messages.length === 0;
 
   return (
@@ -184,7 +235,7 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
         {messages.map((m) => {
           const toolParts = m.parts.filter(isToolUIPart) as ToolUIPart[];
           const isLive = streaming && m === last;
-          const line = m.role === 'assistant' ? statusLineFor(m, isLive, status, stoppedIds) : null;
+          const line = m.role === 'assistant' ? statusLineFor(m, isLive, m === last, status, stoppedIds) : null;
           return (
             <li key={m.id} className={m.role === 'user' ? 'self-end' : 'self-start'}>
               <article aria-label={m.role === 'user' ? 'You' : 'Ask AI'} className={`max-w-[48rem] rounded-lg px-4 py-3 text-sm ${m.role === 'user' ? 'bg-[#0B1E3A] text-white' : 'border border-slate-200 bg-white'}`}>
@@ -196,7 +247,14 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
           );
         })}
         {bottomLine && <li className="text-sm text-slate-600">{bottomLine}</li>}
-        {error && <li role="alert" className="text-sm text-red-700">{describeChatError(error)}</li>}
+        {error && (
+          <li role="alert" className="text-sm text-red-700">
+            {describeChatError(error)}
+            {/* item 6: a first send that then errored still created the chat — a manual way back
+                to it, since a first-send error deliberately never auto-navigates (item 3). */}
+            {!open && streamedCid && <> <Link href={`/ask?c=${encodeURIComponent(streamedCid)}`} className="underline">Open this chat</Link></>}
+          </li>
+        )}
       </ol>
       <Composer
         value={draft}
@@ -204,9 +262,9 @@ export function Thread({ open, defaultModel, canSend, cantSendReason, appOrigin,
         onSend={send}
         onStop={onStop}
         streaming={streaming}
-        disabled={!canSend || busyInFlight}
-        sendDisabled={cooldown}
-        disabledReason={busyInFlight ? BUSY_MESSAGE : cantSendReason}
+        disabled={!canSend}
+        sendDisabled={cooldown || leaving}
+        disabledReason={cantSendReasonEffective}
       />
     </section>
   );

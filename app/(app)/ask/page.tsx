@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { isToolUIPart } from 'ai';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { env } from '@/lib/env';
-import { askAiEnabled, DEFAULT_MODEL } from '@/lib/ask/config';
+import { askAiEnabled, ASK_LIMITS, DEFAULT_MODEL } from '@/lib/ask/config';
 import { askAiEligible } from '@/lib/ask/eligibility';
 import { countMemberAccountsWithAccess, getAccount, resetPeriodIfDue } from '@/lib/ask/ledger';
 import { listConversations, loadConversation, type AskUIMessage } from '@/lib/ask/conversations';
@@ -21,7 +21,10 @@ export const dynamic = 'force-dynamic';
  * so the page payload never needs it either. Never ship it to the browser (Task 9 fix round, item
  * 6). `output` is a required field on the `output-available` variant of `ToolUIPart`, so it is set
  * to `undefined` rather than omitted — TypeScript accepts that (this repo does not turn on
- * `exactOptionalPropertyTypes`), and the key is absent from the serialised JSON either way.
+ * `exactOptionalPropertyTypes`). This does not remove the key from what is sent to the client:
+ * React's server-component serialisation writes an `undefined` prop value as the literal string
+ * `"$undefined"`, so the key survives on the wire with no payload behind it (Task 9 fix round 2,
+ * item 5 — corrects the "absent from the serialised JSON" claim above).
  */
 function withoutToolOutputs(messages: AskUIMessage[]): AskUIMessage[] {
   return messages.map((m) => ({
@@ -61,10 +64,16 @@ export default async function AskPage({ searchParams }: { searchParams: Promise<
         model: open.conversation.model,
         messageCount: open.conversation.messageCount,
         messages: withoutToolOutputs(open.messages),
-        // ISO string or null (Task 9 fix round, item 1): Thread reads this to tell a chat that is
-        // still genuinely locked (a turn in flight elsewhere, within ASK_LIMITS.inFlightExpiryMinutes)
-        // from one that just has no saved answer for another reason.
-        inFlightSince: open.conversation.inFlightSince ? open.conversation.inFlightSince.toISOString() : null,
+        // Computed server-side, per request (Task 9 fix round 2, item 1 / N1) — the raw
+        // inFlightSince timestamp never reaches the client, which must not do this comparison
+        // itself (a client-side "is this recent" clock, frozen at mount, could read an
+        // already-expired lock as still busy forever). The page is force-dynamic, so a plain
+        // router.refresh() always re-runs this comparison against the current time.
+        // `new Date()` rather than `Date.now()`: the React Compiler's purity rule (eslint) treats
+        // `Date.now` as a specifically denylisted impure call even in a Server Component, which
+        // this file otherwise never re-renders like a client one — `new Date()` is the same
+        // current-time read and is already used unflagged a few lines above (resetPeriodIfDue).
+        inFlight: open.conversation.inFlightSince !== null && new Date().getTime() - open.conversation.inFlightSince.getTime() < ASK_LIMITS.inFlightExpiryMinutes * 60_000,
       } : null}
       meter={meterFor(account, model, isAdmin)}
       preview={isAdmin && memberAccounts === 0}

@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { ASK_LIMITS, DEFAULT_MODEL } from '@/lib/ask/models';
 import type { MeterData } from '@/lib/ask/meter';
 import type { AskUIMessage } from '@/lib/ask/conversations';
-import { CHAT_CAP_MESSAGE, CHAT_FULL_MESSAGE, NO_BALANCE_MESSAGE } from '@/lib/ask/messages';
+import { CHAT_FULL_MESSAGE, NO_BALANCE_MESSAGE } from '@/lib/ask/messages';
 import { Meter } from './Meter';
 import { Rail, type RailConversation } from './Rail';
 import { Thread, type OpenConversation } from './Thread';
@@ -20,13 +20,18 @@ export interface AskAiProps {
 export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiProps) {
   const atCap = conversations.length >= ASK_LIMITS.maxChats;
   const full = open !== null && open.messageCount >= ASK_LIMITS.maxMessagesPerChat;
-  const cantSendReason = meter.exhausted ? NO_BALANCE_MESSAGE : full ? CHAT_FULL_MESSAGE : open === null && atCap ? CHAT_CAP_MESSAGE : null;
+  // The chat-cap reason is decided in Thread instead (fix round 2, item 6) — only it knows about a
+  // chat id already learned from the stream, which the cap message must defer to (most visibly
+  // right after a first-send error, where `open` stays null although the chat now exists).
+  const cantSendReason = meter.exhausted ? NO_BALANCE_MESSAGE : full ? CHAT_FULL_MESSAGE : null;
   // The composer's draft lives here, not in Thread (Task 9 fix round, item 8 / M1): a first send
   // moves the URL to ?c=<id>, and Thread — keyed by the open chat's id — remounts when that
-  // happens. Owning the draft one level up means whatever the member had queued survives that.
+  // happens. Owning the draft one level up means whatever the member had queued survives that,
+  // and it also means the draft intentionally follows the member from one chat to another.
   const [draft, setDraft] = useState('');
-  // Narrow-screen drawer (spec §11.2, fix round item 11): Rail is a fixed column at md+ and a
-  // toggled drawer below that. Plain state, no effects.
+  // Narrow-screen drawer (spec §11.2, fix round item 11): a partial implementation of that section
+  // — an in-page expanding panel below `md`, not an overlay; Rail is a fixed column at md+. Plain
+  // state, no effects. Closed automatically once a chat is picked (fix round 2, item 5 minor).
   const [railOpen, setRailOpen] = useState(false);
   return (
     <div className="mx-auto max-w-6xl px-6 py-6 text-slate-800">
@@ -54,14 +59,14 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
       </button>
       <div className="mt-4 grid gap-6 md:mt-6 md:grid-cols-[16rem_1fr]">
         <div id="ask-ai-rail" className={`${railOpen ? 'block' : 'hidden'} md:block`}>
-          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} />
+          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={() => setRailOpen(false)} />
         </div>
         <Thread
-          key={open?.id ?? 'new'}
+          key={open ? `${open.id}:${open.inFlight ? 'busy' : 'idle'}` : 'new'}
           open={open}
           defaultModel={DEFAULT_MODEL}
-          canSend={cantSendReason === null}
           cantSendReason={cantSendReason}
+          atCap={atCap}
           appOrigin={appOrigin}
           draft={draft}
           onDraftChange={setDraft}

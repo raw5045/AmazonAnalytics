@@ -11,8 +11,8 @@ function modelLabel(id: AskModelId): string {
   return ASK_MODELS.find((m) => m.id === id)?.label.split(' (')[0] ?? id;
 }
 
-/** Spec §11.2: newest first, New chat disabled at five, one-step delete confirm. A fixed column on md+ screens; below that it toggles into a drawer (the "Chats" button, aria-expanded wrapper and visibility classes live in AskAi, which owns the open/closed state). */
-export function Rail({ conversations, openId, atCap }: { conversations: RailConversation[]; openId: string | null; atCap: boolean }) {
+/** Spec §11.2: newest first, New chat disabled at five, one-step delete confirm. A fixed column on md+ screens; below that it toggles into an expanding panel (the "Chats" button, aria-expanded wrapper and visibility classes live in AskAi, which owns the open/closed state and closes it via `onNavigate` once a chat is picked — fix round 2, item 5). */
+export function Rail({ conversations, openId, atCap, onNavigate }: { conversations: RailConversation[]; openId: string | null; atCap: boolean; onNavigate: () => void }) {
   const router = useRouter();
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -54,7 +54,7 @@ export function Rail({ conversations, openId, atCap }: { conversations: RailConv
       <Link
         href="/ask"
         aria-disabled={atCap}
-        onClick={(e) => { if (atCap) e.preventDefault(); }}
+        onClick={(e) => { if (atCap) e.preventDefault(); else onNavigate(); }}
         className={`rounded-md px-3 py-2 text-center text-sm font-semibold ${atCap ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-[#0B1E3A] text-white hover:bg-[#13294f]'}`}
       >
         New chat
@@ -63,7 +63,7 @@ export function Rail({ conversations, openId, atCap }: { conversations: RailConv
       <ul className="flex flex-col gap-1">
         {conversations.map((c) => (
           <li key={c.id} className={`rounded-md border p-2 text-sm ${c.id === openId ? 'border-sky-300 bg-white' : 'border-transparent hover:bg-white'}`}>
-            <Link href={`/ask?c=${encodeURIComponent(c.id)}`} className="block truncate font-medium text-slate-800">{c.title}</Link>
+            <Link href={`/ask?c=${encodeURIComponent(c.id)}`} onClick={onNavigate} className="block truncate font-medium text-slate-800">{c.title}</Link>
             <div className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-500">
               <span><span className="rounded bg-slate-100 px-1.5 py-0.5">{modelLabel(c.model)}</span> · {c.updatedAt.slice(0, 10)}</span>
               {confirmId === c.id ? (
