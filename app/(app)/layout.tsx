@@ -6,6 +6,9 @@ import { AuthError } from '@/lib/auth/AuthError';
 import { watchlistCountForUser } from '@/lib/watchlist/loadServer';
 import { mcpAudience } from '@/lib/mcp/config';
 import { connectAiEligible } from '@/lib/mcp/eligibility';
+import { askAiEnabled } from '@/lib/ask/config';
+import { askAiEligible } from '@/lib/ask/eligibility';
+import { getAccount } from '@/lib/ask/ledger';
 import { TabNav } from './TabNav';
 import { TutorialsBanner } from './_components/TutorialsBanner';
 import { FeedbackButton } from './_components/FeedbackButton';
@@ -17,6 +20,7 @@ import { AccountProblem } from '@/app/AccountProblem';
  * /connect-ai.
  *
  * Owns: auth gate, top tab nav (Explorer | Watchlist | Category Builder |
+ * Ask AI, shown only when askAiEnabled and askAiEligible admit this account |
  * Connect AI, shown only when connectAiEligible admits this account |
  * Tutorials), user info.
  * Inner explorer-only chrome (saved-views dropdown, save button) lives
@@ -42,6 +46,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // count just hides the badge instead of crashing the authed layout.
   const watchlistCountPromise = watchlistCountForUser(user.id).catch(() => 0);
 
+  // Ask AI tab (spec §11.1): admins by role; members only with an accessible account — one PK read.
+  const showAskAi = askAiEnabled() && (user.role === 'admin' || askAiEligible(user.role, await getAccount(user.id)));
+
   return (
     <div className="flex min-h-screen flex-col bg-[#F4F6FA]">
       {/* Navy brand bar (2026-07 reskin) — mirrors the marketing header so
@@ -55,6 +62,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <TabNav
             watchlistCountPromise={watchlistCountPromise}
             showConnectAi={connectAiEligible(user.role, mcpAudience())}
+            showAskAi={showAskAi}
           />
         </div>
         <div className="flex items-center gap-4 whitespace-nowrap text-sm text-slate-300">

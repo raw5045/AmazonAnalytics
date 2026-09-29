@@ -303,8 +303,9 @@ Transcripts are private to the member. Logs never contain message text (§13).
 | Turn already running | 409 | "Wait for the current answer to finish." |
 | Message too long / empty | 400 | "Keep it under 4,000 characters." |
 | Model busy or overloaded (429/529 from Anthropic) | stream error | "The AI is busy, try again in a moment." |
-| Turn deadline | stream error | "That took too long. Try a narrower question." |
+| Turn deadline | stream metadata | "That took too long. Try a narrower question." |
 | Loop ended without an answer | stream error | "I ran out of steps before finishing. Try a narrower question." |
+| Answer cut off (output limit) | stream metadata | "The answer was cut off because it got too long. Ask for a shorter version." |
 | Anything else | 500 / stream error | 500: "Something went wrong on our side. Try again in a minute." (`FAILED_MESSAGE`) — stream error: "The AI hit a problem. Try again in a minute." (`PROBLEM_LINE`) |
 
 `lib/ask/messages.ts` (Task 8 review) is now the source of truth for these strings; the row above was one message for both codes, but the two failure modes have always used different strings in the code, so the cell is corrected to show both rather than pretending they match.

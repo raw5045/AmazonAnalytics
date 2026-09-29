@@ -22,8 +22,8 @@ function settled(count: number): Promise<number> {
   return Object.assign(Promise.resolve(count), { status: 'fulfilled' as const, value: count });
 }
 
-function tabNav(showConnectAi = false) {
-  return <TabNav watchlistCountPromise={settled(0)} showConnectAi={showConnectAi} />;
+function tabNav(showConnectAi = false, showAskAi = false) {
+  return <TabNav watchlistCountPromise={settled(0)} showConnectAi={showConnectAi} showAskAi={showAskAi} />;
 }
 
 function explorerLink() {
@@ -48,6 +48,17 @@ describe('TabNav', () => {
 
     render(tabNav(true));
     expect(screen.getByRole('link', { name: /connect ai/i })).toHaveAttribute('href', '/connect-ai');
+  });
+
+  it('shows the Ask AI tab only when eligible, between Category Builder and Connect AI', () => {
+    render(tabNav(true, true));
+    const names = screen.getAllByRole('link').map((l) => l.textContent?.trim());
+    expect(names).toEqual(['Explorer', 'Watchlist', 'Category Builder', 'Ask AI', 'Connect AI', 'Tutorials']);
+    expect(screen.getByRole('link', { name: 'Ask AI' })).toHaveAttribute('href', '/ask');
+  });
+  it('hides the Ask AI tab when not eligible', () => {
+    render(tabNav(true, false));
+    expect(screen.queryByRole('link', { name: 'Ask AI' })).toBeNull();
   });
 
   describe('remembering the last /explorer URL', () => {

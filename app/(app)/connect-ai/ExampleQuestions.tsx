@@ -3,18 +3,9 @@
  * visible; the rest sit behind a native <details> disclosure, so this stays a
  * server component with no client-side script. Copy chosen by the owner
  * (2026-09-24); every prompt maps onto something the research tools can do.
+ * Shared with the Ask AI empty state (lib/ask/examples.ts).
  */
-const FIRST_EXAMPLE = 'Show me the highest volume keywords in the lighting niche with less than 500 average reviews.';
-
-const MORE_EXAMPLES = [
-  'Which lighting keywords gained the most search volume in the last 4 weeks?',
-  'Find long-tail keywords about desk lamps, four words or more, with at least 1,000 searches a month.',
-  "Which lighting keywords have top-clicked products that don't use the keyword in their titles?",
-  "Give me the full picture on 'led strip lights': rank, estimated searches, top clicked products and category.",
-  "How has 'solar path lights' trended over the past year?",
-  "Compare 'floor lamp' and 'standing lamp'. Which has more demand and less competition?",
-  'What categories do you have under pet supplies, and how many keywords are in each?',
-];
+import { FIRST_EXAMPLE, MORE_EXAMPLES } from '@/lib/ask/examples';
 
 const prompt = 'select-all rounded bg-slate-100 px-2 py-1.5';
 

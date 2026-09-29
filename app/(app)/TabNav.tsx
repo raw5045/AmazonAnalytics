@@ -6,7 +6,7 @@ import { Suspense, use, useEffect, useSyncExternalStore } from 'react';
 
 /**
  * Top-level navigation: Explorer | Watchlist (N) | Category Builder |
- * Connect AI (only when showConnectAi is true) | Tutorials.
+ * Ask AI (only when showAskAi is true) | Connect AI (only when showConnectAi is true) | Tutorials.
  *
  * Server-rendered text but client-side for usePathname() so the active
  * tab gets styled correctly without a full page reload after navigation.
@@ -47,15 +47,18 @@ function readLastExplorerUrl(): string | null {
 export function TabNav({
   watchlistCountPromise,
   showConnectAi,
+  showAskAi,
 }: {
   watchlistCountPromise: Promise<number>;
   showConnectAi: boolean;
+  showAskAi: boolean;
 }) {
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
   const isExplorer = pathname === '/explorer' || pathname.startsWith('/explorer/');
   const isWatchlist = pathname === '/watchlist' || pathname.startsWith('/watchlist/');
   const isCategoryBuilder = pathname === '/category-builder' || pathname.startsWith('/category-builder/');
+  const isAskAi = pathname === '/ask' || pathname.startsWith('/ask/');
   const isConnectAi = pathname === '/connect-ai' || pathname.startsWith('/connect-ai/');
 
   // Where the Explorer tab points. On the keyword list page (/explorer,
@@ -98,6 +101,11 @@ export function TabNav({
       <Link href="/category-builder" className={tabClass(isCategoryBuilder)}>
         Category Builder
       </Link>
+      {showAskAi && (
+        <Link href="/ask" className={tabClass(isAskAi)}>
+          Ask AI
+        </Link>
+      )}
       {showConnectAi && (
         <Link href="/connect-ai" className={tabClass(isConnectAi)}>
           Connect AI

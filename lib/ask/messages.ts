@@ -36,3 +36,18 @@ export function dailyLimitMessage(limit: number, seconds: number): string {
   const questions = limit === 1 ? 'question' : 'questions';
   return `You've reached today's limit of ${limit} ${questions}. It resets in ${when}.`;
 }
+
+// --- Task 9: page and client-component copy (spec §11-§12) ---
+
+export const SWITCHED_OFF_MESSAGE = 'Ask AI is switched off for now.';
+/** The loop ran out of steps (spec §12 "Loop ended without an answer") or a stored/live assistant message otherwise has no text — same line either way (Thread.tsx). */
+export const RAN_OUT_MESSAGE = 'I ran out of steps before finishing. Try a narrower question.';
+/** metadata.stopReason === 'deadline' (turn.ts) — no longer a stream error string; see the spec §12 amendment. */
+export const TOO_LONG_TURN_MESSAGE = 'That took too long. Try a narrower question.';
+/** metadata.finishReason === 'length': the model hit ASK_LIMITS.maxOutputTokens before finishing. */
+export const CUT_OFF_MESSAGE = 'The answer was cut off because it got too long. Ask for a shorter version.';
+/** metadata.status === 'stopped' with no stopReason — a member-initiated Stop or a closed tab. */
+export const STOPPED_LINE = 'Stopped.';
+export const ACCURACY_NOTICE = 'Answers can be wrong. Check the numbers on the keyword pages before acting.';
+export const ADMIN_METER = 'Admin: usage is metered but not limited.';
+export const DELETE_FAILED_MESSAGE = 'Could not delete the chat right now. Try again in a minute.';
