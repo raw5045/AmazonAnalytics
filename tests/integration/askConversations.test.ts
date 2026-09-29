@@ -5,7 +5,7 @@ import { grantAccess, getAccount } from '@/lib/ask/ledger';
 import { createConversationWithFirstMessage, deleteConversation, listConversations, acquireTurnLock, releaseTurnLock, appendUserMessage, appendAssistantMessage, loadConversation } from '@/lib/ask/conversations';
 import { createTestUser, deleteTestUser } from './helpers';
 
-// Run (owner-gated, after migration 0048): cross-env RUN_INTEGRATION=1 pnpm vitest run tests/integration/askConversations.test.ts
+// Run (owner-gated, after migration 0048): RUN_INTEGRATION=1 pnpm vitest run tests/integration/askConversations.test.ts
 describe('ask conversations (integration, real Postgres)', () => {
   let userId: string | undefined;
   afterAll(async () => { await deleteTestUser(userId); });

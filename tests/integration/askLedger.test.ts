@@ -4,7 +4,7 @@ import { db } from '@/db/client';
 import { ensureAccount, settleTurn, getAccount, balanceMicro, resetPeriodIfDue, grantAccess, addCredit, globalUsageForMonth } from '@/lib/ask/ledger';
 import { createTestUser, deleteTestUser } from './helpers';
 
-// Run (owner-gated, after migration 0048 is applied): cross-env RUN_INTEGRATION=1 pnpm vitest run tests/integration/askLedger.test.ts
+// Run (owner-gated, after migration 0048 is applied): RUN_INTEGRATION=1 pnpm vitest run tests/integration/askLedger.test.ts
 
 // Fixed test months this file settles against — cleared before AND after the run so a killed
 // process (which skips afterAll) can never leave a prior run's cost/questions counted into a

@@ -234,7 +234,9 @@ All three in one transaction. A member's displayed balance never goes negative; 
 4. Balance above zero — skipped for admins.
 5. Global ceiling: `ask_global_usage[current month].cost_micro < ASK_AI_GLOBAL_MONTHLY_CEILING_USD × 1,000,000`. Applies to everyone, admins included.
 
-There is **no pre-reservation**. The worst-case overshoot of one turn is bounded by §6's loop and output caps: under a dollar on Sonnet 5, about double on Opus 5.5, per the pricing above.
+There is **no pre-reservation**. The worst-case overshoot of one turn is bounded by §6's loop and output caps: about $1.20 on Sonnet 5 and $2.40 on Opus 5.5 for a full-length answer (§6 amendment). A pathological turn whose eight tool calls each return the 256 KiB payload cap can reach roughly $7 on Sonnet 5 and $15 on Opus 5.5, because tool outputs land after the two cache breakpoints and are re-billed at the full input rate on every later step (final review, 2026-09-29); the global ceiling and the Anthropic console spend limit still bound it, and a moving per-step cache breakpoint is the recorded cost lever (§16).
+
+  > **Amendment (final review, 2026-09-29):** the API key is checked by the route AFTER the gates, not as gate 1, so an ineligible caller gets 404 rather than "not configured"; a refused attempt still spends a daily slot (`lib/ask/gates.ts` docblock).
 
 ### 9.6 Ceiling alerts
 When a settlement crosses 80% or 100% of the ceiling and the matching `alerted_*_at` is null, one email goes to `INITIAL_ADMIN_EMAIL` through the existing Resend send path (fire-and-forget, `after()`; when that env is unset the crossing is only logged), and the timestamp is set in the same transaction so it sends once per month.
@@ -258,7 +260,7 @@ Subscription becomes active → `grant` with `period_start` = the Stripe period 
 | `ASK_AI_PRICES_JSON` | unset | Rate overrides (§9.2). |
 | `ASK_AI_DEFAULT_ALLOWANCE_USD` | 10 | Allowance a new grant starts with. |
 
-Fixed in code: 8 tool calls per turn, 4,096 output tokens per step, 240 s turn deadline, 4,000-character message, 20-message history window, 5 chats, 200 messages per chat.
+Fixed in code: 8 tool calls per turn, 8,192 output tokens per step (raised from 4,096 by the Task 7 amendment, §6), 240 s turn deadline, 4,000-character message, 20-message history window, 5 chats, 200 messages per chat.
 
 ## 11. Page and copy
 
@@ -307,6 +309,7 @@ Transcripts are private to the member. Logs never contain message text (§13).
 | Sixth chat | 409 | "You have 5 chats. Delete one to start another." |
 | Chat full | 409 | "This chat is full. Start a new one." |
 | Turn already running | 409, or page load while the previous answer is still saving | "Wait for the current answer to finish." |
+| Chat not available (deleted in another tab, access revoked, or the switch turned off) | bodyless 404 on a send | "This chat is no longer available. Reload the page." |
 | Message too long / empty | 400 | "Keep it under 4,000 characters." |
 | Model busy or overloaded (429/529 from Anthropic) | stream error | "The AI is busy, try again in a moment." |
 | Turn deadline | stream metadata | "That took too long. Try a narrower question." |
@@ -358,6 +361,15 @@ Reviewers and implementers must not run integration tests or call Anthropic unle
 - Write tools with a confirmation step (`requiresConfirmation`).
 - Every other `/admin` page relies on `app/admin/layout.tsx`'s `requireAdmin()` alone — the same page-level gating gap fixed on `/admin/ask-ai` (Task 10 review, S1).
 - `lib/notifications/sendFeedbackEmail.ts` logs the raw Resend error object on failure, unlike `sendAskAiCeilingEmail.ts`'s coded-fields-only logging (Task 10 review).
+- A first send stopped before the stream's start chunk leaves the server-created chat unknown to the client; it appears in the rail after a refresh and a resend creates another chat (Task 9 round 3).
+- `finishReason` / `stopReason` are not persisted, so a reloaded deadline-stopped turn reads "Stopped." and a reloaded cut-off turn shows no line (Task 9 fix round).
+- The narrow-screen rail is an in-page expanding panel below `md`, a partial of §11.2's drawer; the owner's mobile check decides (Task 9 fix round).
+- Cost lever: replace the per-step cache breakpoint on each step via `prepareStep` (the API allows four) so tool outputs are cached for later steps; today only the system prompt and the latest user message carry breakpoints (final review).
+- Accounts without access (revoked, or the kill switch off) get 404 on the page and on DELETE, so they cannot delete their stored chats although the privacy page promises deletion on request; allow DELETE and a read-only list for such accounts before the Stripe cancellation path exists (final review).
+- Strip tool `output` from stored parts in SQL (`jsonb` element rewrite) instead of in `page.tsx`, so long chats stop shipping megabytes to the server render on every refresh and busy poll (final review).
+- `app/(app)/layout.tsx` awaits `getAccount` serially for every member on every app page while Ask AI is on; pass a promise into `TabNav` under Suspense like the watchlist count (final review).
+- `lib/research/toolErrors.ts` logs a non-ResearchError's raw message and stack (arc-1 behaviour now shared with chat; low risk because research queries carry no bound params in messages) (final review).
+- Arc 1: the ChatGPT nine-prompt retest is still pending on OpenAI's one-tool-call-per-chat defect.
 
 ## 17. Verified facts this design relies on (checked 2026-09-28)
 
