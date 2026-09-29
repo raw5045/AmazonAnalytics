@@ -85,6 +85,15 @@ describe('conversations', () => {
     execute.mockResolvedValueOnce({ rows: [] });
     await expect(appendUserMessage({ conversationId: 'c1', userId: 'u1', message: userMsg, now: new Date() })).resolves.toBe('full');
   });
+  it('appendUserMessage strips U+0000 and repairs a lone surrogate in the stored parts (Task 8 review, I1)', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ seq: 3 }] });
+    const dirty = { id: userMsg.id, parts: [{ type: 'text' as const, text: 'a\u0000b\ud800c' }] };
+    await appendUserMessage({ conversationId: 'c1', userId: 'u1', message: dirty, now: new Date() });
+    const stored = paramsOf().find((p) => typeof p === 'string' && p.includes('"text"')) as string;
+    expect(stored).not.toContain('\u0000');
+    expect(stored).not.toContain('\ud800');
+    expect(JSON.parse(stored)).toEqual([{ type: 'text', text: 'ab�c' }]);
+  });
   it('appends the assistant message with its status, touches updated_at, and reports whether the chat still existed', async () => {
     execute.mockResolvedValueOnce({ rows: [{ seq: 4 }] });
     await expect(appendAssistantMessage({ conversationId: 'c1', message: { id: userMsg.id, parts: [{ type: 'text', text: 'Hi' }] }, status: 'complete', now: new Date() })).resolves.toBe(true);
@@ -92,6 +101,15 @@ describe('conversations', () => {
     expect(sqlOf()).toContain('updated_at = now()');
     execute.mockResolvedValueOnce({ rows: [] });
     await expect(appendAssistantMessage({ conversationId: 'gone', message: { id: userMsg.id, parts: [{ type: 'text', text: 'Hi' }] }, status: 'complete', now: new Date() })).resolves.toBe(false);
+  });
+  it('appendAssistantMessage strips U+0000 and repairs a lone surrogate in the stored parts (Task 8 review, M6c — the model\'s own output is never sanitised upstream)', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ seq: 4 }] });
+    const dirty = { id: userMsg.id, parts: [{ type: 'text' as const, text: 'x\u0000\ud800y' }] };
+    await appendAssistantMessage({ conversationId: 'c1', message: dirty, status: 'complete', now: new Date() });
+    const stored = paramsOf().find((p) => typeof p === 'string' && p.includes('"text"')) as string;
+    expect(stored).not.toContain('\u0000');
+    expect(stored).not.toContain('\ud800');
+    expect(JSON.parse(stored)).toEqual([{ type: 'text', text: 'x�y' }]);
   });
   it('acquires the turn lock only when free or expired, scoped to the owner, and releases it', async () => {
     execute.mockResolvedValueOnce({ rows: [{ id: 'c1' }] });

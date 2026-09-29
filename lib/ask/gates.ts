@@ -3,6 +3,7 @@ import { db } from '@/db/client';
 import { dailyMessageLimit, globalMonthlyCeilingMicro } from './config';
 import { askAiEligible } from './eligibility';
 import { balanceMicro, ensureAccount, getAccount, globalUsageForMonth, monthStartUtc, resetPeriodIfDue, type AskAccount } from './ledger';
+import { dailyLimitMessage, GLOBAL_CEILING_MESSAGE, NO_BALANCE_MESSAGE } from './messages';
 
 /** Spec §9.5 / §12. The refusal shape the chat route turns into JSON. */
 export interface GateRefusal {
@@ -12,9 +13,6 @@ export interface GateRefusal {
   retryAfterSeconds?: number;
 }
 export type GateOutcome = { ok: true; account: AskAccount } | { ok: false; refusal: GateRefusal };
-
-export const NO_BALANCE_MESSAGE = "You've used this month's usage. Ask through the Feedback button to add more.";
-export const GLOBAL_CEILING_MESSAGE = 'Ask AI is paused for the rest of the month.';
 
 /**
  * `chat_day` is a RESERVED bucket channel: it lives in research_usage_buckets next to the
@@ -27,12 +25,6 @@ const DAILY_GUARD_CHANNEL = 'chat_day';
 export function secondsToNextUtcDay(now: Date): number {
   const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
   return Math.max(1, Math.ceil((next - now.getTime()) / 1000));
-}
-
-export function dailyLimitMessage(limit: number, seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const when = hours < 1 ? 'less than an hour' : hours === 1 ? '1 hour' : `${hours} hours`;
-  return `You've reached today's limit of ${limit} questions. It resets in ${when}.`;
 }
 
 /** One atomic upsert on research_usage_buckets under channel `chat_day`, bucket = UTC day start; returns today's count including this call. */
@@ -48,9 +40,14 @@ export async function reserveDailyQuestion(userId: string, now: Date): Promise<{
 
 /**
  * In order: eligibility (admin, or an accessible account) → period reset → daily guard → balance
- * (members only) → global ceiling (everyone). The kill switch and the API key are the route's
- * job, before auth. An ineligible caller gets a 404-shaped refusal so the feature's existence is
- * not confirmed to accounts that cannot use it.
+ * (members only) → global ceiling (everyone). The kill switch is the route's job, before auth; the
+ * Anthropic API key check is also the route's job, but AFTER these gates run (not before) — an
+ * ineligible caller gets a 404-shaped refusal so the feature's existence is not confirmed to
+ * accounts that cannot use it, and a caller who fails a later gate never learns whether the key is
+ * even configured. By design, the daily guard counts an attempt regardless of outcome: a request
+ * refused for any reason below it (no balance, the global ceiling) — and, at the route, one refused
+ * for being busy, at the chat cap, chat-full or not configured — still spends one of today's slots,
+ * because `reserveDailyQuestion` runs before those checks and is not rolled back on a refusal.
  */
 export async function runGates(input: { user: { id: string; role: 'admin' | 'standard_user' }; now: Date }): Promise<GateOutcome> {
   const { user, now } = input;

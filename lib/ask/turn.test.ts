@@ -4,7 +4,8 @@ vi.mock('@/lib/env', () => ({ env: {} }));
 import { z } from 'zod';
 import { simulateReadableStream, tool, APICallError } from 'ai';
 import { MockLanguageModelV4 } from 'ai/test';
-import { runTurn, windowHistory, estimateTokens, statusFor, BUSY_LINE, PROBLEM_LINE } from './turn';
+import { runTurn, windowHistory, estimateTokens, statusFor, TURN_DEADLINE } from './turn';
+import { BUSY_LINE, PROBLEM_LINE } from './messages';
 import type { AskUIMessage } from './conversations';
 
 const usage = (i: { noCache: number; cacheRead: number; cacheWrite: number; out: number }) => ({
@@ -43,7 +44,7 @@ async function run(model: MockLanguageModelV4, extra: Partial<Parameters<typeof 
   // `.mock.calls[0][0]` below is typed as the onEnd outcome object instead of an empty tuple.
   const onEnd = vi.fn<Parameters<typeof runTurn>[0]['onEnd']>(async () => {});
   const res = await runTurn({
-    model, instructions: 'system text', tools, history: [], newMessage: user('hi'), abortSignal: new AbortController().signal,
+    model, modelId: 'claude-sonnet-5', instructions: 'system text', tools, history: [], newMessage: user('hi'), abortSignal: new AbortController().signal,
     generateMessageId: () => '22222222-2222-4222-8222-222222222222', onEnd, ...extra,
   });
   const body = await new Response(res.body).text();
@@ -152,7 +153,7 @@ describe('runTurn', () => {
     const model = new MockLanguageModelV4({ doStream: [badToolCallStream(), textStream('ok')] });
     const onEnd = vi.fn<Parameters<typeof runTurn>[0]['onEnd']>(async () => {});
     const res = await runTurn({
-      model, instructions: 'system text', tools: badTools, history: [], newMessage: user('hi'), abortSignal: new AbortController().signal,
+      model, modelId: 'claude-sonnet-5', instructions: 'system text', tools: badTools, history: [], newMessage: user('hi'), abortSignal: new AbortController().signal,
       generateMessageId: () => 'a1', onEnd,
     });
     await new Response(res.body).text();
@@ -166,7 +167,7 @@ describe('runTurn', () => {
     const model = new MockLanguageModelV4({ doStream: textStream('hi there') });
     const onEnd = vi.fn(async () => { throw new Error('db down'); });
     const res = await runTurn({
-      model, instructions: 'system text', tools, history: [], newMessage: user('hi'), abortSignal: new AbortController().signal,
+      model, modelId: 'claude-sonnet-5', instructions: 'system text', tools, history: [], newMessage: user('hi'), abortSignal: new AbortController().signal,
       generateMessageId: () => 'a1', onEnd,
     });
     await expect(new Response(res.body).text()).resolves.toContain('hi there');
@@ -204,7 +205,7 @@ describe('runTurn — stop, abort, provider errors', () => {
   function start(model: MockLanguageModelV4, controller = new AbortController()) {
     const onEnd = vi.fn<Parameters<typeof runTurn>[0]['onEnd']>(async () => {});
     const res = runTurn({
-      model, instructions: 'system text', tools, history: [], newMessage: user('hi'), abortSignal: controller.signal,
+      model, modelId: 'claude-sonnet-5', instructions: 'system text', tools, history: [], newMessage: user('hi'), abortSignal: controller.signal,
       generateMessageId: () => '22222222-2222-4222-8222-222222222222', onEnd,
     });
     return { res, onEnd, controller };
@@ -223,16 +224,27 @@ describe('runTurn — stop, abort, provider errors', () => {
     expect(out.status).toBe('stopped');
   });
 
-  it('an aborted signal (Stop via the request signal, or the deadline) is stopped with the partial answer', async () => {
+  it('the turn deadline aborts with stopReason "deadline" (the route aborts with new Error(TURN_DEADLINE), matched by that exact sentinel, not a /deadline/ regex)', async () => {
     const t = start(new MockLanguageModelV4({ doStream: slowText(['Hello ', 'there ', 'friend ', 'again']) }));
     const { reader, seen } = await readUntil((await t.res).body!, '"delta":"Hello ');
-    t.controller.abort(new Error('turn deadline'));
+    t.controller.abort(new Error(TURN_DEADLINE));
     let rest = seen;
     for (;;) { const { value, done } = await reader.read(); if (done) break; rest += new TextDecoder().decode(value); }
     expect(rest).toContain('"type":"abort"');
+    expect(rest).toContain('"stopReason":"deadline"');
     const out = t.onEnd.mock.calls[0][0];
     expect(out).toMatchObject({ status: 'stopped', steps: 0 });
     expect(out.assistant?.parts.some((p) => p.type === 'text' && p.text === 'Hello ')).toBe(true);
+  });
+
+  it('a member-initiated abort (Stop via the request signal) with any other reason gets stopReason "user"', async () => {
+    const t = start(new MockLanguageModelV4({ doStream: slowText(['Hello ', 'there ', 'friend ', 'again']) }));
+    const { reader, seen } = await readUntil((await t.res).body!, '"delta":"Hello ');
+    t.controller.abort(new Error('client disconnected'));
+    let rest = seen;
+    for (;;) { const { value, done } = await reader.read(); if (done) break; rest += new TextDecoder().decode(value); }
+    expect(rest).toContain('"stopReason":"user"');
+    expect(t.onEnd.mock.calls[0][0]).toMatchObject({ status: 'stopped' });
   });
 
   it('a provider failure before any output is failed, stores nothing, never leaks the provider text, and logs under [ask turn]', async () => {

@@ -45,6 +45,17 @@ export function storedToUiMessage(m: StoredMessage): AskUIMessage {
   return { id: m.id, role: m.role, parts: m.parts as AskUIMessage['parts'], metadata: { status: m.status } };
 }
 
+/**
+ * Strips U+0000 and repairs lone surrogates in every string value before a parts array is stored
+ * as jsonb — Postgres rejects both outright (Task 8 review, I1/M6c). The chat route's own zod
+ * schema already sanitises the member's message text the same way, but appendAssistantMessage's
+ * parts come straight from the model's output with nothing upstream of it to clean them, so both
+ * append functions do this at the DB boundary rather than trusting a caller.
+ */
+function cleanPartsJson(parts: unknown[]): string {
+  return JSON.stringify(parts, (_k, v) => (typeof v === 'string' ? v.replaceAll('\u0000', '').toWellFormed() : v));
+}
+
 export async function listConversations(userId: string): Promise<AskConversation[]> {
   const r = await db.execute<ConvRow>(sql`SELECT ${CONV_COLUMNS} FROM ask_conversations WHERE user_id = ${userId}::uuid ORDER BY updated_at DESC`);
   return r.rows.map(toConv);
@@ -111,7 +122,7 @@ export async function appendUserMessage(a: { conversationId: string; userId: str
       RETURNING id, message_count
     )
     INSERT INTO ask_messages (id, conversation_id, seq, role, parts, status, created_at)
-    SELECT ${a.message.id}::uuid, id, message_count, 'user', ${JSON.stringify(a.message.parts)}::jsonb, 'complete', ${a.now.toISOString()}::timestamptz FROM conv RETURNING seq`);
+    SELECT ${a.message.id}::uuid, id, message_count, 'user', ${cleanPartsJson(a.message.parts)}::jsonb, 'complete', ${a.now.toISOString()}::timestamptz FROM conv RETURNING seq`);
   return r.rows[0] ? { seq: Number(r.rows[0].seq) } : 'full';
 }
 
@@ -127,7 +138,7 @@ export async function appendAssistantMessage(a: { conversationId: string; messag
       UPDATE ask_conversations SET message_count = message_count + 1, updated_at = now() WHERE id = ${a.conversationId}::uuid RETURNING id, message_count
     )
     INSERT INTO ask_messages (id, conversation_id, seq, role, parts, status, created_at)
-    SELECT ${a.message.id}::uuid, id, message_count, 'assistant', ${JSON.stringify(a.message.parts)}::jsonb, ${a.status}, ${a.now.toISOString()}::timestamptz FROM conv RETURNING seq`);
+    SELECT ${a.message.id}::uuid, id, message_count, 'assistant', ${cleanPartsJson(a.message.parts)}::jsonb, ${a.status}, ${a.now.toISOString()}::timestamptz FROM conv RETURNING seq`);
   return r.rows.length > 0;
 }
 

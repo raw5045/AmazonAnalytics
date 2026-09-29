@@ -3,14 +3,18 @@ import {
   type LanguageModel, type ModelMessage, type ToolSet, type UIMessage,
 } from 'ai';
 import { ASK_LIMITS, type AskModelId } from './config';
+import { BUSY_LINE, PROBLEM_LINE } from './messages';
 import { addUsage, usageFromSdk, ZERO_USAGE, type TurnUsage } from './pricing';
 import type { AskUIMessage, MessageStatus } from './conversations';
+
+/** The route aborts the turn's combined signal with `new Error(TURN_DEADLINE)` on the 240s deadline; matched by string (see messageMetadata below), never a regex literal, so the sentinel lives in exactly one place. */
+export const TURN_DEADLINE = 'ask turn deadline';
 
 /** Spec §6. One turn: bounded loop, streamed to the browser, persisted and settled through `onEnd`. */
 export interface TurnInput {
   model: LanguageModel;
   /** Gates the Anthropic `effort` provider option (Task 7 review): Haiku 4.5 rejects it. */
-  modelId?: AskModelId;
+  modelId: AskModelId;
   instructions: string;
   tools: ToolSet;
   /** Already windowed by the caller (windowHistory). */
@@ -25,9 +29,6 @@ export interface TurnInput {
 
 const CACHE = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
 
-/** The two safe lines a member ever sees for a model failure — never the real provider error text (Task 7 review, §E). A busy provider gets its own line so a member knows to just retry. */
-export const BUSY_LINE = 'The AI is busy, try again in a moment.';
-export const PROBLEM_LINE = 'The AI hit a problem. Try again in a minute.';
 const BUSY_STATUS_CODES = new Set([429, 529]);
 
 /**
@@ -82,11 +83,13 @@ export async function runTurn(input: TurnInput): Promise<Response> {
   let usage: TurnUsage = { ...ZERO_USAGE };
   let steps = 0;
   let errored = false;
-  // Cancelling the response body (Stop, a closed tab) does not by itself reach the model call —
-  // streamText's stream is independent of the UI stream toUIMessageStream derives from it — so a
-  // body cancel (isCancelled, in onEnd below) aborts this combined signal too, which the model
-  // call and every tool execution observe. The caller's own signal (request abort, the turn
-  // deadline) still applies unchanged.
+  // Cancelling the response body (Stop, a closed tab) does not by itself reach the model call:
+  // toUIMessageStream reads result.stream through a tee(), and the UI stream sent to the browser
+  // is only one of the two branches — cancelling one branch never cancels the shared source, so
+  // the other branch (the SDK's own internal read) keeps the model call running. A body cancel
+  // (isCancelled, in onEnd below) therefore has to abort this combined signal explicitly, which
+  // the model call and every tool execution observe. The caller's own signal (request abort, the
+  // turn deadline) still applies unchanged.
   const cancelled = new AbortController();
   const abortSignal = AbortSignal.any([input.abortSignal, cancelled.signal]);
 
@@ -137,7 +140,7 @@ export async function runTurn(input: TurnInput): Promise<Response> {
       messageMetadata: ({ part }) => {
         if (part.type === 'start') return input.startMetadata;
         if (part.type === 'finish') return { finishReason: part.finishReason };
-        if (part.type === 'abort') return { stopReason: /deadline/.test(String(part.reason ?? '')) ? ('deadline' as const) : ('user' as const) };
+        if (part.type === 'abort') return { stopReason: String(part.reason ?? '').includes(TURN_DEADLINE) ? ('deadline' as const) : ('user' as const) };
         return undefined;
       },
       onError: (error) => lineFor(error),

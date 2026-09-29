@@ -8,7 +8,8 @@ const ledger = vi.hoisted(() => ({
 vi.mock('./ledger', async (importOriginal) => ({ ...(await importOriginal<typeof import('./ledger')>()), ...ledger }));
 vi.mock('./config', async (importOriginal) => ({ ...(await importOriginal<typeof import('./config')>()), dailyMessageLimit: () => 3, globalMonthlyCeilingMicro: () => 1_000_000 }));
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { runGates, reserveDailyQuestion, secondsToNextUtcDay, dailyLimitMessage } from './gates';
+import { runGates, reserveDailyQuestion, secondsToNextUtcDay } from './gates';
+import { dailyLimitMessage } from './messages';
 
 const dialect = new PgDialect();
 const sqlOf = (i = 0) => dialect.sqlToQuery(execute.mock.calls[i][0]).sql;
@@ -69,6 +70,24 @@ describe('gates', () => {
     const r = await runGates({ user: member, now });
     expect(r).toEqual({ ok: true, account });
     expect(ledger.resetPeriodIfDue).toHaveBeenCalledWith('u1', now);
+  });
+  it('passes on the reset account even when getAccount alone would have refused it (a stale pre-reset object must never be used for the balance check)', async () => {
+    const usedUp = { ...account, allowanceUsedMicro: 10_000_000 };
+    const fresh = { ...account, allowanceUsedMicro: 0, periodStart: '2026-10-01' };
+    ledger.getAccount.mockResolvedValueOnce(usedUp);
+    ledger.resetPeriodIfDue.mockResolvedValueOnce(fresh);
+    await expect(runGates({ user: member, now })).resolves.toEqual({ ok: true, account: fresh });
+  });
+  it('the daily guard is checked before the balance: over the limit AND at zero balance still refuses with daily_limit (429) and never reaches globalUsageForMonth', async () => {
+    const empty = { ...account, allowanceUsedMicro: 10_000_000 };
+    ledger.getAccount.mockResolvedValueOnce(empty);
+    ledger.resetPeriodIfDue.mockResolvedValueOnce(empty);
+    execute.mockResolvedValueOnce({ rows: [{ requests: 4 }] });
+    const r = await runGates({ user: member, now });
+    expect(r.ok).toBe(false);
+    expect(!r.ok && r.refusal.code).toBe('daily_limit');
+    expect(!r.ok && r.refusal.status).toBe(429);
+    expect(ledger.globalUsageForMonth).not.toHaveBeenCalled();
   });
   it('reserveDailyQuestion upserts the chat_day bucket keyed by UTC day and reports the count', async () => {
     execute.mockResolvedValueOnce({ rows: [{ requests: 2 }] });
