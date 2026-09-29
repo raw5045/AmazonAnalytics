@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
-import { mcpAllowedClientIds, mcpAudience, mcpClientCredentials, mcpClientLabel, mcpEnabled, mcpResourceUrl } from '@/lib/mcp/config';
+import { mcpAllowedClientIds, mcpAudience, mcpClientLabel, mcpEnabled, mcpResourceUrl } from '@/lib/mcp/config';
 import { connectAiEligible } from '@/lib/mcp/eligibility';
 import { getMcpConnection } from '@/lib/mcp/connections';
 import { ConnectionControls } from './ConnectionControls';
@@ -10,27 +10,6 @@ import { ExampleQuestions } from './ExampleQuestions';
 export const metadata: Metadata = { title: 'Connect AI' };
 
 const card = 'mt-4 rounded-lg border border-slate-200 bg-white p-4';
-const mono = 'select-all break-all rounded bg-slate-100 px-1.5 py-0.5';
-
-/** The pair a client needs; the secret line says to ask us when it is not configured. */
-function ClientCredentials({ clientId, clientSecret }: { clientId: string; clientSecret: string | null }) {
-  return (
-    <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
-      <dt className="text-slate-500">Client ID</dt>
-      <dd>
-        <code className={mono}>{clientId}</code>
-      </dd>
-      <dt className="text-slate-500">Client secret</dt>
-      <dd>
-        {clientSecret ? (
-          <code className={mono}>{clientSecret}</code>
-        ) : (
-          <span className="text-slate-600">Ask through the Feedback button and we will send it.</span>
-        )}
-      </dd>
-    </dl>
-  );
-}
 
 export default async function ConnectAiPage() {
   const user = await requireAuthenticatedUser();
@@ -41,7 +20,6 @@ export default async function ConnectAiPage() {
   // status/controls section this feeds is not rendered below.
   const connection = enabled ? await getMcpConnection(user.id) : null;
   const endpoint = mcpResourceUrl();
-  const [, chatgpt] = mcpClientCredentials();
   const last = connection?.lastRequestAt
     ? `${connection.lastRequestAt.toISOString().replace('T', ' ').slice(0, 16)} UTC via ${mcpClientLabel(connection.lastClientId)}`
     : 'none yet';
@@ -85,18 +63,10 @@ export default async function ConnectAiPage() {
           <section className={card}>
             <h2 className="font-semibold">ChatGPT</h2>
             <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">
-              <li>
-                Requires a paid ChatGPT plan (Developer mode is not on the free plan); Claude custom connectors work
-                on every plan.
-              </li>
-              <li>Settings → Security and login → turn on Developer mode.</li>
-              <li>Settings → Apps → Create app: name KeywordQuarry, paste the server URL, Authentication: OAuth.</li>
-              <li>
-                Registration method: User-Defined OAuth Client; enter this client ID and secret:
-                <ClientCredentials clientId={chatgpt.clientId} clientSecret={chatgpt.clientSecret} />
-              </li>
-              <li>Create, then Connect, and approve the KeywordQuarry sign-in screen.</li>
-              <li>In a chat, open the + menu, choose Developer mode, select the app, and ask a keyword question.</li>
+              <li>Requires a paid ChatGPT plan with Developer mode on (Settings → Security and login → Developer mode).</li>
+              <li>Go to chatgpt.com/plugins, click +, name it KeywordQuarry, paste the server URL above, and Create.</li>
+              <li>Connect, then approve the KeywordQuarry sign-in screen.</li>
+              <li>In a chat, open the + menu, choose Developer mode, pick KeywordQuarry, and ask a keyword question.</li>
             </ol>
           </section>
 

@@ -21,28 +21,24 @@ describe('Connect AI page credentials', () => {
     envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all' };
   });
 
-  it('shows ChatGPT its ID and secret inline and drops the "ask us" line when the secret is configured', async () => {
+  it('shows no client id or secret anywhere, even when both secrets are configured (clients sign in on their own)', async () => {
     envMock.env.MCP_CLIENT_SECRET_CLAUDE = 'claude-secret-123';
     envMock.env.MCP_CLIENT_SECRET_CHATGPT = 'chatgpt-secret-456';
     render(await ConnectAiPage());
-    expect(screen.getByText('WzrKBzjxqjhn2pUR')).toBeInTheDocument();
-    expect(screen.getByText('chatgpt-secret-456')).toBeInTheDocument();
-    expect(screen.queryByText(/ask through the feedback button/i)).not.toBeInTheDocument();
-  });
-
-  it('never shows the Claude credentials any more (Claude signs in on its own)', async () => {
-    envMock.env.MCP_CLIENT_SECRET_CLAUDE = 'claude-secret-123';
-    envMock.env.MCP_CLIENT_SECRET_CHATGPT = 'chatgpt-secret-456';
-    render(await ConnectAiPage());
-    expect(screen.queryByText('16oat62Xksi7U2Ri')).toBeNull();
-    expect(screen.queryByText('claude-secret-123')).toBeNull();
+    for (const leaked of ['16oat62Xksi7U2Ri', 'claude-secret-123', 'WzrKBzjxqjhn2pUR', 'chatgpt-secret-456']) {
+      expect(screen.queryByText(leaked)).toBeNull();
+    }
     expect(screen.queryByText(/Advanced settings/)).toBeNull();
+    expect(screen.queryByText(/client ID/i)).toBeNull();
+    expect(screen.queryByText(/ask through the feedback button/i)).toBeNull();
   });
 
-  it('falls back to the "ask us" line when the ChatGPT secret is not configured', async () => {
+  it('gives ChatGPT four steps through its Plugins page', async () => {
     render(await ConnectAiPage());
-    expect(screen.getByText('WzrKBzjxqjhn2pUR')).toBeInTheDocument();
-    expect(screen.getByText(/ask through the feedback button/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'ChatGPT' })).toBeInTheDocument();
+    expect(screen.getByText(/Requires a paid ChatGPT plan with Developer mode on/)).toBeInTheDocument();
+    expect(screen.getByText('Go to chatgpt.com/plugins, click +, name it KeywordQuarry, paste the server URL above, and Create.')).toBeInTheDocument();
+    expect(screen.queryByText(/User-Defined OAuth Client/)).toBeNull();
   });
 });
 
@@ -80,7 +76,7 @@ describe('Connect AI page setup steps', () => {
     expect(screen.getByRole('heading', { name: 'Claude (claude.ai or the desktop app)' })).toBeInTheDocument();
     expect(screen.getByText('Customize → Connectors → + → Add custom connector.')).toBeInTheDocument();
     expect(screen.getByText('Name it KeywordQuarry, paste the server URL above, and click Add.')).toBeInTheDocument();
-    expect(screen.getByText('Connect, then approve the KeywordQuarry sign-in screen.')).toBeInTheDocument();
+    expect(screen.getAllByText('Connect, then approve the KeywordQuarry sign-in screen.')).toHaveLength(2); // Claude and ChatGPT
     expect(screen.getByText(/Works the same in the desktop app.s Chat and Code tabs/)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /^Claude Code/ })).toBeNull();
     expect(screen.queryByText(/claude mcp add/)).toBeNull();
