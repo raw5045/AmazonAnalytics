@@ -33,6 +33,28 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
   // — an in-page expanding panel below `md`, not an overlay; Rail is a fixed column at md+. Plain
   // state, no effects. Closed automatically once a chat is picked (fix round 2, item 5 minor).
   const [railOpen, setRailOpen] = useState(false);
+  /**
+   * B1 (Task 9 round-2 re-review): Thread must remount only on a busy→idle transition, never
+   * idle→busy. Keying it directly by `open.inFlight` (the previous shape) remounted on ANY
+   * transition, including idle→busy — and a `router.refresh()` whose server render happens to see
+   * THIS VERY TURN's own lock (deleting another chat in the rail mid-stream; the post-Stop delayed
+   * refresh landing while the save is still slow) reports `inFlight: true` for the chat that is
+   * live right now. Remounting then tears down `useChat`, whose unmount cleanup calls `stop()` —
+   * aborting the member's own in-progress answer and replacing it with the wait line.
+   *
+   * `epoch` only advances on busy→idle, so the key changes only then. This is React's own "adjust
+   * state during render" pattern, not an effect: the write happens synchronously in the render
+   * body, comparing this render's derived value against the last one, and React re-renders
+   * immediately before the browser paints (https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+   * — allowed by the hard rules' React Compiler note; there is no setState-in-effect here.
+   */
+  const busy = !!open?.inFlight;
+  const [wasBusy, setWasBusy] = useState(busy);
+  const [epoch, setEpoch] = useState(0);
+  if (busy !== wasBusy) {
+    setWasBusy(busy);
+    if (wasBusy) setEpoch((e) => e + 1); // bump only on busy -> idle
+  }
   return (
     <div className="mx-auto max-w-6xl px-6 py-6 text-slate-800">
       <header className="flex flex-wrap items-end justify-between gap-4">
@@ -62,7 +84,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
           <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={() => setRailOpen(false)} />
         </div>
         <Thread
-          key={open ? `${open.id}:${open.inFlight ? 'busy' : 'idle'}` : 'new'}
+          key={open ? `${open.id}:${epoch}` : 'new'}
           open={open}
           defaultModel={DEFAULT_MODEL}
           cantSendReason={cantSendReason}

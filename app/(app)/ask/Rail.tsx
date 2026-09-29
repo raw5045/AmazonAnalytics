@@ -31,8 +31,12 @@ export function Rail({ conversations, openId, atCap, onNavigate }: { conversatio
       const res = await fetch(`/api/ask/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (res.ok || res.status === 404) {
         setConfirmId(null);
+        // M3 (round-3): replace OR refresh, never both — deleting the OPEN chat already triggers a
+        // fresh render via the URL change (a force-dynamic route), and calling refresh too used to
+        // needlessly re-fetch a second time right as that navigation was landing. Deleting some
+        // OTHER chat still needs its own refresh (the URL is not changing) to update the rail list.
         if (id === openId) router.replace('/ask');
-        router.refresh();
+        else router.refresh();
         return;
       }
       if (res.status === 409) {

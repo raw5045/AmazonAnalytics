@@ -12,14 +12,22 @@ describe('Rail', () => {
     expect(screen.getByText('You have 5 chats. Delete one to start another.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'New chat' })).toHaveAttribute('aria-disabled', 'true');
   });
-  it('deletes after a one-step confirm and returns to /ask when the open chat goes', async () => {
+  it('deletes after a one-step confirm and returns to /ask when the open chat goes — replace only, not both (M3)', async () => {
     render(<Rail conversations={convs} openId="c1" atCap={false} onNavigate={onNavigate} />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete Chat 1' }));
     expect(screen.getByText('Delete this chat? It cannot be undone.')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Chat 1' }));
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/ask/conversations/c1', { method: 'DELETE' }));
     await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask'));
-    expect(router.refresh).toHaveBeenCalled();
+    expect(router.refresh).not.toHaveBeenCalled();
+  });
+  it('deleting a chat that is NOT open refreshes only — no replace, the URL is not changing (M3)', async () => {
+    render(<Rail conversations={convs} openId="c1" atCap={false} onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Chat 0' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Chat 0' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/ask/conversations/c0', { method: 'DELETE' }));
+    await waitFor(() => expect(router.refresh).toHaveBeenCalled());
+    expect(router.replace).not.toHaveBeenCalled();
   });
   it('autofocuses the confirm button when it appears (item 10 M8)', () => {
     render(<Rail conversations={convs} openId="c1" atCap={false} onNavigate={onNavigate} />);

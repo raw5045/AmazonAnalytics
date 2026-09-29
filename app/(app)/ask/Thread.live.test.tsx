@@ -4,6 +4,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/re
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 import { Thread } from './Thread';
+import { AskAi } from './AskAi';
 
 /**
  * Drives the REAL @ai-sdk/react `useChat` and `lib/ask/transport`'s `createAskTransport` against a
@@ -87,5 +88,89 @@ describe('Thread with the real useChat (mocked SSE fetch)', () => {
     await screen.findByText('the answer');
     await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask?c=11111111-1111-4111-8111-111111111111'));
     expect(router.refresh).not.toHaveBeenCalled();
+  });
+
+  it('M1: a recovery resend after a first-send stream error still moves the URL once it succeeds (reviewer case S8, extended)', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch');
+    spy.mockImplementationOnce(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const ch of [START_NEW, { type: 'start-step' }, { type: 'error', errorText: 'The AI is busy, try again in a moment.' }]) c.enqueue(sse(ch));
+          c.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    spy.mockImplementationOnce(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const ch of [{ type: 'start', messageId: 'a2' }, { type: 'start-step' }, { type: 'text-start', id: 'u' }, { type: 'text-delta', id: 'u', delta: 'recovered answer' }, { type: 'text-end', id: 'u' }, { type: 'finish', finishReason: 'stop' }]) c.enqueue(sse(ch));
+          c.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    render(<Harness open={null} defaultModel="claude-sonnet-5" cantSendReason={null} atCap={false} appOrigin={appOrigin} />);
+    await typeAndSend('first');
+    await screen.findByRole('alert');
+    // the recovery link is the same id the resend below should eventually navigate to
+    expect(screen.getByRole('link', { name: 'Open this chat' })).toHaveAttribute('href', '/ask?c=11111111-1111-4111-8111-111111111111');
+    expect(router.replace).not.toHaveBeenCalled(); // item 3: no auto-navigation on the error itself
+    // the first send's own stream-embedded error (unrelated to M1/M2 — no HTTP refusal, no onError
+    // involvement at all) legitimately triggers one refresh via onFinish's isError branch; only the
+    // calls made AFTER this point are what the resend itself is responsible for.
+    const refreshesBeforeResend = router.refresh.mock.calls.length;
+    await typeAndSend('again');
+    await screen.findByText('recovered answer');
+    // this resend's own message carries no conversationId (the server treats it as an ordinary
+    // follow-up, since the request already named the chat) — the fallback to the id learned from
+    // the earlier, errored attempt is what M1 adds.
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask?c=11111111-1111-4111-8111-111111111111'));
+    expect(router.refresh.mock.calls.length).toBe(refreshesBeforeResend);
+  });
+});
+
+describe('AskAi + Thread: a refresh during the member\'s own streaming turn must not abort it (B1, Task 9 round-2 re-review)', () => {
+  afterEach(() => cleanup());
+
+  it('deleting another chat mid-stream — the rail\'s router.refresh() lands a server render that reports inFlight: true for THIS turn\'s own lock — leaves the stream running', async () => {
+    let chatSignal: AbortSignal | undefined;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (u, init) => {
+      if (String(u).startsWith('/api/ask/conversations/')) return new Response(null, { status: 204 }); // the Rail delete call
+      chatSignal = (init as RequestInit)?.signal ?? undefined;
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const ch of [{ type: 'start', messageId: 'a9' }, { type: 'start-step' }, { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'streaming answer' }]) c.enqueue(sse(ch));
+          // deliberately never closes — the turn is still live when the refresh below lands
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const q = (id: string, text: string) => ({ id, role: 'user', parts: [{ type: 'text', text }], metadata: { status: 'complete' } });
+    const a = (id: string, text: string) => ({ id, role: 'assistant', parts: [{ type: 'text', text }], metadata: { status: 'complete' } });
+    const conv = (id: string) => ({ id, title: `Chat ${id}`, model: 'claude-sonnet-5' as const, updatedAt: '2026-09-28T10:00:00.000Z' });
+    const meter = { percentUsed: 0, questionsLeft: 10, hasCredit: false, exhausted: false, admin: false };
+    const open = { id: 'c1', model: 'claude-sonnet-5' as const, messageCount: 2, messages: [q('m1', 'old q'), a('m2', 'old answer')] as never, inFlight: false };
+    const view = render(<AskAi conversations={[conv('c1'), conv('c2')]} open={open} meter={meter} preview={false} appOrigin={appOrigin} />);
+    fireEvent.change(screen.getByLabelText('Your question'), { target: { value: 'new question' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('streaming answer');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Chat c2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Chat c2' }));
+    await waitFor(() => expect(router.refresh).toHaveBeenCalled());
+    expect(chatSignal?.aborted).toBe(false);
+    // what that refresh's server render returns: the open chat is locked — by this very turn
+    view.rerender(
+      <AskAi
+        conversations={[conv('c1')]}
+        open={{ ...open, messageCount: 3, messages: [q('m1', 'old q'), a('m2', 'old answer'), q('m3', 'new question')] as never, inFlight: true }}
+        meter={meter}
+        preview={false}
+        appOrigin={appOrigin}
+      />,
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    expect(chatSignal?.aborted).toBe(false); // B1: idle -> busy must not remount Thread / abort the live fetch
+    expect(screen.getByText('streaming answer')).toBeInTheDocument();
   });
 });

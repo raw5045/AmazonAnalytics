@@ -169,6 +169,21 @@ describe('Thread', () => {
       act(() => { vi.advanceTimersByTime(8000); });
       expect(router.refresh).not.toHaveBeenCalled();
     });
+
+    it('M4: skips the refresh (but keeps the interval running) while the tab is hidden', () => {
+      const original = Object.getOwnPropertyDescriptor(document, 'hidden');
+      Object.defineProperty(document, 'hidden', { value: true, configurable: true });
+      try {
+        render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: true }} />);
+        act(() => { vi.advanceTimersByTime(8000); });
+        expect(router.refresh).not.toHaveBeenCalled();
+        Object.defineProperty(document, 'hidden', { value: false, configurable: true });
+        act(() => { vi.advanceTimersByTime(4000); });
+        expect(router.refresh).toHaveBeenCalledTimes(1);
+      } finally {
+        if (original) Object.defineProperty(document, 'hidden', original);
+      }
+    });
   });
 
   describe('onFinish navigation (item 2, item 3, item 10 M4)', () => {
@@ -285,6 +300,25 @@ describe('Thread', () => {
       expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
       expect(chat.setMessages).not.toHaveBeenCalled();
       expect(screen.getByLabelText('Your question')).toHaveValue('');
+    });
+
+    it('M2: also holds Send (leaving), and the onFinish({isError}) the SDK fires for the same failure does not also refresh — exactly one navigation', () => {
+      render(<Harness />);
+      const opts = chat.lastOptions as {
+        onError: (e: unknown) => void;
+        onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void;
+      };
+      const err = new APICallError({
+        message: JSON.stringify({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed', conversationId: 'c9' }),
+        url: '/api/ask/chat', requestBodyValues: {}, statusCode: 503,
+      });
+      act(() => { opts.onError(err); });
+      expect(router.replace).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      // the SDK fires onFinish for this exact failed turn too, with isError: true
+      act(() => { opts.onFinish({ message: { metadata: {} }, messages: [], isAbort: false, isError: true }); });
+      expect(router.refresh).not.toHaveBeenCalled();
+      expect(router.replace).toHaveBeenCalledTimes(1);
     });
 
     it('does not navigate on a conversationId-carrying refusal for a FOLLOW-UP (open already known) — that path is unaffected', () => {

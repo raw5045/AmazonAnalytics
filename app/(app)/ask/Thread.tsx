@@ -65,10 +65,11 @@ function statusLineFor(m: AskUIMessage, isLive: boolean, isLast: boolean, chatSt
 }
 
 /**
- * Spec §11.3. One hook instance per chat (AskAi keys this component by the open chat's id, and by
- * busy/idle — item 1). The transport (lib/ask/transport.ts) sends only the new message text plus
- * the chat id (and the model on a first send) — the server loads history itself (spec §13). A
- * first send learns the new chat's id from the assistant message metadata and moves the URL there.
+ * Spec §11.3. One hook instance per chat (AskAi keys this component by the open chat's id, plus an
+ * epoch that advances only on a busy→idle transition — fix round 2 item 1 / round-3 B1). The
+ * transport (lib/ask/transport.ts) sends only the new message text plus the chat id (and the model
+ * on a first send) — the server loads history itself (spec §13). A first send learns the new
+ * chat's id from the assistant message metadata and moves the URL there.
  *
  * `draft` is owned by AskAi, not this component (Task 9 fix round, item 8 / M1): a first send
  * changes the URL to `?c=<id>`, and since Thread is keyed by the open chat's id, that remounts it
@@ -98,6 +99,11 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   // a timer — no state, so this is not the setState-in-effect the lint rule forbids.
   const alive = useRef(true);
   const navTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // M2 (round-3): a first-send setup failure that carries a conversationId (item 4) fires BOTH
+  // onError (which navigates there directly) and onFinish (with isError: true, which would
+  // otherwise also router.refresh() — a second, redundant navigation on the very same failure).
+  // Set by onError just before it navigates, read and cleared by onFinish's isError branch.
+  const navigatedByErrorRef = useRef(false);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -111,7 +117,13 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   // effect body (start/clear an interval) is exactly the exception the hard rules note allows.
   useEffect(() => {
     if (!open?.inFlight) return;
-    const id = setInterval(() => router.refresh(), BUSY_REFRESH_MS);
+    const id = setInterval(() => {
+      // M4 (round-3): skip the network round trip while the tab is in the background — nothing is
+      // shown to refresh for, and the interval resumes refreshing as soon as the tab is visible
+      // again (no separate visibilitychange listener needed — the next tick just checks afresh).
+      if (typeof document !== 'undefined' && document.hidden) return;
+      router.refresh();
+    }, BUSY_REFRESH_MS);
     return () => clearInterval(id);
   }, [open?.inFlight, router]);
   const { messages, sendMessage, status, stop, error, setMessages } = useChat<AskUIMessage>({
@@ -127,12 +139,26 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       // before anything was ever shown — whether its id made it into the visible `messages` list
       // (the second onFinish argument) is what actually distinguishes "stopped with something
       // shown" from "stopped before any answer", not `message.role` (always 'assistant').
-      if (isError) { router.refresh(); return; }
+      if (isError) {
+        // M2: onError already navigated for this exact failure — one navigation, not two.
+        if (navigatedByErrorRef.current) navigatedByErrorRef.current = false;
+        else router.refresh();
+        return;
+      }
       if (isAbort) {
         if (finishedMessages.some((m) => m.id === message.id)) setStoppedIds((prev) => new Set(prev).add(message.id));
         else setStoppedBeforeAnswer(true);
       }
-      const cid = message.metadata?.conversationId;
+      // M1 (round-3): a recovery resend after a first-send error carries the chat id in the
+      // REQUEST (it is already known — see `knownChatId` below), not in `startMetadata`: the
+      // server only attaches that to a message it is CREATING the conversation for, and this
+      // resend's conversationId is already non-null, so the server treats it as an ordinary
+      // follow-up and this message's own metadata carries no conversationId. Falling back to the
+      // id an earlier (errored) attempt already put in `finishedMessages` still moves the URL once
+      // this one succeeds. Read from `finishedMessages` (this callback's own argument) rather than
+      // the outer `streamedCid` below so this does not depend on forward-referencing it.
+      const priorCid = finishedMessages.find((m) => m.metadata?.conversationId)?.metadata?.conversationId;
+      const cid = message.metadata?.conversationId ?? (open ? undefined : priorCid);
       if (!open && cid) setLeaving(true); // item 2 (N2)
       const moveOn = () => {
         if (!alive.current) return;
@@ -156,6 +182,8 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       // stripping the optimistic bubble below, which would let a resend create a second, orphaned
       // chat (conversationId: null again, since `open` is still null here).
       if (!open && refusedConversationId) {
+        setLeaving(true); // M2: hold Send here too — the same page change is about to happen
+        navigatedByErrorRef.current = true; // M2: tell onFinish's isError branch to skip its refresh
         router.replace(`/ask?c=${encodeURIComponent(refusedConversationId)}`);
         return;
       }
@@ -165,6 +193,10 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       // the current messages. The refused text is restored into the draft — and the bubble removed
       // — only when the draft is empty; if the member already typed something else meanwhile, the
       // bubble stays and nothing is overwritten or lost.
+      // M5 (round-3 nit): calling onDraftChange (a different component's state setter) from
+      // inside this updater relies on `@ai-sdk/react` invoking it once, synchronously, when
+      // setMessages is called — not on React's own setState queue, which may defer or re-invoke an
+      // updater and would make this an impure side effect inside it.
       setMessages((msgs) => {
         const trailing = msgs[msgs.length - 1];
         if (trailing?.role !== 'user' || draft !== '') return msgs;
