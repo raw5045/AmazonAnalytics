@@ -141,7 +141,14 @@ export async function runTurn(input: TurnInput): Promise<Response> {
       messageMetadata: ({ part }) => {
         if (part.type === 'start') return input.startMetadata;
         if (part.type === 'finish') return { finishReason: part.finishReason };
-        if (part.type === 'abort') return { stopReason: String(part.reason ?? '').includes(TURN_DEADLINE) ? ('deadline' as const) : ('user' as const) };
+        if (part.type === 'abort') {
+          // `status: 'stopped'` (Task 9 fix round, item 1) alongside stopReason: a live abort
+          // previously carried only stopReason, so the client had nothing to key a "Stopped."
+          // line off during streaming — it could only infer status from a later reload, by which
+          // time stopReason is gone (never persisted; see conversations.ts's storedToUiMessage).
+          const stopReason = String(part.reason ?? '').includes(TURN_DEADLINE) ? ('deadline' as const) : ('user' as const);
+          return { status: 'stopped' as const, stopReason };
+        }
         return undefined;
       },
       onError: (error) => lineFor(error),

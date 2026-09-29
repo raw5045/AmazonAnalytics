@@ -304,8 +304,9 @@ Transcripts are private to the member. Logs never contain message text (§13).
 | Message too long / empty | 400 | "Keep it under 4,000 characters." |
 | Model busy or overloaded (429/529 from Anthropic) | stream error | "The AI is busy, try again in a moment." |
 | Turn deadline | stream metadata | "That took too long. Try a narrower question." |
-| Loop ended without an answer | stream error | "I ran out of steps before finishing. Try a narrower question." |
+| Loop ended without an answer | stream metadata | "I ran out of steps before finishing. Try a narrower question." |
 | Answer cut off (output limit) | stream metadata | "The answer was cut off because it got too long. Ask for a shorter version." |
+| No answer stored for the last question (stopped before any output, failed turn, crashed function) | page load | "No answer was saved for this question. Try asking again." |
 | Anything else | 503 / stream error | 503: "Something went wrong on our side. Try again in a minute." (`FAILED_MESSAGE` — every `setup_failed` case: create_failed, append_failed, the setup catch; never a real 500) — stream error: "The AI hit a problem. Try again in a minute." (`PROBLEM_LINE`). An actual unhandled 500 carries no JSON body, so the client falls back to `FAILED_MESSAGE` there too. |
 
 `lib/ask/messages.ts` (Task 8 review) is now the source of truth for these strings; the row above was one message for both codes, but the two failure modes have always used different strings in the code, so the cell is corrected to show both rather than pretending they match (Task 8 re-review: `FAILED_MESSAGE` is only ever sent with 503, never a literal 500). Task 9 appended the kill-switch, deadline, ran-out and cut-off lines (`SWITCHED_OFF_MESSAGE`, `TOO_LONG_TURN_MESSAGE`, `RAN_OUT_MESSAGE`, `CUT_OFF_MESSAGE`) to the same file. The "Turn deadline" row above is not a stream error: it arrives as `metadata.stopReason: 'deadline'` on the assistant message — an abort (`lib/ask/turn.ts`), not a stream-error event — which is why its HTTP column reads "stream metadata".

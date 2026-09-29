@@ -11,7 +11,7 @@ function modelLabel(id: AskModelId): string {
   return ASK_MODELS.find((m) => m.id === id)?.label.split(' (')[0] ?? id;
 }
 
-/** Spec §11.2: newest first, New chat disabled at five, one-step delete confirm. Collapses under the thread on narrow screens via the grid in AskAi. */
+/** Spec §11.2: newest first, New chat disabled at five, one-step delete confirm. A fixed column on md+ screens; below that it toggles into a drawer (the "Chats" button, aria-expanded wrapper and visibility classes live in AskAi, which owns the open/closed state). */
 export function Rail({ conversations, openId, atCap }: { conversations: RailConversation[]; openId: string | null; atCap: boolean }) {
   const router = useRouter();
   const [confirmId, setConfirmId] = useState<string | null>(null);
@@ -28,7 +28,7 @@ export function Rail({ conversations, openId, atCap }: { conversations: RailConv
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch(`/api/ask/conversations/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/ask/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (res.ok || res.status === 404) {
         setConfirmId(null);
         if (id === openId) router.replace('/ask');
@@ -63,13 +63,17 @@ export function Rail({ conversations, openId, atCap }: { conversations: RailConv
       <ul className="flex flex-col gap-1">
         {conversations.map((c) => (
           <li key={c.id} className={`rounded-md border p-2 text-sm ${c.id === openId ? 'border-sky-300 bg-white' : 'border-transparent hover:bg-white'}`}>
-            <Link href={`/ask?c=${c.id}`} className="block truncate font-medium text-slate-800">{c.title}</Link>
+            <Link href={`/ask?c=${encodeURIComponent(c.id)}`} className="block truncate font-medium text-slate-800">{c.title}</Link>
             <div className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-500">
               <span><span className="rounded bg-slate-100 px-1.5 py-0.5">{modelLabel(c.model)}</span> · {c.updatedAt.slice(0, 10)}</span>
               {confirmId === c.id ? (
                 <span className="flex items-center gap-1">
                   <span className="text-slate-700">Delete this chat? It cannot be undone.</span>
-                  <button type="button" className={button} disabled={busy} onClick={() => remove(c.id)}>Delete</button>
+                  {/* Autofocus + a specific name (item 10 M8): the confirm step replaces the
+                      "Delete" button in place, so the keyboard focus that was on it would
+                      otherwise land nowhere; "Confirm delete <title>" also disambiguates this
+                      button from the (now gone) plain "Delete <title>" one for assistive tech. */}
+                  <button type="button" autoFocus aria-label={`Confirm delete ${c.title}`} className={button} disabled={busy} onClick={() => remove(c.id)}>Delete</button>
                   <button type="button" className={button} disabled={busy} onClick={() => setConfirmId(null)}>Cancel</button>
                 </span>
               ) : (

@@ -4,7 +4,7 @@ import { Composer } from './Composer';
 
 function setup(props: Partial<React.ComponentProps<typeof Composer>> = {}) {
   const onSend = vi.fn(); const onStop = vi.fn(); const onChange = vi.fn();
-  render(<Composer value={props.value ?? 'hello'} onChange={onChange} onSend={onSend} onStop={onStop} streaming={false} disabled={false} disabledReason={null} {...props} />);
+  render(<Composer value={props.value ?? 'hello'} onChange={onChange} onSend={onSend} onStop={onStop} streaming={false} disabled={false} sendDisabled={false} disabledReason={null} {...props} />);
   return { onSend, onStop, onChange };
 }
 describe('Composer', () => {
@@ -31,5 +31,20 @@ describe('Composer', () => {
   it('always shows the accuracy notice', () => {
     setup();
     expect(screen.getByText('Answers can be wrong. Check the numbers on the keyword pages before acting.')).toBeInTheDocument();
+  });
+  it('does not send on the Enter that confirms an IME composition (item 7)', () => {
+    const { onSend } = setup();
+    const box = screen.getByLabelText('Your question');
+    fireEvent.keyDown(box, { key: 'Enter', isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledWith('hello');
+  });
+  it('sendDisabled disables only Send — the textarea stays enabled (item 10 M5)', () => {
+    setup({ sendDisabled: true });
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    expect(screen.getByLabelText('Your question')).toBeEnabled();
   });
 });

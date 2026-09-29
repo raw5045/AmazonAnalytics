@@ -51,3 +51,5 @@ export const STOPPED_LINE = 'Stopped.';
 export const ACCURACY_NOTICE = 'Answers can be wrong. Check the numbers on the keyword pages before acting.';
 export const ADMIN_METER = 'Admin: usage is metered but not limited.';
 export const DELETE_FAILED_MESSAGE = 'Could not delete the chat right now. Try again in a minute.';
+/** The bottom-of-thread fallback (Thread.tsx) when the last message is the member's own and no answer followed, no recent Stop and no recent in-flight lock explain it — a crashed function, a failed save, or a stale reload (Task 9 fix round, item 1). */
+export const NO_ANSWER_MESSAGE = 'No answer was saved for this question. Try asking again.';

@@ -235,6 +235,7 @@ describe('runTurn — stop, abort, provider errors', () => {
     for (;;) { const { value, done } = await reader.read(); if (done) break; rest += new TextDecoder().decode(value); }
     expect(rest).toContain('"type":"abort"');
     expect(rest).toContain('"stopReason":"deadline"');
+    expect(rest).toContain('"status":"stopped"');
     const out = t.onEnd.mock.calls[0][0];
     expect(out).toMatchObject({ status: 'stopped', steps: 0 });
     expect(out.assistant?.parts.some((p) => p.type === 'text' && p.text === 'Hello ')).toBe(true);
@@ -247,6 +248,7 @@ describe('runTurn — stop, abort, provider errors', () => {
     let rest = seen;
     for (;;) { const { value, done } = await reader.read(); if (done) break; rest += new TextDecoder().decode(value); }
     expect(rest).toContain('"stopReason":"user"');
+    expect(rest).toContain('"status":"stopped"');
     expect(t.onEnd.mock.calls[0][0]).toMatchObject({ status: 'stopped' });
   });
 

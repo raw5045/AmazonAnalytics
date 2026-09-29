@@ -23,4 +23,16 @@ describe('AnswerMarkdown', () => {
     render(<AnswerMarkdown appOrigin={appOrigin}>{'<img src=x onerror=alert(1)> text'}</AnswerMarkdown>);
     expect(document.querySelector('img')).toBeNull();
   });
+  it('never renders a markdown image either (fix round item 4)', () => {
+    render(<AnswerMarkdown appOrigin={appOrigin}>{'![x](https://attacker.example/p.png)'}</AnswerMarkdown>);
+    expect(document.querySelector('img')).toBeNull();
+  });
+  it('rejects a same-prefix-but-different-host trick (fix round item 9)', () => {
+    render(<AnswerMarkdown appOrigin={appOrigin}>{'[trick](https://keywordquarry.com.evil.example/x)'}</AnswerMarkdown>);
+    expect(screen.getByRole('link', { name: 'trick' })).toHaveAttribute('target', '_blank');
+  });
+  it('rejects a protocol-relative link to another host (fix round item 9)', () => {
+    render(<AnswerMarkdown appOrigin={appOrigin}>{'[trick](//evil.example/y)'}</AnswerMarkdown>);
+    expect(screen.getByRole('link', { name: 'trick' })).toHaveAttribute('target', '_blank');
+  });
 });

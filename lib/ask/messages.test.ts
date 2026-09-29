@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { ASK_LIMITS } from './models';
 import {
   CHAT_CAP_MESSAGE, TOO_LONG_MESSAGE, dailyLimitMessage,
-  CUT_OFF_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE, RAN_OUT_MESSAGE, DELETE_FAILED_MESSAGE,
+  CUT_OFF_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE, RAN_OUT_MESSAGE, DELETE_FAILED_MESSAGE, NO_ANSWER_MESSAGE,
 } from './messages';
 
 const source = () => readFileSync(path.join(__dirname, 'messages.ts'), 'utf8');
@@ -21,7 +21,7 @@ describe('messages', () => {
     expect(TOO_LONG_MESSAGE).toContain('4,000');
   });
   it('Task 9 status lines are distinct sentences (no copy-paste collisions between situations)', () => {
-    const lines = [CUT_OFF_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE, RAN_OUT_MESSAGE, DELETE_FAILED_MESSAGE];
+    const lines = [CUT_OFF_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE, RAN_OUT_MESSAGE, DELETE_FAILED_MESSAGE, NO_ANSWER_MESSAGE];
     expect(new Set(lines).size).toBe(lines.length);
     expect(CUT_OFF_MESSAGE).toBe('The answer was cut off because it got too long. Ask for a shorter version.');
     expect(STOPPED_LINE).toBe('Stopped.');
