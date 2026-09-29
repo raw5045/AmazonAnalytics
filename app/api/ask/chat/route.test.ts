@@ -319,9 +319,14 @@ describe('POST /api/ask/chat', () => {
       expect(alerts.maybeAlertCeiling).not.toHaveBeenCalled();
       error.mockRestore();
     });
-    it('an alert failure is logged as alert_failed, separate from settle_failed, since the settle already succeeded', async () => {
+    it('an alert failure is logged as alert_failed, separate from settle_failed, since the settle already succeeded, and the after()-lifetime promise still resolves (Task 10 nits, N5)', async () => {
       await post(newChat);
       const { onEnd } = turn.runTurn.mock.calls[0][0];
+      // Captured before onEnd runs, exactly like the finishTurn()-lifetime test above: registered()
+      // returns the same turnFinished promise regardless of when it's called, as long as after() was
+      // already registered by post(newChat).
+      const registered = nextServerMock.after.mock.calls[0][0] as () => Promise<void>;
+      const p = registered();
       alerts.maybeAlertCeiling.mockRejectedValueOnce(new Error('resend down'));
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
       await onEnd({ assistant: null, status: 'failed', usage: { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 0 }, steps: 1 });
@@ -332,6 +337,9 @@ describe('POST /api/ask/chat', () => {
       expect(found).toContain('alert_failed');
       expect(found).not.toContain('settle_failed');
       expect(conv.releaseTurnLock).toHaveBeenCalledWith('c9');
+      // A rejected alert must not leave the turn's after()-lifetime promise — and hence the Vercel
+      // function — hanging: finishTurn is chained via .catch().finally(), so it still resolves.
+      await expect(p).resolves.toBeUndefined();
       error.mockRestore();
     });
     it('an append (save) failure is logged as save_failed and the lock is still released', async () => {

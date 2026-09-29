@@ -53,7 +53,9 @@ export async function listAccountsForAdmin(now: Date): Promise<AdminAccountRow[]
   const r = await db.execute<AdminAccountQueryRow>(sql`
     SELECT u.id AS user_id, u.email, u.role, a.access, a.monthly_allowance_micro,
            CASE WHEN a.period_start < ${month}::date THEN 0 ELSE a.allowance_used_micro END AS allowance_used_micro,
-           a.period_start::text AS period_start, a.credit_micro,
+           -- Consistent with the zeroed "used" above: a stale period reads as already reset here too
+           -- (Task 10 nits, N6), rather than showing last month's date alongside this month's $0.
+           GREATEST(a.period_start, ${month}::date)::text AS period_start, a.credit_micro,
            COALESCE(q.n, 0)::text AS questions_month, COALESCE(q.spend_micro, 0)::text AS spend_month_micro, q.last_at
     FROM ask_accounts a
     JOIN users u ON u.id = a.user_id
@@ -88,7 +90,7 @@ export async function modelMixForMonth(now: Date): Promise<ModelMixRow[]> {
   const r = await db.execute<ModelMixQueryRow>(sql`
     SELECT model, count(*) AS n, (-COALESCE(SUM(amount_micro), 0))::text AS cost_micro
     FROM ask_ledger WHERE kind = 'usage' AND created_at >= ${sinceIso}::timestamptz AND model IS NOT NULL
-    GROUP BY model ORDER BY n DESC`);
+    GROUP BY model ORDER BY n DESC, model`);
   return r.rows.map((x) => ({ model: x.model, questions: num(x.n), costMicro: num(x.cost_micro) }));
 }
 

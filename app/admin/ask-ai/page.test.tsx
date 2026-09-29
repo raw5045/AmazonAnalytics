@@ -50,7 +50,7 @@ describe('AskAiAdminPage', () => {
     render(await AskAiAdminPage());
     expect(screen.getByRole('heading', { name: 'Ask AI' })).toBeInTheDocument();
     expect(screen.getByText(/Standard \(Sonnet 5\) 120 questions \(\$4\.80\)/)).toBeInTheDocument();
-    expect(screen.getByText(/80% sent 2026-09-20 10:00 UTC/)).toBeInTheDocument();
+    expect(screen.getByText(/80% reached 2026-09-20 10:00 UTC/)).toBeInTheDocument();
   });
 
   it('shows "none yet" for the model mix and "none" for alerts when there is no usage', async () => {

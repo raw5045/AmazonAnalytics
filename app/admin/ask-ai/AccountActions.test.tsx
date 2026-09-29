@@ -59,6 +59,33 @@ describe('AccountActions', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  // Task 10 nits, spec note 5 / N1 (regression): Number.parseFloat reads "1,000" as 1 and "10abc"
+  // as 10 instead of refusing them, so a thousands separator (now displayed elsewhere on the page,
+  // C-m7) would silently set a wildly wrong amount.
+  it('refuses "1,500" (thousands separator) and "10abc" (trailing junk) as Allowance/Credit amounts', async () => {
+    render(<AccountActions userId="u1" access allowanceUsd={10} />);
+    fireEvent.change(screen.getByLabelText('Allowance $'), { target: { value: '1,500' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a dollar amount.');
+    expect(fetch).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Credit $'), { target: { value: '10abc' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a dollar amount.');
+    expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  // Task 10 nits, spec note 6: Add credit with no note used to reach Confirm and then fail with the
+  // generic "Invalid request." — checked before the confirm step opens instead.
+  it('refuses Add credit with an empty note before showing Confirm, without sending a request', async () => {
+    render(<AccountActions userId="u1" access allowanceUsd={10} />);
+    fireEvent.change(screen.getByLabelText('Credit $'), { target: { value: '10' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Add a note.');
+    expect(screen.queryByRole('button', { name: 'Confirm' })).toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('shows an error line on failure', async () => {
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'nope' }), { status: 400 }));
     render(<AccountActions userId="u1" access={false} allowanceUsd={0} />);

@@ -90,4 +90,27 @@ describe('maybeAlertCeiling', () => {
     expect(found.some((o) => o?.outcome === 'alert_send_timeout')).toBe(true);
     error.mockRestore();
   });
+  // Task 10 nits, spec note 7 / N2: the 10s timer must not be left pending once the send settles —
+  // a leaked timer would otherwise hold a handle open for up to 10s longer than necessary.
+  it('clears the 10s send timer once the send settles, not leaving a pending timer', async () => {
+    const clearSpy = vi.spyOn(global, 'clearTimeout');
+    await maybeAlertCeiling(80_000_000, now, 10);
+    expect(clearSpy).toHaveBeenCalled();
+    clearSpy.mockRestore();
+  });
+  // Task 10 nits, N4: the 100%→80% secondary mark used to fail silently despite the docblock's own
+  // claim that every step is logged — it must now log alert_mark_failed (level: 80) without failing
+  // the primary mark or blocking the send.
+  it('a secondary 80% mark failure (while marking 100%) is logged, not silent, and the send still proceeds', async () => {
+    ledger.markCeilingAlert.mockImplementation(async (_month: string, level: number) => {
+      if (level === 100) return true;
+      throw new Error('80 mark db down');
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(maybeAlertCeiling(100_000_000, now, 10)).resolves.toBeUndefined();
+    const found = error.mock.calls.map((c) => { try { return JSON.parse(String(c[1])) as { outcome?: string; level?: number }; } catch { return undefined; } });
+    expect(found.some((o) => o?.outcome === 'alert_mark_failed' && o?.level === 80)).toBe(true);
+    expect(send.sendAskAiCeilingEmail).toHaveBeenCalledTimes(1);
+    error.mockRestore();
+  });
 });

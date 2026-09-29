@@ -82,6 +82,16 @@ describe('POST /api/admin/ask-ai/accounts', () => {
     expect(await res.json()).toEqual({ error: 'Amount too small.' });
     expect(ledger.addCredit).not.toHaveBeenCalled();
   });
+  it('an empty or whitespace-only credit note is a specific 400, not the generic "Invalid request." (Task 10 nits, spec note 6)', async () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    const empty = await post({ action: 'add_credit', userId: id, amountUsd: 10, note: '' });
+    expect(empty.status).toBe(400);
+    expect(await empty.json()).toEqual({ error: 'A note is required.' });
+    const whitespace = await post({ action: 'add_credit', userId: id, amountUsd: 10, note: '   ' });
+    expect(whitespace.status).toBe(400);
+    expect(await whitespace.json()).toEqual({ error: 'A note is required.' });
+    expect(ledger.addCredit).not.toHaveBeenCalled();
+  });
   it('validates: unknown action, credit without a note, negative amounts, missing user', async () => {
     const id = '11111111-1111-4111-8111-111111111111';
     expect((await post({ action: 'nuke', userId: id })).status).toBe(400);

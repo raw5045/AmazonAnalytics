@@ -1,8 +1,9 @@
 /**
  * Admin › Ask AI (spec §11.5, amended Task 10 review): month spend vs ceiling (counting spendable
- * credit too, C-m7), model mix (S2), alert timestamps (C-m3), member table with grant/allowance/
- * credit/revoke and per-member spend this period (C-m7). No transcripts, no message text anywhere
- * on this page.
+ * credit too, C-m7), model mix (S2), alert-reached timestamps (C-m3), member table with grant/
+ * allowance/credit/revoke and per-member spend this month (C-m7; Task 10 nits, spec note 2 — the
+ * ledger sum is always the UTC calendar month, unlike the allowance's own "used this period", which
+ * will track period_start once Stripe sets it). No transcripts, no message text anywhere on this page.
  */
 import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { redirect } from 'next/navigation';
@@ -47,11 +48,14 @@ export default async function AskAiAdminPage() {
   // The ceiling-too-low check must also count spendable credit, not just committed allowances —
   // credit is real spendable balance too (Task 10 review, C-m7).
   const tooLow = remaining + credit > ceiling - usage.costMicro;
+  // "Reached", not "sent" (Task 10 nits, spec note 4): alerted80At/alerted100At are set when the
+  // threshold is crossed, before the send is even attempted — an unset admin email, a failed send,
+  // or a jump straight to 100% would all still show a timestamp here despite no email going out.
   const alertParts: string[] = [];
   const alerted80 = fmtAlertAt(usage.alerted80At);
   const alerted100 = fmtAlertAt(usage.alerted100At);
-  if (alerted80) alertParts.push(`80% sent ${alerted80}`);
-  if (alerted100) alertParts.push(`100% sent ${alerted100}`);
+  if (alerted80) alertParts.push(`80% reached ${alerted80}`);
+  if (alerted100) alertParts.push(`100% reached ${alerted100}`);
 
   return (
     <div>

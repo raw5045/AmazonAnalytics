@@ -17,7 +17,9 @@ const usd = z.number().min(0).max(10_000);
 const bodySchema = z.discriminatedUnion('action', [
   z.strictObject({ action: z.literal('grant'), userId: z.uuid().optional(), email: z.string().trim().min(3).max(320).optional(), amountUsd: usd.optional() }),
   z.strictObject({ action: z.literal('set_allowance'), userId: z.uuid(), amountUsd: usd }),
-  z.strictObject({ action: z.literal('add_credit'), userId: z.uuid(), amountUsd: usd.gt(0), note: z.string().trim().min(1).max(200) }),
+  // note has no .min(1): an empty note gets the specific "A note is required." message below
+  // instead of the schema's generic "Invalid request." (Task 10 nits, spec note 6).
+  z.strictObject({ action: z.literal('add_credit'), userId: z.uuid(), amountUsd: usd.gt(0), note: z.string().trim().max(200) }),
   z.strictObject({ action: z.literal('revoke'), userId: z.uuid() }),
 ]);
 const json = (body: unknown, status: number) => NextResponse.json(body, { status, headers: { 'cache-control': 'no-store' } });
@@ -51,6 +53,11 @@ export async function POST(req: Request) {
       // first, before the write, with a message that explains why.
       const amountMicro = usdToMicro(b.amountUsd);
       if (amountMicro <= 0) return json({ error: 'Amount too small.' }, 400);
+      // Client-checked too (AccountActions.tsx never opens its Confirm step without one), but
+      // enforced here since the client is never trusted alone (Task 10 nits, spec note 6): a blank
+      // note used to fail the schema's own .min(1) with the generic "Invalid request." after the
+      // admin had already confirmed.
+      if (!b.note) return json({ error: 'A note is required.' }, 400);
       const account = await addCredit({ userId: b.userId, amountMicro, adminId: admin.id, note: b.note, now });
       if (!account) return json({ error: 'No Ask AI account for that member. Grant access first.' }, 404);
       return json({ account }, 200);

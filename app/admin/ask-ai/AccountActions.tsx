@@ -10,6 +10,19 @@ async function post(body: unknown): Promise<string | null> {
 }
 
 const DOLLAR_ERROR = 'Enter a dollar amount.';
+const NOTE_ERROR = 'Add a note.';
+
+/**
+ * Strict dollar parsing (Task 10 nits, spec note 5 / N1 — a regression against `Number.parseFloat`,
+ * which reads "1,000" as 1 and "10abc" as 10 by stopping at the first character it can't parse,
+ * silently accepting a wildly wrong amount instead of refusing it). Whole dollars or a decimal
+ * amount only — no thousands separators, no currency symbol (the input has no `$` inside it, that's
+ * in the label), no trailing junk.
+ */
+function parseDollarAmount(raw: string): number {
+  const t = raw.trim();
+  return /^\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
+}
 
 /**
  * Spec §11.5 row actions. Revoke and Add credit get a one-step inline confirm — the two actions
@@ -44,21 +57,24 @@ export function AccountActions({ userId, access, allowanceUsd }: { userId: strin
   };
 
   function setAllowanceAction() {
-    const amountUsd = Number.parseFloat(allowance);
+    const amountUsd = parseDollarAmount(allowance);
     // Never post an empty or non-numeric box (S4d): a NaN amount would otherwise reach the server
     // as an invalid request for no useful reason.
     if (!Number.isFinite(amountUsd)) { setStatus(null); setError(DOLLAR_ERROR); return; }
     void run({ action: 'set_allowance', userId, amountUsd }, 'Saved.');
   }
   function requestAddCredit() {
-    const amountUsd = Number.parseFloat(credit);
+    const amountUsd = parseDollarAmount(credit);
     if (!Number.isFinite(amountUsd)) { setStatus(null); setError(DOLLAR_ERROR); return; }
+    // A note is required server-side too (add_credit's schema), but checking here means the confirm
+    // step never opens on a request that's already known to fail (Task 10 nits, spec note 6).
+    if (!note.trim()) { setStatus(null); setError(NOTE_ERROR); return; }
     setError(null);
     setConfirming('credit');
   }
   function confirmAddCredit() {
-    const amountUsd = Number.parseFloat(credit);
-    if (!Number.isFinite(amountUsd)) { setStatus(null); setError(DOLLAR_ERROR); setConfirming(null); return; }
+    const amountUsd = parseDollarAmount(credit);
+    if (!Number.isFinite(amountUsd) || !note.trim()) { setStatus(null); setError(!Number.isFinite(amountUsd) ? DOLLAR_ERROR : NOTE_ERROR); setConfirming(null); return; }
     void run({ action: 'add_credit', userId, amountUsd, note }, 'Credit added.', () => { setCredit(''); setNote(''); });
   }
   function confirmRevoke() {
@@ -70,7 +86,7 @@ export function AccountActions({ userId, access, allowanceUsd }: { userId: strin
 
   const input = 'w-20 rounded border border-gray-300 px-1 py-0.5 text-sm';
   const button = 'rounded border border-gray-300 bg-white px-2 py-0.5 text-xs hover:bg-gray-50 disabled:opacity-60';
-  const creditAmount = Number.parseFloat(credit);
+  const creditAmount = parseDollarAmount(credit);
   return (
     <div className="flex flex-col gap-1 text-xs">
       <div className="flex items-center gap-1">
