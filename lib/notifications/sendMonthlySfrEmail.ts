@@ -7,6 +7,7 @@
  * went completely unnoticed — this closes that gap for the BA SFR ingest.
  */
 import { Resend } from 'resend';
+import { logResendError, logSendThrew } from './logSendFailure';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
@@ -60,14 +61,14 @@ export async function sendMonthlySfrEmail(input: SendMonthlySfrEmailInput): Prom
       html: email.html,
     });
     if (result.error) {
-      console.error('[sendMonthlySfrEmail] Resend returned error:', result.error);
+      logResendError('[sendMonthlySfrEmail]', result.error);
     } else {
       console.log(
         `[sendMonthlySfrEmail] sent "${email.subject}" to ${recipients.length} admin(s). id=${result.data?.id}`,
       );
     }
   } catch (e) {
-    console.error('[sendMonthlySfrEmail] send threw:', e);
+    logSendThrew('[sendMonthlySfrEmail]', e);
   }
 }
 

@@ -13,6 +13,7 @@
  * Recipient list: `SELECT email FROM users WHERE role='admin' AND email IS NOT NULL`.
  */
 import { Resend } from 'resend';
+import { logResendError, logSendThrew } from './logSendFailure';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
@@ -61,13 +62,13 @@ export async function sendEnrichmentEmail(input: SendEnrichmentEmailInput): Prom
       html: email.html,
     });
     if (result.error) {
-      console.error('[sendEnrichmentEmail] Resend returned error:', result.error);
+      logResendError('[sendEnrichmentEmail]', result.error);
     } else {
       console.log(
         `[sendEnrichmentEmail] sent "${email.subject}" to ${recipients.length} admin(s). id=${result.data?.id}`,
       );
     }
   } catch (e) {
-    console.error('[sendEnrichmentEmail] send threw:', e);
+    logSendThrew('[sendEnrichmentEmail]', e);
   }
 }

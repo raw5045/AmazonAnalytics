@@ -1,5 +1,6 @@
 // lib/notifications/sendWelcomeEmail.ts
 import { Resend } from 'resend';
+import { logResendError, logSendThrew } from './logSendFailure';
 import { buildWelcomeEmail } from './buildWelcomeEmail';
 
 /**
@@ -36,12 +37,12 @@ export async function sendWelcomeEmail(input: {
       html,
     });
     if (result.error) {
-      console.error('[welcome email] Resend error:', result.error);
+      logResendError('[welcome email]', result.error);
       return false;
     }
     return true;
   } catch (e) {
-    console.error('[welcome email] send threw:', e);
+    logSendThrew('[welcome email]', e);
     return false;
   }
 }

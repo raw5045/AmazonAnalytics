@@ -13,6 +13,7 @@
  * loop — see implementation note below).
  */
 import { Resend } from 'resend';
+import { logResendError, logSendThrew } from './logSendFailure';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
@@ -67,13 +68,13 @@ export async function sendImportEmail(input: SendImportEmailInput): Promise<void
       html: email.html,
     });
     if (result.error) {
-      console.error('[sendImportEmail] Resend returned error:', result.error);
+      logResendError('[sendImportEmail]', result.error);
     } else {
       console.log(
         `[sendImportEmail] sent "${email.subject}" to ${recipients.length} admin(s). id=${result.data?.id}`,
       );
     }
   } catch (e) {
-    console.error('[sendImportEmail] send threw:', e);
+    logSendThrew('[sendImportEmail]', e);
   }
 }

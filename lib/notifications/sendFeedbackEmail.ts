@@ -9,6 +9,7 @@
  * account email, so a Gmail reply goes straight back to them as support@.
  */
 import { Resend } from 'resend';
+import { logResendError, logSendThrew } from './logSendFailure';
 import { buildFeedbackEmail, type FeedbackEmailInput } from './buildFeedbackEmail';
 
 const SUPPORT_INBOX = 'support@keywordquarry.com';
@@ -36,12 +37,12 @@ export async function sendFeedbackEmail(
       html,
     });
     if (result.error) {
-      console.error('[sendFeedbackEmail] Resend error:', result.error);
+      logResendError('[sendFeedbackEmail]', result.error);
       return { sent: false, reason: 'send failed' };
     }
     return { sent: true };
   } catch (e) {
-    console.error('[sendFeedbackEmail] send threw:', e);
+    logSendThrew('[sendFeedbackEmail]', e);
     return { sent: false, reason: 'send failed' };
   }
 }

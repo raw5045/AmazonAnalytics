@@ -7,6 +7,7 @@
  * Inngest run.
  */
 import { Resend } from 'resend';
+import { logResendError, logSendThrew } from './logSendFailure';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
@@ -58,13 +59,13 @@ export async function sendCalibrationEmail(input: SendCalibrationEmailInput): Pr
       html: email.html,
     });
     if (result.error) {
-      console.error('[sendCalibrationEmail] Resend returned error:', result.error);
+      logResendError('[sendCalibrationEmail]', result.error);
     } else {
       console.log(
         `[sendCalibrationEmail] sent "${email.subject}" to ${recipients.length} admin(s). id=${result.data?.id}`,
       );
     }
   } catch (e) {
-    console.error('[sendCalibrationEmail] send threw:', e);
+    logSendThrew('[sendCalibrationEmail]', e);
   }
 }

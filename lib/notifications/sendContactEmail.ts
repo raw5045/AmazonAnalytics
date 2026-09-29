@@ -11,6 +11,7 @@
  * in Cloudflare rather than resurrecting the DB admin lookup here.
  */
 import { Resend } from 'resend';
+import { logResendError, logSendThrew } from './logSendFailure';
 import type { ContactInput } from '@/lib/contact/validate';
 
 const SUPPORT_INBOX = 'support@keywordquarry.com';
@@ -40,12 +41,12 @@ export async function sendContactEmail(input: ContactInput): Promise<{ sent: boo
       html,
     });
     if (result.error) {
-      console.error('[sendContactEmail] Resend error:', result.error);
+      logResendError('[sendContactEmail]', result.error);
       return { sent: false, reason: 'send failed' };
     }
     return { sent: true };
   } catch (e) {
-    console.error('[sendContactEmail] send threw:', e);
+    logSendThrew('[sendContactEmail]', e);
     return { sent: false, reason: 'send failed' };
   }
 }
