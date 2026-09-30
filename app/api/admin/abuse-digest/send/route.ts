@@ -10,6 +10,7 @@
 import { NextResponse } from 'next/server';
 import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { sendAbuseDigest } from '@/lib/notifications/abuseDigest/sendAbuseDigest';
+import { errFields } from '@/lib/ask/logSafe';
 
 export const runtime = 'nodejs';
 
@@ -36,7 +37,7 @@ export async function POST(req: Request) {
     const result = await sendAbuseDigest({ day, force: true });
     return NextResponse.json(result);
   } catch (e) {
-    console.error('[abuse-digest] force send failed:', e);
+    console.error('[abuse-digest]', JSON.stringify({ outcome: 'force_send_failed', error: errFields(e).error, code: errFields(e).code }));
     return NextResponse.json(
       { error: e instanceof Error ? e.message : 'send failed' },
       { status: 500 },

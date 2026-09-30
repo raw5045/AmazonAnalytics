@@ -13,7 +13,7 @@
  * Recipient list: `SELECT email FROM users WHERE role='admin' AND email IS NOT NULL`.
  */
 import { Resend } from 'resend';
-import { logResendError, logSendThrew } from './logSendFailure';
+import { logResendError, logSendThrew , logLookupFailed } from './logSendFailure';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
@@ -43,7 +43,7 @@ export async function sendEnrichmentEmail(input: SendEnrichmentEmailInput): Prom
       .where(and(eq(users.role, 'admin'), isNotNull(users.email)));
     recipients = adminRows.map((r) => r.email).filter((e): e is string => !!e);
   } catch (e) {
-    console.error('[sendEnrichmentEmail] failed to look up admin recipients:', e);
+    logLookupFailed('[sendEnrichmentEmail]', e);
     return;
   }
 

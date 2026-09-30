@@ -81,7 +81,8 @@ export async function sendAbuseDigest(opts?: {
   });
   if (error) {
     // Throw so the Inngest wrapper retries (key not advanced → safe re-send).
-    throw new Error(`[abuse-digest] Resend error: ${error.message ?? 'send failed'}`);
+    // Coded fields only: Resend's free-text message can echo an address.
+    throw new Error(`[abuse-digest] Resend error: ${error.name} (status ${error.statusCode ?? 'none'})`);
   }
 
   // 5. Advance the key — only for COMPLETED ET days. A "today so far" send

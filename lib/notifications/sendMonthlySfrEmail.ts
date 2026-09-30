@@ -7,7 +7,7 @@
  * went completely unnoticed — this closes that gap for the BA SFR ingest.
  */
 import { Resend } from 'resend';
-import { logResendError, logSendThrew } from './logSendFailure';
+import { logResendError, logSendThrew , logLookupFailed } from './logSendFailure';
 import { db } from '@/db/client';
 import { users } from '@/db/schema';
 import { and, eq, isNotNull } from 'drizzle-orm';
@@ -42,7 +42,7 @@ export async function sendMonthlySfrEmail(input: SendMonthlySfrEmailInput): Prom
       .where(and(eq(users.role, 'admin'), isNotNull(users.email)));
     recipients = adminRows.map((r) => r.email).filter((e): e is string => !!e);
   } catch (e) {
-    console.error('[sendMonthlySfrEmail] admin recipient lookup failed:', e);
+    logLookupFailed('[sendMonthlySfrEmail]', e);
     return;
   }
 
