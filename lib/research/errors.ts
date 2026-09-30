@@ -11,6 +11,10 @@ export const RESEARCH_ERROR_CODES = [
   'QUERY_TIMEOUT',
   'HISTORY_UNAVAILABLE',
   'DATA_UNAVAILABLE',
+  // Workspace tools (spec 2026-09-30 §7)
+  'LIMIT_REACHED',
+  'DUPLICATE_NAME',
+  'NOT_FOUND',
 ] as const;
 export type ResearchErrorCode = (typeof RESEARCH_ERROR_CODES)[number];
 

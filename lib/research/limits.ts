@@ -35,6 +35,8 @@ export interface ResearchLimits {
   maxPayloadBytes: number;
   /** §3.6 prose (not the table): the dedicated research pool's max connections. */
   poolMax: number;
+  /** Spec 2026-09-30 §8.2: workspace writes per account per Eastern calendar day. */
+  writesPerDay: number;
 }
 
 export const DEFAULT_LIMITS: Readonly<ResearchLimits> = Object.freeze({
@@ -54,6 +56,7 @@ export const DEFAULT_LIMITS: Readonly<ResearchLimits> = Object.freeze({
   rowsPerMinute: 6_000,
   maxPayloadBytes: 256 * 1024,
   poolMax: 4,
+  writesPerDay: 200,
 });
 
 /**
@@ -76,6 +79,7 @@ const OVERRIDABLE = new Set<keyof ResearchLimits>([
   'rowsPerMinute',
   'maxPayloadBytes',
   'poolMax',
+  'writesPerDay',
 ]);
 
 /** True for a value this module accepts as a limit override: a safe integer in 1..2147483647. */

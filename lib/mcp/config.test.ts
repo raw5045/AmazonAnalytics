@@ -12,6 +12,7 @@ import {
   mcpClientLabel,
   mcpEnabled,
   mcpResourceUrl,
+  mcpWriteEnabled,
   resetMcpConfigWarningsForTests,
 } from './config';
 
@@ -122,6 +123,14 @@ describe('mcp config', () => {
     expect(mcpClientLabel('https://chatgpt.com/oauth/abc123/client.json')).toBe('ChatGPT');
     expect(mcpClientLabel('https://claude.ai/oauth/some-future-client-metadata')).toBe('Claude');
     expect(mcpClientLabel('https://cursor.example/client.json')).toBe('https://cursor.example/client.json');
+  });
+
+  it('registers the workspace tools only when MCP_WRITE_ENABLED is exactly "1" (spec 2026-09-30 §2)', () => {
+    expect(mcpWriteEnabled()).toBe(false);
+    envMock.env.MCP_WRITE_ENABLED = 'true';
+    expect(mcpWriteEnabled()).toBe(false);
+    envMock.env.MCP_WRITE_ENABLED = '1';
+    expect(mcpWriteEnabled()).toBe(true);
   });
 });
 

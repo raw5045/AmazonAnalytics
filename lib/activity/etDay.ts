@@ -34,3 +34,18 @@ export function addDays(day: string, deltaDays: number): string {
   const dd = String(shifted.getUTCDate()).padStart(2, '0');
   return `${shifted.getUTCFullYear()}-${mm}-${dd}`;
 }
+
+/**
+ * Seconds from `now` until the next Eastern calendar day begins. ET midnight is 04:00Z under
+ * EDT and 05:00Z under EST; DST switches happen at 02:00 local, never at midnight, so the
+ * first instant of a day is always one of those two. Probing 04:00Z decides which: if that
+ * instant already falls on the next ET day, the offset is −4, otherwise −5. Used as the daily
+ * write cap's retryAfterSeconds (spec 2026-09-30 §8.2).
+ */
+export function secondsUntilNextEtDay(now: Date): number {
+  const next = addDays(etDay(now), 1);
+  const [y, m, d] = next.split('-').map(Number);
+  const edtMidnight = Date.UTC(y, m - 1, d, 4);
+  const midnight = etDay(new Date(edtMidnight)) === next ? edtMidnight : Date.UTC(y, m - 1, d, 5);
+  return Math.max(1, Math.ceil((midnight - now.getTime()) / 1000));
+}

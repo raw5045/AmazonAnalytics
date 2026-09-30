@@ -29,6 +29,7 @@ describe('parseResearchLimits', () => {
       rowsPerMinute: 6000,
       maxPayloadBytes: 262144,
       poolMax: 4,
+      writesPerDay: 200,
     };
     expect(DEFAULT_LIMITS).toEqual(defaults);
     expect(parseResearchLimits(undefined)).toEqual(defaults);
@@ -90,6 +91,11 @@ describe('parseResearchLimits', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain('fixed by the tool input schema');
   });
+
+  it('lets RESEARCH_LIMITS_JSON override writesPerDay (spec 2026-09-30 §8.2)', () => {
+    expect(parseResearchLimits(JSON.stringify({ writesPerDay: 50 }))).toEqual({ ...DEFAULT_LIMITS, writesPerDay: 50 });
+    expect(warn).not.toHaveBeenCalled();
+  });
 });
 
 describe('researchLimits', () => {
@@ -119,7 +125,7 @@ describe('researchLimits', () => {
   });
 });
 
-// Drift guards: DEFAULT_LIMITS has 16 keys, split into ten runtime knobs
+// Drift guards: DEFAULT_LIMITS has 17 keys, split into eleven runtime knobs
 // RESEARCH_LIMITS_JSON may override and six bound by literal maximums baked into the tool
 // input schemas (see the OVERRIDABLE doc comment in limits.ts). Both guards below fail loudly
 // if that split or its schema literals ever drift apart, instead of quietly going stale.
@@ -143,10 +149,10 @@ describe('OVERRIDABLE classification (drift guard)', () => {
   });
   afterEach(() => warn.mockRestore());
 
-  it('splits the 16 keys into exactly 10 overridable and 6 schema-bound', () => {
-    expect(keys).toHaveLength(16);
+  it('splits the 17 keys into exactly 11 overridable and 6 schema-bound', () => {
+    expect(keys).toHaveLength(17);
     expect(keys.filter((k) => SCHEMA_BOUND.has(k))).toHaveLength(6);
-    expect(keys.filter((k) => !SCHEMA_BOUND.has(k))).toHaveLength(10);
+    expect(keys.filter((k) => !SCHEMA_BOUND.has(k))).toHaveLength(11);
   });
 
   for (const key of keys) {

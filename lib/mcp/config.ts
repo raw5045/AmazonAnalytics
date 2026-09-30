@@ -24,6 +24,11 @@ export function mcpEnabled(): boolean {
   return env.MCP_ENABLED === '1';
 }
 
+/** The eleven workspace (write) tools are registered only while MCP_WRITE_ENABLED is exactly "1" (spec 2026-09-30 §2). */
+export function mcpWriteEnabled(): boolean {
+  return env.MCP_WRITE_ENABLED === '1';
+}
+
 /**
  * Set once mcpAudience() has warned about a misconfigured MCP_AUDIENCE, so
  * it logs at most once per process rather than on every call — layout.tsx

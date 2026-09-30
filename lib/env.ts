@@ -25,6 +25,8 @@ const serverSchema = z.object({
   /** Shown on the Connect AI page to signed-in, eligible accounts (see mcpClientCredentials). */
   MCP_CLIENT_SECRET_CLAUDE: z.string().optional(),
   MCP_CLIENT_SECRET_CHATGPT: z.string().optional(),
+  /** Workspace (write) tools on /api/mcp (arc 3, docs/superpowers/specs/2026-09-30-mcp-write-access-design.md §2): "1" registers them. */
+  MCP_WRITE_ENABLED: z.string().optional(),
   // Research service (arc 1): cursor signing key and validated limit overrides.
   RESEARCH_CURSOR_SECRET: z.string().optional(),
   RESEARCH_LIMITS_JSON: z.string().optional(),

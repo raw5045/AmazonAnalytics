@@ -22,7 +22,9 @@ export type UserActivityMetric =
   | 'mcp_rows'
   | 'ask_question'
   | 'ask_tool_call'
-  | 'ask_rows';
+  | 'ask_rows'
+  /** One successful workspace write through the MCP (spec 2026-09-30 §8.2); the daily cap reads it back with countUserActivityToday. */
+  | 'mcp_write';
 export type AppActivityMetric = 'contact_submission' | 'contact_honeypot' | 'feedback_submission';
 
 export async function bumpUserActivity(userId: string, metric: UserActivityMetric): Promise<void> {

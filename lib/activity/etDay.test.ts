@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { etDay, previousEtDay, addDays } from './etDay';
+import { etDay, previousEtDay, addDays, secondsUntilNextEtDay } from './etDay';
 
 describe('etDay', () => {
   it('returns the ET calendar date for a UTC instant that is still "yesterday" in ET', () => {
@@ -80,5 +80,18 @@ describe('addDays', () => {
   });
   it('returns the same day for a zero shift', () => {
     expect(addDays('2026-09-15', 0)).toBe('2026-09-15');
+  });
+});
+
+describe('secondsUntilNextEtDay', () => {
+  it('counts to 04:00Z in summer (EDT midnight)', () => {
+    // 2026-07-15 12:00Z → next ET day starts 2026-07-16T04:00:00Z
+    expect(secondsUntilNextEtDay(new Date('2026-07-15T12:00:00Z'))).toBe(16 * 3600);
+  });
+  it('counts to 05:00Z in winter (EST midnight)', () => {
+    expect(secondsUntilNextEtDay(new Date('2026-01-15T12:00:00Z'))).toBe(17 * 3600);
+  });
+  it('never returns less than one second', () => {
+    expect(secondsUntilNextEtDay(new Date('2026-07-16T03:59:59.900Z'))).toBe(1);
   });
 });
