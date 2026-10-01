@@ -3575,6 +3575,8 @@ Read `node_modules/next/dist/docs/01-app/01-getting-started/` (server components
 - Modify: `app/(app)/connect-ai/ExampleQuestions.tsx`, `app/(app)/connect-ai/page.tsx`
 - Test: `app/(app)/connect-ai/page.test.tsx`
 
+> **Landed as 5116ca8 (2026-09-30); fix round 0bfc5db.** Spec review: compliant (the new describe resets `authMock.role` because the Ask AI describe leaves it at `'admin'`; `writes` is deliberately not gated on `enabled` — the intro describes the product and the prompts render only in the enabled branch). Code-quality review: approve → 0bfc5db, re-reviewed and approved: **copy changed from the blocks below** (spec §9.3 amended in c70ba81) — the flag-on intro is now "…while you work and, with your approval, save views, build custom categories and edit your watchlist. Beta, free while it lasts." ("each time" dropped: the client prompts, and Always allow stops prompts) and the prompts sub-heading is "It can also save. Try asking" as an `h3` with `aria-labelledby` on its list; `INTRO_READ_ONLY`/`INTRO_WITH_WRITES` constants (the flag-off text is byte-identical to arc 2, DOM verified); a file-level role reset; the doc comment covers both lists; new `lib/ask/examples.test.ts` pins that no workspace prompt appears in Ask AI's lists (§11.10) and that `MORE_EXAMPLES` has seven entries. The code blocks below still carry the pre-amendment copy — do not re-run them. Open, optional: a render-level check in `Thread.test.tsx` would also catch a direct import of `WORKSPACE_EXAMPLES` into the Ask AI empty state. 30 files / 234 tests across connect-ai, ask and lib/ask.
+
 - [ ] **Step 1: Failing tests — append to `app/(app)/connect-ai/page.test.tsx`**
 
 ```ts
