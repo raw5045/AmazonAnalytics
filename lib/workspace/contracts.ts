@@ -123,10 +123,11 @@ export interface AddToWatchlistResponse { added: number; alreadyWatching: number
 export interface RemoveFromWatchlistResponse { removed: number; notWatching: number; unmatched: string[]; watching: number; limit: number }
 
 /**
- * One method per tool. Both callers (the MCP SDK today, the AI SDK if the chat ever gets writes)
- * validate args against the same schema before calling, so each method's own safeParse of `input`
- * is defence in depth; that makes every schema's parse idempotent by contract — no type-changing
- * `.transform()`. Expected failures reject with a ResearchError.
+ * One method per tool. Both callers — the MCP SDK and the in-app chat's AI SDK (lib/ask/tools.ts) —
+ * validate args against the same schema before calling, and the chat's approval resume
+ * (runWorkspaceTool) re-validates the stored input with that schema too, so each method's own
+ * safeParse of `input` is defence in depth; that makes every schema's parse idempotent by
+ * contract — no type-changing `.transform()`. Expected failures reject with a ResearchError.
  */
 export interface WorkspaceService {
   listSavedViews(actor: ResearchActor, input: unknown): Promise<ListSavedViewsResponse>;

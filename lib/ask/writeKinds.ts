@@ -1,9 +1,10 @@
 /**
  * Spec 2026-10-01 §3: which workspace tools are changes and which are deletes. A static list,
- * not derived from lib/workspace/tools.ts, because this module is rendered in the browser
+ * not derived from lib/workspace/tools.ts, because this module is imported by browser code
  * (ApprovalCard) and importing the definitions would pull their whole graph (zod schemas, the
  * research contracts, the Explorer query builder) into the client bundle; writeKinds.test.ts
- * keeps the two in step. Reads (list_*) are neither and never need a card.
+ * keeps the two in step. Reads (list_*) are neither and never need a card. A new write missing
+ * from both sets is never auto-approved: toolApprovalFor (lib/ask/tools.ts) always asks for it.
  */
 export type WriteKind = 'change' | 'delete';
 

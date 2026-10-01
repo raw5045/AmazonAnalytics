@@ -1,9 +1,10 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: {} }));
 import { buildAskTools, runWorkspaceTool, toolApprovalFor } from './tools';
 import { ResearchError } from '@/lib/research/errors';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { SAFE_TOOL_FAILURE } from '@/lib/research/toolErrors';
+import { RESEARCH_TOOLS } from '@/lib/research/tools';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
 import { WORKSPACE_TOOL_NAMES, type WorkspaceService } from '@/lib/workspace/contracts';
 import { WORKSPACE_TOOLS } from '@/lib/workspace/tools';
@@ -33,23 +34,31 @@ const LISTS = ['list_saved_views', 'list_custom_categories', 'list_watchlist'];
 const sorted = (names: ReadonlyArray<string>) => [...names].sort();
 
 const exec = (t: ReturnType<typeof buildAskTools>, name: string, args: unknown) => (t[name] as { execute: (a: unknown, o: unknown) => Promise<unknown> }).execute(args, { toolCallId: 't1', messages: [] });
+/** What the SDK sends the model for one bound tool: its description, and its input schema (compared by identity). */
+const bound = (t: ReturnType<typeof buildAskTools>, name: string) => t[name] as { description?: string; inputSchema?: unknown };
 
+// vitest 4's restoreAllMocks only restores vi.spyOn spies, so clear every vi.fn's call history before each test too.
+beforeEach(() => vi.clearAllMocks());
 afterEach(() => vi.restoreAllMocks());
 
 describe('buildAskTools', () => {
   const tools = buildAskTools(service, actor, DEFAULT_LIMITS);
 
-  it('without a workspace service (the flag off) exposes exactly the five research tools with their descriptions — byte-for-byte today\'s chat (spec 2026-10-01 §2)', () => {
+  it('without a workspace service (the flag off) exposes exactly the five research tools, byte-for-byte today\'s chat: the shared descriptions and schemas (spec 2026-10-01 §2)', () => {
     expect(Object.keys(tools)).toEqual(RESEARCH);
-    expect((tools.search_keywords as { description?: string }).description).toContain('Search current Amazon keywords');
+    for (const d of RESEARCH_TOOLS) {
+      expect(bound(tools, d.name).description).toBe(d.description(DEFAULT_LIMITS));
+      expect(bound(tools, d.name).inputSchema).toBe(d.inputSchema);
+    }
+    expect(bound(tools, 'search_keywords').description).toContain('Search current Amazon keywords');
     for (const name of WORKSPACE_TOOL_NAMES) expect(tools[name]).toBeUndefined();
     expect(Object.keys(buildAskTools(service, actor, DEFAULT_LIMITS, null))).toEqual(RESEARCH);
   });
   it('runs the service with the bound actor', async () => {
     await expect(exec(tools, 'get_research_guide', {})).resolves.toEqual({ guideVersion: 1 });
-    expect(service.guide).toHaveBeenCalledWith(actor);
+    expect(service.guide).toHaveBeenCalledExactlyOnceWith(actor);
     await expect(exec(tools, 'get_keyword_history', { searchTermId: 'x', weeks: 4 })).resolves.toEqual({ points: [] });
-    expect(service.history).toHaveBeenCalledWith(actor, { searchTermId: 'x', weeks: 4 });
+    expect(service.history).toHaveBeenCalledExactlyOnceWith(actor, { searchTermId: 'x', weeks: 4 });
   });
   it('returns a ResearchError as a result object, never a throw, so the model can explain or narrow', async () => {
     await expect(exec(tools, 'search_keywords', { filters: {} })).resolves.toEqual({ error: { code: 'RATE_LIMITED', message: 'Rate limit reached', retryable: true, retryAfterSeconds: 9 } });
@@ -67,15 +76,14 @@ describe('buildAskTools', () => {
     it('exposes the five research tools followed by the eleven workspace tools, with the shared descriptions and schemas', () => {
       expect(Object.keys(all)).toEqual([...RESEARCH, ...WORKSPACE_TOOL_NAMES]);
       for (const d of WORKSPACE_TOOLS) {
-        const t = all[d.name] as { description?: string; inputSchema?: unknown };
-        expect(t.description).toBe(d.description(DEFAULT_LIMITS));
+        expect(bound(all, d.name).description).toBe(d.description(DEFAULT_LIMITS));
         // The very schema object the MCP registers, so the SDK rejects a bad or hallucinated key the same way.
-        expect(t.inputSchema).toBe(d.inputSchema);
+        expect(bound(all, d.name).inputSchema).toBe(d.inputSchema);
       }
     });
     it('runs a workspace tool with the bound actor and the SDK-parsed input', async () => {
       await expect(exec(all, 'add_to_watchlist', { keywords: ['desk lamp'], searchTermIds: [] })).resolves.toMatchObject({ added: 1 });
-      expect(workspace.addToWatchlist).toHaveBeenCalledWith(actor, { keywords: ['desk lamp'], searchTermIds: [] });
+      expect(workspace.addToWatchlist).toHaveBeenCalledExactlyOnceWith(actor, { keywords: ['desk lamp'], searchTermIds: [] });
     });
     it('a ResearchError from a write is a result object; an unexpected one is the safe sentence, logged under [ask tool]', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -98,25 +106,36 @@ describe('the approval map and the resume runner (spec 2026-10-01 §3, §6)', ()
     expect(sorted(Object.keys(toolApprovalFor({ allowChanges: false, allowDeletes: true })))).toEqual(sorted(CHANGES));
     expect(toolApprovalFor({ allowChanges: true, allowDeletes: true })).toEqual({});
   });
+  it('fails closed: a write that writeKinds.ts does not classify yet always needs a card, whatever the allowances', () => {
+    const defs = [...WORKSPACE_TOOLS, { name: 'export_everything', requiresConfirmation: true }, { name: 'list_everything', requiresConfirmation: false }];
+    expect(toolApprovalFor({ allowChanges: true, allowDeletes: true }, defs)).toEqual({ export_everything: 'user-approval' });
+    expect(sorted(Object.keys(toolApprovalFor({ allowChanges: false, allowDeletes: false }, defs)))).toEqual(sorted([...CHANGES, ...DELETES, 'export_everything']));
+    expect(toolApprovalFor(null, defs)).toEqual({});
+  });
   it('runWorkspaceTool validates the stored input against the tool schema before running it (the approval resume path)', async () => {
     await expect(runWorkspaceTool(workspace, actor, 'add_to_watchlist', { keywords: ['desk lamp'] })).resolves.toMatchObject({ added: 1 });
     // The schema's output reaches the service, not the stored input: the omitted searchTermIds arrives as its default.
-    expect(workspace.addToWatchlist).toHaveBeenLastCalledWith(actor, { keywords: ['desk lamp'], searchTermIds: [] });
+    expect(workspace.addToWatchlist).toHaveBeenCalledExactlyOnceWith(actor, { keywords: ['desk lamp'], searchTermIds: [] });
   });
-  it('runWorkspaceTool refuses, without calling the service, an input its schema rejects or a name that is not a workspace write', async () => {
-    vi.mocked(workspace.addToWatchlist).mockClear();
-    vi.mocked(workspace.listSavedViews).mockClear();
+  it('runWorkspaceTool refuses, without calling the service, an input its schema rejects or a name that is not a workspace write, and logs each refusal by code — never the input or a raw name', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(runWorkspaceTool(workspace, actor, 'add_to_watchlist', { keywords: 'not-a-list' })).resolves.toEqual(INVALID);
     await expect(runWorkspaceTool(workspace, actor, 'search_keywords', {})).resolves.toEqual(INVALID);
     await expect(runWorkspaceTool(workspace, actor, 'list_saved_views', {})).resolves.toEqual(INVALID);
     expect(workspace.addToWatchlist).not.toHaveBeenCalled();
     expect(workspace.listSavedViews).not.toHaveBeenCalled();
+    const refusal = (tool: string, reason: string) => ['[ask tool]', JSON.stringify({ outcome: 'resume_refused', tool, reason })];
+    expect(warn.mock.calls).toEqual([refusal('add_to_watchlist', 'invalid_input'), refusal('unknown', 'not_a_write'), refusal('list_saved_views', 'not_a_write')]);
   });
-  it('runWorkspaceTool reports a failure as the live tools do: a ResearchError as a result object, anything else as the safe sentence', async () => {
+  it('runWorkspaceTool never throws: a ResearchError is a result object, and anything else — even while the input is read — is the safe sentence', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     await expect(runWorkspaceTool(workspace, actor, 'create_saved_view', { name: 'Lamps', search: {} })).resolves.toEqual({ error: { code: 'DUPLICATE_NAME', message: DUPLICATE_MESSAGE, retryable: false } });
     await expect(runWorkspaceTool(workspace, actor, 'delete_saved_view', { id: HEX_ID })).resolves.toEqual({ error: SAFE_TOOL_FAILURE });
     expect(error.mock.calls[0][0]).toBe('[ask tool]');
     expect(String(error.mock.calls[0][1])).toContain('delete_saved_view');
+    // safeParse runs inside the guard too: an input that throws while it is read is a result, never a rejection.
+    const throwing = { get keywords() { throw new Error('boom'); } };
+    await expect(runWorkspaceTool(workspace, actor, 'add_to_watchlist', throwing)).resolves.toEqual({ error: SAFE_TOOL_FAILURE });
+    expect(workspace.addToWatchlist).not.toHaveBeenCalled();
   });
 });

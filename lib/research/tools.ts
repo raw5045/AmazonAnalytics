@@ -24,10 +24,12 @@ export interface ToolAnnotations {
  * lib/workspace/tools.ts — so one registration adapter (lib/mcp/tools/registerDefinitions.ts)
  * serves both. Provider-neutral (spec 2026-09-28 §4): the MCP registers both lists (the
  * workspace one only while MCP_WRITE_ENABLED is "1"); Ask AI (lib/ask/tools.ts) builds its tool
- * map from RESEARCH_TOOLS only, so a research tool's name, description, schema and behaviour
- * cannot drift between the two.
- * `requiresConfirmation` is true for a tool that changes data: the in-app chat is to ask before
- * running it (a later arc); MCP clients decide from `annotations` instead.
+ * map from RESEARCH_TOOLS, plus WORKSPACE_TOOLS while ASK_AI_WRITES_ENABLED is "1", so a tool's
+ * name, description, schema and behaviour cannot drift between the two.
+ * `requiresConfirmation` is true for a tool that changes data: the in-app chat asks through an
+ * approval card before running it unless the member has allowed that kind of write (spec
+ * 2026-10-01 §3; lib/ask/writeKinds.ts classifies each write as a change or a delete, and a write
+ * it does not classify always asks); MCP clients decide from `annotations` instead.
  */
 export interface ToolDefinition<TService, TName extends string = string> {
   readonly name: TName;

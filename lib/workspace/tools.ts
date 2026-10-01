@@ -1,7 +1,9 @@
 /**
  * The eleven workspace tools (spec 2026-09-30 §3), the same frozen-definition shape as
- * lib/research/tools.ts. Registered on the MCP server only while MCP_WRITE_ENABLED is "1"
- * (lib/mcp/handler.ts); never handed to Ask AI (lib/ask/tools.ts builds from RESEARCH_TOOLS).
+ * lib/research/tools.ts. Registered on the MCP server while MCP_WRITE_ENABLED is "1"
+ * (lib/mcp/handler.ts) and handed to the in-app chat while ASK_AI_WRITES_ENABLED is "1"
+ * (lib/ask/tools.ts, spec 2026-10-01 §3), where toolApprovalFor decides which calls wait for an
+ * approval card.
  * Descriptions are what Claude and ChatGPT show in their approval prompt, so they stay plain.
  */
 import { MAX_CUSTOM_CATEGORIES, MAX_LEAF_PATHS_PER_CATEGORY } from '@/lib/customCategories/validation';
