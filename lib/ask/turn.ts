@@ -2,6 +2,7 @@ import {
   convertToModelMessages, createUIMessageStreamResponse, isStepCount, isToolUIPart, streamText, toUIMessageStream, RetryError,
   type LanguageModel, type ModelMessage, type ToolSet, type UIMessage,
 } from 'ai';
+import { isApprovalResultMessage } from './approvalResult';
 import { ASK_LIMITS, type AskModelId } from './config';
 import { errFields } from './logSafe';
 import { BUSY_LINE, PROBLEM_LINE } from './messages';
@@ -26,7 +27,7 @@ export interface TurnInput {
   generateMessageId: () => string;
   /** Attached to the assistant message when the stream starts — the new conversation's id on a first send. */
   startMetadata?: AskUIMessage['metadata'];
-  /** Spec 2026-10-01 §6: the tools whose next call must pause for a card (streamText's toolApproval map). */
+  /** Spec 2026-10-01 §6: the tools whose calls must pause for a card (streamText's toolApproval map). */
   toolApproval?: Record<string, 'user-approval'>;
   /** `approvalsRequested`: the tool calls in the answer that paused for a card (spec 2026-10-01 §6). */
   onEnd: (outcome: { assistant: AskUIMessage | null; status: MessageStatus; usage: TurnUsage; steps: number; finishReason?: string; stopReason?: 'deadline' | 'user'; approvalsRequested: number }) => Promise<void>;
@@ -134,11 +135,17 @@ export async function runTurn(input: TurnInput): Promise<Response> {
   const abortSignal = AbortSignal.any([input.abortSignal, cancelled.signal]);
 
   // A resume (spec 2026-10-01 §6) has no new message: the last history message is the hidden outcome
-  // message (a user message) and is passed as is. trimHistoryForReplay never touches user messages
-  // anyway, but the explicit split documents the contract. The route always appends that message
-  // before a resume; anything else would end the prompt on an assistant turn, so it fails here, early.
-  if (!input.newMessage && input.history[input.history.length - 1]?.role !== 'user') {
-    throw new Error('runTurn: a resume needs the outcome message (a user message) as the last history entry');
+  // message (a user message; isApprovalResultMessage) and is passed as is. trimHistoryForReplay never
+  // touches user messages anyway, but the explicit split documents the contract. The route always
+  // appends that message before a resume, so anything else is refused here, before the model call.
+  // An assistant message last would be worse than a wrong prompt: the SDK continues a trailing
+  // assistant message under its own id (toUIMessageStream seeds the answer from it), so its old
+  // approval parts would be counted again and the route would append a row whose id already exists.
+  if (!input.newMessage) {
+    const tail = input.history[input.history.length - 1];
+    if (!tail || !isApprovalResultMessage(tail)) {
+      throw new Error('runTurn: a resume needs the outcome message (a user message) as the last history entry');
+    }
   }
   const original = input.newMessage
     ? [...trimHistoryForReplay(input.history), input.newMessage]
@@ -157,8 +164,9 @@ export async function runTurn(input: TurnInput): Promise<Response> {
     instructions: [{ role: 'system', content: input.instructions, providerOptions: CACHE }],
     messages,
     tools: input.tools,
-    // A listed tool's call ends the step with a tool-approval-request instead of executing; a tool
-    // absent from the map runs as before (spec 2026-10-01 §6).
+    // A listed tool's call is not executed: the SDK emits a tool-approval-request for it instead. The
+    // request does not itself end the step; the call, having no result, stops the multi-step loop
+    // once the step ends, while unlisted calls in the same step still run (spec 2026-10-01 §6).
     toolApproval: input.toolApproval,
     providerOptions,
     stopWhen: isStepCount(ASK_LIMITS.maxSteps),

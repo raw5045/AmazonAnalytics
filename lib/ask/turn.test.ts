@@ -467,10 +467,96 @@ describe('runTurn — tool approval (arc 4)', () => {
     expect(prompt[prompt.length - 1]).toMatchObject({ content: [{ type: 'text', text: '[approval-result] The person approved x and it ran. Result: {}' }] });
     expect(onEnd.mock.calls[0][0]).toMatchObject({ status: 'complete', approvalsRequested: 0 });
   });
-  it('a resume needs the outcome (a user message) as the last history entry: an empty or assistant-last history throws before any model call', async () => {
+  it('a resume needs the outcome message as the last history entry: an empty, assistant-last or plain user-last history throws before any model call', async () => {
     const model = new MockLanguageModelV4({ doStream: textStream('x') });
     await expect(run(model, { history: [], newMessage: undefined })).rejects.toThrow('last history entry');
     await expect(run(model, { history: [user('q'), assistantMsg('a1')], newMessage: undefined })).rejects.toThrow('last history entry');
+    await expect(run(model, { history: [user('q'), assistantMsg('a1'), user('save it')], newMessage: undefined })).rejects.toThrow('last history entry');
     expect(model.doStreamCalls).toHaveLength(0);
+  });
+  it('a resume replays the answered paused message as its text only: no tool call, approval or result reaches the model ahead of the outcome', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('Saved.') });
+    const paused: AskUIMessage = {
+      id: 'a1', role: 'assistant',
+      parts: [
+        { type: 'step-start' },
+        { type: 'text', text: 'Saving that view.' },
+        { type: 'tool-get_research_guide', toolCallId: 'c1', state: 'output-available', input: {}, output: { ok: true }, approval: { id: 'ap1', approved: true } },
+      ],
+    };
+    const outcome: AskUIMessage = { id: 'o1', role: 'user', parts: [{ type: 'text', text: '[approval-result] The person approved get_research_guide and it ran. Result: {"ok":true}' }] };
+    await run(model, { history: [user('save it', 'u1'), paused, outcome], newMessage: undefined });
+    const prompt = model.doStreamCalls[0].prompt;
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(prompt[2].content).toEqual([{ type: 'text', text: 'Saving that view.' }]);
+    expect(JSON.stringify(prompt)).not.toContain('tool-call');
+    expect(JSON.stringify(prompt)).not.toContain('tool-approval');
+    expect(JSON.stringify(prompt)).not.toContain('tool-result');
+  });
+  it('two listed calls in one step: both pause with distinct approval ids, neither runs, one model call', async () => {
+    const twoCalls = () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          { type: 'stream-start' as const, warnings: [] },
+          ...['c1', 'c2'].flatMap((id) => [
+            { type: 'tool-input-start' as const, id, toolName: 'get_research_guide' },
+            { type: 'tool-input-delta' as const, id, delta: '{}' },
+            { type: 'tool-input-end' as const, id },
+            { type: 'tool-call' as const, toolCallId: id, toolName: 'get_research_guide', input: '{}' },
+          ]),
+          { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool-calls' }, usage: usage({ noCache: 100, cacheRead: 0, cacheWrite: 0, out: 40 }) },
+        ],
+      }),
+    });
+    const model = new MockLanguageModelV4({ doStream: [twoCalls()] });
+    const { onEnd } = await run(model, { toolApproval: { get_research_guide: 'user-approval' } });
+    const out = onEnd.mock.calls[0][0];
+    expect(out.approvalsRequested).toBe(2);
+    const paused = out.assistant!.parts.filter((p) => p.type === 'tool-get_research_guide' && (p as { state: string }).state === 'approval-requested') as unknown as Array<{ toolCallId: string; approval: { id: string } }>;
+    expect(paused.map((p) => p.toolCallId)).toEqual(['c1', 'c2']);
+    expect(new Set(paused.map((p) => p.approval.id)).size).toBe(2);
+    expect(guideExecute).not.toHaveBeenCalled();
+    expect(model.doStreamCalls).toHaveLength(1);
+  });
+  it('a request abort after the approval request was sent: the message is stored as stopped with the pending part kept', async () => {
+    const slowPause = () => ({
+      stream: simulateReadableStream({
+        initialDelayInMs: 0,
+        chunkDelayInMs: 20,
+        chunks: [
+          { type: 'stream-start' as const, warnings: [] },
+          { type: 'tool-input-start' as const, id: 'c1', toolName: 'get_research_guide' },
+          { type: 'tool-input-delta' as const, id: 'c1', delta: '{}' },
+          { type: 'tool-input-end' as const, id: 'c1' },
+          { type: 'tool-call' as const, toolCallId: 'c1', toolName: 'get_research_guide', input: '{}' },
+          { type: 'text-start' as const, id: 't1' },
+          ...['one ', 'two ', 'three ', 'four '].map((delta) => ({ type: 'text-delta' as const, id: 't1', delta })),
+          { type: 'text-end' as const, id: 't1' },
+          { type: 'finish' as const, finishReason: { unified: 'tool-calls' as const, raw: 'tool-calls' }, usage: usage({ noCache: 100, cacheRead: 0, cacheWrite: 0, out: 20 }) },
+        ],
+      }),
+    });
+    const model = new MockLanguageModelV4({ doStream: [slowPause()] });
+    const controller = new AbortController();
+    const onEnd = vi.fn<Parameters<typeof runTurn>[0]['onEnd']>(async () => {});
+    const res = await runTurn({
+      model, modelId: 'claude-sonnet-5', instructions: 'system text', tools, history: [], newMessage: user('save it'), abortSignal: controller.signal,
+      generateMessageId: () => 'a1', toolApproval: { get_research_guide: 'user-approval' }, onEnd,
+    });
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let seen = '';
+    while (!seen.includes('"type":"tool-approval-request"')) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      seen += dec.decode(value);
+    }
+    expect(seen).toContain('"type":"tool-approval-request"');
+    controller.abort(new Error('client disconnected'));
+    for (;;) { const { done } = await reader.read(); if (done) break; }
+    const out = onEnd.mock.calls[0][0];
+    expect(out).toMatchObject({ status: 'stopped', stopReason: 'user', approvalsRequested: 1 });
+    expect(out.assistant?.parts.some((p) => p.type === 'tool-get_research_guide' && (p as { state: string }).state === 'approval-requested')).toBe(true);
+    expect(guideExecute).not.toHaveBeenCalled();
   });
 });
