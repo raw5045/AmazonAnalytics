@@ -322,8 +322,8 @@ Rules, in the guide's existing style:
 `lib/mcp/handler.ts`'s `instructions` string gains, when the flag is on: "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; clients normally ask the person before each write; confirm names and deletions."
 
 ### 9.3 Connect AI page
-- Intro sentence, flag on: "Let Claude or ChatGPT search KeywordQuarry directly while you work and, with your approval each time, save views, build custom categories and edit your watchlist. Beta, free while it lasts." Flag off: today's read-only sentence.
-- `ExampleQuestions` gains, flag on only, a second list under the existing disclosure headed "With saving on, also try", from `lib/workspace/examples.ts`:
+- Intro sentence, flag on: "Let Claude or ChatGPT search KeywordQuarry directly while you work and, with your approval, save views, build custom categories and edit your watchlist. Beta, free while it lasts." Flag off: today's read-only sentence. (Amended 2026-09-30 after the Task 12 code review: the first draft said "with your approval each time", but the client, not the server, prompts — a member who picks Always allow, or a client set to auto-run, stops seeing prompts — so "each time" overpromised; the server instructions already say clients "normally" ask. Owner may revert in one line.)
+- `ExampleQuestions` gains, flag on only, a second list under the existing disclosure headed "It can also save. Try asking" (an `h3` labelling its list; the first draft's "With saving on, also try" named a switch members never see — same review), from `lib/workspace/examples.ts`:
   1. "Save that search as a view called Lamps under 500 reviews."
   2. "Build a custom category called Lighting from everything under Lamps and Ceiling Lights, then show me its top keywords."
   3. "Add the top 20 results to my watchlist."
