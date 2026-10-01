@@ -67,6 +67,7 @@ const mcp = createMcpHandler(
   },
   {
     serverInfo: MCP_SERVER_INFO,
+    // Fixed per process: lib/env parses once and a Vercel env change redeploys, so this always agrees with the per-request check above.
     instructions: mcpWriteEnabled() ? `${BASE_INSTRUCTIONS} ${WORKSPACE_INSTRUCTIONS}` : BASE_INSTRUCTIONS,
   },
 );
@@ -89,7 +90,8 @@ async function gated(req: Request): Promise<Response> {
   try {
     account = await resolveMcpAccount(extra.clerkUserId);
   } catch (e) {
-    console.error('[mcp auth]', JSON.stringify({ outcome: 'account_lookup_failed', ...ids, error: e instanceof Error ? e.message : String(e) }));
+    // Log-safe fields only (lib/ask/logSafe.ts): a DrizzleQueryError's own message embeds the bound params.
+    console.error('[mcp auth]', JSON.stringify({ outcome: 'account_lookup_failed', ...ids, ...errFields(e) }));
     return unavailable();
   }
 
@@ -101,7 +103,7 @@ async function gated(req: Request): Promise<Response> {
   try {
     connection = await getMcpConnection(localUserId);
   } catch (e) {
-    console.error('[mcp auth]', JSON.stringify({ outcome: 'connection_lookup_failed', ...ids, error: e instanceof Error ? e.message : String(e) }));
+    console.error('[mcp auth]', JSON.stringify({ outcome: 'connection_lookup_failed', ...ids, ...errFields(e) }));
     return unavailable();
   }
   if (connection?.status === 'disconnected') {

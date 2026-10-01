@@ -223,9 +223,13 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     explorerUrl: customCategoryUrlFor(deps.appUrl, c.id), createdAt: c.createdAt, updatedAt: c.updatedAt,
   });
 
-  /** §5.1: the search's own validation (schema → presets → one resolveScope); the converter then decides between custom ids and the expanded leaves (§5.2). */
+  /**
+   * §5.1: the search's own validation (schema → presets → one resolveScope); the converter then decides between custom ids and the
+   * expanded leaves (§5.2). A `pageSize` copied from the search is dropped: a saved view has no page size (the Explorer's perPage is
+   * fixed by normalizeFilters).
+   */
   async function convertSearch(userId: string, search: SearchSpec): Promise<{ filters: ExplorerFilters; notes: string[] }> {
-    const parsed = parseSearchInput({ schemaVersion: 1, ...search });
+    const parsed = parseSearchInput({ schemaVersion: 1, ...search, pageSize: undefined });
     // Unreachable: searchSpecSchema is strict and omits `cursor`, so parseSearchInput never sees one here. Kept only so `parsed` narrows to the new-search branch.
     if (parsed.kind === 'continuation') throw new ResearchError('INVALID_FILTERS', 'Pass the search criteria, never a cursor.');
     const { filters, sort, comparisonWindow } = applyPresets(parsed.request);

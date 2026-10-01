@@ -1,15 +1,9 @@
-import type { McpServer, ServerContext } from '@modelcontextprotocol/server';
-import { researchLimits, type ResearchLimits } from '@/lib/research/limits';
-import type { ResearchActor, ResearchService } from '@/lib/research/service';
+import type { McpServer } from '@modelcontextprotocol/server';
+import { researchLimits } from '@/lib/research/limits';
+import type { ResearchService } from '@/lib/research/service';
 import { RESEARCH_TOOLS } from '@/lib/research/tools';
-import { registerDefinitions } from './registerDefinitions';
+import { registerDefinitions, type RegisterToolsOptions } from './registerDefinitions';
 import { actorFromContext } from './toolResult';
-
-export interface RegisterResearchToolsOptions {
-  actorFor?: (ctx: ServerContext) => ResearchActor;
-  /** Defaults to `researchLimits()` (memoised, env-driven); overridable so tests can pin the numbers the description is built from. */
-  limits?: ResearchLimits;
-}
 
 /**
  * Registers the five MCP research tools on `server` from the shared definitions in
@@ -20,6 +14,6 @@ export interface RegisterResearchToolsOptions {
  * everything past that point (a filter the schema itself cannot express, a service failure) is an
  * MCP tool error whose text is the JSON `{ error: ResearchErrorInfo }`.
  */
-export function registerResearchTools(server: McpServer, service: ResearchService, opts: RegisterResearchToolsOptions = {}): void {
+export function registerResearchTools(server: McpServer, service: ResearchService, opts: RegisterToolsOptions = {}): void {
   registerDefinitions(server, RESEARCH_TOOLS, service, opts.actorFor ?? actorFromContext, opts.limits ?? researchLimits());
 }

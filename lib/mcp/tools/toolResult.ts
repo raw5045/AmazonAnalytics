@@ -30,7 +30,7 @@ export function okResult(structured: object): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(structuredContent) }], structuredContent };
 }
 
-/** `tool` is the MCP tool name (registerResearchTools.ts's runTool caller), logged for a non-ResearchError so an unexpected failure can be traced back to which tool raised it. */
+/** `tool` is the MCP tool name (passed through runTool by the generic adapter in ./registerDefinitions.ts, which registers both the research and the workspace tools), logged for a non-ResearchError so an unexpected failure can be traced back to which tool raised it. */
 export function errorResult(e: unknown, tool: string): CallToolResult {
   const info = classifyToolError(e, tool, '[mcp tool]');
   return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: info }) }] };

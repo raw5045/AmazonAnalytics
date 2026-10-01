@@ -48,8 +48,8 @@ function compareCodeUnits(a: string, b: string): number {
 
 /** Hex characters kept from the sha256 leaf-set hash (64 → 16 = 8 bytes: plenty to catch an accidental cross-request scope mismatch without bloating the response). */
 const LEAF_SET_HASH_HEX = 16;
-/** Leaf paths shown inline in `ResolvedScope.previewPaths` before a caller must page/expand for the rest. */
-const PREVIEW_PATHS = 20;
+/** Leaf paths shown inline in `ResolvedScope.previewPaths` before a caller must page/expand for the rest. Exported for the pin against lib/workspace/contracts.ts's PREVIEW_LEAF_PATHS. */
+export const PREVIEW_PATHS = 20;
 
 export interface CatalogEntry {
   path: string;

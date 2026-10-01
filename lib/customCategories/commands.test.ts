@@ -109,6 +109,11 @@ describe('updateCustomCategory', () => {
     updateReturning(new DrizzleQueryError('q', [], Object.assign(new Error('relation does not exist'), { code: '42P01' })));
     await expect(updateCustomCategory(USER_ID, CAT_ID, { name: 'x' })).rejects.toBeInstanceOf(DrizzleQueryError);
   });
+  it('rethrows a 23505 from a leaves-only update: without a rename it cannot be a duplicate name', async () => {
+    const e = uniqueViolation();
+    updateReturning(e);
+    await expect(updateCustomCategory(USER_ID, CAT_ID, { leafPaths: ['A › B'] })).rejects.toBe(e);
+  });
 });
 
 describe('deleteCustomCategory', () => {

@@ -4,6 +4,7 @@
 // reuse unchanged (deferred v2; see the spec's non-goals).
 import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
 import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
+import { DEFAULT_WRITES_PER_DAY } from '@/lib/research/defaults';
 import type { AbuseDigestStats, Flag } from './types';
 
 /**
@@ -24,8 +25,11 @@ export const THRESHOLDS = {
   // created in a single day.
   userSavedViewsPerDay: { amber: MAX_VIEWS_PER_USER - 1 },
   userCustomCategoriesPerDay: { amber: 10 }, // cap is 25 (MAX_CUSTOM_CATEGORIES) — 11-25 reachable
-  // Workspace writes are capped at 200/day by the service (spec 2026-09-30 §8.2); amber at half.
-  userMcpWritesPerDay: { amber: 100 },
+  // Workspace writes: the service caps them at DEFAULT_WRITES_PER_DAY a day unless
+  // RESEARCH_LIMITS_JSON overrides it (spec 2026-09-30 §8.2); amber at half. The digest on Railway
+  // only ever sees the default, so a RESEARCH_LIMITS_JSON cap of 100 or less would make this flag
+  // unable to fire.
+  userMcpWritesPerDay: { amber: DEFAULT_WRITES_PER_DAY / 2 },
   honeypotTripsPerDay: { amber: 20 },
   contactSubmissionsPerDay: { amber: 10 },
 } as const;

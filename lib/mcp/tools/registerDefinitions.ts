@@ -7,6 +7,14 @@ import { runTool } from './toolResult';
 
 const anyObject = z.looseObject({});
 
+/** Options for registerResearchTools and registerWorkspaceTools. */
+export interface RegisterToolsOptions {
+  /** Defaults to actorFromContext (./toolResult.ts): the identity the gate put on the auth context. */
+  actorFor?: (ctx: ServerContext) => ResearchActor;
+  /** Defaults to `researchLimits()` (memoised, env-driven); overridable so tests can pin the numbers the descriptions are built from. */
+  limits?: ResearchLimits;
+}
+
 /**
  * Registers one frozen definition list on `server`. Each handler is a thin adapter: the SDK
  * validates `args` against the tool's own input schema before the callback ever runs,

@@ -21,11 +21,11 @@ export interface PerUserActivity {
   customCategoriesCreated: number;
   /** CSV exports (explorer_export counter) — capped at 10/day by the route. */
   exports: number;
-  /** MCP research calls (mcp_request counter): +1 per tool call the research service completed — see recordResearchActivity in lib/research/usage.ts. Refused (rate-limited, invalid) or failed calls are not counted; whoami is never counted. */
+  /** MCP calls (mcp_request counter): +1 per research or workspace call completed, writes included (so mcpWrites is a subset) — see recordResearchActivity in lib/research/usage.ts. Refused (rate-limited, invalid) or failed calls are not counted; whoami is never counted. */
   mcpRequests: number;
   /** Rows returned by MCP tools (mcp_rows counter). */
   mcpRows: number;
-  /** Workspace writes through the MCP (mcp_write counter): saved views, custom categories and watchlist changes, +1 per successful call. Enforced at 200/day (spec 2026-09-30 §8.2). */
+  /** Workspace writes through the MCP (mcp_write counter): saved views, custom categories and watchlist changes, +1 per successful call. Capped at 200/day by default (overridable through RESEARCH_LIMITS_JSON; spec 2026-09-30 §8.2). */
   mcpWrites: number;
 }
 

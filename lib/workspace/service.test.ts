@@ -156,6 +156,14 @@ describe('create_saved_view', () => {
     await expect(svc.createSavedView(actor, { name: 'L', search: { filters: { text: { value: 'lamp' } } } })).resolves.toBeTruthy();
     await expect(svc.createSavedView(actor, { name: 'L', search: { cursor: 'c'.repeat(20) } })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
   });
+  it('accepts and ignores a pageSize copied from the search (a saved view has no page size): the stored filters are the same as without it', async () => {
+    const withPageSize = makeDeps();
+    const without = makeDeps();
+    await createWorkspaceService(withPageSize).createSavedView(actor, { name: 'Lamps', search: { ...search, pageSize: 50 } });
+    await createWorkspaceService(without).createSavedView(actor, { name: 'Lamps', search });
+    const stored = (deps: WorkspaceServiceDeps) => (deps.savedViews.create as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(stored(withPageSize)).toEqual(stored(without));
+  });
   it('an unknown category path fails like search does, before any save', async () => {
     const deps = makeDeps();
     await expect(createWorkspaceService(deps).createSavedView(actor, { name: 'L', search: { filters: { categories: { leafPaths: ['Nope › Nothing'] } } } })).rejects.toMatchObject({ code: 'CATEGORY_NOT_AVAILABLE' });

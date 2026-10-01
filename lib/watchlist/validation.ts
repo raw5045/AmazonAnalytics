@@ -1,3 +1,5 @@
+import { isUuid } from '@/lib/db/uuid';
+
 export const MAX_WATCHED_KEYWORDS = 100;
 
 /**
@@ -10,8 +12,6 @@ export const MAX_WATCHED_KEYWORDS = 100;
  */
 export const HARD_MAX_INPUT = 500;
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export function isValidUuid(s: unknown): s is string {
-  return typeof s === 'string' && UUID_RE.test(s);
+  return isUuid(s);
 }

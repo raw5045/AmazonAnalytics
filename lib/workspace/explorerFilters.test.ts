@@ -49,8 +49,10 @@ describe('toExplorerFilters', () => {
       { leaves: ['A › B › C', 'A › B › D'] },
     );
     expect(bySelection.filters).toMatchObject({ leafPaths: ['A › B › C', 'A › B › D'], customCategoryIds: [], category: null });
+    expect(bySelection.notes).toEqual([]);
     const byPath = convert(F({ categories: { leafPaths: ['A › B › C'] } }), { leaves: ['A › B › C'] });
     expect(byPath.filters).toMatchObject({ leafPaths: ['A › B › C'], customCategoryIds: [] });
+    expect(byPath.notes).toEqual([]);
   });
 
   it('a custom-only scope passes the ids and leaves leafPaths empty, so the link follows later edits to the category', () => {
@@ -76,11 +78,12 @@ describe('toExplorerFilters', () => {
   });
 
   it('a custom category plus explicit leaf paths is a mixed scope too', () => {
-    const { filters } = convert(
+    const { filters, notes } = convert(
       F({ categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }], leafPaths: ['A › B › C'] } }),
       { leaves: ['A › B › C', 'X › Y'] },
     );
     expect(filters).toMatchObject({ leafPaths: ['A › B › C', 'X › Y'], customCategoryIds: [] });
+    expect(notes).toEqual([]);
   });
 
   it('a department alone expands to its leaves like any other selection (the Explorer\'s broad category is a different taxonomy)', () => {
@@ -103,8 +106,9 @@ describe('toExplorerFilters', () => {
   });
 
   it('maps a volume move onto the volume presets', () => {
-    const { filters } = convert(F({ movement: { window: '4w', metric: 'volume', prior: { lt: 5000 }, current: { gt: 15000 }, baseline: 'include_not_observed' } }));
+    const { filters, notes } = convert(F({ movement: { window: '4w', metric: 'volume', prior: { lt: 5000 }, current: { gt: 15000 }, baseline: 'include_not_observed' } }));
     expect(filters).toMatchObject({ jump: 'v5k_to_15k', jumpMetric: 'volume' });
+    expect(notes).toEqual([]);
   });
 
   it('shifts volume lte/gte the other way and keeps the unread current bound as volMax', () => {
@@ -164,6 +168,9 @@ describe('toExplorerFilters', () => {
     expect(sortOf({ field: 'averageReviews', direction: 'desc' }).filters.sort).toBe('avg_reviews_desc');
     expect(sortOf({ field: 'volumeDelta', direction: 'desc' }).filters.sort).toBe('imp');
     expect(sortOf({ field: 'volumeDelta', direction: 'asc' }).filters.sort).toBe('decline');
+    for (const field of ['estimatedMonthlySearches', 'rank', 'averageReviews', 'volumeDelta'] as const) {
+      for (const direction of ['asc', 'desc'] as const) expect(sortOf({ field, direction }).notes, `${field} ${direction}`).toEqual([]);
+    }
     const words = sortOf({ field: 'wordCount', direction: 'asc' });
     expect(words.filters.sort).toBe('rank');
     expect(words.notes).toEqual([NOTE_WORD_COUNT_SORT]);
@@ -179,8 +186,9 @@ describe('toExplorerFilters', () => {
   });
 
   it('keeps severities in canonical order so a reordered default still compacts away', () => {
-    const { filters } = convert(F({ severities: ['warning', 'none'] }));
+    const { filters, notes } = convert(F({ severities: ['warning', 'none'] }));
     expect(filters.severities).toEqual(['none', 'warning']);
+    expect(notes).toEqual([]);
     expect(compactExplorerFilters(filters)).toEqual({ window: '4w' });
   });
 

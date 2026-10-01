@@ -22,8 +22,10 @@ export interface ToolAnnotations {
 /**
  * The shape every tool list shares — the research tools below and the workspace tools in
  * lib/workspace/tools.ts — so one registration adapter (lib/mcp/tools/registerDefinitions.ts)
- * serves both. Provider-neutral (spec 2026-09-28 §4): the MCP registration and the in-app chat
- * both build from these lists, so names, descriptions, schemas and behaviour cannot drift.
+ * serves both. Provider-neutral (spec 2026-09-28 §4): the MCP registers both lists (the
+ * workspace one only while MCP_WRITE_ENABLED is "1"); Ask AI (lib/ask/tools.ts) builds its tool
+ * map from RESEARCH_TOOLS only, so a research tool's name, description, schema and behaviour
+ * cannot drift between the two.
  * `requiresConfirmation` is true for a tool that changes data: the in-app chat is to ask before
  * running it (a later arc); MCP clients decide from `annotations` instead.
  */
@@ -31,8 +33,19 @@ export interface ToolDefinition<TService, TName extends string = string> {
   readonly name: TName;
   readonly title: string;
   readonly description: (limits: ResearchLimits) => string;
-  /** Always a `z.strictObject(...)` — a plain `ZodObject`, narrower than `z.ZodType`, so `registerTool`'s JSON-Schema conversion always sees an object shape. */
+  /**
+   * Must be a `z.strictObject` (the TypeScript type cannot tell strict from strip; each list's
+   * tools.test.ts pins it with an unknown-key rejection loop). Typed as a plain `ZodObject`,
+   * narrower than `z.ZodType`, so `registerTool`'s JSON-Schema conversion always sees an object shape.
+   */
   readonly inputSchema: z.ZodObject<z.ZodRawShape>;
+  /**
+   * Resolves to the tool's JSON answer. An expected failure throws a ResearchError, which reaches
+   * the caller as its info; anything else is logged log-safely and replaced by SAFE_TOOL_FAILURE
+   * (classifyToolError in ./toolErrors.ts, used by both the MCP and the Ask AI adapter). A
+   * property, not a method, so strictFunctionTypes checks it contravariantly: no `run` can narrow
+   * `args` below `unknown`.
+   */
   readonly run: (service: TService, actor: ResearchActor, args: unknown) => Promise<object>;
   readonly annotations: ToolAnnotations;
   readonly requiresConfirmation: boolean;

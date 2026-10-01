@@ -2,6 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: {} }));
 import { MAX_NAME_LENGTH as CUSTOM_CATEGORY_NAME_MAX } from '@/lib/customCategories/validation';
+import { PREVIEW_PATHS } from '@/lib/research/categories';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { READ_ONLY_ANNOTATIONS } from '@/lib/research/tools';
 import type { ResearchActor } from '@/lib/research/service';
@@ -54,6 +55,10 @@ describe('WORKSPACE_TOOLS', () => {
       expect(workspaceToolByName(n).description(DEFAULT_LIMITS), n).toContain('its compact filters (leaf categories previewed, with leafCount)');
     }
   });
+  it('previews as many leaf paths as a search scope does', () => {
+    // Intentional: research's resolvedCategoryScope.previewPaths and the workspace category/view summaries preview the same number of paths.
+    expect(PREVIEW_LEAF_PATHS).toBe(PREVIEW_PATHS);
+  });
   it('every write description ends with the confirmation sentence and no list description carries it', () => {
     for (const t of WORKSPACE_TOOLS) {
       expect(t.description(DEFAULT_LIMITS).endsWith('Clients normally ask the person before this runs.'), t.name).toBe(t.requiresConfirmation);
@@ -81,10 +86,14 @@ function camel(n: string): string {
 }
 
 describe('input schemas', () => {
-  it('a saved view takes the search criteria, never a cursor, and a name of 1–80 characters', () => {
+  it('a saved view takes the search criteria (a pageSize is accepted, a cursor never), and a name of 1–80 characters', () => {
     expect(createSavedViewInputSchema.safeParse({ name: 'Lamps', search: { schemaVersion: 1, filters: { text: { value: 'lamp' } } } }).success).toBe(true);
     expect(createSavedViewInputSchema.safeParse({ name: 'Lamps', search: { cursor: 'c'.repeat(20) } }).success).toBe(false);
-    expect(createSavedViewInputSchema.safeParse({ name: 'Lamps', search: { pageSize: 10 } }).success).toBe(false);
+    // A model may copy its search_keywords arguments as-is: pageSize parses with the search's own bounds (the service ignores it).
+    expect(createSavedViewInputSchema.safeParse({ name: 'Lamps', search: { pageSize: 50 } }).success).toBe(true);
+    expect(createSavedViewInputSchema.safeParse({ name: 'Lamps', search: { pageSize: 101 } }).success).toBe(false);
+    expect(updateSavedViewInputSchema.safeParse({ id: ID, search: { pageSize: 50 } }).success).toBe(true);
+    expect(updateSavedViewInputSchema.safeParse({ id: ID, search: { cursor: 'c'.repeat(20) } }).success).toBe(false);
     expect(createSavedViewInputSchema.safeParse({ name: '', search: {} }).success).toBe(false);
     expect(createSavedViewInputSchema.safeParse({ name: 'x'.repeat(81), search: {} }).success).toBe(false);
     expect(createSavedViewInputSchema.safeParse({ name: 'Lamps', search: {}, extra: 1 }).success).toBe(false);

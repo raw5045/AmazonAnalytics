@@ -62,7 +62,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'create_saved_view',
     title: 'Create saved view',
-    description: () => `Saves the exact criteria you searched with as a named Explorer view: pass the same presetIds, filters, sort and comparisonWindow (never a cursor). Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes for anything the Explorer could not carry over; relay the notes to the person. ${ASKS}`,
+    description: () => `Saves the exact criteria you searched with as a named Explorer view: pass the same presetIds, filters, sort and comparisonWindow (never a cursor; pageSize is accepted and ignored). Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes for anything the Explorer could not carry over; relay the notes to the person. ${ASKS}`,
     inputSchema: createSavedViewInputSchema,
     run: (service, actor, args) => service.createSavedView(actor, args),
     annotations: CREATE_ANNOTATIONS,
@@ -71,7 +71,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'update_saved_view',
     title: 'Update saved view',
-    description: () => `Renames a saved view and/or replaces its filters with a new search (no merge). Takes the id from list_saved_views. Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes. ${ASKS}`,
+    description: () => `Renames a saved view and/or replaces its filters with a new search (no merge), passed as in create_saved_view (never a cursor; pageSize is accepted and ignored). Takes the id from list_saved_views. Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes. ${ASKS}`,
     inputSchema: updateSavedViewInputSchema,
     run: (service, actor, args) => service.updateSavedView(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,

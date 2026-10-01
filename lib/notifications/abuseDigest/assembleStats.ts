@@ -83,8 +83,9 @@ export function assemblePerUserActivity(
   for (const [userId, n] of creations.savedViewsCreated) rowFor(userId).savedViewsCreated = n;
   for (const [userId, n] of creations.customCategoriesCreated) rowFor(userId).customCategoriesCreated = n;
 
-  // Rank = every read the user initiated, whichever door: explorer queries,
-  // detail views, MCP calls. Calls, not rows — rows are volume, not intent.
+  // Rank = every request the user initiated, whichever door: explorer queries,
+  // detail views, MCP calls (research or workspace calls, writes included).
+  // Calls, not rows — rows are volume, not intent.
   // The subject-line "reads" pulse and THRESHOLDS.userReadsPerDay stay
   // explorer + detail on purpose (owner-tracked trend; MCP has its own limiter).
   const rank = (u: PerUserActivity) => u.explorerQueries + u.detailViews + u.mcpRequests;

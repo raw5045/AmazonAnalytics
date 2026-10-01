@@ -7,6 +7,7 @@ import 'server-only';
 import { eq, and, desc } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
+import { isUuid } from '@/lib/db/uuid';
 import { MAX_VIEWS_PER_USER, normalizeFiltersBlob } from '@/lib/savedViews/validation';
 import type { SavedView } from './types';
 
@@ -14,8 +15,6 @@ import type { SavedView } from './types';
 export function rowToSavedView(r: typeof savedViews.$inferSelect): SavedView {
   return { id: r.id, name: r.name, filters: normalizeFiltersBlob(r.filters), createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
 }
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Fetch all of the user's saved views (up to MAX_VIEWS_PER_USER),
@@ -40,7 +39,7 @@ export async function listSavedViewsForUser(userId: string): Promise<SavedView[]
  * as the same "view not available" outcome).
  */
 export async function loadSavedViewForUser(userId: string, viewId: string): Promise<SavedView | null> {
-  if (!UUID_RE.test(viewId)) return null;
+  if (!isUuid(viewId)) return null;
   const [row] = await db
     .select()
     .from(savedViews)

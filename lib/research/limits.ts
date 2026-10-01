@@ -1,5 +1,6 @@
 import { env } from '@/lib/env';
 import { PAGE_SIZE_MAX } from './contracts';
+import { DEFAULT_WRITES_PER_DAY } from './defaults';
 
 /** Amendment §3.6. Engineering defaults, not product allowances. */
 export interface ResearchLimits {
@@ -56,7 +57,7 @@ export const DEFAULT_LIMITS: Readonly<ResearchLimits> = Object.freeze({
   rowsPerMinute: 6_000,
   maxPayloadBytes: 256 * 1024,
   poolMax: 4,
-  writesPerDay: 200,
+  writesPerDay: DEFAULT_WRITES_PER_DAY,
 });
 
 /**

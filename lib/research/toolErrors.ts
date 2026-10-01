@@ -19,10 +19,11 @@ export const SAFE_TOOL_FAILURE: Readonly<ResearchErrorInfo> = Object.freeze({
  */
 export function classifyToolError(e: unknown, tool: string, logPrefix: string): ResearchErrorInfo {
   if (isResearchError(e)) return e.toInfo();
+  const fields = errFields(e);
   // A primitive throw (`throw 'boom'`) has no fields of its own; keep its value as the detail so
   // it still reaches the log.
-  const detail = e instanceof Object ? {} : { detail: String(e).slice(0, 200) };
-  console.error(logPrefix, JSON.stringify({ tool, ...errFields(e), ...detail }));
+  if (!(e instanceof Object)) fields.detail = String(e).slice(0, 200);
+  console.error(logPrefix, JSON.stringify({ tool, ...fields }));
   const stack = (e as { stack?: unknown })?.stack;
   if (typeof stack === 'string') {
     const frames = stack.split('\n').filter((line) => /^\s+at /.test(line));

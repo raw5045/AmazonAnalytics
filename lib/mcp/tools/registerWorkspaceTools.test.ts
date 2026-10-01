@@ -68,11 +68,13 @@ describe('workspace tools over an in-memory MCP connection', () => {
   });
 
   it('rejects a schema-invalid call via the SDK before the service ever runs', async () => {
+    // Counted from here, so the assertion holds whichever order the tests run in (the DUPLICATE_NAME test also calls it).
+    const before = vi.mocked(service.createSavedView).mock.calls.length;
     const r = await client.callTool({ name: 'delete_saved_view', arguments: { id: 'nope' } });
     expect(r.isError).toBe(true);
     expect(service.deleteSavedView).not.toHaveBeenCalled();
     const cursor = await client.callTool({ name: 'create_saved_view', arguments: { name: 'x', search: { cursor: 'c'.repeat(20) } } });
     expect(cursor.isError).toBe(true);
-    expect(service.createSavedView).toHaveBeenCalledTimes(1); // only the DUPLICATE_NAME call above
+    expect(service.createSavedView).toHaveBeenCalledTimes(before);
   });
 });

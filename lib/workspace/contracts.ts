@@ -27,7 +27,11 @@ export const WORKSPACE_TOOL_NAMES = [
 export type WorkspaceToolName = (typeof WORKSPACE_TOOL_NAMES)[number];
 
 export const MAX_WATCHLIST_ITEMS_PER_CALL = 100;
-/** How many stored leaf paths a category summary shows (same count as search's previewPaths). */
+/**
+ * How many stored leaf paths a category or saved-view summary previews: the same count as search's
+ * resolvedCategoryScope.previewPaths (PREVIEW_PATHS in lib/research/categories.ts, which reaches the
+ * database layer, so tools.test.ts pins the two equal instead of this module importing it).
+ */
 export const PREVIEW_LEAF_PATHS = 20;
 export const LEAF_MODES = ['replace', 'add', 'remove'] as const;
 export type LeafMode = (typeof LEAF_MODES)[number];
@@ -42,10 +46,14 @@ const nameSchema = z
 // lookups compare exactly. toLowerCase() is idempotent, so a service's own re-parse changes nothing.
 const idSchema = z.uuid().toLowerCase().describe('The id from a list tool or a create result.');
 
-/** search_keywords' input minus cursor and pageSize — what the AI searched with. A fresh strict object, so a `cursor` key is rejected. */
+/**
+ * search_keywords' input minus cursor — what the AI searched with. A fresh strict object, so a `cursor` key is rejected.
+ * `pageSize` stays (optional, with the search's own bounds) so a model can copy its search arguments as-is; the service
+ * ignores it, since a saved view has no page size.
+ */
 export const searchSpecSchema = z
-  .strictObject(searchToolInputSchema.omit({ cursor: true, pageSize: true }).shape)
-  .describe('The exact criteria you searched with: presetIds, filters, sort, comparisonWindow. Never a cursor.');
+  .strictObject(searchToolInputSchema.omit({ cursor: true }).shape)
+  .describe('The exact criteria you searched with: presetIds, filters, sort, comparisonWindow. Never a cursor; pageSize is accepted and ignored.');
 export type SearchSpec = z.infer<typeof searchSpecSchema>;
 
 const categoriesInputSchema = categoriesSchema

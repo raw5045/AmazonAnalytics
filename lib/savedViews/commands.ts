@@ -10,6 +10,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
 import { isUniqueViolation } from '@/lib/db/pgErrorCode';
+import { isUuid } from '@/lib/db/uuid';
 import type { ExplorerFilters } from '@/lib/explorer/types';
 import { MAX_VIEWS_PER_USER, normalizeFilters, validateName } from './validation';
 import { rowToSavedView } from './loadServer';
@@ -17,8 +18,6 @@ import type { SavedView } from './types';
 
 export type SavedViewCommandCode = 'invalid_id' | 'invalid_name' | 'nothing_to_update' | 'cap_reached' | 'duplicate_name' | 'not_found';
 export type SavedViewResult<T> = ({ ok: true } & T) | { ok: false; code: SavedViewCommandCode; message: string };
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const fail = (code: SavedViewCommandCode, message: string) => ({ ok: false as const, code, message });
 
@@ -44,7 +43,7 @@ export async function createSavedView(userId: string, input: { name: unknown; fi
 }
 
 export async function updateSavedView(userId: string, id: string, input: { name?: unknown; filters?: unknown }): Promise<SavedViewResult<{ view: SavedView }>> {
-  if (!UUID_RE.test(id)) return fail('invalid_id', 'invalid view id');
+  if (!isUuid(id)) return fail('invalid_id', 'invalid view id');
   const updates: { name?: string; filters?: ExplorerFilters; updatedAt: Date } = { updatedAt: new Date() };
   if (input.name !== undefined) {
     const nameResult = validateName(input.name);
@@ -65,7 +64,7 @@ export async function updateSavedView(userId: string, id: string, input: { name?
 }
 
 export async function deleteSavedView(userId: string, id: string): Promise<SavedViewResult<{ deleted: { id: string; name: string } }>> {
-  if (!UUID_RE.test(id)) return fail('invalid_id', 'invalid view id');
+  if (!isUuid(id)) return fail('invalid_id', 'invalid view id');
   // Owner-scoped like the update: a foreign id deletes nothing and reads as not found.
   const [deleted] = await db
     .delete(savedViews)

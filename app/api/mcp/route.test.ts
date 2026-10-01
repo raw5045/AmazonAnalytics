@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { DrizzleQueryError } from 'drizzle-orm';
 
 const { mockAuth, mockFindFirst, mockDatasetWeek, envMock } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
@@ -23,13 +24,14 @@ const { fakeService } = vi.hoisted(() => ({
     history: vi.fn(async () => ({ points: [] })),
   },
 }));
-const { fakeWorkspace } = vi.hoisted(() => ({
-  fakeWorkspace: {
+const { fakeWorkspace, mockDefaultWorkspaceService } = vi.hoisted(() => {
+  const fakeWorkspace = {
     listSavedViews: vi.fn(async () => ({ views: [], count: 0, limit: 5 })),
     listCustomCategories: vi.fn(), listWatchlist: vi.fn(), createSavedView: vi.fn(), updateSavedView: vi.fn(), deleteSavedView: vi.fn(),
     createCustomCategory: vi.fn(), updateCustomCategory: vi.fn(), deleteCustomCategory: vi.fn(), addToWatchlist: vi.fn(), removeFromWatchlist: vi.fn(),
-  },
-}));
+  };
+  return { fakeWorkspace, mockDefaultWorkspaceService: vi.fn(() => fakeWorkspace) };
+});
 
 vi.mock('@clerk/nextjs/server', () => ({ auth: mockAuth }));
 vi.mock('@/db/client', () => ({ db: { query: { users: { findFirst: mockFindFirst } } } }));
@@ -37,7 +39,7 @@ vi.mock('@/lib/mcp/datasetWeek', () => ({ currentDatasetWeek: mockDatasetWeek })
 vi.mock('@/lib/mcp/connections', () => ({ getMcpConnection: mockGetConnection, touchMcpConnection: mockTouch }));
 vi.mock('@/lib/env', () => envMock);
 vi.mock('@/lib/research/service', () => ({ defaultResearchService: () => fakeService }));
-vi.mock('@/lib/workspace/service', () => ({ defaultWorkspaceService: () => fakeWorkspace }));
+vi.mock('@/lib/workspace/service', () => ({ defaultWorkspaceService: mockDefaultWorkspaceService }));
 
 import { GET, POST } from './route';
 
@@ -88,6 +90,18 @@ async function connect(token = TOKEN) {
     requestInit: { headers: { authorization: `Bearer ${token}` } },
   });
   await client.connect(transport);
+  return client;
+}
+
+/** Like connect(), against a freshly imported route: for the describes that reset modules to change what handler.ts reads at load. */
+async function connectFresh(name: string) {
+  const route = await import('./route');
+  const fetchFresh = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    const req = new Request(typeof input === 'string' ? input : input.toString(), init);
+    return req.method === 'POST' ? route.POST(req) : req.method === 'GET' ? route.GET(req) : new Response(null, { status: 405 });
+  };
+  const client = new Client({ name, version: '0.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(URL_MCP), { fetch: fetchFresh, requestInit: { headers: { authorization: `Bearer ${TOKEN}` } } }));
   return client;
 }
 
@@ -175,6 +189,7 @@ describe('/api/mcp', () => {
       expect(tools.map((t) => t.name).sort()).toEqual(['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami']);
       expect(tools[0].annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
       expect(client.getInstructions()).not.toContain('Workspace tools');
+      expect(mockDefaultWorkspaceService).not.toHaveBeenCalled();
 
       const result = await client.callTool({ name: 'whoami', arguments: {} });
       expect(result.isError).toBeFalsy();
@@ -286,6 +301,22 @@ describe('/api/mcp', () => {
     expect(res.headers.get('retry-after')).toBe('30');
     expect((await res.json()).error).toBe('temporarily_unavailable');
   });
+
+  it('logs a failed account or connection lookup by its log-safe fields only, never the query text or the bound params', async () => {
+    // What production throws: drizzle-orm wraps the driver error in a DrizzleQueryError whose own message embeds the params.
+    const dbError = () => new DrizzleQueryError('select "id" from "users" where "clerk_user_id" = $1', ['SECRET-PARAM'], Object.assign(new Error('Connection terminated unexpectedly'), { code: '08006' }));
+    mockFindFirst.mockRejectedValueOnce(dbError());
+    expect((await post({ authorization: `Bearer ${TOKEN}` })).status).toBe(503);
+    mockGetConnection.mockRejectedValueOnce(dbError());
+    expect((await post({ authorization: `Bearer ${TOKEN}` })).status).toBe(503);
+    const failures = vi.mocked(console.error).mock.calls.filter((c) => c[0] === '[mcp auth]').map((c) => JSON.parse(String(c[1])));
+    const safe = { clientId: 'client_claude', clerkUserId: 'user_clerk_1', error: 'Error', code: '08006', detail: 'Connection terminated unexpectedly' };
+    expect(failures).toEqual([{ outcome: 'account_lookup_failed', ...safe }, { outcome: 'connection_lookup_failed', ...safe }]);
+    for (const line of consoleLines()) {
+      expect(line).not.toContain('SECRET-PARAM');
+      expect(line).not.toContain('Failed query');
+    }
+  });
 });
 
 describe('/api/mcp with MCP_WRITE_ENABLED=1 (spec 2026-09-30 §2)', () => {
@@ -311,13 +342,7 @@ describe('/api/mcp with MCP_WRITE_ENABLED=1 (spec 2026-09-30 §2)', () => {
   });
 
   it('lists the five research tools, whoami and the eleven workspace tools, says so in the instructions, and runs a workspace tool with the gate-supplied actor', async () => {
-    const route = await import('./route');
-    const fetchFresh = async (input: string | URL, init?: RequestInit): Promise<Response> => {
-      const req = new Request(typeof input === 'string' ? input : input.toString(), init);
-      return req.method === 'POST' ? route.POST(req) : req.method === 'GET' ? route.GET(req) : new Response(null, { status: 405 });
-    };
-    const client = new Client({ name: 'route-test-writes', version: '0.0.0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(URL_MCP), { fetch: fetchFresh, requestInit: { headers: { authorization: `Bearer ${TOKEN}` } } }));
+    const client = await connectFresh('route-test-writes');
     try {
       const { tools } = await client.listTools();
       expect(tools).toHaveLength(17);
@@ -327,6 +352,48 @@ describe('/api/mcp with MCP_WRITE_ENABLED=1 (spec 2026-09-30 §2)', () => {
       expect(r.isError).toBeFalsy();
       expect(fakeWorkspace.listSavedViews).toHaveBeenCalledWith({ localUserId: 'uuid-admin', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp' }, {});
       expect(r.structuredContent).toEqual({ views: [], count: 0, limit: 5 });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+});
+
+describe('/api/mcp with MCP_WRITE_ENABLED=1 when the workspace service cannot be built (fail-soft)', () => {
+  const spies: ReturnType<typeof vi.spyOn>[] = [];
+  const consoleLines = () => spies.flatMap((s) => s.mock.calls.map((c: unknown[]) => c.map(String).join(' ')));
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules(); // as above: the route is re-imported per test
+    envMock.env.MCP_ENABLED = '1';
+    envMock.env.MCP_WRITE_ENABLED = '1';
+    delete envMock.env.MCP_AUDIENCE;
+    delete envMock.env.MCP_ALLOWED_CLIENT_IDS;
+    mockAuth.mockResolvedValue(clerkOauth());
+    mockFindFirst.mockResolvedValue(adminRow);
+    mockGetConnection.mockResolvedValue(null);
+    mockDatasetWeek.mockResolvedValue('2026-09-12');
+    vi.doMock('@/lib/workspace/service', () => ({
+      defaultWorkspaceService: () => {
+        throw new DrizzleQueryError('select 1', ['SECRET-PARAM'], Object.assign(new Error('boom'), { code: '08006' }));
+      },
+    }));
+    for (const m of ['log', 'warn', 'error'] as const) spies.push(vi.spyOn(console, m).mockImplementation(() => {}));
+  });
+  afterEach(() => {
+    // Back to the file's hoisted fake for every later import (vi.doUnmock would drop the mock altogether).
+    vi.doMock('@/lib/workspace/service', () => ({ defaultWorkspaceService: mockDefaultWorkspaceService }));
+    delete envMock.env.MCP_WRITE_ENABLED;
+    spies.splice(0).forEach((s) => s.mockRestore());
+  });
+
+  it('still lists whoami and the five research tools, and logs the failure by its log-safe fields only', async () => {
+    const client = await connectFresh('route-test-fail-soft');
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name).sort()).toEqual(['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami']);
+      const logged = vi.mocked(console.error).mock.calls.filter((c) => c[0] === '[mcp]').map((c) => JSON.parse(String(c[1])));
+      expect(logged).toContainEqual({ outcome: 'workspace_tools_unavailable', error: 'Error', code: '08006', detail: 'boom' });
+      for (const line of consoleLines()) expect(line).not.toContain('SECRET-PARAM');
     } finally {
       await client.close().catch(() => {});
     }

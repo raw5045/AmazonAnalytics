@@ -1,8 +1,10 @@
 /**
- * The Postgres SQLSTATE of a thrown error. drizzle-orm (0.45, neon-http and node-postgres alike)
- * rethrows every driver failure as a DrizzleQueryError and keeps the Postgres error on `cause`,
- * so the code lives one level down; a raw driver error carries it on itself. lib/db/retry.ts
- * reads both levels the same way.
+ * Whatever string `code` a thrown error carries, on itself or else on its `cause`: a Postgres
+ * SQLSTATE for a database error, but just as well e.g. `ECONNRESET` for a socket error, so a
+ * caller must compare against the exact code it means. drizzle-orm (0.45, neon-http and
+ * node-postgres alike) rethrows every driver failure as a DrizzleQueryError and keeps the driver
+ * error on `cause`, so the code usually lives one level down; a raw driver error carries it on
+ * itself. `isUniqueViolation` below is the only semantic helper.
  */
 export function pgErrorCode(e: unknown): string | undefined {
   for (const err of [e, (e as { cause?: unknown } | null)?.cause]) {

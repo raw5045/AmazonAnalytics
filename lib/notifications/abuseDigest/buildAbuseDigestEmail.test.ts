@@ -239,6 +239,7 @@ describe('buildAbuseDigestEmail — MCP columns', () => {
     const { text, html } = buildAbuseDigestEmail(stats, []);
     expect(text).toContain('5 MCP calls (250 rows), 2 MCP writes');
     expect(html).toContain('<th style="padding:5px 0 5px 8px;text-align:right;">MCP writes</th>');
+    expect(html.indexOf('>MCP writes</th>')).toBeGreaterThan(html.indexOf('>MCP rows</th>'));
     expect(html).toMatch(/<td[^>]*>2<\/td>\s*<\/tr>/);
   });
 });
