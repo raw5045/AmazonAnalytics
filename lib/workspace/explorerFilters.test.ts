@@ -98,6 +98,18 @@ describe('toExplorerFilters', () => {
     expect(notes).toEqual([NOTE_JUMP_INVALID]);
   });
 
+  it('a decline, or a prior bound on the side the jump never reads, is noted as a move the Explorer cannot express; the current bound still becomes the plain range', () => {
+    const volumeDecline = convert(F({ movement: { window: '4w', metric: 'volume', prior: { gte: 50000 }, current: { lt: 10000 }, baseline: 'include_not_observed' } }));
+    expect(volumeDecline.filters).toMatchObject({ jump: null, volMin: null, volMax: 9999 });
+    expect(volumeDecline.notes).toEqual([NOTE_JUMP_INVALID]);
+    const rankDrop = convert(F({ movement: { window: '4w', metric: 'rank', prior: { lte: 1000 }, current: { gt: 1000 } } }));
+    expect(rankDrop.filters).toMatchObject({ jump: null, rankMin: 1001, rankMax: null });
+    expect(rankDrop.notes).toEqual([NOTE_JUMP_INVALID, NOTE_BASELINE]);
+    const priorUnreadOnly = convert(F({ movement: { window: '4w', metric: 'rank', prior: { lte: 1000 } } }));
+    expect(priorUnreadOnly.filters).toMatchObject({ jump: null, rankMin: null, rankMax: null });
+    expect(priorUnreadOnly.notes).toEqual([NOTE_PRIOR_ONLY]);
+  });
+
   it('maps every sort; word count falls back to rank with a note', () => {
     const sortOf = (sort: Sort) => convert(F(), { sort });
     expect(sortOf({ field: 'estimatedMonthlySearches', direction: 'desc' }).filters.sort).toBe('rank');

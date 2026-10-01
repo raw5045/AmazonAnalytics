@@ -96,9 +96,13 @@ function convertMovement(m: NonNullable<Filters['movement']>, out: ExplorerFilte
     }
     mapped = true;
   } else {
-    if (from !== undefined) notes.push(NOTE_PRIOR_ONLY);
+    // No from/to pair the Explorer's jump can read. The schema guarantees a non-null `prior`
+    // carries at least one bound, so any prior here is lost: with a current bound it is a move
+    // the Explorer cannot express (e.g. a decline, or a bound on the side the jump never reads);
+    // alone it is a bound on the earlier value only.
+    if (prior) notes.push(current ? NOTE_JUMP_INVALID : NOTE_PRIOR_ONLY);
     if (current) {
-      // A current-side bound with no usable prior bound is not a move: it is the plain range, exactly.
+      // A current-side bound is still exact as the plain range on the same metric.
       tightenPlainRange(out, m.metric, inclusive(current));
       mapped = true;
     }
