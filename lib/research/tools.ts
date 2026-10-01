@@ -11,22 +11,39 @@ export type ResearchToolName = (typeof RESEARCH_TOOL_NAMES)[number];
 
 export const READ_ONLY_ANNOTATIONS = Object.freeze({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const);
 
+/** MCP tool annotations as each definition sets them (spec 2026-09-30 §3): the four booleans clients read to decide whether to prompt. */
+export interface ToolAnnotations {
+  readonly readOnlyHint: boolean;
+  readonly destructiveHint: boolean;
+  readonly idempotentHint: boolean;
+  readonly openWorldHint: boolean;
+}
+
 /**
- * One research tool, provider-neutral (spec `docs/superpowers/specs/2026-09-28-in-app-chat-design.md`
- * §4): the MCP registration and the in-app chat both build from this list, so names,
- * descriptions, schemas and behaviour cannot drift between the two surfaces.
- * `requiresConfirmation` is false for all five; a future write tool sets it true and the chat
- * asks before running it. Every field is `readonly` and every entry in `RESEARCH_TOOLS` below is
- * individually `Object.freeze`d (in addition to the array itself), so no caller can mutate a
- * shared definition out from under another.
+ * The shape every tool list shares — the research tools below and the workspace tools in
+ * lib/workspace/tools.ts — so one registration adapter (lib/mcp/tools/registerDefinitions.ts)
+ * serves both. Provider-neutral (spec 2026-09-28 §4): the MCP registration and the in-app chat
+ * both build from these lists, so names, descriptions, schemas and behaviour cannot drift.
+ * `requiresConfirmation` is true for a tool that changes data: the in-app chat is to ask before
+ * running it (a later arc); MCP clients decide from `annotations` instead.
  */
-export interface ResearchToolDefinition {
-  readonly name: ResearchToolName;
+export interface ToolDefinition<TService, TName extends string = string> {
+  readonly name: TName;
   readonly title: string;
   readonly description: (limits: ResearchLimits) => string;
-  /** All five schemas in contracts.ts are `z.strictObject(...)` — a plain `ZodObject`, narrower than `z.ZodType` so `registerTool`'s JSON-Schema conversion always sees an object shape. */
+  /** Always a `z.strictObject(...)` — a plain `ZodObject`, narrower than `z.ZodType`, so `registerTool`'s JSON-Schema conversion always sees an object shape. */
   readonly inputSchema: z.ZodObject<z.ZodRawShape>;
-  readonly run: (service: ResearchService, actor: ResearchActor, args: unknown) => Promise<object>;
+  readonly run: (service: TService, actor: ResearchActor, args: unknown) => Promise<object>;
+  readonly annotations: ToolAnnotations;
+  readonly requiresConfirmation: boolean;
+}
+
+/**
+ * One research tool. Every field is `readonly` and every entry in `RESEARCH_TOOLS` below is
+ * individually `Object.freeze`d (in addition to the array itself), so no caller can mutate a
+ * shared definition out from under another. All five are read-only and need no confirmation.
+ */
+export interface ResearchToolDefinition extends ToolDefinition<ResearchService, ResearchToolName> {
   readonly annotations: typeof READ_ONLY_ANNOTATIONS;
   readonly requiresConfirmation: false;
 }
