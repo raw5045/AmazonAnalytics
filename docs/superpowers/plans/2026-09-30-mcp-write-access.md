@@ -3696,6 +3696,10 @@ MSG
 
 ---
 
+### Nits pass before the final review (not in the original plan)
+
+> **Landed as f3b0820 (2026-09-30).** One commit for the items the per-task reviews queued as minor: a shared `lib/db/uuid.ts` (`UUID_RE`, `isUuid`) replacing four copies (a fifth, in `app/(app)/explorer/keyword/[id]/page.tsx`, was outside the lane and is left); comment fixes in `lib/mcp/tools/toolResult.ts`, `lib/research/tools.ts` and `lib/db/pgErrorCode.ts`; a 23505-on-a-leaves-only-update rethrow test; `notes: []` pinned on every lossless conversion test; `PREVIEW_PATHS` exported from `lib/research/categories.ts` and pinned equal to `PREVIEW_LEAF_PATHS`; `gated()`'s two lookup logs switched to `errFields` with a secret-param test; `DEFAULT_WRITES_PER_DAY` in an import-free `lib/research/defaults.ts` feeding both `DEFAULT_LIMITS` and the digest's amber threshold (still 100); digest doc and header-position test polish; from the Task 10 review — a shuffle-safe registration test, a comment on the module-load `instructions`, a fail-soft registration test (`vi.doMock` throwing a DrizzleQueryError → six tools, log-safe line, no param in any console call), a hoisted `defaultWorkspaceService` mock proving the flag-off handler never builds it, `classifyToolError` readability, one shared `RegisterToolsOptions`, and `searchSpecSchema` accepting-and-ignoring `pageSize` (spec §3, §5.1 amended). Whole unit suite 178 files / 1,858 tests; typecheck and scoped eslint clean; the two MCP test files pass under several shuffle seeds. Known, unchanged: when the workspace service cannot be built, the module-load `instructions` still mention "Workspace tools" (both read the same env; a client would be told about tools it was not given only in that failure state).
+
 ### Task 13: Offline checks, integration tests, ship (owner-gated)
 
 Steps 1–3 run offline. Steps 4–7 need the owner's explicit go **for each**; the controller (not a subagent) performs them.
