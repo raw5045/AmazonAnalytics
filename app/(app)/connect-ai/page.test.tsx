@@ -115,3 +115,28 @@ describe('Connect AI page → Ask AI link', () => {
     expect(screen.queryByRole('link', { name: 'Prefer to chat here? Try Ask AI.' })).toBeNull();
   });
 });
+
+describe('Connect AI page with the workspace tools on (spec 2026-09-30 §9.3)', () => {
+  beforeEach(() => {
+    envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all', MCP_WRITE_ENABLED: '1' };
+    authMock.role = 'user'; // a member, whatever the Ask AI describe above left behind
+  });
+
+  it('says the AI can save with approval, and adds the three workspace prompts behind the disclosure', async () => {
+    render(await ConnectAiPage());
+    expect(screen.getByText(/with your approval each time, save views, build custom categories and edit your watchlist/)).toBeInTheDocument();
+    expect(screen.queryByText(/The connection is read-only/)).toBeNull();
+    const details = screen.getByText('Show more example questions').closest('details')!;
+    expect(details.querySelectorAll('li')).toHaveLength(10);
+    expect(screen.getByText('With saving on, also try').closest('details')).toBe(details);
+    expect(screen.getByText(/Add the top 20 results to my watchlist/).closest('details')).toBe(details);
+  });
+
+  it('keeps the read-only wording and seven prompts while the flag is off', async () => {
+    delete envMock.env.MCP_WRITE_ENABLED;
+    render(await ConnectAiPage());
+    expect(screen.getByText(/The connection is read-only/)).toBeInTheDocument();
+    expect(screen.queryByText('With saving on, also try')).toBeNull();
+    expect(screen.getByText('Show more example questions').closest('details')!.querySelectorAll('li')).toHaveLength(7);
+  });
+});

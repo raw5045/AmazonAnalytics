@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
-import { mcpAllowedClientIds, mcpAudience, mcpClientLabel, mcpEnabled, mcpResourceUrl } from '@/lib/mcp/config';
+import { mcpAllowedClientIds, mcpAudience, mcpClientLabel, mcpEnabled, mcpResourceUrl, mcpWriteEnabled } from '@/lib/mcp/config';
 import { connectAiEligible } from '@/lib/mcp/eligibility';
 import { getMcpConnection } from '@/lib/mcp/connections';
 import { askAiEnabled } from '@/lib/ask/config';
@@ -21,6 +21,7 @@ export default async function ConnectAiPage() {
   const audience = mcpAudience();
   if (!connectAiEligible(user.role, audience)) notFound();
   const enabled = mcpEnabled();
+  const writes = mcpWriteEnabled();
   // Skip the connection lookup entirely while the kill switch is off — the
   // status/controls section this feeds is not rendered below.
   const connection = enabled ? await getMcpConnection(user.id) : null;
@@ -33,8 +34,9 @@ export default async function ConnectAiPage() {
     <div className="mx-auto max-w-3xl px-6 py-8 text-slate-800">
       <h1 className="text-2xl font-bold">Connect your AI</h1>
       <p className="mt-2 text-sm text-slate-600">
-        Let Claude or ChatGPT read KeywordQuarry directly while you work. The connection is read-only: search,
-        categories, keyword details and history. Beta, free while it lasts.
+        {writes
+          ? 'Let Claude or ChatGPT search KeywordQuarry directly while you work and, with your approval each time, save views, build custom categories and edit your watchlist. Beta, free while it lasts.'
+          : 'Let Claude or ChatGPT read KeywordQuarry directly while you work. The connection is read-only: search, categories, keyword details and history. Beta, free while it lasts.'}
       </p>
 
       {/* Cross-link to the in-app chat (spec §11.6). Guarded like the tab check in
@@ -59,7 +61,7 @@ export default async function ConnectAiPage() {
         </section>
       ) : (
         <>
-          <ExampleQuestions className={card} />
+          <ExampleQuestions className={card} writes={writes} />
 
           <section className={card}>
             <h2 className="font-semibold">Server URL</h2>
