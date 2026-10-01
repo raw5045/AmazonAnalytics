@@ -1,8 +1,10 @@
 /**
  * Shared custom-category commands (spec 2026-09-30 §6.2): the API routes and the MCP workspace
- * service both call these. Results, never HTTP responses; every message is the sentence the
- * routes returned before this module existed, verbatim. Leaf modes (replace/add/remove) are
- * resolved by the workspace service before calling `updateCustomCategory` with the full list.
+ * service both call these. Commands return results, never HTTP responses; the routes map `code`
+ * to a status (lib/customCategories/httpStatus.ts) and the workspace service maps it to a
+ * ResearchError. Every message is the sentence the routes returned before this module existed,
+ * verbatim. Leaf modes (replace/add/remove) are resolved by the workspace service before calling
+ * `updateCustomCategory` with the full list.
  */
 import 'server-only';
 import { and, eq, sql } from 'drizzle-orm';
@@ -24,7 +26,7 @@ export async function createCustomCategory(userId: string, input: { name: unknow
   const leafPaths = normalizePaths(input.leafPaths);
   if (leafPaths.length === 0) return fail('no_leaves', 'Add at least one leaf category before saving.');
   if (leafPaths.length > MAX_LEAF_PATHS_PER_CATEGORY) return tooManyLeaves();
-  // Cap. COUNT-then-insert is not atomic (spec §8.7): a soft cap, accepted.
+  // Cap. COUNT-then-insert is not atomic (spec §8.7): a soft cap, accepted. Make it strict with a per-user advisory lock only if that ever matters.
   const [{ n }] = await db.select({ n: sql<number>`COUNT(*)::int` }).from(customCategories).where(eq(customCategories.userId, userId));
   if (n >= MAX_CUSTOM_CATEGORIES) return fail('cap_reached', `You've reached the ${MAX_CUSTOM_CATEGORIES}-category limit. Delete one to add another.`);
   try {
@@ -39,12 +41,10 @@ export async function createCustomCategory(userId: string, input: { name: unknow
 export async function updateCustomCategory(userId: string, id: string, input: { name?: unknown; leafPaths?: unknown }): Promise<CustomCategoryResult<{ category: CustomCategoryDTO }>> {
   if (!isValidUuid(id)) return fail('invalid_id', 'invalid category id');
   const updates: { name?: string; leafPaths?: string[]; updatedAt: Date } = { updatedAt: new Date() };
-  let name: string | undefined;
   if (input.name !== undefined) {
     const nameResult = validateName(input.name);
     if (!nameResult.ok) return fail('invalid_name', nameResult.error);
-    name = nameResult.name;
-    updates.name = name;
+    updates.name = nameResult.name;
   }
   if (input.leafPaths !== undefined) {
     const leafPaths = normalizePaths(input.leafPaths);
@@ -54,17 +54,20 @@ export async function updateCustomCategory(userId: string, id: string, input: { 
   }
   if (updates.name === undefined && updates.leafPaths === undefined) return fail('nothing_to_update', 'nothing to update');
   try {
+    // Owner-scoped: a foreign id updates nothing and reads as not found (never leaks existence).
     const [updated] = await db.update(customCategories).set(updates).where(and(eq(customCategories.id, id), eq(customCategories.userId, userId))).returning();
     if (!updated) return fail('not_found', 'Not found');
     return { ok: true, category: rowToDTO(updated) };
   } catch (e) {
-    if (isUniqueViolation(e)) return fail('duplicate_name', `You already have a category named "${name ?? ''}".`);
+    // Only a renamed row can collide (the unique index is on (user_id, lower(name))); anything else is rethrown.
+    if (isUniqueViolation(e) && updates.name !== undefined) return fail('duplicate_name', `You already have a category named "${updates.name}".`);
     throw e;
   }
 }
 
 export async function deleteCustomCategory(userId: string, id: string): Promise<CustomCategoryResult<{ deleted: { id: string; name: string; leafCount: number } }>> {
   if (!isValidUuid(id)) return fail('invalid_id', 'invalid category id');
+  // Owner-scoped: a foreign id deletes nothing and reads as not found (never leaks existence).
   const [deleted] = await db
     .delete(customCategories)
     .where(and(eq(customCategories.id, id), eq(customCategories.userId, userId)))

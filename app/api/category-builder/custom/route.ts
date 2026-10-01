@@ -6,6 +6,7 @@ import { NextResponse } from 'next/server';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
 import { createCustomCategory } from '@/lib/customCategories/commands';
+import { CUSTOM_CATEGORY_HTTP_STATUS } from '@/lib/customCategories/httpStatus';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
 
 export const runtime = 'nodejs';
@@ -21,7 +22,7 @@ export async function POST(req: Request) {
   try { user = await requireAuthenticatedUser(); } catch (e) { return handleAuthError(e); }
   const body = (await req.json().catch(() => ({}))) as { name?: unknown; leafPaths?: unknown } | null;
   const result = await createCustomCategory(user.id, { name: body?.name, leafPaths: body?.leafPaths });
-  if (!result.ok) return NextResponse.json({ error: result.message }, { status: result.code === 'duplicate_name' ? 409 : 400 });
+  if (!result.ok) return NextResponse.json({ error: result.message }, { status: CUSTOM_CATEGORY_HTTP_STATUS[result.code] });
   return NextResponse.json({ category: result.category });
 }
 

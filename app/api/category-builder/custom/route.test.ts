@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { DrizzleQueryError } from 'drizzle-orm';
 
 const { mockRequireUser, mockDb } = vi.hoisted(() => ({
   mockRequireUser: vi.fn(),
@@ -21,7 +22,8 @@ const USER = { id: '00000000-0000-4000-8000-000000000001', email: 'm@example.com
 const CAT_ID = '22222222-2222-4222-8222-222222222222';
 const row = { id: CAT_ID, userId: USER.id, name: 'Lighting', leafPaths: ['Lighting › Lamps'], createdAt: new Date('2026-09-30T10:00:00Z'), updatedAt: new Date('2026-09-30T10:00:00Z') };
 const dto = { id: CAT_ID, name: 'Lighting', leafPaths: ['Lighting › Lamps'], createdAt: '2026-09-30T10:00:00.000Z', updatedAt: '2026-09-30T10:00:00.000Z' };
-const uniqueViolation = () => Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+// What production throws: drizzle-orm wraps the driver error in a DrizzleQueryError and keeps the Postgres error on `cause`.
+const uniqueViolation = () => new DrizzleQueryError('insert into "custom_categories" ("user_id", "name", "leaf_paths") values ($1, $2, $3) returning *', [USER.id, 'Lighting', '["x"]'], Object.assign(new Error('duplicate key value violates unique constraint "custom_categories_user_name_uniq"'), { code: '23505' }));
 
 function selectWhere(rows: unknown[]) {
   mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where: vi.fn().mockResolvedValueOnce(rows) }) } as never);
@@ -34,6 +36,11 @@ function insertReturning(result: unknown[] | Error) {
   mockDb.insert.mockReturnValueOnce({ values: vi.fn().mockReturnValueOnce({ returning }) } as never);
 }
 const post = (body: unknown) => POST(new Request('https://keywordquarry.com/api/category-builder/custom', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+/** Every error answer is `{ error }` with a status; assert both, never just one. */
+async function expectError(res: Response, status: number, error: string) {
+  expect(res.status).toBe(status);
+  expect(await res.json()).toEqual({ error });
+}
 
 describe('GET /api/category-builder/custom', () => {
   beforeEach(() => { vi.clearAllMocks(); mockRequireUser.mockResolvedValue(USER); });
@@ -45,7 +52,7 @@ describe('GET /api/category-builder/custom', () => {
   });
   it('is 401 when not signed in', async () => {
     mockRequireUser.mockRejectedValueOnce(new AuthError('UNAUTHENTICATED', 'Not signed in'));
-    expect((await GET()).status).toBe(401);
+    await expectError(await GET(), 401, 'Not signed in');
   });
 });
 
@@ -59,32 +66,26 @@ describe('POST /api/category-builder/custom', () => {
     expect(await res.json()).toEqual({ category: dto });
   });
   it('rejects a missing name, an empty leaf list, and too many leaves', async () => {
-    expect(await (await post({ leafPaths: ['x'] })).json()).toEqual({ error: 'name must be a string' });
-    expect(await (await post({ name: 'L', leafPaths: [] })).json()).toEqual({ error: 'Add at least one leaf category before saving.' });
+    await expectError(await post({ leafPaths: ['x'] }), 400, 'name must be a string');
+    await expectError(await post({ name: 'L', leafPaths: [] }), 400, 'Add at least one leaf category before saving.');
     const tooMany = Array.from({ length: 12001 }, (_, i) => `Dept › Leaf ${i}`);
-    expect(await (await post({ name: 'L', leafPaths: tooMany })).json()).toEqual({ error: `A category can include at most ${(12000).toLocaleString()} leaves.` });
+    await expectError(await post({ name: 'L', leafPaths: tooMany }), 400, `A category can include at most ${(12000).toLocaleString()} leaves.`);
     expect(mockDb.select).not.toHaveBeenCalled();
   });
   it('refuses the 26th category with the cap sentence', async () => {
     selectWhere([{ n: 25 }]);
-    const res = await post({ name: 'L', leafPaths: ['x'] });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: "You've reached the 25-category limit. Delete one to add another." });
+    await expectError(await post({ name: 'L', leafPaths: ['x'] }), 400, "You've reached the 25-category limit. Delete one to add another.");
   });
   it('maps a unique violation to 409 naming the clash', async () => {
     selectWhere([{ n: 1 }]);
     insertReturning(uniqueViolation());
-    const res = await post({ name: 'Lighting', leafPaths: ['x'] });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'You already have a category named "Lighting".' });
+    await expectError(await post({ name: 'Lighting', leafPaths: ['x'] }), 409, 'You already have a category named "Lighting".');
   });
 });
 
 describe('POST /api/category-builder/custom with a null JSON body (hardened in the extraction)', () => {
   beforeEach(() => { vi.clearAllMocks(); mockRequireUser.mockResolvedValue(USER); });
   it('answers 400 instead of throwing', async () => {
-    const res = await post(null);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'name must be a string' });
+    await expectError(await post(null), 400, 'name must be a string');
   });
 });

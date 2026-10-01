@@ -41,7 +41,5 @@ export function isValidUuid(id: string): boolean {
   return UUID_RE.test(id);
 }
 
-/** True when a DB error is a Postgres unique-constraint violation (code 23505). */
-export function isUniqueViolation(e: unknown): boolean {
-  return Boolean(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23505');
-}
+/** Postgres unique violation (23505), on the error or on the `cause` drizzle wraps it in — see lib/db/pgErrorCode.ts. */
+export { isUniqueViolation } from '@/lib/db/pgErrorCode';
