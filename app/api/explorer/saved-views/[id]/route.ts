@@ -9,13 +9,10 @@
 import { NextResponse } from 'next/server';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
-import { deleteSavedView, updateSavedView, type SavedViewCommandCode } from '@/lib/savedViews/commands';
+import { deleteSavedView, updateSavedView } from '@/lib/savedViews/commands';
+import { SAVED_VIEW_HTTP_STATUS } from '@/lib/savedViews/httpStatus';
 
 export const runtime = 'nodejs';
-
-const STATUS: Record<SavedViewCommandCode, number> = {
-  invalid_id: 400, invalid_name: 400, nothing_to_update: 400, cap_reached: 400, duplicate_name: 409, not_found: 404,
-};
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   let user;
@@ -27,7 +24,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const { id } = await params;
   const body = (await req.json().catch(() => ({}))) as { name?: unknown; filters?: unknown } | null;
   const result = await updateSavedView(user.id, id, { name: body?.name, filters: body?.filters });
-  if (!result.ok) return NextResponse.json({ error: result.message }, { status: STATUS[result.code] });
+  if (!result.ok) return NextResponse.json({ error: result.message }, { status: SAVED_VIEW_HTTP_STATUS[result.code] });
   return NextResponse.json({ view: result.view });
 }
 
@@ -40,7 +37,7 @@ export async function DELETE(_req: Request, { params }: { params: Promise<{ id: 
   }
   const { id } = await params;
   const result = await deleteSavedView(user.id, id);
-  if (!result.ok) return NextResponse.json({ error: result.message }, { status: STATUS[result.code] });
+  if (!result.ok) return NextResponse.json({ error: result.message }, { status: SAVED_VIEW_HTTP_STATUS[result.code] });
   return NextResponse.json({ ok: true });
 }
 

@@ -13,6 +13,7 @@ import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
 import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
 import { createSavedView } from '@/lib/savedViews/commands';
+import { SAVED_VIEW_HTTP_STATUS } from '@/lib/savedViews/httpStatus';
 
 export const runtime = 'nodejs';
 
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
   }
   const body = (await req.json().catch(() => ({}))) as { name?: unknown; filters?: unknown } | null;
   const result = await createSavedView(user.id, { name: body?.name, filters: body?.filters });
-  if (!result.ok) return NextResponse.json({ error: result.message }, { status: result.code === 'duplicate_name' ? 409 : 400 });
+  if (!result.ok) return NextResponse.json({ error: result.message }, { status: SAVED_VIEW_HTTP_STATUS[result.code] });
   return NextResponse.json({ view: result.view });
 }
 

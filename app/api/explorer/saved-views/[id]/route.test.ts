@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { DrizzleQueryError } from 'drizzle-orm';
 
 const { mockRequireUser, mockDb } = vi.hoisted(() => ({
   mockRequireUser: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock('@/lib/auth/requireAdmin', async () => {
 });
 
 import { PATCH, DELETE } from './route';
+import { AuthError } from '@/lib/auth/AuthError';
 import { normalizeFilters } from '@/lib/savedViews/validation';
 
 const USER = { id: '00000000-0000-4000-8000-000000000001', email: 'm@example.com', role: 'standard_user' };
@@ -24,7 +26,8 @@ const row = {
   createdAt: new Date('2026-09-30T10:00:00Z'), updatedAt: new Date('2026-09-30T11:00:00Z'),
 };
 const dto = { id: VIEW_ID, name: 'Lamps', filters: row.filters, createdAt: '2026-09-30T10:00:00.000Z', updatedAt: '2026-09-30T11:00:00.000Z' };
-const uniqueViolation = () => Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+// What production throws: drizzle-orm wraps the driver error in a DrizzleQueryError and keeps the Postgres error on `cause`.
+const uniqueViolation = () => new DrizzleQueryError('update "saved_views" set "name" = $1, "updated_at" = $2 where ("saved_views"."id" = $3 and "saved_views"."user_id" = $4) returning *', ['Taken', '2026-09-30T11:00:00.000Z', VIEW_ID, USER.id], Object.assign(new Error('duplicate key value violates unique constraint "saved_views_user_name_uniq"'), { code: '23505' }));
 
 function updateReturning(result: unknown[] | Error) {
   const returning = result instanceof Error ? vi.fn().mockRejectedValueOnce(result) : vi.fn().mockResolvedValueOnce(result);
@@ -53,7 +56,9 @@ describe('PATCH /api/explorer/saved-views/[id]', () => {
     expect(mockDb.update).not.toHaveBeenCalled();
   });
   it('rejects a bad name and an empty patch', async () => {
-    expect(await (await patch(VIEW_ID, { name: '' })).json()).toEqual({ error: 'name cannot be empty' });
+    const badName = await patch(VIEW_ID, { name: '' });
+    expect(badName.status).toBe(400);
+    expect(await badName.json()).toEqual({ error: 'name cannot be empty' });
     const empty = await patch(VIEW_ID, {});
     expect(empty.status).toBe(400);
     expect(await empty.json()).toEqual({ error: 'nothing to update' });
@@ -70,6 +75,12 @@ describe('PATCH /api/explorer/saved-views/[id]', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'You already have a view with that name.' });
   });
+  it('is 401 when not signed in', async () => {
+    mockRequireUser.mockRejectedValueOnce(new AuthError('UNAUTHENTICATED', 'Not signed in'));
+    const res = await patch(VIEW_ID, { name: 'x' });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Not signed in' });
+  });
 });
 
 describe('DELETE /api/explorer/saved-views/[id]', () => {
@@ -81,11 +92,19 @@ describe('DELETE /api/explorer/saved-views/[id]', () => {
     expect(await res.json()).toEqual({ ok: true });
   });
   it('is 400 for a malformed id and 404 when nothing matched', async () => {
-    expect((await del('nope')).status).toBe(400);
+    const badId = await del('nope');
+    expect(badId.status).toBe(400);
+    expect(await badId.json()).toEqual({ error: 'invalid view id' });
     deleteReturning([]);
     const res = await del(VIEW_ID);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'view not found' });
+  });
+  it('is 401 when not signed in', async () => {
+    mockRequireUser.mockRejectedValueOnce(new AuthError('UNAUTHENTICATED', 'Not signed in'));
+    const res = await del(VIEW_ID);
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Not signed in' });
   });
 });
 

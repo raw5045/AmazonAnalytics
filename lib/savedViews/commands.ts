@@ -9,23 +9,16 @@ import 'server-only';
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
+import { isUniqueViolation } from '@/lib/db/pgErrorCode';
 import type { ExplorerFilters } from '@/lib/explorer/types';
-import { MAX_VIEWS_PER_USER, normalizeFilters, normalizeFiltersBlob, validateName } from './validation';
+import { MAX_VIEWS_PER_USER, normalizeFilters, validateName } from './validation';
+import { rowToSavedView } from './loadServer';
 import type { SavedView } from './types';
 
 export type SavedViewCommandCode = 'invalid_id' | 'invalid_name' | 'nothing_to_update' | 'cap_reached' | 'duplicate_name' | 'not_found';
 export type SavedViewResult<T> = ({ ok: true } & T) | { ok: false; code: SavedViewCommandCode; message: string };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** True when a DB error is a Postgres unique-constraint violation (code 23505). */
-function isUniqueViolation(e: unknown): boolean {
-  return Boolean(e && typeof e === 'object' && 'code' in e && (e as { code: string }).code === '23505');
-}
-
-function toView(r: typeof savedViews.$inferSelect): SavedView {
-  return { id: r.id, name: r.name, filters: normalizeFiltersBlob(r.filters), createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
-}
 
 const fail = (code: SavedViewCommandCode, message: string) => ({ ok: false as const, code, message });
 
@@ -41,7 +34,7 @@ export async function createSavedView(userId: string, input: { name: unknown; fi
   }
   try {
     const [created] = await db.insert(savedViews).values({ userId, name: nameResult.name, filters }).returning();
-    return { ok: true, view: toView(created) };
+    return { ok: true, view: rowToSavedView(created) };
   } catch (e) {
     if (isUniqueViolation(e)) {
       return fail('duplicate_name', `You already have a view named "${nameResult.name}". Choose a different name or update the existing one.`);
@@ -64,7 +57,7 @@ export async function updateSavedView(userId: string, id: string, input: { name?
     // Owner-scoped: a foreign id updates nothing and reads as not found (never leaks existence).
     const [updated] = await db.update(savedViews).set(updates).where(and(eq(savedViews.id, id), eq(savedViews.userId, userId))).returning();
     if (!updated) return fail('not_found', 'view not found');
-    return { ok: true, view: toView(updated) };
+    return { ok: true, view: rowToSavedView(updated) };
   } catch (e) {
     if (isUniqueViolation(e)) return fail('duplicate_name', 'You already have a view with that name.');
     throw e;
@@ -73,6 +66,7 @@ export async function updateSavedView(userId: string, id: string, input: { name?
 
 export async function deleteSavedView(userId: string, id: string): Promise<SavedViewResult<{ deleted: { id: string; name: string } }>> {
   if (!UUID_RE.test(id)) return fail('invalid_id', 'invalid view id');
+  // Owner-scoped like the update: a foreign id deletes nothing and reads as not found.
   const [deleted] = await db
     .delete(savedViews)
     .where(and(eq(savedViews.id, id), eq(savedViews.userId, userId)))

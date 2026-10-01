@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { DrizzleQueryError } from 'drizzle-orm';
 
 const { mockRequireUser, mockDb } = vi.hoisted(() => ({
   mockRequireUser: vi.fn(),
@@ -25,7 +26,8 @@ const row = {
   createdAt: new Date('2026-09-30T10:00:00Z'), updatedAt: new Date('2026-09-30T10:00:00Z'),
 };
 const dto = { id: VIEW_ID, name: 'Lamps', filters: row.filters, createdAt: '2026-09-30T10:00:00.000Z', updatedAt: '2026-09-30T10:00:00.000Z' };
-const uniqueViolation = () => Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+// What production throws: drizzle-orm wraps the driver error in a DrizzleQueryError and keeps the Postgres error on `cause`.
+const uniqueViolation = () => new DrizzleQueryError('insert into "saved_views" ("user_id", "name", "filters") values ($1, $2, $3) returning *', [USER.id, 'Lamps', '{}'], Object.assign(new Error('duplicate key value violates unique constraint "saved_views_user_name_uniq"'), { code: '23505' }));
 
 /** Next `db.select(...).from(...).where(...)` resolves to `rows` (the COUNT query). */
 function selectWhere(rows: unknown[]) {

@@ -10,6 +10,11 @@ import { savedViews } from '@/db/schema';
 import { MAX_VIEWS_PER_USER, normalizeFiltersBlob } from '@/lib/savedViews/validation';
 import type { SavedView } from './types';
 
+/** A saved_views row → the typed SavedView the app and the MCP tools share (filters normalised from the stored blob). */
+export function rowToSavedView(r: typeof savedViews.$inferSelect): SavedView {
+  return { id: r.id, name: r.name, filters: normalizeFiltersBlob(r.filters), createdAt: r.createdAt.toISOString(), updatedAt: r.updatedAt.toISOString() };
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -26,13 +31,7 @@ export async function listSavedViewsForUser(userId: string): Promise<SavedView[]
     .orderBy(desc(savedViews.createdAt))
     .limit(MAX_VIEWS_PER_USER);
 
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    filters: normalizeFiltersBlob(r.filters),
-    createdAt: r.createdAt.toISOString(),
-    updatedAt: r.updatedAt.toISOString(),
-  }));
+  return rows.map(rowToSavedView);
 }
 
 /**
@@ -48,12 +47,6 @@ export async function loadSavedViewForUser(userId: string, viewId: string): Prom
     .where(and(eq(savedViews.id, viewId), eq(savedViews.userId, userId)))
     .limit(1);
   if (!row) return null;
-  return {
-    id: row.id,
-    name: row.name,
-    filters: normalizeFiltersBlob(row.filters),
-    createdAt: row.createdAt.toISOString(),
-    updatedAt: row.updatedAt.toISOString(),
-  };
+  return rowToSavedView(row);
 }
 
