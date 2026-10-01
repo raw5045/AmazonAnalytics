@@ -1,18 +1,23 @@
-import { randomUUID } from 'node:crypto';
-import { getToolName, isToolUIPart } from 'ai';
-import type { AskUIMessage } from './conversations';
-
 /**
  * Spec 2026-10-01 §6 (as amended in the plan): the member's answers to the cards never replay
  * the paused tool calls to the model. The server runs (or declines) each tool itself, records
  * the outcomes on the stored assistant message, and tells the model through ONE hidden user
- * message carrying this prefix. The thread hides such messages; the prompt explains them; the
- * chat route refuses a member message that starts with it (only the server writes this channel).
+ * message carrying APPROVAL_RESULT_PREFIX. The thread hides such messages; the prompt explains
+ * them; the chat route refuses a member message that starts with the prefix (only the server
+ * writes this channel).
  *
- * Server-only: `randomUUID` is node:crypto's (as in app/api/ask/chat/route.ts), so browser code
- * never imports this module. No logging here.
+ * Server-only: `randomUUID` is node:crypto's (as in app/api/ask/chat/route.ts), and the chat route
+ * imports this module. Browser code imports ./approvalResult instead: the prefix and
+ * isApprovalResultMessage live there, free of runtime imports, and are re-exported here so server
+ * code keeps one import path. No logging here.
  */
-export const APPROVAL_RESULT_PREFIX = '[approval-result]';
+import { randomUUID } from 'node:crypto';
+import { getToolName, isToolUIPart } from 'ai';
+import { APPROVAL_RESULT_PREFIX } from './approvalResult';
+import type { AskUIMessage } from './conversations';
+
+export { APPROVAL_RESULT_PREFIX, isApprovalResultMessage } from './approvalResult';
+
 const MAX_RESULT_CHARS = 20_000;
 
 type Part = AskUIMessage['parts'][number];
@@ -61,10 +66,4 @@ function outcomeLine(a: ApprovalOutcome): string {
 /** The hidden user message the model continues from: one line per answered card, in part order. */
 export function approvalOutcomeMessage(outcomes: ApprovalOutcome[]): AskUIMessage {
   return { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} ${outcomes.map(outcomeLine).join('\n')}` }] };
-}
-
-/** True only for the server's hidden outcome message: a user message whose first part is text starting with the prefix. */
-export function isApprovalResultMessage(m: Pick<AskUIMessage, 'role' | 'parts'>): boolean {
-  const first = m.parts[0];
-  return m.role === 'user' && first?.type === 'text' && first.text.startsWith(APPROVAL_RESULT_PREFIX);
 }

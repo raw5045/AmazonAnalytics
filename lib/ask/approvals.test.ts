@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { APPROVAL_RESULT_PREFIX, approvalOutcomeMessage, isApprovalResultMessage, pendingApprovals, respondedParts } from './approvals';
+import * as approvalResult from './approvalResult';
 import type { AskUIMessage } from './conversations';
 
 // Fixtures are checked against the SDK's part union (`satisfies`, never `as never`), so one that
@@ -74,8 +75,9 @@ describe('the hidden outcome message', () => {
     expect(text.isWellFormed()).toBe(true);
     expect(text.endsWith('…')).toBe(true);
   });
-  it('isApprovalResultMessage is false for an ordinary user message and for an assistant message', () => {
-    expect(isApprovalResultMessage({ role: 'user', parts: [{ type: 'text', text: 'please save it' }] })).toBe(false);
-    expect(isApprovalResultMessage({ role: 'assistant', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} x` }] })).toBe(false);
+  // The prefix and isApprovalResultMessage's own cases live in approvalResult.test.ts (the browser-safe module).
+  it('re-exports the prefix and isApprovalResultMessage from approvalResult.ts: one implementation for the route and the thread', () => {
+    expect(APPROVAL_RESULT_PREFIX).toBe(approvalResult.APPROVAL_RESULT_PREFIX);
+    expect(isApprovalResultMessage).toBe(approvalResult.isApprovalResultMessage);
   });
 });
