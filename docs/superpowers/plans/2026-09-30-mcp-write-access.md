@@ -3452,6 +3452,8 @@ MSG
 - Modify: `lib/notifications/abuseDigest/types.ts`, `assembleStats.ts`, `evaluateFlags.ts`, `buildAbuseDigestEmail.ts`
 - Modify: `lib/notifications/abuseDigest/assembleStats.test.ts`, `evaluateFlags.test.ts`, `buildAbuseDigestEmail.test.ts`
 
+> **Landed as 2c3e48f (2026-09-30).** Line for line as written; no other `PerUserActivity` literal exists and the loader already passes every counter row through. Spec review: compliant. Code-quality review: approve, three polish items taken into the nits pass — derive the amber threshold from a shared import-free `DEFAULT_WRITES_PER_DAY` (the digest runs on Railway and never sees a Vercel `RESEARCH_LIMITS_JSON` override; a cap of 100 or less would make the flag unable to fire), reword the `mcpRequests` doc and rank comment (every workspace call also bumps `mcp_request`, so writes are a subset of "MCP calls"), and pin the header position next to the cells in the email test. 34/34 digest tests (36/36 with the admin page test).
+
 - [ ] **Step 1: Failing tests**
 
 In all three test files, add `mcpWrites: 0,` after every `mcpRows: 0,` (the `toEqual` expectations in `assembleStats.test.ts`, the `userWith` builder in `evaluateFlags.test.ts`, the `activeUser` builder in `buildAbuseDigestEmail.test.ts`). Then append:
