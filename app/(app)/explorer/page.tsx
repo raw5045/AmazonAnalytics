@@ -96,9 +96,10 @@ function ExplorerFallback() {
 
 async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
   // The saved-views picker + Save button live in the layout header.
-  // The page still needs the *active* view's stored filters so the
-  // bookmark URL shape (`/explorer?view=<id>` with no filter params)
-  // can hydrate its sidebar from the view's saved JSON.
+  // The page still loads the *active* view: both view-tag URL shapes
+  // (`?view=<id>` alone, or with a sort / page overlay) resolve to its
+  // stored filters below, so it drives the query, the sidebar and the
+  // CSV export.
   const user = await getCurrentUser();
   const viewId = getOne(sp.view);
   const [activeView, watchlistItems, customCategories] = await Promise.all([

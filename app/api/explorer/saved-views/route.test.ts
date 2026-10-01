@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { DrizzleQueryError } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const { mockRequireUser, mockDb } = vi.hoisted(() => ({
   mockRequireUser: vi.fn(),
@@ -33,9 +34,11 @@ const uniqueViolation = () => new DrizzleQueryError('insert into "saved_views" (
 function selectWhere(rows: unknown[]) {
   mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where: vi.fn().mockResolvedValueOnce(rows) }) } as never);
 }
-/** Next `db.select().from().where().orderBy()` resolves to `rows` (the list query — never capped). */
+/** Next `db.select().from().where().orderBy()` resolves to `rows` (the list query — never capped); returns the `where` spy. */
 function selectList(rows: unknown[]) {
-  mockDb.select.mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: vi.fn().mockResolvedValueOnce(rows) }) }) } as never);
+  const where = vi.fn().mockReturnValueOnce({ orderBy: vi.fn().mockResolvedValueOnce(rows) });
+  mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where }) } as never);
+  return { where };
 }
 function insertReturning(result: unknown[] | Error) {
   const returning = result instanceof Error ? vi.fn().mockRejectedValueOnce(result) : vi.fn().mockResolvedValueOnce(result);
@@ -47,10 +50,12 @@ const post = (body: unknown) => POST(new Request('https://keywordquarry.com/api/
 describe('GET /api/explorer/saved-views', () => {
   beforeEach(() => { vi.clearAllMocks(); mockRequireUser.mockResolvedValue(USER); });
   it('lists the caller\'s views as DTOs', async () => {
-    selectList([row]);
+    const { where } = selectList([row]);
     const res = await GET();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ views: [dto] });
+    // Owner-scoped: only the signed-in member's own rows are listed.
+    expect(new PgDialect().sqlToQuery(where.mock.calls[0][0])).toMatchObject({ sql: '"saved_views"."user_id" = $1', params: [USER.id] });
   });
   it('lists all six views when the create race left one over the cap (nothing is hidden from the picker)', async () => {
     selectList([6, 5, 4, 3, 2, 1].map((i) => ({ ...row, id: `${row.id.slice(0, -1)}${i}`, name: `View ${i}` })));

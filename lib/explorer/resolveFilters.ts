@@ -3,8 +3,8 @@ import type { ExplorerFilters } from './types';
 import type { SavedView } from '@/lib/savedViews/types';
 
 /**
- * URL keys that OVERLAY a saved view instead of replacing it. SortableHeader and
- * PaginationControls keep the current URL and set one of these, so
+ * URL keys that OVERLAY a saved view instead of replacing it. SortableHeader,
+ * PaginationControls and JumpToPage keep the current URL and set one of these, so
  * `/explorer?view=<id>&sort=imp` must still mean "the view, sorted" and
  * `?view=<id>&page=2` "the view, page 2". Any other key is a filter param: the
  * member changed the view's criteria (FilterSidebar's Apply drops the view tag),
@@ -26,9 +26,11 @@ export function resolveExplorerFilters(sp: SearchParamsLike, activeView: SavedVi
   const extraKeys = Object.keys(sp).filter((k) => k !== 'view' && sp[k] !== undefined);
   const onlyOverlays = extraKeys.every((k) => (VIEW_OVERLAY_KEYS as readonly string[]).includes(k));
   if (!activeView || !onlyOverlays) return { filters: parseExplorerFilters(sp), fromView: false };
-  // The overlays go through the same parser as a full URL, so they are validated and
-  // clamped exactly as before (bad sort → default sort, page clamped to MAX_EXPLORER_OFFSET).
-  const overlay = parseExplorerFilters(sp);
+  // The overlays go through the same parser as a full URL, so they are validated the
+  // same way (bad sort → default sort). The page is clamped to MAX_EXPLORER_OFFSET
+  // against the page size the result uses — the URL's per_page if present, else the
+  // view's own — so the clamp holds whatever page size the view stores.
+  const overlay = parseExplorerFilters({ ...sp, per_page: sp.per_page ?? String(activeView.filters.perPage) });
   return {
     filters: {
       ...activeView.filters,

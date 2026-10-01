@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { EXPLORER_DEFAULTS } from './parseFilters';
+import { EXPLORER_DEFAULTS, MAX_EXPLORER_OFFSET } from './parseFilters';
 import { resolveExplorerFilters, VIEW_OVERLAY_KEYS } from './resolveFilters';
 import type { SavedView } from '@/lib/savedViews/types';
 
@@ -34,6 +34,17 @@ describe('resolveExplorerFilters (saved view vs URL, 2026-10-01)', () => {
     expect(resolveExplorerFilters({ view: view.id, page: '2', per_page: '50' }, view).filters).toEqual({ ...stored, page: 2, perPage: 50 });
   });
 
+  it('clamps an overlaid page against the page size the result uses, so OFFSET never exceeds MAX_EXPLORER_OFFSET', () => {
+    const lastPage = (perPage: number) => Math.floor(MAX_EXPLORER_OFFSET / perPage) + 1;
+    // The default page size (every stored view today): a stray ?page=99999 → the last counted page.
+    expect(resolveExplorerFilters({ view: view.id, page: '99999' }, view).filters).toEqual({ ...stored, page: lastPage(EXPLORER_DEFAULTS.perPage) });
+    // A view storing a bigger page size clamps against its own size, not the URL default.
+    const big = { ...view, filters: { ...stored, perPage: 500 } };
+    const r = resolveExplorerFilters({ view: view.id, page: '999' }, big).filters;
+    expect(r).toEqual({ ...stored, perPage: 500, page: lastPage(500) });
+    expect((r.page - 1) * r.perPage).toBeLessThanOrEqual(MAX_EXPLORER_OFFSET);
+  });
+
   it('an invalid overlay value falls back the way parseExplorerFilters does, never to losing the view', () => {
     expect(resolveExplorerFilters({ view: view.id, sort: 'bogus' }, view).filters).toEqual({ ...stored, sort: EXPLORER_DEFAULTS.sort });
     expect(resolveExplorerFilters({ view: view.id, page: '0' }, view).filters).toEqual({ ...stored, page: EXPLORER_DEFAULTS.page });
@@ -50,7 +61,7 @@ describe('resolveExplorerFilters (saved view vs URL, 2026-10-01)', () => {
     expect(resolveExplorerFilters({ view: view.id, sort: 'imp' }, null).fromView).toBe(false);
   });
 
-  it('ignores undefined params (Next passes them for absent keys) and array-valued ones take the first value', () => {
+  it('tolerates an explicit undefined param (a guard: Next and searchParamsToLike only pass present keys), and an array-valued key takes its first value', () => {
     expect(resolveExplorerFilters({ view: view.id, sort: undefined }, view)).toEqual({ filters: stored, fromView: true });
     expect(resolveExplorerFilters({ view: view.id, page: ['2', '9'] }, view).filters.page).toBe(2);
   });
