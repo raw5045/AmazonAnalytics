@@ -40,7 +40,7 @@ export function addDays(day: string, deltaDays: number): string {
  * EDT and 05:00Z under EST; DST switches happen at 02:00 local, never at midnight, so the
  * first instant of a day is always one of those two. Probing 04:00Z decides which: if that
  * instant already falls on the next ET day, the offset is −4, otherwise −5. Used as the daily
- * write cap's retryAfterSeconds (spec 2026-09-30 §8.2).
+ * write cap's retryAfterSeconds (spec 2026-09-30 §7, §8.2).
  */
 export function secondsUntilNextEtDay(now: Date): number {
   const next = addDays(etDay(now), 1);

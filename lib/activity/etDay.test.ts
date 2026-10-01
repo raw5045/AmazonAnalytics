@@ -94,4 +94,19 @@ describe('secondsUntilNextEtDay', () => {
   it('never returns less than one second', () => {
     expect(secondsUntilNextEtDay(new Date('2026-07-16T03:59:59.900Z'))).toBe(1);
   });
+  it('ends the 23h spring-forward day at 04:00Z (offset read at the next midnight, not at now)', () => {
+    // 2026-03-08 00:30 EST = 05:30Z; the day ends 2026-03-09 00:00 EDT = 04:00Z → 22.5h
+    expect(secondsUntilNextEtDay(new Date('2026-03-08T05:30:00Z'))).toBe(22.5 * 3600);
+  });
+  it('ends the 25h fall-back day at 05:00Z', () => {
+    // 2026-11-01 00:30 EDT = 04:30Z; the day ends 2026-11-02 00:00 EST = 05:00Z → 24.5h
+    expect(secondsUntilNextEtDay(new Date('2026-11-01T04:30:00Z'))).toBe(24.5 * 3600);
+  });
+  it('rounds a partial second up, so a retry at the hint is never early', () => {
+    expect(secondsUntilNextEtDay(new Date('2026-07-15T12:00:00.500Z'))).toBe(16 * 3600);
+  });
+  it('crosses the year boundary', () => {
+    // 2027-01-01T04:30Z = 2026-12-31 23:30 EST → 30 min to 05:00Z
+    expect(secondsUntilNextEtDay(new Date('2027-01-01T04:30:00Z'))).toBe(30 * 60);
+  });
 });

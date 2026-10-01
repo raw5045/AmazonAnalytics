@@ -125,7 +125,7 @@ describe('mcp config', () => {
     expect(mcpClientLabel('https://cursor.example/client.json')).toBe('https://cursor.example/client.json');
   });
 
-  it('registers the workspace tools only when MCP_WRITE_ENABLED is exactly "1" (spec 2026-09-30 §2)', () => {
+  it('is off unless MCP_WRITE_ENABLED is exactly "1" (spec 2026-09-30 §2)', () => {
     expect(mcpWriteEnabled()).toBe(false);
     envMock.env.MCP_WRITE_ENABLED = 'true';
     expect(mcpWriteEnabled()).toBe(false);
