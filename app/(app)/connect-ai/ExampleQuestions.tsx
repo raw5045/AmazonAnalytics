@@ -1,11 +1,12 @@
 /**
  * Sample prompts for a freshly connected client. The first one is always
  * visible; the rest sit behind a native <details> disclosure, so this stays a
- * server component with no client-side script. Copy chosen by the owner
- * (2026-09-24); every prompt maps onto something the research tools can do.
- * Shared with the Ask AI empty state (lib/ask/examples.ts). With `writes` on
- * (MCP_WRITE_ENABLED), three workspace prompts follow inside the same
- * disclosure; Ask AI never shows those (spec 2026-09-30 §9.3).
+ * server component with no client-side script. The research prompts (owner
+ * copy, 2026-09-24; lib/ask/examples.ts, shared with the Ask AI empty state)
+ * each map onto something the read tools can do. The workspace prompts
+ * (lib/workspace/examples.ts) show only with `writes` (MCP_WRITE_ENABLED), in
+ * the same disclosure, and map onto the write tools; Ask AI, which has no
+ * write tools, never shows them (spec 2026-09-30 §9.3).
  */
 import { FIRST_EXAMPLE, MORE_EXAMPLES } from '@/lib/ask/examples';
 import { WORKSPACE_EXAMPLES } from '@/lib/workspace/examples';
@@ -31,8 +32,10 @@ export function ExampleQuestions({ className, writes }: { className: string; wri
         </ul>
         {writes && (
           <>
-            <p className="mt-3 font-medium">With saving on, also try</p>
-            <ul className="mt-2 space-y-1.5">
+            <h3 id="workspace-examples" className="mt-3 font-medium">
+              It can also save. Try asking
+            </h3>
+            <ul aria-labelledby="workspace-examples" className="mt-2 space-y-1.5">
               {WORKSPACE_EXAMPLES.map((q) => (
                 <li key={q} className={prompt}>
                   &ldquo;{q}&rdquo;

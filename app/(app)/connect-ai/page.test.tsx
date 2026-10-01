@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 
 const envMock = vi.hoisted(() => ({ env: {} as Record<string, string | undefined> }));
 const authMock = vi.hoisted(() => ({ role: 'user' }));
@@ -17,6 +17,11 @@ vi.mock('next/navigation', () => ({
 }));
 
 import ConnectAiPage from './page';
+
+// A member unless a describe says otherwise: file-level hooks run first, so the Ask AI describe's 'admin' still applies there.
+beforeEach(() => {
+  authMock.role = 'user';
+});
 
 describe('Connect AI page credentials', () => {
   beforeEach(() => {
@@ -119,16 +124,16 @@ describe('Connect AI page → Ask AI link', () => {
 describe('Connect AI page with the workspace tools on (spec 2026-09-30 §9.3)', () => {
   beforeEach(() => {
     envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all', MCP_WRITE_ENABLED: '1' };
-    authMock.role = 'user'; // a member, whatever the Ask AI describe above left behind
   });
 
   it('says the AI can save with approval, and adds the three workspace prompts behind the disclosure', async () => {
     render(await ConnectAiPage());
-    expect(screen.getByText(/with your approval each time, save views, build custom categories and edit your watchlist/)).toBeInTheDocument();
+    expect(screen.getByText(/with your approval, save views, build custom categories and edit your watchlist/)).toBeInTheDocument();
     expect(screen.queryByText(/The connection is read-only/)).toBeNull();
     const details = screen.getByText('Show more example questions').closest('details')!;
     expect(details.querySelectorAll('li')).toHaveLength(10);
-    expect(screen.getByText('With saving on, also try').closest('details')).toBe(details);
+    expect(screen.getByText('It can also save. Try asking').closest('details')).toBe(details);
+    expect(within(screen.getByRole('list', { name: 'It can also save. Try asking' })).getAllByRole('listitem')).toHaveLength(3);
     expect(screen.getByText(/Add the top 20 results to my watchlist/).closest('details')).toBe(details);
   });
 
@@ -136,7 +141,7 @@ describe('Connect AI page with the workspace tools on (spec 2026-09-30 §9.3)', 
     delete envMock.env.MCP_WRITE_ENABLED;
     render(await ConnectAiPage());
     expect(screen.getByText(/The connection is read-only/)).toBeInTheDocument();
-    expect(screen.queryByText('With saving on, also try')).toBeNull();
+    expect(screen.queryByText('It can also save. Try asking')).toBeNull();
     expect(screen.getByText('Show more example questions').closest('details')!.querySelectorAll('li')).toHaveLength(7);
   });
 });
