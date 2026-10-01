@@ -49,4 +49,11 @@ describe('RESEARCH_TOOLS', () => {
     expect(service.details).toHaveBeenCalledWith(actor, { searchTermId: 'id' });
     expect(service.history).toHaveBeenCalledWith(actor, { searchTermId: 'id', weeks: 4 });
   });
+  it('every input schema is strict: an unknown key is rejected with unrecognized_keys, never silently dropped', () => {
+    for (const t of RESEARCH_TOOLS) {
+      const r = t.inputSchema.safeParse({ __probe: 1 });
+      expect(r.success, t.name).toBe(false);
+      expect(r.success ? [] : r.error.issues.map((i) => i.code), t.name).toContain('unrecognized_keys');
+    }
+  });
 });
