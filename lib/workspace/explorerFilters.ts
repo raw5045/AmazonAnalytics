@@ -18,7 +18,11 @@ export interface ConvertInput {
   sort: Sort;
   /** The window the search ran with (its effective comparisonWindow), so the Explorer shows the same change columns. */
   window: Window;
-  /** Terminal leaves expanded from the taxonomy selections and explicit leaf paths only — never from custom selections, which pass by id. */
+  /**
+   * The search's full `scope.leaves`, as its own resolveScope returns them: the expanded, sorted union of the taxonomy selections,
+   * the explicit leaf paths and the custom categories' leaves. They become `leafPaths`, except for a custom-only scope, which is
+   * passed by id instead and leaves `leafPaths` empty (§5.2).
+   */
   leaves: string[];
 }
 export interface ConvertResult {
@@ -35,6 +39,8 @@ export const NOTE_MOVE_UNSUPPORTED = 'The Explorer only accepts a move from a wo
 export const NOTE_WORD_COUNT_SORT = 'The Explorer cannot sort by word count; the view opens sorted by rank.';
 export const NOTE_EXPLORER_REREAD = 'The Explorer reads part of these filters differently from the search (for example a comma or a doubled space inside an excluded term); check the filters it opens with.';
 export const NOTE_LINK_TOO_LONG = 'Too many leaf categories for a link; save it as a view instead.';
+/** The too-long note for a reader who cannot save a view: Ask AI, or the MCP with the workspace tools off (§5.6). */
+export const NOTE_LINK_TOO_LONG_READONLY = 'Too many leaf categories for a link; narrow the categories to get one.';
 /** Vercel's CDN rejects URLs over 14 KB (§5.6); stay well under it. */
 export const MAX_EXPLORER_URL_BYTES = 12_000;
 
@@ -158,8 +164,19 @@ export function toExplorerFilters(input: ConvertInput): ConvertResult {
     out.titleMatchMode = f.titleGap.quantifier;
     out.matchMode = f.titleGap.mode;
   }
-  out.customCategoryIds = f.categories.selections.filter((s) => s.kind === 'custom').map((s) => s.id);
-  out.leafPaths = [...input.leaves];
+  // §5.2: the Explorer sidebar holds one leaf mode at a time (custom ids OR leaf paths), so a link or view carrying both would
+  // open with the right rows and then lose its taxonomy part on the first sidebar Apply. A custom-only scope passes the ids (the
+  // Explorer expands them itself, so the link follows later edits to the category); a mixed scope expands to the full leaves,
+  // the custom categories' included, as a snapshot.
+  const customIds = f.categories.selections.filter((s) => s.kind === 'custom').map((s) => s.id);
+  const hasTaxonomy = f.categories.selections.some((s) => s.kind === 'taxonomy') || f.categories.leafPaths.length > 0;
+  if (customIds.length > 0 && !hasTaxonomy) {
+    out.customCategoryIds = customIds;
+    out.leafPaths = [];
+  } else {
+    out.customCategoryIds = [];
+    out.leafPaths = [...input.leaves];
+  }
   if (f.movement) convertMovement(f.movement, out, notes);
   out.sort = convertSort(input.sort, notes);
   // Every link and saved view is re-read by the Explorer's parser (normalizeFilters → parseExplorerFilters).

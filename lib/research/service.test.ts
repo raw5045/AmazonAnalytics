@@ -14,14 +14,14 @@ vi.mock('@/db/client', () => ({ db: {} }));
 vi.mock('./pool', () => ({ getResearchPool: () => ({}) }));
 
 import { createResearchService, defaultResearchService, resetResearchServiceForTests, type ResearchActor, type ResearchServiceDeps } from './service';
-import { buildCategoryCatalog } from './categories';
+import { buildCategoryCatalog, type CategoryDeps } from './categories';
 import { DEFAULT_LIMITS } from './limits';
 import { signCursor, verifyCursor } from './cursor';
 import { ResearchError, searchExpiredError } from './errors';
 import type { RawSearchRow } from './query';
-import { parseExplorerFilters } from '@/lib/explorer/parseFilters';
+import { EXPLORER_DEFAULTS, parseExplorerFilters } from '@/lib/explorer/parseFilters';
 import { searchParamsToLike } from '@/lib/explorer/export/query';
-import { NOTE_DELTA, NOTE_LINK_TOO_LONG } from '@/lib/workspace/explorerFilters';
+import { NOTE_DELTA, NOTE_LINK_TOO_LONG, NOTE_LINK_TOO_LONG_READONLY } from '@/lib/workspace/explorerFilters';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
 const META = { currentWeekEndDate: '2026-09-12', snapshotVersion: 'snap-a', refreshedAt: '2026-09-13T06:00:00.000Z', volumeFitRunId: null, calibrationMonthEndDate: null, isExtrapolated: false };
@@ -42,6 +42,7 @@ function makeDeps(over: Partial<ResearchServiceDeps> = {}) {
     appUrl: 'https://keywordquarry.com',
     cursorSecret: 'test-secret',
     audience: () => 'admin',
+    workspaceEnabled: () => false,
     now: () => new Date('2026-09-21T12:00:00Z'),
     reserve: vi.fn(async () => ({ requests: 1, rows: 50 })),
     record: vi.fn(),
@@ -287,12 +288,15 @@ describe('search: continuation and caps', () => {
   it('I1: halving AND a too-large cursor together report PAYLOAD_LIMITED (without the cursor clause) alongside CURSOR_TOO_LARGE', async () => {
     // Same oversized leafPaths as C5 (cursor never signs), but with maxPayloadBytes small
     // enough that the response itself — dominated by those same leafPaths, echoed back in
-    // appliedFilters and again in the explorerUrl (that ~8.8 KB link is why this limit is not
-    // the 15000 it was before search answers carried one) — also needs the halving loop to
-    // run at least once. So this response
-    // is BOTH actually shortened (pageShortened: true) AND has its cursor dropped for size;
-    // PAYLOAD_LIMITED must fire (the page really was cut) but without the "cursor continues"
-    // clause (there is no cursor — cursorTooLarge forced nextCursor to null).
+    // appliedFilters and again in the explorerUrl (~8.8 KB here) — also needs the halving loop
+    // to run at least once. So this response is BOTH actually shortened (pageShortened: true)
+    // AND has its cursor dropped for size; PAYLOAD_LIMITED must fire (the page really was cut)
+    // but without the "cursor continues" clause (there is no cursor — cursorTooLarge forced
+    // nextCursor to null).
+    // Why 29000: with that link, a single row fits from ~22.0 KB and the full 50-row page is
+    // 36.7 KB, so any limit in between keeps a 1-49 row page. 29000 sits mid-window, ~7 KB
+    // clear of either edge, so a small change to the link's size cannot flip this test (it was
+    // 15000 before search answers carried a link).
     const leafPaths = Array.from({ length: 60 }, (_, i) => `Leaf-${String(i).padStart(3, '0')}-${'x'.repeat(130)}`);
     const bigCatalog = buildCategoryCatalog(
       { snapshotVersion: 'snap-a', datasetWeek: '2026-09-12' },
@@ -300,7 +304,7 @@ describe('search: continuation and caps', () => {
     );
     const deps = makeDeps({
       categories: { loadCatalog: async () => bigCatalog, loadCustomRows: async () => [], listCustom: async () => [] },
-      limits: { ...DEFAULT_LIMITS, maxPayloadBytes: 24500 },
+      limits: { ...DEFAULT_LIMITS, maxPayloadBytes: 29000 },
     });
     const res = await createResearchService(deps).search(actor, { schemaVersion: 1, filters: { categories: { leafPaths } } });
     expect(res.rows.length).toBeLessThan(50);
@@ -385,36 +389,86 @@ describe('defaultResearchService', () => {
 });
 
 describe('search: the Explorer link (spec 2026-09-30 §3.2)', () => {
+  const linkOf = (res: { explorerUrl: string | null }) => parseExplorerFilters(searchParamsToLike(new URL(res.explorerUrl!).searchParams));
+  const custom = '33333333-3333-4333-8333-333333333333';
+  // A custom category whose only leaf is 'A › C'.
+  const withCustom = (over: Partial<CategoryDeps> = {}): CategoryDeps => ({ loadCatalog: async () => catalog, loadCustomRows: async () => [{ id: custom, leafPaths: ['A › C'] }], listCustom: async () => [], ...over });
+  // 400 long leaf paths: a link far past the 12,000-byte cap (spec §5.6).
+  const wideLeaves = Array.from({ length: 400 }, (_, i) => `Department › Section ${i} › A fairly long leaf category name ${i}`);
+  const wide = buildCategoryCatalog({ snapshotVersion: 'snap-a', datasetWeek: '2026-09-12' }, wideLeaves.map((categoryPath) => ({ categoryPath, allCount: 1 })));
+  const wideCategories: CategoryDeps = { loadCatalog: async () => wide, loadCustomRows: async () => [], listCustom: async () => [] };
+
   it('carries a link that opens the Explorer with the same filters, sort and window, and no notes when exact', async () => {
     const res = await createResearchService(makeDeps()).search(actor, {
       schemaVersion: 1, comparisonWindow: '1w',
       filters: { estimatedMonthlySearches: { gt: 10000 }, categories: { selections: [{ kind: 'taxonomy', path: 'A', includeDescendants: true }] } },
     });
     expect(res.explorerUrl).toMatch(/^https:\/\/keywordquarry\.com\/explorer\?/);
-    const parsed = parseExplorerFilters(searchParamsToLike(new URL(res.explorerUrl!).searchParams));
     // 'A' is a whole department: the probe dropped the broad-category shortcut (spec §5.2), so it expands to its leaves.
-    expect(parsed).toMatchObject({ window: '1w', volMin: 10001, category: null, leafPaths: ['A › B', 'A › C'], sort: 'rank' });
+    // The WHOLE parsed object: severities, titleSlots, matchMode, customCategoryIds and the pagination are pinned through the real
+    // URL encoding and decoding, not only through the converter's own self-check.
+    expect(linkOf(res)).toEqual({ ...EXPLORER_DEFAULTS, window: '1w', volMin: 10001, leafPaths: ['A › B', 'A › C'], sort: 'rank', page: 1, perPage: 100 });
     expect(res.explorerNotes).toEqual([]);
   });
-  it('lists the leaves of a taxonomy selection but passes a custom selection by id', async () => {
-    const custom = '33333333-3333-4333-8333-333333333333';
-    const deps = makeDeps({ categories: { loadCatalog: async () => catalog, loadCustomRows: async () => [{ id: custom, leafPaths: ['A › C'] }], listCustom: async () => [] } });
-    const res = await createResearchService(deps).search(actor, {
+  it('a mixed scope (a taxonomy selection or explicit leaf paths, plus a custom category) opens as the union of leaves with no ids, from one resolution (spec §5.2)', async () => {
+    // The Explorer sidebar holds one leaf mode at a time, so a link carrying both ids and leaves would lose its taxonomy part on the first Apply.
+    const loadCatalog = vi.fn(async () => catalog);
+    const loadCustomRows = vi.fn(async () => [{ id: custom, leafPaths: ['A › C'] }]);
+    const svc = createResearchService(makeDeps({ categories: withCustom({ loadCatalog, loadCustomRows }) }));
+    const bySelection = await svc.search(actor, {
       schemaVersion: 1,
       filters: { categories: { selections: [{ kind: 'taxonomy', path: 'A › B', includeDescendants: true }, { kind: 'custom', id: custom }] } },
     });
-    const parsed = parseExplorerFilters(searchParamsToLike(new URL(res.explorerUrl!).searchParams));
-    expect(parsed).toMatchObject({ leafPaths: ['A › B'], customCategoryIds: [custom] });
+    expect(linkOf(bySelection)).toMatchObject({ leafPaths: ['A › B', 'A › C'], customCategoryIds: [] });
+    expect(bySelection.explorerNotes).toEqual([]);
+    // One resolveScope per search: the converter decides between ids and leaves, so there is no second resolution.
+    expect(loadCatalog).toHaveBeenCalledTimes(1);
+    expect(loadCustomRows).toHaveBeenCalledTimes(1);
+    const byPath = await svc.search(actor, { schemaVersion: 1, filters: { categories: { selections: [{ kind: 'custom', id: custom }], leafPaths: ['A › B'] } } });
+    expect(linkOf(byPath)).toMatchObject({ leafPaths: ['A › B', 'A › C'], customCategoryIds: [] });
+    expect(byPath.explorerNotes).toEqual([]);
+  });
+  it('a custom-only scope passes its id and no leaves, so the link follows later edits to the category (spec §5.2)', async () => {
+    const res = await createResearchService(makeDeps({ categories: withCustom() })).search(actor, {
+      schemaVersion: 1, filters: { categories: { selections: [{ kind: 'custom', id: custom }] } },
+    });
+    expect(linkOf(res)).toMatchObject({ customCategoryIds: [custom], leafPaths: [] });
+    expect(res.explorerNotes).toEqual([]);
+    // The search itself still ran over the category's leaves; only the link passes the id.
+    expect(res.resolvedCategoryScope).toMatchObject({ expandedLeafCount: 1, previewPaths: ['A › C'] });
+  });
+  it('a continuation page carries the same link and notes as the first page', async () => {
+    const svc = createResearchService(makeDeps());
+    const first = await svc.search(actor, {
+      schemaVersion: 1, presetIds: ['growing_4w_v1'],
+      filters: { averageReviews: { lt: 500 }, categories: { selections: [{ kind: 'taxonomy', path: 'A', includeDescendants: true }] } },
+    });
+    expect(first.explorerUrl).toContain('reviews_max=499'); // a real link with content, so the equality below is not null === null
+    expect(first.explorerNotes).toEqual([NOTE_DELTA]);
+    const second = await svc.search(actor, { cursor: first.pagination.nextCursor });
+    expect(second.pagination.offset).toBe(50);
+    expect(second.explorerUrl).toBe(first.explorerUrl);
+    expect(second.explorerNotes).toEqual(first.explorerNotes);
   });
   it('notes what the link cannot carry, and omits the link past the URL cap', async () => {
     const delta = await createResearchService(makeDeps()).search(actor, { schemaVersion: 1, presetIds: ['growing_4w_v1'] });
     expect(delta.explorerNotes).toEqual([NOTE_DELTA]);
     expect(delta.explorerUrl).toContain('sort=imp');
-    const paths = Array.from({ length: 400 }, (_, i) => `Department › Section ${i} › A fairly long leaf category name ${i}`);
-    const wide = buildCategoryCatalog({ snapshotVersion: 'snap-a', datasetWeek: '2026-09-12' }, paths.map((categoryPath) => ({ categoryPath, allCount: 1 })));
-    const long = await createResearchService(makeDeps({ categories: { loadCatalog: async () => wide, loadCustomRows: async () => [], listCustom: async () => [] } }))
-      .search(actor, { schemaVersion: 1, filters: { categories: { leafPaths: paths } } });
+    expect(delta.explorerUrl).toContain('window=4w'); // a window that is not the Explorer's own default, pinned through the real URL
+    const long = await createResearchService(makeDeps({ categories: wideCategories })).search(actor, { schemaVersion: 1, filters: { categories: { leafPaths: wideLeaves } } });
     expect(long.explorerUrl).toBeNull();
-    expect(long.explorerNotes).toEqual([NOTE_LINK_TOO_LONG]);
+    expect(long.explorerNotes).toEqual([NOTE_LINK_TOO_LONG_READONLY]); // workspaceEnabled is off in makeDeps: nobody can save a view
+  });
+  it('lists the converter\'s notes before the too-long note, and offers "save it as a view" only to the MCP channel with the workspace tools on (spec §5.6)', async () => {
+    const request = { schemaVersion: 1, presetIds: ['growing_4w_v1'], filters: { categories: { leafPaths: wideLeaves } } };
+    const notesFor = async (deps: ResearchServiceDeps, who: ResearchActor) => (await createResearchService(deps).search(who, request)).explorerNotes;
+    const chatActor: ResearchActor = { ...actor, clientId: 'ask-ai', channel: 'chat' };
+    // Workspace tools off: no client can save a view, so none is offered one.
+    expect(await notesFor(makeDeps({ categories: wideCategories }), actor)).toEqual([NOTE_DELTA, NOTE_LINK_TOO_LONG_READONLY]);
+    // On: the MCP channel is offered the save, after the converter's own note.
+    const writesOn = () => makeDeps({ categories: wideCategories, workspaceEnabled: () => true });
+    expect(await notesFor(writesOn(), actor)).toEqual([NOTE_DELTA, NOTE_LINK_TOO_LONG]);
+    // The in-app chat never has the workspace tools, even when they are on: it is still told to narrow the categories.
+    expect(await notesFor(writesOn(), chatActor)).toEqual([NOTE_DELTA, NOTE_LINK_TOO_LONG_READONLY]);
   });
 });

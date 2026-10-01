@@ -223,17 +223,14 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     explorerUrl: customCategoryUrlFor(deps.appUrl, c.id), createdAt: c.createdAt, updatedAt: c.updatedAt,
   });
 
-  /** §5.1: the search's own validation (schema → presets → full scope), then the taxonomy-only leaves for the converter. */
+  /** §5.1: the search's own validation (schema → presets → one resolveScope); the converter then decides between custom ids and the expanded leaves (§5.2). */
   async function convertSearch(userId: string, search: SearchSpec): Promise<{ filters: ExplorerFilters; notes: string[] }> {
     const parsed = parseSearchInput({ schemaVersion: 1, ...search });
     // Unreachable: searchSpecSchema is strict and omits `cursor`, so parseSearchInput never sees one here. Kept only so `parsed` narrows to the new-search branch.
     if (parsed.kind === 'continuation') throw new ResearchError('INVALID_FILTERS', 'Pass the search criteria, never a cursor.');
     const { filters, sort, comparisonWindow } = applyPresets(parsed.request);
     const full = await resolveScope(userId, filters.categories, deps.limits.maxExpandedLeaves, deps.categories);
-    const hasCustom = filters.categories.selections.some((s) => s.kind === 'custom');
-    const taxonomyOnly: Filters['categories'] = { selections: filters.categories.selections.filter((s) => s.kind === 'taxonomy'), leafPaths: filters.categories.leafPaths };
-    const leaves = hasCustom ? (await resolveScope(userId, taxonomyOnly, deps.limits.maxExpandedLeaves, deps.categories)).leaves : full.leaves;
-    return toExplorerFilters({ filters, sort, window: comparisonWindow, leaves });
+    return toExplorerFilters({ filters, sort, window: comparisonWindow, leaves: full.leaves });
   }
 
   /** §6.2: a category may hold a whole department, so the cap here is the column's, not the search's. */

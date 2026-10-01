@@ -125,13 +125,30 @@ describe('create_saved_view', () => {
     const [uid, input] = (deps.savedViews.create as ReturnType<typeof vi.fn>).mock.calls[0] as [string, { name: string; filters: Record<string, unknown> }];
     expect(uid).toBe('u1');
     expect(input.name).toBe('Lamps');
-    // Taxonomy selections expand to their leaves; the custom selection passes to the Explorer by id.
-    expect(input.filters).toMatchObject({ ...EXPLORER_DEFAULTS, window: '1w', q: 'lamp', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'], customCategoryIds: [CUSTOM_ID], category: null });
+    // A mixed scope (a taxonomy selection plus a custom category) is saved as the union of leaves, with no ids (spec §5.2).
+    expect(input.filters).toMatchObject({ ...EXPLORER_DEFAULTS, window: '1w', q: 'lamp', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'], customCategoryIds: [], category: null });
     expect(res).toEqual({ view: expect.objectContaining({ id: VIEW_ID, explorerUrl: `https://keywordquarry.com/explorer?view=${VIEW_ID}` }), notes: [] });
     expect(deps.record).toHaveBeenCalledWith('u1', 0, 'mcp');
     expect(deps.bumpWrite).toHaveBeenCalledWith('u1');
     expect(lines()[0]).toMatchObject({ tool: 'create_saved_view', outcome: 'ok', userId: 'u1' });
     expect(JSON.stringify(lines())).not.toContain('Lamps');
+  });
+  // §5.2: the Explorer sidebar holds one leaf mode at a time (custom ids OR leaf paths), so a view carrying both would lose its taxonomy part on the first Apply.
+  const savedFilters = async (categories: unknown) => {
+    const loadCatalog = vi.fn(async () => catalog);
+    const deps = makeDeps({ categories: { ...makeDeps().categories, loadCatalog } });
+    await createWorkspaceService(deps).createSavedView(actor, { name: 'L', search: { filters: { categories } } });
+    expect(loadCatalog).toHaveBeenCalledTimes(1); // one resolveScope: the converter decides between ids and leaves, there is no second resolution
+    return (deps.savedViews.create as ReturnType<typeof vi.fn>).mock.calls[0][1].filters as Record<string, unknown>;
+  };
+  it('a mixed scope is saved as the union of its leaves, the custom category\'s included, with no ids', async () => {
+    const ceiling = { kind: 'taxonomy', path: 'Lighting › Ceiling Lights' }; // the custom category's own leaf is Lighting › Lamps
+    const custom = { kind: 'custom', id: CUSTOM_ID };
+    expect(await savedFilters({ selections: [ceiling, custom] })).toMatchObject({ leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'], customCategoryIds: [] });
+    expect(await savedFilters({ selections: [custom], leafPaths: ['Lighting › Ceiling Lights'] })).toMatchObject({ leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'], customCategoryIds: [] });
+  });
+  it('a custom-only scope is saved by id with no leaves, so the view follows later edits to the category', async () => {
+    expect(await savedFilters({ selections: [{ kind: 'custom', id: CUSTOM_ID }] })).toMatchObject({ customCategoryIds: [CUSTOM_ID], leafPaths: [] });
   });
   it('fills schemaVersion when the AI omits it, and refuses a cursor', async () => {
     const deps = makeDeps();
@@ -324,6 +341,7 @@ describe('unexpected failures', () => {
     const wrapped = new DrizzleQueryError('insert into "saved_views" ("user_id", "name", "filters") values ($1, $2, $3)', ['u1', 'SECRET-VIEW-NAME', '{}'], Object.assign(new Error('boom'), { code: '08006' }));
     const deps = makeDeps({ savedViews: { ...makeDeps().savedViews, create: vi.fn(async () => { throw wrapped; }) } });
     const err = await createWorkspaceService(deps).createSavedView(actor, { name: 'SECRET-VIEW-NAME', search: {} }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResearchError);
     expect(err).toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message, retryable: true });
     expect(lines()).toEqual([expect.objectContaining({ tool: 'create_saved_view', outcome: 'failed', error: 'Error', code: '08006' })]);
     expect([...consoleLines(log, errorLog), inspect(err, { depth: 6 })].join('\n')).not.toContain('SECRET-VIEW-NAME');

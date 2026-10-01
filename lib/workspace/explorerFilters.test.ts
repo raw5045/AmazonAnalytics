@@ -40,14 +40,47 @@ describe('toExplorerFilters', () => {
     expect(notes).toEqual([]);
   });
 
-  it('taxonomy selections become the expanded leaves; custom selections pass by id and are never expanded', () => {
-    const { filters } = convert(
-      F({ categories: { selections: [{ kind: 'taxonomy', path: 'A › B', includeDescendants: true }, { kind: 'custom', id: CUSTOM_ID }] } }),
+  // §5.2: the Explorer sidebar holds one leaf mode at a time (custom ids OR leaf paths), so a link or view that carried both
+  // would open with the right rows and then lose its taxonomy part on the first sidebar Apply. `leaves` below is the search's
+  // full scope.leaves, the custom categories' leaves included, exactly as resolveScope returns it.
+  it('taxonomy selections and explicit leaf paths become the expanded leaves, with no ids', () => {
+    const bySelection = convert(
+      F({ categories: { selections: [{ kind: 'taxonomy', path: 'A › B', includeDescendants: true }] } }),
       { leaves: ['A › B › C', 'A › B › D'] },
     );
-    expect(filters.leafPaths).toEqual(['A › B › C', 'A › B › D']);
-    expect(filters.customCategoryIds).toEqual([CUSTOM_ID]);
+    expect(bySelection.filters).toMatchObject({ leafPaths: ['A › B › C', 'A › B › D'], customCategoryIds: [], category: null });
+    const byPath = convert(F({ categories: { leafPaths: ['A › B › C'] } }), { leaves: ['A › B › C'] });
+    expect(byPath.filters).toMatchObject({ leafPaths: ['A › B › C'], customCategoryIds: [] });
+  });
+
+  it('a custom-only scope passes the ids and leaves leafPaths empty, so the link follows later edits to the category', () => {
+    const other = '22222222-2222-4222-8222-222222222222';
+    const { filters, notes } = convert(
+      F({ categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }, { kind: 'custom', id: other }] } }),
+      { leaves: ['A › B › C', 'X › Y'] }, // the two categories' leaves: the Explorer expands the ids itself, so they are ignored here
+    );
+    expect(filters.customCategoryIds).toEqual([CUSTOM_ID, other]);
+    expect(filters.leafPaths).toEqual([]);
     expect(filters.category).toBeNull();
+    expect(notes).toEqual([]);
+  });
+
+  it('a custom category plus a taxonomy selection is a mixed scope: the full leaves, the custom category\'s included, and no ids', () => {
+    const { filters, notes } = convert(
+      F({ categories: { selections: [{ kind: 'taxonomy', path: 'A › B', includeDescendants: true }, { kind: 'custom', id: CUSTOM_ID }] } }),
+      { leaves: ['A › B › C', 'A › B › D', 'X › Y'] },
+    );
+    expect(filters.leafPaths).toEqual(['A › B › C', 'A › B › D', 'X › Y']);
+    expect(filters.customCategoryIds).toEqual([]);
+    expect(notes).toEqual([]);
+  });
+
+  it('a custom category plus explicit leaf paths is a mixed scope too', () => {
+    const { filters } = convert(
+      F({ categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }], leafPaths: ['A › B › C'] } }),
+      { leaves: ['A › B › C', 'X › Y'] },
+    );
+    expect(filters).toMatchObject({ leafPaths: ['A › B › C', 'X › Y'], customCategoryIds: [] });
   });
 
   it('a department alone expands to its leaves like any other selection (the Explorer\'s broad category is a different taxonomy)', () => {
@@ -151,13 +184,22 @@ describe('toExplorerFilters', () => {
     expect(compactExplorerFilters(filters)).toEqual({ window: '4w' });
   });
 
-  it('round-trips through the saved-view normaliser and through its own link', () => {
+  // Every scope shape of §5.2 must survive the Explorer's own re-read: taxonomy leaves, a mixed scope as its union of leaves (no ids), and a custom-only scope as ids (no leaves).
+  const taxonomyB = { kind: 'taxonomy', path: 'A › B', includeDescendants: true };
+  const customOne = { kind: 'custom', id: CUSTOM_ID };
+  const scopes: Array<[shape: string, selections: unknown[], leaves: string[], ids: string[], leafPaths: string[]]> = [
+    ['taxonomy leaves', [taxonomyB], ['A › B › C'], [], ['A › B › C']],
+    ['a mixed scope, as the union of its leaves', [taxonomyB, customOne], ['A › B › C', 'X › Y'], [], ['A › B › C', 'X › Y']],
+    ['a custom-only scope, by id', [customOne], ['X › Y'], [CUSTOM_ID], []],
+  ];
+  it.each(scopes)('round-trips through the saved-view normaliser and through its own link: %s', (_shape, selections, leaves, ids, leafPaths) => {
     const { filters } = convert(
       F({ text: { value: 'desk lamp' }, excludeTerms: ['floor', 'ceiling fan'], rank: { lte: 20000 }, averageReviews: { lt: 500 }, severities: ['none', 'warning', 'critical'],
           titleGap: { slots: [1, 2, 3], quantifier: 'any', mode: 'loose' }, movement: { window: '13w', metric: 'volume', prior: { lt: 30000 }, current: { gte: 100001 } },
-          categories: { selections: [{ kind: 'taxonomy', path: 'A › B', includeDescendants: true }, { kind: 'custom', id: CUSTOM_ID }] } }),
-      { window: '13w', sort: { field: 'volumeDelta', direction: 'desc' }, leaves: ['A › B › C'] },
+          categories: { selections } }),
+      { window: '13w', sort: { field: 'volumeDelta', direction: 'desc' }, leaves },
     );
+    expect(filters).toMatchObject({ customCategoryIds: ids, leafPaths });
     expect(normalizeFilters(filters)).toEqual({ ...filters, page: 1, perPage: 100 });
     const url = explorerUrlFor(APP, filters)!;
     expect(url.startsWith(`${APP}/explorer?`)).toBe(true);

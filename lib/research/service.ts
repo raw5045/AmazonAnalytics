@@ -4,8 +4,8 @@ import type { Pool } from 'pg';
 import { env } from '@/lib/env';
 import { isPoolConnectTimeout } from '@/lib/db/tcpPool';
 import { fetchFits } from '@/lib/explorer/fetchKeywordDetail';
-import { mcpAudience } from '@/lib/mcp/config';
-import { explorerUrlFor, NOTE_LINK_TOO_LONG, toExplorerFilters } from '@/lib/workspace/explorerFilters';
+import { mcpAudience, mcpWriteEnabled } from '@/lib/mcp/config';
+import { explorerUrlFor, NOTE_LINK_TOO_LONG, NOTE_LINK_TOO_LONG_READONLY, toExplorerFilters } from '@/lib/workspace/explorerFilters';
 import { applyPresets, buildGuide, GUIDE_VERSION, QUERY_VERSION } from './catalog';
 import { defaultCategoryDeps, rankCandidates, resolveScope, type CategoryDeps } from './categories';
 import {
@@ -53,6 +53,8 @@ export interface ResearchServiceDeps {
   appUrl: string;
   cursorSecret: string;
   audience: () => 'admin' | 'all';
+  /** Whether the workspace (write) tools are on. The too-long note offers "save it as a view" only then, and only to the MCP channel; Task 10 also keys the guide's workspace section on it (spec 2026-09-30 §5.6, §9.1). */
+  workspaceEnabled: () => boolean;
   now: () => Date;
   reserve: typeof reserveResearchRequest;
   record: typeof recordResearchActivity;
@@ -74,6 +76,7 @@ export function defaultResearchDeps(): ResearchServiceDeps {
     appUrl,
     cursorSecret: cursorSecret(),
     audience: mcpAudience,
+    workspaceEnabled: mcpWriteEnabled,
     now: () => new Date(),
     reserve: reserveResearchRequest,
     record: recordResearchActivity,
@@ -214,22 +217,15 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     await reserveFor(deps, actor, pageSize);
     const scope = await resolveScope(actor.localUserId, filters.categories, deps.limits.maxExpandedLeaves, deps.categories);
 
-    // Spec 2026-09-30 §3.2: the Explorer link for this exact search. Custom selections reach the
-    // Explorer by id, so the link's leaf list comes from the taxonomy selections and explicit leaf
-    // paths only — a second resolution against the same cached catalog when a custom selection is
-    // present (a subset of `scope`, so it cannot fail where the search itself succeeded).
-    const hasCustom = filters.categories.selections.some((s) => s.kind === 'custom');
-    const explorerLeaves = hasCustom
-      ? (await resolveScope(
-          actor.localUserId,
-          { selections: filters.categories.selections.filter((s) => s.kind === 'taxonomy'), leafPaths: filters.categories.leafPaths },
-          deps.limits.maxExpandedLeaves,
-          deps.categories,
-        )).leaves
-      : scope.leaves;
-    const explorer = toExplorerFilters({ filters, sort, window: comparisonWindow, leaves: explorerLeaves });
+    // Spec 2026-09-30 §3.2: the Explorer link for this exact search. One resolution serves the query and
+    // the link: the converter gets the full scope.leaves and decides between custom ids (a custom-only
+    // scope) and expanded leaves (every other scope) — §5.2. When the link is too long (§5.6), the note
+    // says what the reader can do: only the MCP channel with the workspace tools on can save a view.
+    const explorer = toExplorerFilters({ filters, sort, window: comparisonWindow, leaves: scope.leaves });
     const explorerUrl = explorerUrlFor(deps.appUrl, explorer.filters);
-    const explorerNotes = explorerUrl === null ? [...explorer.notes, NOTE_LINK_TOO_LONG] : explorer.notes;
+    const explorerNotes = explorerUrl === null
+      ? [...explorer.notes, actor.channel === 'mcp' && deps.workspaceEnabled() ? NOTE_LINK_TOO_LONG : NOTE_LINK_TOO_LONG_READONLY]
+      : explorer.notes;
 
     // M5: reachable/visible must be known before compiling, so the SQL only ever asks for as
     // many rows as the response could actually show (visible + 1, to detect a next page) —
