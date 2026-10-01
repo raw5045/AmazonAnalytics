@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import { describe, it, expect } from 'vitest';
 import { EXPLORER_DEFAULTS, parseExplorerFilters } from '@/lib/explorer/parseFilters';
 import { searchParamsToLike } from '@/lib/explorer/export/query';
@@ -5,15 +6,19 @@ import { normalizeFilters } from '@/lib/savedViews/validation';
 import { filtersSchema, type Filters, type Sort, type Window } from '@/lib/research/contracts';
 import {
   compactExplorerFilters, customCategoryUrlFor, explorerUrlFor, savedViewUrlFor, toExplorerFilters,
-  NOTE_BASELINE, NOTE_DELTA, NOTE_JUMP_INVALID, NOTE_PRIOR_BAND, NOTE_PRIOR_ONLY, NOTE_WORD_COUNT_SORT,
+  NOTE_BASELINE, NOTE_DELTA, NOTE_EXPLORER_REREAD, NOTE_MOVE_UNSUPPORTED, NOTE_PRIOR_BAND, NOTE_PRIOR_ONLY, NOTE_WORD_COUNT_SORT,
 } from './explorerFilters';
 
 const APP = 'https://keywordquarry.com';
 const CUSTOM_ID = '11111111-1111-4111-8111-111111111111';
 const SORT: Sort = { field: 'estimatedMonthlySearches', direction: 'desc' };
 const F = (partial: Record<string, unknown> = {}): Filters => filtersSchema.parse(partial);
-const convert = (filters: Filters, over: { sort?: Sort; window?: Window; leaves?: string[] } = {}) =>
-  toExplorerFilters({ filters, sort: over.sort ?? SORT, window: over.window ?? '4w', leaves: over.leaves ?? [] });
+const convert = (filters: Filters, over: { sort?: Sort; window?: Window; leaves?: string[] } = {}) => {
+  const r = toExplorerFilters({ filters, sort: over.sort ?? SORT, window: over.window ?? '4w', leaves: over.leaves ?? [] });
+  // The Explorer re-reads every link and view through normalizeFilters; the converter promises exactness unless it says otherwise.
+  expect(isDeepStrictEqual(normalizeFilters(r.filters), r.filters)).toBe(!r.notes.includes(NOTE_EXPLORER_REREAD));
+  return r;
+};
 
 describe('toExplorerFilters', () => {
   it('an empty search is the default Explorer at the search window, with no notes', () => {
@@ -69,6 +74,12 @@ describe('toExplorerFilters', () => {
     expect(filters).toMatchObject({ jump: 'v5k_to_15k', jumpMetric: 'volume' });
   });
 
+  it('shifts volume lte/gte the other way and keeps the unread current bound as volMax', () => {
+    const { filters, notes } = convert(F({ movement: { window: '4w', metric: 'volume', prior: { lte: 4999 }, current: { gte: 15001, lte: 50000 }, baseline: 'include_not_observed' } }));
+    expect(filters).toMatchObject({ jump: 'v5k_to_15k', jumpMetric: 'volume', jumpFrom: null, jumpTo: null, volMin: null, volMax: 50000 });
+    expect(notes).toEqual([]);
+  });
+
   it('a current-only bound is the plain range, exactly; a prior-only bound is dropped with a note', () => {
     const currentOnly = convert(F({ movement: { window: '4w', metric: 'rank', current: { lt: 50000 } } }));
     expect(currentOnly.filters).toMatchObject({ jump: null, rankMax: 49999 });
@@ -95,16 +106,16 @@ describe('toExplorerFilters', () => {
   it('a move the Explorer would reject is dropped with a note; its current bound still becomes the plain range', () => {
     const { filters, notes } = convert(F({ movement: { window: '4w', metric: 'rank', prior: { gt: 100 }, current: { lt: 200 }, baseline: 'include_not_observed' } }));
     expect(filters).toMatchObject({ jump: null, rankMax: 199 });
-    expect(notes).toEqual([NOTE_JUMP_INVALID]);
+    expect(notes).toEqual([NOTE_MOVE_UNSUPPORTED]);
   });
 
   it('a decline, or a prior bound on the side the jump never reads, is noted as a move the Explorer cannot express; the current bound still becomes the plain range', () => {
     const volumeDecline = convert(F({ movement: { window: '4w', metric: 'volume', prior: { gte: 50000 }, current: { lt: 10000 }, baseline: 'include_not_observed' } }));
     expect(volumeDecline.filters).toMatchObject({ jump: null, volMin: null, volMax: 9999 });
-    expect(volumeDecline.notes).toEqual([NOTE_JUMP_INVALID]);
+    expect(volumeDecline.notes).toEqual([NOTE_MOVE_UNSUPPORTED]);
     const rankDrop = convert(F({ movement: { window: '4w', metric: 'rank', prior: { lte: 1000 }, current: { gt: 1000 } } }));
     expect(rankDrop.filters).toMatchObject({ jump: null, rankMin: 1001, rankMax: null });
-    expect(rankDrop.notes).toEqual([NOTE_JUMP_INVALID, NOTE_BASELINE]);
+    expect(rankDrop.notes).toEqual([NOTE_MOVE_UNSUPPORTED, NOTE_BASELINE]);
     const priorUnreadOnly = convert(F({ movement: { window: '4w', metric: 'rank', prior: { lte: 1000 } } }));
     expect(priorUnreadOnly.filters).toMatchObject({ jump: null, rankMin: null, rankMax: null });
     expect(priorUnreadOnly.notes).toEqual([NOTE_PRIOR_ONLY]);
@@ -125,6 +136,21 @@ describe('toExplorerFilters', () => {
     expect(words.notes).toEqual([NOTE_WORD_COUNT_SORT]);
   });
 
+  it('notes an excluded term the Explorer would read back differently (a comma splits it, a doubled space collapses)', () => {
+    const comma = convert(F({ excludeTerms: ['lamp, floor'] }));
+    expect(comma.filters.qExclude).toEqual(['lamp, floor']);
+    expect(comma.notes).toEqual([NOTE_EXPLORER_REREAD]);
+    const spaces = convert(F({ excludeTerms: ['ceiling  fan'] }));
+    expect(spaces.notes).toEqual([NOTE_EXPLORER_REREAD]);
+    expect(convert(F({ excludeTerms: ['floor', 'ceiling fan'] })).notes).toEqual([]);
+  });
+
+  it('keeps severities in canonical order so a reordered default still compacts away', () => {
+    const { filters } = convert(F({ severities: ['warning', 'none'] }));
+    expect(filters.severities).toEqual(['none', 'warning']);
+    expect(compactExplorerFilters(filters)).toEqual({ window: '4w' });
+  });
+
   it('round-trips through the saved-view normaliser and through its own link', () => {
     const { filters } = convert(
       F({ text: { value: 'desk lamp' }, excludeTerms: ['floor', 'ceiling fan'], rank: { lte: 20000 }, averageReviews: { lt: 500 }, severities: ['none', 'warning', 'critical'],
@@ -140,10 +166,12 @@ describe('toExplorerFilters', () => {
 });
 
 describe('compactExplorerFilters', () => {
-  it('keeps only the fields that differ from the defaults, never pagination, and jumpMetric only with a jump', () => {
+  it('keeps only the fields that differ from the defaults, never pagination, and jumpMetric whenever a jump is set', () => {
     expect(compactExplorerFilters({ ...EXPLORER_DEFAULTS })).toEqual({});
+    expect(compactExplorerFilters(convert(F()).filters)).toEqual({ window: '4w' }); // fresh arrays, not the shared defaults
     expect(compactExplorerFilters({ ...EXPLORER_DEFAULTS, q: 'lamp', page: 3, perPage: 50, jumpMetric: 'volume' })).toEqual({ q: 'lamp' });
     expect(compactExplorerFilters({ ...EXPLORER_DEFAULTS, jump: 'v5k_to_15k', jumpMetric: 'volume' })).toEqual({ jump: 'v5k_to_15k', jumpMetric: 'volume' });
+    expect(compactExplorerFilters({ ...EXPLORER_DEFAULTS, jump: '100k_to_50k' })).toEqual({ jump: '100k_to_50k', jumpMetric: 'rank' });
   });
 });
 

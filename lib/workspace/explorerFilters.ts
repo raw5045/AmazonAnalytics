@@ -9,7 +9,8 @@ import { filtersToQueryString } from '@/lib/explorer/export/query';
 import { jumpPresetsFor } from '@/lib/explorer/jumpPresets';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
 import type { ExplorerFilters, JumpKey, SortKey } from '@/lib/explorer/types';
-import type { Filters, IntegerRange, Sort, Window } from '@/lib/research/contracts';
+import { SEVERITIES, type Filters, type IntegerRange, type Sort, type Window } from '@/lib/research/contracts';
+import { normalizeFilters } from '@/lib/savedViews/validation';
 
 export interface ConvertInput {
   /** The search's effective filters, after applyPresets. */
@@ -26,12 +27,13 @@ export interface ConvertResult {
   notes: string[];
 }
 
-export const NOTE_BASELINE = "The Explorer's movement filter also counts keywords that had no earlier value, so it can show a few more rows than this search.";
-export const NOTE_DELTA = 'The Explorer cannot filter on the size of the change itself; the from/to move was kept.';
+export const NOTE_BASELINE = 'The Explorer also counts keywords that had no earlier value, so it can show a few more rows than this search.';
+export const NOTE_DELTA = 'The Explorer cannot filter on the size of the change itself; that part of the movement filter was dropped.';
 export const NOTE_PRIOR_ONLY = 'The Explorer cannot filter on the earlier value alone; that part of the movement filter was dropped.';
 export const NOTE_PRIOR_BAND = 'The Explorer takes a single from-value for a move; the other bound on the earlier value was dropped.';
-export const NOTE_JUMP_INVALID = 'The Explorer only accepts a move from a worse rank to a better one, or from a lower volume to a higher one; this move was dropped.';
+export const NOTE_MOVE_UNSUPPORTED = 'The Explorer only accepts a move from a worse rank to a better one, or from a lower volume to a higher one; this move was dropped.';
 export const NOTE_WORD_COUNT_SORT = 'The Explorer cannot sort by word count; the view opens sorted by rank.';
+export const NOTE_EXPLORER_REREAD = 'The Explorer reads part of these filters differently from the search (for example a comma or a doubled space inside an excluded term); check the filters it opens with.';
 export const NOTE_LINK_TOO_LONG = 'Too many leaf categories for a link; save it as a view instead.';
 /** Vercel's CDN rejects URLs over 14 KB (§5.6); stay well under it. */
 export const MAX_EXPLORER_URL_BYTES = 12_000;
@@ -61,8 +63,9 @@ function tightenPlainRange(out: ExplorerFilters, metric: 'rank' | 'volume', boun
 /**
  * §5.3. The Explorer's jump is "was on one side of `from`, now past `to`": rank compiles to
  * `(prior > from OR prior IS NULL) AND current < to`, volume to `(prior < from OR prior IS NULL)
- * AND current > to`. Exact research comparators shift onto those strict bounds; whatever the
- * jump cannot carry either tightens the plain range (current side, exact) or is dropped with a note.
+ * AND current > to` (`prior IS NULL` there is the prior *rank*). Exact research comparators shift
+ * onto those strict bounds; whatever the jump cannot carry either tightens the plain range
+ * (current side, exact) or is dropped with a note.
  */
 function convertMovement(m: NonNullable<Filters['movement']>, out: ExplorerFilters, notes: string[]): void {
   if (m.delta) notes.push(NOTE_DELTA);
@@ -91,7 +94,7 @@ function convertMovement(m: NonNullable<Filters['movement']>, out: ExplorerFilte
       tightenPlainRange(out, m.metric, m.metric === 'rank' ? { min: leftover.min, max: null } : { min: null, max: leftover.max });
       if (priorHasOtherSide) notes.push(NOTE_PRIOR_BAND);
     } else {
-      notes.push(NOTE_JUMP_INVALID);
+      notes.push(NOTE_MOVE_UNSUPPORTED);
       tightenPlainRange(out, m.metric, inclusive(current));
     }
     mapped = true;
@@ -100,9 +103,11 @@ function convertMovement(m: NonNullable<Filters['movement']>, out: ExplorerFilte
     // carries at least one bound, so any prior here is lost: with a current bound it is a move
     // the Explorer cannot express (e.g. a decline, or a bound on the side the jump never reads);
     // alone it is a bound on the earlier value only.
-    if (prior) notes.push(current ? NOTE_JUMP_INVALID : NOTE_PRIOR_ONLY);
+    if (prior) notes.push(current ? NOTE_MOVE_UNSUPPORTED : NOTE_PRIOR_ONLY);
     if (current) {
-      // A current-side bound is still exact as the plain range on the same metric.
+      // A current-side bound is still exact as the plain range on the same metric. (For volume under
+      // include_not_observed the search also applies the Δ-volume eligibility guard; it never bites today
+      // because a volume fit exists for every horizon once any fit exists.)
       tightenPlainRange(out, m.metric, inclusive(current));
       mapped = true;
     }
@@ -136,7 +141,7 @@ export function toExplorerFilters(input: ConvertInput): ConvertResult {
     qExclude: [...f.excludeTerms],
     leafPaths: [],
     customCategoryIds: [],
-    severities: [...f.severities],
+    severities: SEVERITIES.filter((s) => f.severities.includes(s)),
     titleSlots: [...EXPLORER_DEFAULTS.titleSlots],
   };
   if (f.text) {
@@ -157,15 +162,23 @@ export function toExplorerFilters(input: ConvertInput): ConvertResult {
   out.leafPaths = [...input.leaves];
   if (f.movement) convertMovement(f.movement, out, notes);
   out.sort = convertSort(input.sort, notes);
+  // Every link and saved view is re-read by the Explorer's parser (normalizeFilters → parseExplorerFilters).
+  // When it would read these filters back differently — an excluded term with a comma or a doubled space,
+  // a volume jump threshold past the int4 ceiling — say so, so an empty `notes` still means "exact" (spec §3.2).
+  if (!isDeepStrictEqual(normalizeFilters(out), out)) notes.push(NOTE_EXPLORER_REREAD);
   return { filters: out, notes };
 }
 
-/** §5.5: the fields that differ from the Explorer defaults; never pagination; `jumpMetric` only with a jump. */
+/** §5.5: the fields that differ from the Explorer defaults; never pagination; `jumpMetric` whenever `jump` is set. */
 export function compactExplorerFilters(f: ExplorerFilters): Partial<ExplorerFilters> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(EXPLORER_DEFAULTS) as Array<keyof ExplorerFilters>) {
     if (key === 'page' || key === 'perPage') continue;
-    if (key === 'jumpMetric' && f.jump === null) continue;
+    if (key === 'jumpMetric') {
+      // Always explicit when a jump is set, even for the default rank metric, so the AI never infers it (spec §5.5).
+      if (f.jump !== null) out.jumpMetric = f.jumpMetric;
+      continue;
+    }
     if (!isDeepStrictEqual(f[key], EXPLORER_DEFAULTS[key])) out[key] = f[key];
   }
   return out as Partial<ExplorerFilters>;
