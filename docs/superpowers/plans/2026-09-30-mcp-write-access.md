@@ -3700,6 +3700,10 @@ MSG
 
 > **Landed as f3b0820 (2026-09-30).** One commit for the items the per-task reviews queued as minor: a shared `lib/db/uuid.ts` (`UUID_RE`, `isUuid`) replacing four copies (a fifth, in `app/(app)/explorer/keyword/[id]/page.tsx`, was outside the lane and is left); comment fixes in `lib/mcp/tools/toolResult.ts`, `lib/research/tools.ts` and `lib/db/pgErrorCode.ts`; a 23505-on-a-leaves-only-update rethrow test; `notes: []` pinned on every lossless conversion test; `PREVIEW_PATHS` exported from `lib/research/categories.ts` and pinned equal to `PREVIEW_LEAF_PATHS`; `gated()`'s two lookup logs switched to `errFields` with a secret-param test; `DEFAULT_WRITES_PER_DAY` in an import-free `lib/research/defaults.ts` feeding both `DEFAULT_LIMITS` and the digest's amber threshold (still 100); digest doc and header-position test polish; from the Task 10 review — a shuffle-safe registration test, a comment on the module-load `instructions`, a fail-soft registration test (`vi.doMock` throwing a DrizzleQueryError → six tools, log-safe line, no param in any console call), a hoisted `defaultWorkspaceService` mock proving the flag-off handler never builds it, `classifyToolError` readability, one shared `RegisterToolsOptions`, and `searchSpecSchema` accepting-and-ignoring `pageSize` (spec §3, §5.1 amended). `pnpm vitest run lib app` 178 files / 1,858 tests (the whole suite, which also covers `tests/unit` and friends, is 183 files / 1,873 at this commit); typecheck and scoped eslint clean; the two MCP test files pass under several shuffle seeds. Known, unchanged: when the workspace service cannot be built, the module-load `instructions` still mention "Workspace tools" (both read the same env; a client would be told about tools it was not given only in that failure state).
 
+### Final whole-diff review (2e10bed → f3b0820, 2026-10-01)
+
+> **Ship after fixes → fix round 5a47eaf → re-review: Ship.** The reviewer walked converted filters through `normalizeFilters` → the Explorer page → the sidebar, re-verified owner scoping, the gate-only actor, log safety and the route extraction (which also fixed two pre-existing production bugs: duplicate names answered 500 because the 23505 sits on the wrapped error's `cause`; a null JSON body crashed). One important finding: a saved view wider than a link can hold (about 100+ leaves — exactly what the old too-long note told the AI to make) opens from `?view=<id>` but the Explorer re-serialises its filters for Export and Apply, both of which then exceed Vercel's 14 KB URL limit, while the save returned `notes: []`. Fixed in 5a47eaf: `NOTE_VIEW_TOO_WIDE` on create/update whenever the stored filters would exceed the link cap (checked in `convertSearch`), `NOTE_LINK_TOO_LONG` now points at the custom-category route first (a custom-only scope passes just the id everywhere), a ninth guide rule, 150-leaf tests, smoke 6b extended (Export and Apply are now expected to fail on the raw department view — intended). Minors fixed in the same commit: PgDialect owner-scoping pins for the watchlist delete/read/list plus a cross-account integration case; the kill switch needs a redeploy (comment, `.env.example`, spec §2/§13). Recorded as follow-ups (spec §14): a column-header sort on a saved view drops the view's filters; a sixth view created through the accepted count-then-insert race is invisible to the `.limit(5)` listing. Whole suite after the fix: 184 files / 1,878 tests; `pnpm build` 81 routes, unchanged.
+
 ### Task 13: Offline checks, integration tests, ship (owner-gated)
 
 Steps 1–3 run offline. Steps 4–7 need the owner's explicit go **for each**; the controller (not a subagent) performs them.
@@ -3835,11 +3839,11 @@ Filled in at Task 13 Step 3. One row per check; keep the numbers, not adjectives
 
 | Check | Outcome |
 |---|---|
-| Department probe (Task 3 Step 1) | sampled / mismatches, and whether the shortcut was kept |
-| `pnpm test` | files / tests passed |
-| `pnpm typecheck` | |
-| `pnpm lint` | |
-| `pnpm build` | |
-| Final code review | verdict and the SHAs of any fix round |
-| Integration test (Step 4) | |
-| Smoke (Step 7) | one line per §12 item |
+| Department probe (Task 3 Step 1) | `{"sampled":200000,"mismatches":182658}` — the broad category is Brand Analytics' own taxonomy, not the Keepa path root; the shortcut was dropped (§5.2) |
+| `pnpm test` | 184 files / 1,878 tests passed (2026-10-01, at 5a47eaf; 79 s) |
+| `pnpm typecheck` | clean |
+| `pnpm lint` | whole project exits 1: 2 errors, both in untracked throwaway scripts (`scripts/checkCatPages.ts`, `scripts/diagResend0916.ts`), and 13 pre-existing warnings in tracked files arc 3 never touched; eslint over every tracked file the arc changed (77 files, plus the integration test and the two fix rounds): clean |
+| `pnpm build` | passed; 81 routes, list unchanged (no route, page or layout added or removed in 2e10bed..5a47eaf) |
+| Final code review | Ship after fixes → 5a47eaf → re-review Ship (see the section above) |
+| Integration test (Step 4) | pending the owner's go (needs a settled week; creates and removes two `itest` users) |
+| Smoke (Step 7) | pending the owner (after the push); 6b now expects Export and Apply to fail on the raw department view and to work on the custom-category view |
