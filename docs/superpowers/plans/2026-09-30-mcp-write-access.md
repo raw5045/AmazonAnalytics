@@ -3845,5 +3845,5 @@ Filled in at Task 13 Step 3. One row per check; keep the numbers, not adjectives
 | `pnpm lint` | whole project exits 1: 2 errors, both in untracked throwaway scripts (`scripts/checkCatPages.ts`, `scripts/diagResend0916.ts`), and 13 pre-existing warnings in tracked files arc 3 never touched; eslint over every tracked file the arc changed (77 files, plus the integration test and the two fix rounds): clean |
 | `pnpm build` | passed; 81 routes, list unchanged (no route, page or layout added or removed in 2e10bed..5a47eaf) |
 | Final code review | Ship after fixes → 5a47eaf → re-review Ship (see the section above) |
-| Integration test (Step 4) | pending the owner's go (needs a settled week; creates and removes two `itest` users) |
+| Integration test (Step 4) | 2026-10-01 on the owner's go, no Keepa run or import active: 3 passed in 3.55 s against the real tables (saved views incl. the case-insensitive duplicate; a custom category from a real catalog expansion; watchlist by text and id incl. the cross-account removal); both `itest` users removed, 0 synthetic users left |
 | Smoke (Step 7) | pending the owner (after the push); 6b now expects Export and Apply to fail on the raw department view and to work on the custom-category view |
