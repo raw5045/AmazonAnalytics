@@ -49,8 +49,8 @@ export async function POST(req: Request) {
   } catch (e) {
     return handleAuthError(e);
   }
-  const body = (await req.json().catch(() => ({}))) as { name?: unknown; filters?: unknown };
-  const result = await createSavedView(user.id, { name: body.name, filters: body.filters });
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown; filters?: unknown } | null;
+  const result = await createSavedView(user.id, { name: body?.name, filters: body?.filters });
   if (!result.ok) return NextResponse.json({ error: result.message }, { status: result.code === 'duplicate_name' ? 409 : 400 });
   return NextResponse.json({ view: result.view });
 }

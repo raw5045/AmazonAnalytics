@@ -88,3 +88,16 @@ describe('DELETE /api/explorer/saved-views/[id]', () => {
     expect(await res.json()).toEqual({ error: 'view not found' });
   });
 });
+
+describe('PATCH /api/explorer/saved-views/[id] with a null JSON body (hardened in the extraction)', () => {
+  beforeEach(() => { vi.clearAllMocks(); mockRequireUser.mockResolvedValue(USER); });
+  it('still answers 400 for a bad id, and 400 "nothing to update" for a valid id', async () => {
+    const badId = await patch('nope', null);
+    expect(badId.status).toBe(400);
+    expect(await badId.json()).toEqual({ error: 'invalid view id' });
+    const validId = await patch(VIEW_ID, null);
+    expect(validId.status).toBe(400);
+    expect(await validId.json()).toEqual({ error: 'nothing to update' });
+    expect(mockDb.update).not.toHaveBeenCalled();
+  });
+});

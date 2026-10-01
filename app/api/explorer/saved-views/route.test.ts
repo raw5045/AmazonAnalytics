@@ -93,3 +93,13 @@ describe('POST /api/explorer/saved-views', () => {
     expect((await post({ name: 'x', filters: {} })).status).toBe(401);
   });
 });
+
+describe('POST /api/explorer/saved-views with a null JSON body (hardened in the extraction)', () => {
+  beforeEach(() => { vi.clearAllMocks(); mockRequireUser.mockResolvedValue(USER); });
+  it('answers 400 instead of throwing', async () => {
+    const res = await post(null);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'name must be a string' });
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+});

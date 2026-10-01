@@ -25,8 +25,8 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     return handleAuthError(e);
   }
   const { id } = await params;
-  const body = (await req.json().catch(() => ({}))) as { name?: unknown; filters?: unknown };
-  const result = await updateSavedView(user.id, id, { name: body.name, filters: body.filters });
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown; filters?: unknown } | null;
+  const result = await updateSavedView(user.id, id, { name: body?.name, filters: body?.filters });
   if (!result.ok) return NextResponse.json({ error: result.message }, { status: STATUS[result.code] });
   return NextResponse.json({ view: result.view });
 }
