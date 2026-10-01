@@ -4,7 +4,8 @@ import remarkGfm from 'remark-gfm';
 
 /**
  * A link is internal only when its RESOLVED origin equals this deployment's own origin (Task 9
- * fix round, item 9; spec review "Different" #4). `new URL(href, appOrigin)` also resolves a
+ * fix round, item 9; spec review "Different" #4); since 2026-10-01 that only decides the referrer
+ * policy — every link opens in a new tab. `new URL(href, appOrigin)` also resolves a
  * relative href like `/explorer/keyword/...` (what the research tools' absolute `keywordUrl`
  * values collapse to once compared this way) — no separate `startsWith('/')` case needed. Plain
  * prefix matching was too loose: `https://keywordquarry.com.evil.example` passed a
@@ -23,7 +24,8 @@ function isInternal(href: string, appOrigin: string): boolean {
  * GFM tables and links; react-markdown renders no raw HTML by default (spec §6). Images are
  * dropped entirely (Task 9 fix round, item 4) — the model's output is untrusted (spec §13), and an
  * `<img src>` is a way to make the member's browser fetch an attacker-chosen URL with no
- * confirmation. Internal detail links stay in the tab; anything else opens in a new one.
+ * confirmation. Every link opens in a new tab so the chat stays where it is (owner, 2026-10-01);
+ * an internal link keeps the referrer (`noopener`), an external one sends none (`noopener noreferrer`).
  */
 export function AnswerMarkdown({ children, appOrigin }: { children: string; appOrigin: string }) {
   return (
@@ -34,7 +36,7 @@ export function AnswerMarkdown({ children, appOrigin }: { children: string; appO
         components={{
           a: ({ href, children: linkText }) => {
             const internal = typeof href === 'string' && isInternal(href, appOrigin);
-            return <a href={href} className="text-blue-700 underline" {...(internal ? {} : { target: '_blank', rel: 'noopener noreferrer' })}>{linkText}</a>;
+            return <a href={href} className="text-blue-700 underline" target="_blank" rel={internal ? 'noopener' : 'noopener noreferrer'}>{linkText}</a>;
           },
           table: ({ children: rows }) => <div className="overflow-x-auto"><table className="min-w-full text-sm">{rows}</table></div>,
         }}
