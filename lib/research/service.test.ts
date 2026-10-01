@@ -19,6 +19,9 @@ import { DEFAULT_LIMITS } from './limits';
 import { signCursor, verifyCursor } from './cursor';
 import { ResearchError, searchExpiredError } from './errors';
 import type { RawSearchRow } from './query';
+import { parseExplorerFilters } from '@/lib/explorer/parseFilters';
+import { searchParamsToLike } from '@/lib/explorer/export/query';
+import { NOTE_DELTA, NOTE_LINK_TOO_LONG } from '@/lib/workspace/explorerFilters';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
 const META = { currentWeekEndDate: '2026-09-12', snapshotVersion: 'snap-a', refreshedAt: '2026-09-13T06:00:00.000Z', volumeFitRunId: null, calibrationMonthEndDate: null, isExtrapolated: false };
@@ -284,7 +287,9 @@ describe('search: continuation and caps', () => {
   it('I1: halving AND a too-large cursor together report PAYLOAD_LIMITED (without the cursor clause) alongside CURSOR_TOO_LARGE', async () => {
     // Same oversized leafPaths as C5 (cursor never signs), but with maxPayloadBytes small
     // enough that the response itself — dominated by those same leafPaths, echoed back in
-    // appliedFilters — also needs the halving loop to run at least once. So this response
+    // appliedFilters and again in the explorerUrl (that ~8.8 KB link is why this limit is not
+    // the 15000 it was before search answers carried one) — also needs the halving loop to
+    // run at least once. So this response
     // is BOTH actually shortened (pageShortened: true) AND has its cursor dropped for size;
     // PAYLOAD_LIMITED must fire (the page really was cut) but without the "cursor continues"
     // clause (there is no cursor — cursorTooLarge forced nextCursor to null).
@@ -295,7 +300,7 @@ describe('search: continuation and caps', () => {
     );
     const deps = makeDeps({
       categories: { loadCatalog: async () => bigCatalog, loadCustomRows: async () => [], listCustom: async () => [] },
-      limits: { ...DEFAULT_LIMITS, maxPayloadBytes: 15000 },
+      limits: { ...DEFAULT_LIMITS, maxPayloadBytes: 24500 },
     });
     const res = await createResearchService(deps).search(actor, { schemaVersion: 1, filters: { categories: { leafPaths } } });
     expect(res.rows.length).toBeLessThan(50);
@@ -376,5 +381,40 @@ describe('defaultResearchService', () => {
     resetResearchServiceForTests();
     const c = defaultResearchService();
     expect(c).not.toBe(a);
+  });
+});
+
+describe('search: the Explorer link (spec 2026-09-30 §3.2)', () => {
+  it('carries a link that opens the Explorer with the same filters, sort and window, and no notes when exact', async () => {
+    const res = await createResearchService(makeDeps()).search(actor, {
+      schemaVersion: 1, comparisonWindow: '1w',
+      filters: { estimatedMonthlySearches: { gt: 10000 }, categories: { selections: [{ kind: 'taxonomy', path: 'A', includeDescendants: true }] } },
+    });
+    expect(res.explorerUrl).toMatch(/^https:\/\/keywordquarry\.com\/explorer\?/);
+    const parsed = parseExplorerFilters(searchParamsToLike(new URL(res.explorerUrl!).searchParams));
+    // 'A' is a whole department: the probe dropped the broad-category shortcut (spec §5.2), so it expands to its leaves.
+    expect(parsed).toMatchObject({ window: '1w', volMin: 10001, category: null, leafPaths: ['A › B', 'A › C'], sort: 'rank' });
+    expect(res.explorerNotes).toEqual([]);
+  });
+  it('lists the leaves of a taxonomy selection but passes a custom selection by id', async () => {
+    const custom = '33333333-3333-4333-8333-333333333333';
+    const deps = makeDeps({ categories: { loadCatalog: async () => catalog, loadCustomRows: async () => [{ id: custom, leafPaths: ['A › C'] }], listCustom: async () => [] } });
+    const res = await createResearchService(deps).search(actor, {
+      schemaVersion: 1,
+      filters: { categories: { selections: [{ kind: 'taxonomy', path: 'A › B', includeDescendants: true }, { kind: 'custom', id: custom }] } },
+    });
+    const parsed = parseExplorerFilters(searchParamsToLike(new URL(res.explorerUrl!).searchParams));
+    expect(parsed).toMatchObject({ leafPaths: ['A › B'], customCategoryIds: [custom] });
+  });
+  it('notes what the link cannot carry, and omits the link past the URL cap', async () => {
+    const delta = await createResearchService(makeDeps()).search(actor, { schemaVersion: 1, presetIds: ['growing_4w_v1'] });
+    expect(delta.explorerNotes).toEqual([NOTE_DELTA]);
+    expect(delta.explorerUrl).toContain('sort=imp');
+    const paths = Array.from({ length: 400 }, (_, i) => `Department › Section ${i} › A fairly long leaf category name ${i}`);
+    const wide = buildCategoryCatalog({ snapshotVersion: 'snap-a', datasetWeek: '2026-09-12' }, paths.map((categoryPath) => ({ categoryPath, allCount: 1 })));
+    const long = await createResearchService(makeDeps({ categories: { loadCatalog: async () => wide, loadCustomRows: async () => [], listCustom: async () => [] } }))
+      .search(actor, { schemaVersion: 1, filters: { categories: { leafPaths: paths } } });
+    expect(long.explorerUrl).toBeNull();
+    expect(long.explorerNotes).toEqual([NOTE_LINK_TOO_LONG]);
   });
 });

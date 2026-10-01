@@ -399,3 +399,11 @@ describe('filters.excludeTerms', () => {
     expect(legacy.filters.excludeTerms).toEqual([]);
   });
 });
+
+describe('custom selection ids', () => {
+  it('are lowercased, so an uppercase uuid from a client still matches the lowercase ids Postgres returns (spec 2026-09-30 §3)', () => {
+    const parsed = filtersSchema.parse({ categories: { selections: [{ kind: 'custom', id: 'ABCDEF12-ABCD-4ABC-8ABC-ABCDEF123456' }] } });
+    expect(parsed.categories.selections).toEqual([{ kind: 'custom', id: 'abcdef12-abcd-4abc-8abc-abcdef123456' }]);
+    expect(filtersSchema.safeParse({ categories: { selections: [{ kind: 'custom', id: 'not-a-uuid' }] } }).success).toBe(false);
+  });
+});

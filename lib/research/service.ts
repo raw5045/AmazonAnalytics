@@ -5,6 +5,7 @@ import { env } from '@/lib/env';
 import { isPoolConnectTimeout } from '@/lib/db/tcpPool';
 import { fetchFits } from '@/lib/explorer/fetchKeywordDetail';
 import { mcpAudience } from '@/lib/mcp/config';
+import { explorerUrlFor, NOTE_LINK_TOO_LONG, toExplorerFilters } from '@/lib/workspace/explorerFilters';
 import { applyPresets, buildGuide, GUIDE_VERSION, QUERY_VERSION } from './catalog';
 import { defaultCategoryDeps, rankCandidates, resolveScope, type CategoryDeps } from './categories';
 import {
@@ -213,6 +214,23 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     await reserveFor(deps, actor, pageSize);
     const scope = await resolveScope(actor.localUserId, filters.categories, deps.limits.maxExpandedLeaves, deps.categories);
 
+    // Spec 2026-09-30 §3.2: the Explorer link for this exact search. Custom selections reach the
+    // Explorer by id, so the link's leaf list comes from the taxonomy selections and explicit leaf
+    // paths only — a second resolution against the same cached catalog when a custom selection is
+    // present (a subset of `scope`, so it cannot fail where the search itself succeeded).
+    const hasCustom = filters.categories.selections.some((s) => s.kind === 'custom');
+    const explorerLeaves = hasCustom
+      ? (await resolveScope(
+          actor.localUserId,
+          { selections: filters.categories.selections.filter((s) => s.kind === 'taxonomy'), leafPaths: filters.categories.leafPaths },
+          deps.limits.maxExpandedLeaves,
+          deps.categories,
+        )).leaves
+      : scope.leaves;
+    const explorer = toExplorerFilters({ filters, sort, window: comparisonWindow, leaves: explorerLeaves });
+    const explorerUrl = explorerUrlFor(deps.appUrl, explorer.filters);
+    const explorerNotes = explorerUrl === null ? [...explorer.notes, NOTE_LINK_TOO_LONG] : explorer.notes;
+
     // M5: reachable/visible must be known before compiling, so the SQL only ever asks for as
     // many rows as the response could actually show (visible + 1, to detect a next page) —
     // never a flat pageSize + 1 past the maxRowsPerSearch cap. An offset already beyond the cap
@@ -295,6 +313,8 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
         effectiveWindow: comparisonWindow,
         presetApplications: applications,
         resolvedCategoryScope: scope.scope,
+        explorerUrl,
+        explorerNotes,
         provenance: {
           datasetWeek: run.meta.currentWeekEndDate, snapshotVersion: run.meta.snapshotVersion, summaryRefreshedAt: run.meta.refreshedAt,
           resultCapturedAt: resultCapturedAt.toISOString(), volumeFitRunId: run.meta.volumeFitRunId, calibrationMonthEndDate: run.meta.calibrationMonthEndDate,

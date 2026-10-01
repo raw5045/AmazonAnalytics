@@ -96,7 +96,8 @@ export const taxonomySelectionSchema = z.strictObject({
   path: z.string().trim().min(1).max(256),
   includeDescendants: z.boolean().default(true),
 });
-export const customSelectionSchema = z.strictObject({ kind: z.literal('custom'), id: z.uuid() });
+// Lowercased: clients may send uppercase, Postgres returns lowercase, and resolveScope matches ids in JavaScript (spec 2026-09-30 §3).
+export const customSelectionSchema = z.strictObject({ kind: z.literal('custom'), id: z.uuid().toLowerCase() });
 export const categoriesSchema = z
   .strictObject({
     selections: z.array(z.discriminatedUnion('kind', [taxonomySelectionSchema, customSelectionSchema])).max(25).default([]),
@@ -398,6 +399,10 @@ export interface SearchResponse {
   effectiveWindow: Window;
   presetApplications: PresetApplication[];
   resolvedCategoryScope: ResolvedScope;
+  /** The Explorer opened with this search's filters, sort and window (spec 2026-09-30 §3.2, §5), or null when the link would exceed the URL cap (§5.6). */
+  explorerUrl: string | null;
+  /** What the link could not carry, or why it is null; empty when the link is exact. */
+  explorerNotes: string[];
   provenance: Provenance;
   rows: SearchRow[];
   pagination: Pagination;

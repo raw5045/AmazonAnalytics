@@ -83,6 +83,8 @@ const service: ResearchService = {
       effectiveWindow: '4w' as const,
       presetApplications: [],
       resolvedCategoryScope: { selections: [], expandedLeafCount: 0, leafSetHash: null, previewPaths: [], previewComplete: true },
+      explorerUrl: 'https://keywordquarry.com/explorer?window=4w&sort=rank',
+      explorerNotes: [],
       provenance: {
         datasetWeek: '2026-09-12', snapshotVersion: 's', summaryRefreshedAt: 'x', resultCapturedAt: 'y',
         volumeFitRunId: null, calibrationMonthEndDate: null, volumeIsExtrapolated: false, guideVersion: 1, queryVersion: 1,
