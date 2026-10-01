@@ -156,7 +156,7 @@ One converter serves the search link (§3.2), `create_saved_view` and `update_sa
 | `titleGap.slots` / `.quantifier` / `.mode` | `titleSlots` / `titleMatchMode` / `matchMode` | copy; `titleGap: null` leaves the Explorer defaults (`[1,2,3]`, `null`, `'loose'`) |
 | `categories.selections[kind='custom'].id` | `customCategoryIds` | copy the ids; their leaves are **not** expanded into `leafPaths` (the Explorer expands custom ids itself) |
 | `categories.selections[kind='taxonomy']`, `categories.leafPaths` | `leafPaths` | the expanded terminal leaves from step 3 (taxonomy selections and explicit leaf paths only) |
-| a single taxonomy selection that is a **department** (one path segment, `includeDescendants: true`), with no other selection of either kind and no explicit `leafPaths` | `category` | the department name, instead of up to thousands of leaves. Only when it is alone: the Explorer ANDs `category` with `leafPaths`, while the search ORs selections. Implementer check (plan): a production read-only probe confirming `top_clicked_category_1_current` equals the first segment of `top_clicked_category_path`; if it does not, drop this row and always expand to leaves. |
+| a single taxonomy selection that is a **department** | `leafPaths` | **Dropped 2026-09-30.** The planned shortcut (map a lone department to the Explorer's broad category) was probed before implementation: in a 200,000-row sample, 182,658 rows have a broad category that differs from the first segment of the leaf path. `top_clicked_category_1_current` is Brand Analytics' own taxonomy ("Apparel", "Home", "Kitchen"), not the Keepa path root ("Clothing, Shoes & Jewelry", "Home & Kitchen"), and the mapping is not one to one. A department selection therefore expands to its leaves like every other selection; a department too large for a link gets the "save it as a view" note (§5.6). |
 | `comparisonWindow` (effective) | `window` | copy. The view keeps the window the search actually ran with (research defaults to 4w, the Explorer to 1w), so the Explorer shows the same change columns the AI quoted. |
 | `movement` | `jump`, `jumpMetric`, `jumpFrom`, `jumpTo`, `window` | §5.3 |
 | `sort` | `sort` | §5.4 |
@@ -311,7 +311,7 @@ Rules, in the guide's existing style:
 - "Caps: 5 saved views, 25 custom categories, 100 watched keywords. At a cap, tell the person what they could remove; do not delete anything to make room unless they say so."
 - "Never create, change or delete anything the person did not ask for in this conversation."
 
-`GUIDE_VERSION` becomes 2 (echoed in search provenance). `guide()` passes `workspace: actor.channel === 'mcp' && mcpWriteEnabled()`, so Ask AI's guide is unchanged.
+`GUIDE_VERSION` becomes 2 (echoed in search provenance). `guide()` passes `workspace: actor.channel === 'mcp' && mcpWriteEnabled()`, so Ask AI's guide has no workspace section; it shares the error-code list (which now carries the three workspace codes, as it already carries the never-thrown `UNSUPPORTED_FILTER`) and `guideVersion` with the MCP guide.
 
 ### 9.2 Server instructions
 `lib/mcp/handler.ts`'s `instructions` string gains, when the flag is on: "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; the client asks the person before each write; confirm names and deletions."

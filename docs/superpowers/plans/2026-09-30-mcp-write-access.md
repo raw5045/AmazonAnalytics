@@ -12,7 +12,7 @@
 
 ## Conventions (every task)
 
-- **TDD**: write the failing test, run it, implement, run it, commit. Run one file at a time: `pnpm vitest run <path>`. If you pipe output (`| tail`), check `${PIPESTATUS[0]}`, not the pipe's exit code.
+- **TDD**: write the failing test, run it, implement, run it, commit. Run one file at a time: `pnpm vitest run <path>`. If you pipe output (`| tail`), check `${PIPESTATUS[0]}`, not the pipe's exit code. Whole-project `pnpm lint` fails on pre-existing warnings and on untracked throwaway scripts (review finding, Task 2); wherever a step says `pnpm lint`, run `pnpm exec eslint <the files you touched>` instead.
 - **Commits** are local only, on `main`, one per task (or per step where marked). Every commit message ends with exactly this trailer line: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`. Use `git commit -F - <<'MSG' … MSG`. **Never push.** `git add` only the files named in the task, never `-A` or `.` (the working tree carries untracked throwaway scripts that must stay untracked, including `scripts/applyMigration0048.ts`).
 - **No DDL.** Nothing in this plan touches `db/migrations`, `pnpm db:generate` or `pnpm db:migrate`.
 - **Log-safe**: never log `e.message` of a database error (it embeds SQL params); log `e.name` / `code` via `errFields` (`lib/ask/logSafe.ts`) or the patterns shown. Never log names, keyword text, leaf paths or member emails.
@@ -52,6 +52,9 @@
 - Modify: `lib/research/errors.ts`
 - Modify: `lib/activity/bump.ts`
 - Modify: `lib/activity/etDay.ts`, `lib/activity/etDay.test.ts`
+- Modify (review amendment): `.env.example` — document `MCP_WRITE_ENABLED` in the MCP section, as every other serverSchema flag is
+
+> **Landed as 4c73891 (2026-09-30).** Spec review: compliant. Code-quality review: approve with fixes — four more `secondsUntilNextEtDay` tests (the 23-hour and 25-hour daylight-saving days, rounding a partial second up, the year boundary; the committed three could not tell a correct implementation from three plausible wrong ones), the `.env.example` entry, and three nits (config comment without a hard-coded tool count, test title "is off unless MCP_WRITE_ENABLED is exactly \"1\"", etDay comment citing §7, §8.2). Fix round requested from the same implementer; its SHA is in the Results table. The reviewer's oracle sweep (479,058 instants, 2024–2028, three host time zones) found 0 mismatches in the helper itself.
 
 - [ ] **Step 1: Failing tests for the flag, the limit and the ET helper**
 
@@ -336,6 +339,8 @@ MSG
 - Create (untracked, never committed): `scripts/probeDeptBroadCategory0930.ts`
 - Create: `lib/workspace/explorerFilters.ts`
 - Test: `lib/workspace/explorerFilters.test.ts`
+
+> **Landed as 3f69c6d (2026-09-30; amended from 7968773).** The probe returned `{"sampled":200000,"mismatches":182658}`: the Explorer's broad category is Brand Analytics' own taxonomy ("Apparel" over "Clothing, Shoes & Jewelry", "Home" and "Kitchen" both over "Home & Kitchen"), so the department shortcut was dropped per the decision rule and spec §5.2 now says so. Two test corrections in the fix round: the band test's numbers (100000→50000) accidentally matched the `100k_to_50k` preset, so it now uses 100000→40000 to exercise the custom-jump path; and a pin test replaces the deleted department test ("a department alone expands to its leaves like any other selection"). 16 tests.
 
 - [ ] **Step 1: The production read-only probe for the department shortcut (§5.2)**
 
@@ -2944,9 +2949,8 @@ describe('search: the Explorer link (spec 2026-09-30 §3.2)', () => {
     });
     expect(res.explorerUrl).toMatch(/^https:\/\/keywordquarry\.com\/explorer\?/);
     const parsed = parseExplorerFilters(searchParamsToLike(new URL(res.explorerUrl!).searchParams));
-    // 'A' is a whole department alone → the broad-category filter (§5.2). If Task 3's probe
-    // dropped that shortcut, expect `category: null, leafPaths: ['A › B', 'A › C']` instead.
-    expect(parsed).toMatchObject({ window: '1w', volMin: 10001, category: 'A', leafPaths: [], sort: 'rank' });
+    // 'A' is a whole department: the probe dropped the broad-category shortcut (spec §5.2), so it expands to its leaves.
+    expect(parsed).toMatchObject({ window: '1w', volMin: 10001, category: null, leafPaths: ['A › B', 'A › C'], sort: 'rank' });
     expect(res.explorerNotes).toEqual([]);
   });
   it('lists the leaves of a taxonomy selection but passes a custom selection by id', async () => {
