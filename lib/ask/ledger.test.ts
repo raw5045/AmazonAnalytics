@@ -141,7 +141,13 @@ describe('write toggles (arc 4)', () => {
     expect(sqlOf()).toContain('auto_approve_changes = COALESCE($1::boolean, auto_approve_changes)');
     expect(sqlOf()).toContain('auto_approve_deletes = COALESCE($2::boolean, auto_approve_deletes)');
     expect(sqlOf()).toContain('WHERE user_id = $3::uuid');
+    expect(sqlOf()).toContain('RETURNING user_id, access');
     expect(paramsOf()).toEqual([true, null, 'u1']);
+  });
+  it('setAutoApprove binds false as a value (turning a toggle off), not as "leave as is"', async () => {
+    execute.mockResolvedValueOnce({ rows: [row] });
+    await setAutoApprove('u1', { changes: false });
+    expect(paramsOf()).toEqual([false, null, 'u1']);
   });
   it('setAutoApprove returns null when the account row is missing', async () => {
     execute.mockResolvedValueOnce({ rows: [] });

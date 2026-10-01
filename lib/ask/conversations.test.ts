@@ -169,16 +169,19 @@ describe('write approval state (arc 4)', () => {
     await expect(stampChangesApproved('u1', 'c1', new Date('2026-10-01T12:00:00.000Z'))).resolves.toBe(true);
     expect(sqlOf(2)).toContain('UPDATE ask_conversations SET changes_approved_at = COALESCE(changes_approved_at, $1::timestamptz)');
     expect(sqlOf(2)).toContain('WHERE id = $2::uuid AND user_id = $3::uuid');
+    expect(sqlOf(2)).toContain('RETURNING id');
     expect(paramsOf(2)).toEqual(['2026-10-01T12:00:00.000Z', 'c1', 'u1']);
     execute.mockResolvedValueOnce({ rows: [] });
     await expect(stampChangesApproved('u2', 'c1', new Date('2026-10-01T12:00:00.000Z'))).resolves.toBe(false);
+    expect(paramsOf(3)).toEqual(['2026-10-01T12:00:00.000Z', 'c1', 'u2']);
     execute.mockResolvedValueOnce({ rows: [convRow] });
     await expect(listConversations('u1')).resolves.toMatchObject([{ changesApprovedAt: null }]);
   });
   it('replaceMessageParts rewrites one message\'s parts inside its conversation and cleans NULs', async () => {
     execute.mockResolvedValueOnce({ rows: [{ id: 'm2' }] });
     await expect(replaceMessageParts('c1', 'm2', [{ type: 'text', text: 'a\u0000b' }])).resolves.toBe(true);
-    expect(sqlOf()).toContain('UPDATE ask_messages SET parts = $1::jsonb WHERE id = $2::uuid AND conversation_id = $3::uuid');
+    expect(sqlOf()).toContain("UPDATE ask_messages SET parts = $1::jsonb WHERE id = $2::uuid AND conversation_id = $3::uuid AND role = 'assistant'");
+    expect(sqlOf()).toContain('RETURNING id');
     expect(paramsOf()).toEqual([JSON.stringify([{ type: 'text', text: 'ab' }]), 'm2', 'c1']);
     execute.mockResolvedValueOnce({ rows: [] });
     await expect(replaceMessageParts('c1', 'm9', [])).resolves.toBe(false);

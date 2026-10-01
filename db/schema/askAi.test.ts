@@ -105,4 +105,11 @@ describe('ask ai schema', () => {
       }
     });
   });
+
+  it('0049 adds the two write toggles as NOT NULL DEFAULT false and the per-chat stamp as a nullable timestamptz', () => {
+    const addColumnsSql = readFileSync(ADD_COLUMNS_MIGRATION_PATH, 'utf8');
+    expect(addColumnsSql).toMatch(/auto_approve_changes boolean NOT NULL DEFAULT false/);
+    expect(addColumnsSql).toMatch(/auto_approve_deletes boolean NOT NULL DEFAULT false/);
+    expect(addColumnsSql).toMatch(/changes_approved_at timestamptz;/);
+  });
 });

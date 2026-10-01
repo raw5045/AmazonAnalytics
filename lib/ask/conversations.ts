@@ -26,8 +26,10 @@ function toConv(r: ConvRow): AskConversation {
   if (!isAskModelId(r.model)) throw new Error(`ask_conversations ${r.id} has unknown model ${r.model}; retiring a model needs a data migration`);
   return {
     id: r.id, userId: r.user_id, title: r.title, model: r.model, messageCount: Number(r.message_count),
-    inFlightSince: r.in_flight_since === null ? null : new Date(r.in_flight_since), createdAt: new Date(r.created_at), updatedAt: new Date(r.updated_at),
+    inFlightSince: r.in_flight_since === null ? null : new Date(r.in_flight_since),
+    // The undefined guard: a missing column reads as not approved, so the card shows.
     changesApprovedAt: r.changes_approved_at === null || r.changes_approved_at === undefined ? null : new Date(r.changes_approved_at),
+    createdAt: new Date(r.created_at), updatedAt: new Date(r.updated_at),
   };
 }
 const CONV_COLUMNS = sql.raw('id, user_id, title, model, message_count, in_flight_since, changes_approved_at, created_at, updated_at');
@@ -53,8 +55,8 @@ export function storedToUiMessage(m: StoredMessage): AskUIMessage {
  * assistant message's parts (they come straight from the model's output) or the title text
  * re-derived from a first message here, so this file cleans at the DB boundary rather than
  * trusting a caller (Task 8 re-review): `cleanPartsJson` for a parts array
- * (createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage all use it),
- * `cleanString` for the plain text a title is cut from.
+ * (createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage and
+ * replaceMessageParts all use it), `cleanString` for the plain text a title is cut from.
  */
 function cleanString(s: string): string {
   return s.replaceAll('\u0000', '').toWellFormed();
@@ -172,7 +174,11 @@ export async function releaseTurnLock(conversationId: string): Promise<void> {
   await db.execute(sql`UPDATE ask_conversations SET in_flight_since = NULL WHERE id = ${conversationId}::uuid`);
 }
 
-/** Spec 2026-10-01 §6: "Approve" on a change card allows changes for the rest of this chat. First stamp wins; never cleared by the app. */
+/**
+ * Spec 2026-10-01 §6: "Approve" on a change card allows changes for the rest of this chat. First
+ * stamp wins; never cleared by the app. True when the chat is this member's, including one that
+ * was already stamped (the earlier stamp is kept); false when the chat is missing or not theirs.
+ */
 export async function stampChangesApproved(userId: string, conversationId: string, now: Date): Promise<boolean> {
   const r = await db.execute(sql`
     UPDATE ask_conversations SET changes_approved_at = COALESCE(changes_approved_at, ${now.toISOString()}::timestamptz)
@@ -181,12 +187,15 @@ export async function stampChangesApproved(userId: string, conversationId: strin
 }
 
 /**
- * Rewrites one stored message's parts — used only to record an approval's answer and outcome on
- * the assistant message that asked (spec 2026-10-01 §6). Scoped to the conversation the route has
- * already loaded and locked under the owner's id, so no user_id predicate is needed here.
+ * Rewrites one stored assistant message's parts — used only to record an approval's answer and
+ * outcome on the assistant message that asked (spec 2026-10-01 §6). `role = 'assistant'` keeps it
+ * off every user-role row: a member's own message and the server-written approval outcome message.
+ * No user_id predicate. Precondition: `conversationId` was verified as the member's
+ * (`acquireTurnLock` + `loadConversation` under their id) and `messageId` comes from that loaded
+ * history, never from a request body.
  */
 export async function replaceMessageParts(conversationId: string, messageId: string, parts: unknown[]): Promise<boolean> {
-  const r = await db.execute(sql`UPDATE ask_messages SET parts = ${cleanPartsJson(parts)}::jsonb WHERE id = ${messageId}::uuid AND conversation_id = ${conversationId}::uuid RETURNING id`);
+  const r = await db.execute(sql`UPDATE ask_messages SET parts = ${cleanPartsJson(parts)}::jsonb WHERE id = ${messageId}::uuid AND conversation_id = ${conversationId}::uuid AND role = 'assistant' RETURNING id`);
   return r.rows.length > 0;
 }
 

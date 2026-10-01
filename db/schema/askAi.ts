@@ -3,8 +3,9 @@ import { pgTable, uuid, varchar, text, integer, bigint, bigserial, boolean, date
 import { users } from './users';
 
 /**
- * Ask AI (spec §8, migration 0048). Typing and reads only — every atomic write goes through
- * single-statement SQL in lib/ask/{ledger,conversations}.ts because neon-http has no transactions.
+ * Ask AI (spec §8, migration 0048; migration 0049 adds the arc-4 write-approval columns, spec
+ * 2026-10-01 §7). Typing and reads only — every atomic write goes through single-statement SQL in
+ * lib/ask/{ledger,conversations}.ts because neon-http has no transactions.
  * Money columns are integer micro-dollars (bigint in Postgres, read as JS numbers: well under 2^53).
  *
  * That JS-number mapping is Drizzle's own column read path — it does not apply to a raw

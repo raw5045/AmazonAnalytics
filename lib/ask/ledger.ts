@@ -107,7 +107,10 @@ export async function resetPeriodIfDue(userId: string, now: Date): Promise<AskAc
   return r.rows[0] ? toAccount(r.rows[0]) : null;
 }
 
-/** Spec 2026-10-01 §8: a partial update of the two write toggles; null means "leave as is". Owner-scoped by primary key. */
+/**
+ * Spec 2026-10-01 §8: a partial update of the two write toggles. An omitted field is left as is
+ * (bound as NULL); `false` turns a toggle off. Owner-scoped by primary key.
+ */
 export async function setAutoApprove(userId: string, patch: { changes?: boolean; deletes?: boolean }): Promise<AskAccount | null> {
   const r = await db.execute<AccountRow>(sql`
     UPDATE ask_accounts
