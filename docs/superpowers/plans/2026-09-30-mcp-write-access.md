@@ -54,7 +54,7 @@
 - Modify: `lib/activity/etDay.ts`, `lib/activity/etDay.test.ts`
 - Modify (review amendment): `.env.example` — document `MCP_WRITE_ENABLED` in the MCP section, as every other serverSchema flag is
 
-> **Landed as 4c73891 (2026-09-30).** Spec review: compliant. Code-quality review: approve with fixes — four more `secondsUntilNextEtDay` tests (the 23-hour and 25-hour daylight-saving days, rounding a partial second up, the year boundary; the committed three could not tell a correct implementation from three plausible wrong ones), the `.env.example` entry, and three nits (config comment without a hard-coded tool count, test title "is off unless MCP_WRITE_ENABLED is exactly \"1\"", etDay comment citing §7, §8.2). Fix round requested from the same implementer; its SHA is in the Results table. The reviewer's oracle sweep (479,058 instants, 2024–2028, three host time zones) found 0 mismatches in the helper itself.
+> **Landed as 4c73891 (2026-09-30).** Spec review: compliant. Code-quality review: approve with fixes — four more `secondsUntilNextEtDay` tests (the 23-hour and 25-hour daylight-saving days, rounding a partial second up, the year boundary; the committed three could not tell a correct implementation from three plausible wrong ones), the `.env.example` entry, and three nits (config comment without a hard-coded tool count, test title "is off unless MCP_WRITE_ENABLED is exactly \"1\"", etDay comment citing §7, §8.2). Fix round requested from the same implementer; its SHA is in the Results table. The reviewer's oracle sweep (479,058 instants, 2024–2028, two host time zones plus a spot check under a third) found 0 mismatches in the helper itself.
 
 - [ ] **Step 1: Failing tests for the flag, the limit and the ET helper**
 
@@ -198,6 +198,8 @@ The research tools are typed to `ResearchService`; the workspace tools need the 
 - Modify: `lib/mcp/tools/registerResearchTools.ts`
 - Test (existing, must stay green): `lib/research/tools.test.ts`, `lib/mcp/tools/registerResearchTools.test.ts`, `lib/ask/tools.test.ts`
 
+> **Landed as c30d224 (2026-09-30).** Spec review: byte-identical to the plan. Code-quality review: approve (type probes showed the generic is sound, the adapter rejects a mismatched service, and the SDK's annotations typing stays safe under `exactOptionalPropertyTypes`). Nits queued for a later nits commit: `toolResult.ts:33` should name `registerDefinitions.ts` as the `runTool` caller; the `tools.ts` doc comment should say the chat builds from `RESEARCH_TOOLS` only; the `inputSchema` comment should read "Must be a `z.strictObject(...)` (the type cannot tell strict from strip; the tests pin it)". A strictness loop (every definition's `inputSchema` rejects `{ __probe: 1 }` with issue code `unrecognized_keys`) goes into both tool tests with Task 7. Optional: a comment on why `run` is a property (not a method) and moving the two-failure-shapes paragraph into `registerDefinitions.ts`.
+
 - [ ] **Step 1: Replace the interface block in `lib/research/tools.ts`**
 
 Replace lines 12–32 (from `export const READ_ONLY_ANNOTATIONS` through the closing `}` of `ResearchToolDefinition`) with:
@@ -340,7 +342,7 @@ MSG
 - Create: `lib/workspace/explorerFilters.ts`
 - Test: `lib/workspace/explorerFilters.test.ts`
 
-> **Landed as 3f69c6d (2026-09-30; amended from 7968773).** The probe returned `{"sampled":200000,"mismatches":182658}`: the Explorer's broad category is Brand Analytics' own taxonomy ("Apparel" over "Clothing, Shoes & Jewelry", "Home" and "Kitchen" both over "Home & Kitchen"), so the department shortcut was dropped per the decision rule and spec §5.2 now says so. Two test corrections in the fix round: the band test's numbers (100000→50000) accidentally matched the `100k_to_50k` preset, so it now uses 100000→40000 to exercise the custom-jump path; and a pin test replaces the deleted department test ("a department alone expands to its leaves like any other selection"). 16 tests.
+> **Landed as 3f69c6d (2026-09-30; amended from 7968773).** The probe returned `{"sampled":200000,"mismatches":182658}`: the Explorer's broad category is Brand Analytics' own taxonomy ("Apparel" over "Clothing, Shoes & Jewelry", "Home" and "Kitchen" both over "Home & Kitchen"), so the department shortcut was dropped per the decision rule and spec §5.2 now says so. Two test corrections in the fix round: the band test's numbers (100000→50000) accidentally matched the `100k_to_50k` preset, so it now uses 100000→40000 to exercise the custom-jump path; and a pin test replaces the deleted department test ("a department alone expands to its leaves like any other selection"). 16 tests. Fix round 2 (d944c17, after the spec review): a prior bound on the side the jump never reads — a decline, or that bound alone — was dropped silently by the plan's own code, breaking spec §3.2's "empty notes = exact link"; it now notes `NOTE_JUMP_INVALID` (with a current bound) or `NOTE_PRIOR_ONLY` (alone). 17 tests; spec §5.3 gained the matching row.
 
 - [ ] **Step 1: The production read-only probe for the department shortcut (§5.2)**
 
@@ -2458,7 +2460,7 @@ describe('create_saved_view', () => {
     const [uid, input] = (deps.savedViews.create as ReturnType<typeof vi.fn>).mock.calls[0] as [string, { name: string; filters: Record<string, unknown> }];
     expect(uid).toBe('u1');
     expect(input.name).toBe('Lamps');
-    // The department is not alone (a custom selection sits beside it), so its leaves are listed and the custom id passes by id.
+    // Taxonomy selections expand to their leaves; the custom selection passes to the Explorer by id.
     expect(input.filters).toMatchObject({ ...EXPLORER_DEFAULTS, window: '1w', q: 'lamp', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'], customCategoryIds: [CUSTOM_ID], category: null });
     expect(res).toEqual({ view: expect.objectContaining({ id: VIEW_ID, explorerUrl: `https://keywordquarry.com/explorer?view=${VIEW_ID}` }), notes: [] });
     expect(deps.record).toHaveBeenCalledWith('u1', 0, 'mcp');

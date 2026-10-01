@@ -138,7 +138,7 @@ One converter serves the search link (§3.2), `create_saved_view` and `update_sa
 1. `parseSearchInput(search)` — a continuation (`cursor`) is not accepted here: the strict schema rejects the key; the message says to pass the criteria, not a cursor.
 2. `applyPresets(request)` → `filters`, `sort`, `comparisonWindow`, `applications`. Presets are filter bundles, so this step is lossless.
 3. `resolveScope(userId, { selections: taxonomy selections only, leafPaths }, limits.maxExpandedLeaves, deps)` → the expanded, sorted leaf list (max 2000, the Explorer's own `MAX_LEAF_PATHS`). Custom selections are left out of this expansion on purpose: they reach the Explorer by id (§5.2). Inside `search()` this is a second `resolveScope` call after the search's own; it reads the same cached catalog, loads no custom rows, and its leaf set is a subset of the search's, so it cannot fail where the search succeeded.
-4. `toExplorerFilters({ filters, sort, window: comparisonWindow, leaves, selections })` → `{ filters: ExplorerFilters, notes: string[] }`.
+4. `toExplorerFilters({ filters, sort, window: comparisonWindow, leaves })` → `{ filters: ExplorerFilters, notes: string[] }` (custom selections are read from `filters.categories`).
 5. For a saved view: `normalizeFilters(filters)` (the app's own normaliser: `filtersToSearchParams` → `parseExplorerFilters`, page 1, perPage 100) and store. For a link: `explorerUrlFor(appUrl, filters)`.
 
 ### 5.2 Field map (exact)
@@ -183,6 +183,7 @@ The Explorer's jump is "was on one side of `from`, is now past `to`", and always
 | `current` with an extra bound the jump cannot carry (e.g. rank `current.gte`) | the extra bound becomes the plain range on the same metric when possible, otherwise dropped, with a note |
 | `delta` (volume only) | dropped, with a note: "The Explorer cannot filter on the size of the change itself; the from/to move was kept." |
 | a from/to pair the Explorer would reject (rank needs from > to, volume needs from < to; `parseExplorerFilters` drops such a custom jump silently) | the jump is dropped, with a note; any current-side bound still becomes the plain range |
+| a prior bound on the side the jump does not read (rank `lt`/`lte`, volume `gt`/`gte`): a decline, an improvement within a band, or that bound alone | no jump. With a current bound the note says the Explorer cannot express the move; alone, the note says the earlier-value bound was dropped. Any current bound still becomes the plain range. (Added 2026-09-30 after the Task 3 spec review: the first draft dropped these silently, breaking §3.2's "empty notes = exact link".) |
 
 "Moved from 100k to 50k over the last week" is rank movement `{ window: '1w', prior: { gt: 100000 }, current: { lt: 50000 } }` and lands exactly on the Explorer's `100k_to_50k` preset with `window: '1w'`.
 
@@ -355,7 +356,7 @@ client tool call
 
 All offline (vitest, node environment for MCP/research modules, `vi.mock('@/lib/env', …)` as the existing tests do), run before anything ships:
 
-1. **Converter** (`lib/workspace/explorerFilters.test.ts`): every row of §5.2 including the gt/lt shifts; presets expand first; the department shortcut and its "alone" condition; each movement row in §5.3 (preset hit, custom, current-only → range, prior-only dropped, band, delta, baseline note); each sort in §5.4; the note texts; `compactExplorerFilters`; `explorerUrlFor` at and over 12,000 bytes; and a round trip: converted filters → `normalizeFilters` → `parseExplorerFilters(searchParamsToLike(new URLSearchParams(filtersToQueryString(f))))` equals the stored object.
+1. **Converter** (`lib/workspace/explorerFilters.test.ts`): every row of §5.2 including the gt/lt shifts; presets expand first; a department selection expands to its leaves like any other; each movement row in §5.3 (preset hit, custom, current-only → range, prior-only dropped, band, delta, baseline note); each sort in §5.4; the note texts; `compactExplorerFilters`; `explorerUrlFor` at and over 12,000 bytes; and a round trip: converted filters → `normalizeFilters` → `parseExplorerFilters(searchParamsToLike(new URLSearchParams(filtersToQueryString(f))))` equals the stored object.
 2. **Commands** (`lib/savedViews/commands.test.ts`, `lib/customCategories/commands.test.ts`, `lib/watchlist/commands.test.ts`): every code in §6 with `@/db/client` mocked; leaf modes add/remove/replace; dedupe across keywords and ids; `skippedAtCap` in input order; `bulkAddToWatchlist`'s existing tests still pass unchanged.
 3. **Routes** (`app/api/explorer/saved-views/*.test.ts`, `app/api/category-builder/custom/*.test.ts`): every status code and message in §6.1–6.2 before and after extraction (the assertions are written against the pre-extraction routes first, then the extraction lands under them).
 4. **Tool definitions** (`lib/workspace/tools.test.ts`): eleven names in order, strict schemas (a `cursor` inside `search` is rejected; `categories` needs at least one selection or leaf path; watchlist inputs 1–100 combined), annotations per §3, `requiresConfirmation` true on the eight writes, frozen entries, `run` dispatch.
