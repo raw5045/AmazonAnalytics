@@ -57,18 +57,18 @@ All names are snake_case like the research tools. "Read-only" tools carry `READ_
 | `list_custom_categories` | read-only | `{}` | `{ categories: [{ id, name, leafCount, previewPaths, previewComplete, explorerUrl, createdAt, updatedAt }], count, limit: 25 }` — `previewPaths` = first 20 stored paths, `previewComplete` = leafCount ≤ 20 |
 | `list_watchlist` | read-only | `{}` | `{ items: [{ searchTermId, keyword, keywordUrl, addedAt }], count, limit: 100 }`, newest first |
 | `create_saved_view` | `destructiveHint: false, idempotentHint: false` | `{ name, search }` | `{ view: { id, name, explorerUrl, filters }, notes }` |
-| `update_saved_view` | `destructiveHint: false, idempotentHint: true` | `{ id, name?, search? }` (at least one of `name`, `search`) | same as create |
+| `update_saved_view` | `destructiveHint: true, idempotentHint: true` (it replaces the stored filters wholesale; MCP defines `destructiveHint: false` as additive-only — changed 2026-09-30 after the Task 7 code review) | `{ id, name?, search? }` (at least one of `name`, `search`) | same as create |
 | `delete_saved_view` | `destructiveHint: true, idempotentHint: true` | `{ id }` | `{ deleted: { id, name } }` |
 | `create_custom_category` | `destructiveHint: false, idempotentHint: false` | `{ name, categories }` | `{ category: { id, name, leafCount, previewPaths, previewComplete, explorerUrl }, notes }` |
-| `update_custom_category` | `destructiveHint: false, idempotentHint: true` | `{ id, name?, categories?, leafMode: 'replace' \| 'add' \| 'remove' (default 'replace') }` (at least one of `name`, `categories`) | same as create |
+| `update_custom_category` | `destructiveHint: true, idempotentHint: true` (replace and remove drop leaves; same reasoning) | `{ id, name?, categories?, leafMode: 'replace' \| 'add' \| 'remove' (default 'replace') }` (at least one of `name`, `categories`) | same as create |
 | `delete_custom_category` | `destructiveHint: true, idempotentHint: true` | `{ id }` | `{ deleted: { id, name, leafCount } }` |
 | `add_to_watchlist` | `destructiveHint: false, idempotentHint: true` | `{ keywords?: string[], searchTermIds?: string[] }` (1–100 items combined) | `{ added, alreadyWatching, unmatched: string[], skippedAtCap, watching, limit: 100 }` |
 | `remove_from_watchlist` | `destructiveHint: true, idempotentHint: true` | `{ keywords?: string[], searchTermIds?: string[] }` (1–100 items combined) | `{ removed, notWatching, unmatched: string[], watching, limit: 100 }` |
 
 Field rules:
 
-- `name`: string, trimmed, 1–80 characters (the app's `validateName` on both surfaces). Names are labels, never keys.
-- `id`: UUID (`z.uuid()`), always the caller's own row. **Edits and deletes take ids only**; the AI gets them from the list tools, from a create result, or (watchlist) from search rows.
+- `name`: string, trimmed, 1–80 characters (the app's `validateName` on both surfaces). Unique per account: saved-view names exactly, custom-category names ignoring case. Names are labels, never keys.
+- `id`: UUID (`z.uuid().toLowerCase()` — clients may send uppercase, Postgres returns lowercase, so the schema lowercases; the research schema's custom-selection id gets the same treatment in Task 9), always the caller's own row. **Edits and deletes take ids only**; the AI gets them from the list tools, from a create result, or (watchlist) from search rows.
 - `search`: the `search_keywords` input minus `cursor` and `pageSize` — `{ schemaVersion?, presetIds?, filters?, sort?, comparisonWindow? }`, built as `searchToolInputSchema.omit({ cursor: true, pageSize: true })`. A `cursor` key is rejected by the strict schema; the description says "pass the criteria you searched with, never a cursor".
 - `categories`: exactly `filters.categories` from the research schema (`categoriesSchema`: `selections` ≤ 25 of `{ kind: 'taxonomy', path, includeDescendants }` or `{ kind: 'custom', id }`, plus `leafPaths` ≤ 2000 exact terminal paths). Refined: at least one selection or leaf path.
 - `keywords`: plain keyword text, trimmed, 1–512 characters each, matched through the same normalized lookup the Watchlist page's paste box uses (`normalizeForMatch` + `search_terms.search_term_normalized`). `searchTermIds`: UUIDs from search rows. An unknown id or unmatched text goes into `unmatched` as the string the caller passed.
@@ -77,7 +77,7 @@ Field rules:
 
 ### 3.1 Tool descriptions
 
-One or two plain sentences each, in the style of the research tools: what it does, what it returns, and, for writes, "The client asks the person before this runs." Descriptions are what Claude and ChatGPT show in the approval prompt, so no schema sketches and no jargon. Delete descriptions say the deletion is permanent; `remove_from_watchlist` says removal is not.
+One or two plain sentences each, in the style of the research tools: what it does, what it returns, and, for writes, "Clients normally ask the person before this runs." ("normally": a member can choose Always allow, and some clients auto-run) Descriptions are what Claude and ChatGPT show in the approval prompt, so no schema sketches and no jargon. Delete descriptions say the deletion is permanent; `remove_from_watchlist` says removal is not.
 
 ### 3.2 `search_keywords` gains a link
 
@@ -94,9 +94,9 @@ New:
 
 | File | Responsibility |
 |---|---|
-| `lib/workspace/contracts.ts` | zod input schemas (strict) and TypeScript response types for the eleven tools; `WORKSPACE_TOOL_NAMES`. |
+| `lib/workspace/contracts.ts` | zod input schemas (strict), TypeScript response types and the `WorkspaceService` interface for the eleven tools; `WORKSPACE_TOOL_NAMES`. (The interface lives here, not in service.ts, so tools.ts never imports the service's runtime.) |
 | `lib/workspace/tools.ts` | `WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition>` — name, title, description, schema, annotations, `requiresConfirmation`, `run(service, actor, args)`. Same frozen-definition discipline as `RESEARCH_TOOLS`. |
-| `lib/workspace/service.ts` | `WorkspaceService` (one method per tool), `createWorkspaceService(deps)`, `defaultWorkspaceService()` singleton, `resetWorkspaceServiceForTests()`. Order per call: validate → reserve (per-minute bucket) → daily write cap (writes only) → command → record. |
+| `lib/workspace/service.ts` | implements `WorkspaceService` (one method per tool): `createWorkspaceService(deps)`, `defaultWorkspaceService()` singleton, `resetWorkspaceServiceForTests()`. Order per call: validate → reserve (per-minute bucket) → daily write cap (writes only) → command → record. |
 | `lib/workspace/explorerFilters.ts` | The converter (§5): `toExplorerFilters(input)`, `explorerUrlFor(appUrl, filters)`, `compactExplorerFilters(filters)`, `savedViewUrlFor(appUrl, id)`, `customCategoryUrlFor(appUrl, id)`. Pure; no I/O. |
 | `lib/workspace/examples.ts` | The three workspace example prompts for the Connect AI page (§9.3). |
 | `lib/mcp/tools/registerWorkspaceTools.ts` | Registers `WORKSPACE_TOOLS` on the `McpServer`, same thin adapter as `registerResearchTools.ts` (`actorFromContext`, `runTool`, `outputSchema: anyObject`). |
@@ -217,6 +217,8 @@ Today the saved-view, custom-category and watchlist rules live inline in the API
 
 Result shape for every command: `{ ok: true, ...payload } | { ok: false, code, message }`. `message` is the user-facing sentence the route already returns (verbatim).
 
+Unique-name violations are detected with `lib/db/pgErrorCode.ts` (`pgErrorCode(e)`, `isUniqueViolation(e)`), which reads the SQLSTATE on the error or on the `cause` that drizzle-orm wraps every driver error in (`DrizzleQueryError`). The inline check the routes used before this arc read only the top level and therefore never matched in production: a duplicate name answered 500 instead of the 409 sentence. Found by the Task 4 code review and fixed on both surfaces 2026-09-30; the test doubles now build the wrapped shape.
+
 ### 6.1 `lib/savedViews/commands.ts`
 
 | Command | Codes | Notes |
@@ -235,7 +237,7 @@ Result shape for every command: `{ ok: true, ...payload } | { ok: false, code, m
 | `updateCustomCategory(userId, id, { name?: unknown, leafPaths?: unknown })` → `{ category }` | `invalid_id`, `invalid_name`, `no_leaves`, `too_many_leaves`, `nothing_to_update`, `not_found`, `duplicate_name` | partial: a missing field is left alone. The PATCH route keeps requiring both fields and returns its existing 400s before calling this. |
 | `deleteCustomCategory(userId, id)` → `{ deleted: { id, name, leafCount } }` | `invalid_id`, `not_found` | owner-scoped. |
 
-Leaf modes are resolved in the workspace service, not the command: it loads the row (`loadCustomCategoryForUser`; `not_found` if missing), expands `categories` through `resolveScope(userId, categories, MAX_LEAF_PATHS_PER_CATEGORY, deps)` (12,000, not the search's 2,000 — a category may hold a whole department), then computes the final list: `replace` = the expansion; `add` = stored ∪ expansion (stored paths are kept as they are, even ones no longer in the catalog); `remove` = stored ∖ expansion. An empty result is `no_leaves`. The command then stores the full list. A custom selection inside `categories` expands to that category's live leaves, so categories can be composed; a category adding itself is a harmless no-op.
+Leaf modes are resolved in the workspace service, not the command: it loads the row (`loadCustomCategoryForUser`; `not_found` if missing), expands `categories` through `resolveScope(userId, categories, MAX_LEAF_PATHS_PER_CATEGORY, deps)` (12,000, not the search's 2,000 — a category may hold a whole department), then computes the final list: `replace` = the expansion; `add` = stored ∪ expansion (stored paths are kept as they are, even ones no longer in the catalog); `remove` = stored minus the explicit `leafPaths` taken verbatim (trimmed) and minus the expansion of any `selections` — explicit paths are not run through the catalog in remove mode, so a stale stored leaf that `list_custom_categories` just showed can still be removed (the catalog would otherwise reject it with CATEGORY_NOT_AVAILABLE; Task 7 code review, 2026-09-30). An empty result is `no_leaves`. The command then stores the full list. A custom selection inside `categories` expands to that category's live leaves, so categories can be composed; a category adding itself is a harmless no-op.
 
 Category paths use the app's separator `' › '` (space, U+203A, space), as `resolve_categories` returns them.
 
@@ -289,7 +291,7 @@ Every command is scoped to `actor.localUserId`. A foreign or missing id is `NOT_
 One line per workspace call: `console.log('[workspace]', JSON.stringify({ tool, outcome: 'ok' | 'refused' | 'failed', code?, userId, durationMs }))`. Never names, keyword text or leaf paths. Unexpected errors go through `classifyToolError` as today.
 
 ### 8.7 Known soft spot
-Cap checks are count-then-insert without a transaction (neon-http), as in the routes today. Two racing writes can land one row over a cap. Accepted: the per-minute limit and the AI's one-at-a-time calls make it rare, and the app already lives with it.
+Cap checks are count-then-insert without a transaction (neon-http), as in the routes today. Two racing writes can land one row over a cap. Accepted: the per-minute limit and the AI's one-at-a-time calls make it rare, and the app already lives with it. Two refinements from the 2026-09-30 reviews: (1) the custom-category leaf modes are likewise an untransacted load → expand → update, so a Category Builder save landing in between is overwritten — the same accepted trade-off; (2) "one-at-a-time" is an assumption — Claude and ChatGPT can issue parallel tool calls, and "Always allow" removes the pacing, so N concurrent creates could overshoot a cap by N−1. A hard cap would need a per-user advisory lock plus a conditional insert inside one `db.batch()` (drizzle's neon-http batch runs as one transaction). An owner decision for later; nothing changes now.
 
 ## 9. What the AI is told, what members read
 

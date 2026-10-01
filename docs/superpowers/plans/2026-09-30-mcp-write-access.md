@@ -772,7 +772,7 @@ The route tests are written **against the routes as they are today** and must pa
 - Create: `lib/savedViews/commands.ts`, `lib/savedViews/commands.test.ts`
 - Modify: `app/api/explorer/saved-views/route.ts`, `app/api/explorer/saved-views/[id]/route.ts`
 
-> **Landed as d953890 + b2f53bb (2026-09-30).** The route tests passed against the untouched routes (14) and unchanged against the delegating routes. Spec review: compliant; two minor findings — the stray `export` keywords on the test helpers below were rightly dropped, and a JSON body of literal `null` 500'd (pre-existing on POST, new on PATCH with a bad id because the body is now read first) → b2f53bb hardens both routes with optional chaining and adds null-body tests. The import list in Step 7 was wrong about `savedViews`/`MAX_VIEWS_PER_USER`: `GET` still needs them; only imports that actually become unused are dropped.
+> **Landed as d953890 + b2f53bb (2026-09-30).** The route tests passed against the untouched routes (14) and unchanged against the delegating routes. Spec review: compliant; two minor findings — the stray `export` keywords on the test helpers below were rightly dropped, and a JSON body of literal `null` 500'd (pre-existing on POST, new on PATCH with a bad id because the body is now read first) → b2f53bb hardens both routes with optional chaining and adds null-body tests. The import list in Step 7 was wrong about `savedViews`/`MAX_VIEWS_PER_USER`: `GET` still needs them; only imports that actually become unused are dropped. Code-quality review (approve with fixes) → fix round 2, 2c737cc: Step 5's `isUniqueViolation` never matched in production (drizzle wraps driver errors; the 23505 sits on `cause`) — replaced by the shared `lib/db/pgErrorCode.ts`, with `DrizzleQueryError`-shaped test doubles; PgDialect pins of the owner scoping on COUNT/update/delete; insert-payload, filters-only and legacy-blob pins; `lib/savedViews/httpStatus.ts` used by every route; `rowToSavedView` shared by loaders and commands. Full unit suite 178 files / 1,789 tests green. Do not reintroduce the top-level-only `code` check shown in Step 5.
 
 Before touching the routes, read `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/route.md` (route handlers; `params` is a Promise in this version).
 
@@ -1702,7 +1702,7 @@ MSG
 - Modify: `lib/watchlist/bulkAdd.ts` (becomes a wrapper), `lib/watchlist/loadServer.ts` (add `listWatchlistWithKeywords`)
 - Test (existing, must stay green): `lib/watchlist/bulkAdd.test.ts`
 
-> **Landed as bab2b7d (2026-09-30).** `bulkAdd.test.ts` green unchanged. The wrapper's doc comment carries one extra sentence pointing at the 2026-05-29 bulk-add spec (added by the controller's prompt, not in the block below; accepted). Spec review: compliant. Nit queued: `resolveSelection` should lowercase ids at read-in (dedupe on the lowercase form, remember the caller's first spelling for `unmatched`, push lowercase ids) — `isValidUuid` and `z.uuid()` accept uppercase while Postgres returns lowercase, so an uppercase id of a watched keyword would be miscounted as new.
+> **Landed as bab2b7d (2026-09-30).** `bulkAdd.test.ts` green unchanged. The wrapper's doc comment carries one extra sentence pointing at the 2026-05-29 bulk-add spec (added by the controller's prompt, not in the block below; accepted). Spec review: compliant. Uppercase ids (`isValidUuid` and `z.uuid()` accept them, Postgres returns lowercase) are handled at the tool schema instead of in this command: Task 7's fix round lowercases `searchTermIds` and every `id` with `z.uuid().toLowerCase()`, and Task 9 does the same for the research `customSelectionSchema`; the paste box only ever passes text. The command stays as written.
 
 - [ ] **Step 1: Failing tests — `lib/watchlist/commands.test.ts`**
 
@@ -2166,7 +2166,7 @@ export interface SavedViewSummary {
 }
 export interface ListSavedViewsResponse { views: SavedViewSummary[]; count: number; limit: number }
 export interface SavedViewWriteResponse { view: SavedViewSummary; notes: string[] }
-export interface DeletedSavedViewResponse { deleted: { id: string; name: string } }
+export interface DeleteSavedViewResponse { deleted: { id: string; name: string } }
 
 export interface CustomCategorySummary {
   id: string;
@@ -2180,7 +2180,7 @@ export interface CustomCategorySummary {
 }
 export interface ListCustomCategoriesResponse { categories: CustomCategorySummary[]; count: number; limit: number }
 export interface CustomCategoryWriteResponse { category: CustomCategorySummary; notes: string[] }
-export interface DeletedCustomCategoryResponse { deleted: { id: string; name: string; leafCount: number } }
+export interface DeleteCustomCategoryResponse { deleted: { id: string; name: string; leafCount: number } }
 
 export interface WatchlistEntry { searchTermId: string; keyword: string; keywordUrl: string; addedAt: string }
 export interface ListWatchlistResponse { items: WatchlistEntry[]; count: number; limit: number }
@@ -2194,10 +2194,10 @@ export interface WorkspaceService {
   listWatchlist(actor: ResearchActor, input: unknown): Promise<ListWatchlistResponse>;
   createSavedView(actor: ResearchActor, input: unknown): Promise<SavedViewWriteResponse>;
   updateSavedView(actor: ResearchActor, input: unknown): Promise<SavedViewWriteResponse>;
-  deleteSavedView(actor: ResearchActor, input: unknown): Promise<DeletedSavedViewResponse>;
+  deleteSavedView(actor: ResearchActor, input: unknown): Promise<DeleteSavedViewResponse>;
   createCustomCategory(actor: ResearchActor, input: unknown): Promise<CustomCategoryWriteResponse>;
   updateCustomCategory(actor: ResearchActor, input: unknown): Promise<CustomCategoryWriteResponse>;
-  deleteCustomCategory(actor: ResearchActor, input: unknown): Promise<DeletedCustomCategoryResponse>;
+  deleteCustomCategory(actor: ResearchActor, input: unknown): Promise<DeleteCustomCategoryResponse>;
   addToWatchlist(actor: ResearchActor, input: unknown): Promise<AddToWatchlistResponse>;
   removeFromWatchlist(actor: ResearchActor, input: unknown): Promise<RemoveFromWatchlistResponse>;
 }
@@ -2376,6 +2376,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test', APP_PUBLIC_URL: 'https://keywordquarry.com' } }));
 vi.mock('@/db/client', () => ({ db: {} }));
 
+import { DrizzleQueryError } from 'drizzle-orm';
 import { createWorkspaceService, type WorkspaceServiceDeps } from './service';
 import { buildCategoryCatalog } from '@/lib/research/categories';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
@@ -2536,7 +2537,7 @@ describe('custom categories', () => {
     expect(deps.customCategories.create).toHaveBeenCalledWith('u1', { name: 'Lighting', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'] });
     expect(res).toEqual({ category: expect.objectContaining({ id: CAT_ID, leafCount: 2, previewComplete: true, explorerUrl: `https://keywordquarry.com/explorer?custom=${CAT_ID}` }), notes: [] });
   });
-  it('update resolves leafMode add / remove / replace against the stored leaves, and is NOT_FOUND for a missing category', async () => {
+  it('update resolves leafMode add / remove / replace against the stored leaves (remove subtracts explicit paths verbatim), and is NOT_FOUND for a missing category', async () => {
     const deps = makeDeps();
     const svc = createWorkspaceService(deps);
     const ceiling = { selections: [{ kind: 'taxonomy', path: 'Lighting › Ceiling Lights', includeDescendants: false }] };
@@ -2544,11 +2545,14 @@ describe('custom categories', () => {
     expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: undefined, leafPaths: ['Lighting › Lamps', 'Old › Leaf', 'Lighting › Ceiling Lights'] });
     await svc.updateCustomCategory(actor, { id: CAT_ID, categories: { leafPaths: ['Lighting › Lamps'] }, leafMode: 'remove' });
     expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: undefined, leafPaths: ['Old › Leaf'] });
+    // A stale stored leaf (not in the catalog) is still removable: explicit paths are subtracted verbatim.
+    await svc.updateCustomCategory(actor, { id: CAT_ID, categories: { leafPaths: ['Old › Leaf'] }, leafMode: 'remove' });
+    expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: undefined, leafPaths: ['Lighting › Lamps'] });
     await svc.updateCustomCategory(actor, { id: CAT_ID, name: 'Ceilings', categories: ceiling });
     expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: 'Ceilings', leafPaths: ['Lighting › Ceiling Lights'] });
     await svc.updateCustomCategory(actor, { id: CAT_ID, name: 'Renamed' });
     expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: 'Renamed', leafPaths: undefined });
-    expect(deps.customCategories.load).toHaveBeenCalledTimes(3);
+    expect(deps.customCategories.load).toHaveBeenCalledTimes(4);
     const missing = makeDeps({ customCategories: { ...makeDeps().customCategories, load: vi.fn(async () => null) } });
     await expect(createWorkspaceService(missing).updateCustomCategory(actor, { id: CAT_ID, categories: ceiling })).rejects.toMatchObject({ code: 'NOT_FOUND' });
     expect(missing.customCategories.update).not.toHaveBeenCalled();
@@ -2569,9 +2573,12 @@ describe('watchlist', () => {
     expect(deps.bumpWrite).toHaveBeenCalledTimes(2);
   });
   it('an unexpected failure is logged as failed with the error name only, and rethrown', async () => {
-    const deps = makeDeps({ watchlist: { ...makeDeps().watchlist, add: vi.fn(async () => { throw Object.assign(new Error('relation watchlist_items does not exist for u1@example.com'), { name: 'DrizzleQueryError' }); }) } });
-    await expect(createWorkspaceService(deps).addToWatchlist(actor, { keywords: ['x'] })).rejects.toThrow();
-    expect(lines()[0]).toEqual(expect.objectContaining({ tool: 'add_to_watchlist', outcome: 'failed', error: 'DrizzleQueryError', userId: 'u1' }));
+    // The production shape: drizzle wraps the driver error, whose SQLSTATE sits on `cause`; the wrapper's
+    // message embeds the bound params (here an email), which must never reach the log.
+    const wrapped = new DrizzleQueryError('insert into "watchlist_items" ("user_id", "keyword_id") values ($1, $2)', ['u1', 'u1@example.com'], Object.assign(new Error('relation "watchlist_items" does not exist'), { code: '42P01' }));
+    const deps = makeDeps({ watchlist: { ...makeDeps().watchlist, add: vi.fn(async () => { throw wrapped; }) } });
+    await expect(createWorkspaceService(deps).addToWatchlist(actor, { keywords: ['x'] })).rejects.toBe(wrapped);
+    expect(lines()[0]).toEqual(expect.objectContaining({ tool: 'add_to_watchlist', outcome: 'failed', error: 'Error', code: '42P01', userId: 'u1' }));
     expect(JSON.stringify(lines())).not.toContain('example.com');
   });
 });
@@ -2593,6 +2600,7 @@ Expected: FAIL — cannot resolve `./service`.
  */
 import { bumpUserActivity } from '@/lib/activity/bump';
 import { secondsUntilNextEtDay } from '@/lib/activity/etDay';
+import { errFields } from '@/lib/ask/logSafe';
 import { countUserActivityToday } from '@/lib/activity/readToday';
 import * as categoryCommands from '@/lib/customCategories/commands';
 import { listCustomCategoriesForUser, loadCustomCategoryForUser, type CustomCategoryDTO } from '@/lib/customCategories/loadServer';
@@ -2617,8 +2625,8 @@ import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
 import {
   createCustomCategoryInputSchema, createSavedViewInputSchema, deleteCustomCategoryInputSchema, deleteSavedViewInputSchema, emptyInputSchema,
   PREVIEW_LEAF_PATHS, updateCustomCategoryInputSchema, updateSavedViewInputSchema, watchlistSelectionInputSchema,
-  type AddToWatchlistResponse, type CustomCategorySummary, type CustomCategoryWriteResponse, type DeletedCustomCategoryResponse,
-  type DeletedSavedViewResponse, type ListCustomCategoriesResponse, type ListSavedViewsResponse, type ListWatchlistResponse,
+  type AddToWatchlistResponse, type CustomCategorySummary, type CustomCategoryWriteResponse, type DeleteCustomCategoryResponse,
+  type DeleteSavedViewResponse, type ListCustomCategoriesResponse, type ListSavedViewsResponse, type ListWatchlistResponse,
   type RemoveFromWatchlistResponse, type SavedViewSummary, type SavedViewWriteResponse, type SearchSpec, type WorkspaceService, type WorkspaceToolName,
 } from './contracts';
 import { compactExplorerFilters, customCategoryUrlFor, savedViewUrlFor, toExplorerFilters } from './explorerFilters';
@@ -2722,7 +2730,12 @@ function logged<T>(tool: WorkspaceToolName, actor: ResearchActor, fn: () => Prom
     },
     (e: unknown) => {
       if (e instanceof ResearchError) line({ outcome: 'refused', code: e.code });
-      else line({ outcome: 'failed', error: e instanceof Error ? e.name : typeof e });
+      else {
+        // A DrizzleQueryError's own name is just "Error" and its message embeds the bound params, so log
+        // the unwrapped name and SQLSTATE only (lib/ask/logSafe.ts reads the cause) — never a message.
+        const { error, code } = errFields(e);
+        line({ outcome: 'failed', error, ...(code ? { code } : {}) });
+      }
       throw e;
     },
   );
@@ -2827,7 +2840,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     return { view: viewSummary(r.view), notes };
   }
 
-  async function deleteSavedView(actor: ResearchActor, input: unknown): Promise<DeletedSavedViewResponse> {
+  async function deleteSavedView(actor: ResearchActor, input: unknown): Promise<DeleteSavedViewResponse> {
     const p = deleteSavedViewInputSchema.safeParse(input);
     if (!p.success) throw invalid(p.error);
     await beforeWrite(actor);
@@ -2856,12 +2869,17 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     if (p.data.categories) {
       const existing = await deps.customCategories.load(actor.localUserId, p.data.id);
       if (!existing) throw new ResearchError('NOT_FOUND', NOT_FOUND_MESSAGE.category);
-      const expansion = await expandForCategory(actor.localUserId, p.data.categories);
-      if (p.data.leafMode === 'replace') leafPaths = expansion;
-      else if (p.data.leafMode === 'add') leafPaths = [...new Set([...existing.leafPaths, ...expansion])];
-      else {
-        const drop = new Set(expansion);
+      if (p.data.leafMode === 'remove') {
+        // Explicit paths are subtracted verbatim: a stale stored leaf must be removable even when the
+        // catalog no longer has it (resolveScope would reject it). Only selections go through the catalog.
+        const expanded = p.data.categories.selections.length > 0
+          ? await expandForCategory(actor.localUserId, { selections: p.data.categories.selections, leafPaths: [] })
+          : [];
+        const drop = new Set([...p.data.categories.leafPaths.map((path) => path.trim()), ...expanded]);
         leafPaths = existing.leafPaths.filter((path) => !drop.has(path));
+      } else {
+        const expansion = await expandForCategory(actor.localUserId, p.data.categories);
+        leafPaths = p.data.leafMode === 'replace' ? expansion : [...new Set([...existing.leafPaths, ...expansion])];
       }
     }
     const r = await deps.customCategories.update(actor.localUserId, p.data.id, { name: p.data.name, leafPaths });
@@ -2870,7 +2888,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     return { category: categorySummary(r.category), notes: [] };
   }
 
-  async function deleteCustomCategory(actor: ResearchActor, input: unknown): Promise<DeletedCustomCategoryResponse> {
+  async function deleteCustomCategory(actor: ResearchActor, input: unknown): Promise<DeleteCustomCategoryResponse> {
     const p = deleteCustomCategoryInputSchema.safeParse(input);
     if (!p.success) throw invalid(p.error);
     await beforeWrite(actor);
