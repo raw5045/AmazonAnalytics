@@ -358,9 +358,10 @@ MSG
 
 | Check | Outcome |
 |---|---|
-| `pnpm vitest run` | |
-| `pnpm typecheck` | |
-| `pnpm build` | |
-| Reviews | |
-| Push / deploy | |
-| Smoke | |
+| Commits | 1d3a56d Task 1 (resolver + page), 9e06ed1 Task 2 (uncapped listings), b1649ce Save button resolves like the page (implementer-flagged gap: saving a sorted view would have posted the whole catalogue), c7c570d six-view copy + dropdown comment, 4a1fcf9 clamp against the view's page size + GET owner-scoping pin + comment/title fixes |
+| `pnpm vitest run` | 186 files / 1,895 tests passed at 4a1fcf9 (2026-10-01) |
+| `pnpm typecheck` | clean |
+| `pnpm build` | passed; no route, page or layout added or removed |
+| Reviews | Task 2 spec: compliant (four cosmetic notes → c7c570d). Task 1 spec (three commits): compliant, every Explorer flow walked (header sort, Next/Prev, detail-and-back, Apply blanks the chip, Save on a sorted view, Save on a hybrid URL); pre-existing note: after a header sort the sidebar is not remounted, so its Sort select still shows the stored sort and Apply re-sorts by it — true for every URL today. Combined code-quality review (19bd65c..c7c570d): approve; four of six minors taken in 4a1fcf9, left: `fromView` (kept for the tests and a future picker use), the MCP "(up to 5)" wording and the create refusal sentence (spec-pinned), and a follow-up that the GET route duplicates `listSavedViewsForUser` (delegating would normalise `filters` in the response) |
+| Push / deploy | pending the owner's go |
+| Smoke | pending the owner: open a saved view, sort by a column (rows stay the view's, picker still names it), Next page, change a sidebar filter and Apply (chip blanks); the AI's `list_saved_views` shape unchanged |
