@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildViewHref } from '@/lib/savedViews/serialize';
 import type { SavedView } from '@/lib/savedViews/types';
 import { NameViewModal } from './NameViewModal';
+import { LoadingOverlay } from './LoadingOverlay';
 
 /**
  * The "Saved Views" picker, rendered in the explorer's layout header.
@@ -45,12 +46,24 @@ export function SavedViewsDropdown({
   onRenamed?: (id: string, name: string) => void;
 }) {
   const searchParams = useSearchParams();
-  const viewId = activeIdOverride ?? searchParams?.get('view') ?? null;
+  const currentSearch = searchParams?.toString() ?? '';
+  // A pick shows at once: the URL, and so `?view=`, only changes when the pick's
+  // navigation commits (view load + Explorer query, seconds on a cold hit).
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [pendingSearch, setPendingSearch] = useState('');
+  // React's "adjust state when a prop changes" pattern (as in SavedViewsControls):
+  // the first render whose URL differs from the one at the pick ends it, because
+  // the navigation committed (the URL now carries the id, so the label carries on)
+  // or the member went elsewhere (the URL wins). False right after, so no loop.
+  if (pendingId !== null && currentSearch !== pendingSearch) setPendingId(null);
+  const urlViewId = searchParams?.get('view') ?? null;
+  const viewId = pendingId ?? activeIdOverride ?? urlViewId;
   const activeView = useMemo(
     () => (viewId ? views.find((v) => v.id === viewId) ?? null : null),
     [viewId, views],
   );
   const router = useRouter();
+  const [isPending, startTransition] = useTransition();
   const [open, setOpen] = useState(false);
   const [renamingView, setRenamingView] = useState<SavedView | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
@@ -69,18 +82,24 @@ export function SavedViewsDropdown({
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  // Note: these handlers used to wrap router calls in startTransition
-  // + drive a `disabled={isPending}` on the dropdown button. In
-  // practice the transition's isPending got stuck true after a
-  // delete (Next.js 16's transition tracking for router.refresh()
-  // doesn't always resolve when the layout's data fetch is what
-  // changed), which left the dropdown permanently disabled — the
-  // user couldn't reopen it or pick a different view. Direct
-  // router calls work fine: the navigation still happens, we just
-  // don't have a tracked "pending" state to get stuck.
+  // Only the pick runs in a transition. A transition around router.push resolves
+  // when the navigation commits (like the sidebar's router.replace), so isPending
+  // drives the loading overlay and aria-busy for exactly the view load + Explorer
+  // query, while pendingId shows the pick at once. The push stays synchronous
+  // inside startTransition, never after an await.
+  // Delete and rename stay unwrapped on purpose: these handlers used to wrap their
+  // router calls in startTransition + drive a `disabled={isPending}` on the
+  // dropdown button, and the transition's isPending got stuck true after a delete
+  // (Next.js 16's transition tracking for router.refresh() doesn't always resolve
+  // when the layout's data fetch is what changed), which left the dropdown
+  // permanently disabled. Their direct router calls need no pending state.
   const applyView = (view: SavedView) => {
     setOpen(false);
-    router.push(buildViewHref(view));
+    setPendingId(view.id);
+    setPendingSearch(currentSearch);
+    startTransition(() => {
+      router.push(buildViewHref(view));
+    });
   };
 
   const deleteView = async (view: SavedView) => {
@@ -138,12 +157,16 @@ export function SavedViewsDropdown({
 
   return (
     <div ref={containerRef} className="relative">
+      {/* A pick in flight. fixed inset-0 covers the viewport from here; it stacks in the
+          saved-views bar's z-20 layer, so only the z-30 top nav stays above it. */}
+      <LoadingOverlay show={isPending} />
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between border border-gray-300 rounded px-2 py-1.5 text-sm bg-white hover:bg-gray-50"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-busy={isPending}
         title={activeView ? `Currently loaded: ${activeView.name}` : 'Pick a saved view'}
       >
         <span className={`truncate ${activeView ? 'text-blue-900 font-medium' : 'text-gray-500'}`}>

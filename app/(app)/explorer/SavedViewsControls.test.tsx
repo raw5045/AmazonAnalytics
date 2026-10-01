@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
 import type { SavedView } from '@/lib/savedViews/types';
+import { buildViewHref } from '@/lib/savedViews/serialize';
 import { SavedViewsControls } from './SavedViewsControls';
 
 // A stateful router mock: push() updates the search params the components
@@ -229,6 +230,61 @@ describe('SavedViewsControls', () => {
 
     expect(screen.getByTitle('Currently loaded: Lamps v2')).toBeInTheDocument();
     expect(nav.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  // Picking a view (owner request, 2026-10-01): the URL, and so `?view=`, only moves when
+  // the pick's navigation commits (view load + Explorer query, seconds on a cold hit), so
+  // the picker shows the pick at once and the pick drives the loading overlay.
+  const desks = savedView({ id: '22222222-1111-4111-8111-111111111111', name: 'Desks' });
+  function pickView(name: string) {
+    fireEvent.click(screen.getByTitle(/^(Pick a saved view|Currently loaded: .*)$/));
+    fireEvent.click(within(screen.getByRole('listbox')).getByText(name));
+  }
+
+  it('shows a picked view at once, while the URL has not moved, and pushes its href in a transition that settles', () => {
+    nav.push.mockImplementationOnce(() => {}); // the navigation is still in flight
+    render(<SavedViewsControls views={[savedView(), desks]} />);
+    pickView('Desks');
+
+    expect(nav.push).toHaveBeenCalledWith(buildViewHref(desks));
+    expect(nav.state.params.get('view')).toBeNull();
+    const picker = screen.getByTitle('Currently loaded: Desks');
+    expect(picker).toHaveTextContent('Desks');
+    // The real useTransition: the (mocked, synchronous) push settles inside the click, so no overlay is left behind.
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(picker).toHaveAttribute('aria-busy', 'false');
+  });
+
+  it('keeps the picked view when its navigation commits (the URL then carries its id)', () => {
+    nav.push.mockImplementationOnce(() => {});
+    const { rerender } = render(<SavedViewsControls views={[savedView(), desks]} />);
+    pickView('Desks');
+    expect(screen.getByTitle('Currently loaded: Desks')).toBeInTheDocument();
+
+    nav.state.params = new URLSearchParams(`view=${desks.id}`);
+    rerender(<SavedViewsControls views={[savedView(), desks]} />);
+    expect(screen.getByTitle('Currently loaded: Desks')).toHaveTextContent('Desks');
+  });
+
+  it('follows the URL when it moves anywhere else before the pick commits', () => {
+    const views = [savedView(), desks];
+    const { rerender } = render(<SavedViewsControls views={views} />);
+
+    nav.push.mockImplementationOnce(() => {});
+    pickView('Desks');
+    expect(screen.getByTitle('Currently loaded: Desks')).toBeInTheDocument();
+    // Another view's URL lands instead (e.g. Back): that view, not the pick.
+    nav.state.params = new URLSearchParams(`view=${VIEW_ID}`);
+    rerender(<SavedViewsControls views={views} />);
+    expect(screen.getByTitle('Currently loaded: Lamps under 500')).toBeInTheDocument();
+
+    nav.push.mockImplementationOnce(() => {});
+    pickView('Desks');
+    expect(screen.getByTitle('Currently loaded: Desks')).toBeInTheDocument();
+    // A full-form filter URL lands (no view tag): the placeholder.
+    nav.state.params = new URLSearchParams('q=desk');
+    rerender(<SavedViewsControls views={views} />);
+    expect(screen.getByTitle('Pick a saved view')).toHaveTextContent('Saved views');
   });
 
   it("saves the LOADED view's filters when the URL is the bookmark form, never the defaults", async () => {
