@@ -153,10 +153,10 @@ export function SavedViewsDropdown({
       </button>
 
       {open && (
-        // No max-height / overflow on the UL: with a 5-view per-user
-        // limit there's never enough content to need scroll, and any
-        // overflow:auto here would clip the absolutely-positioned ⋮
-        // popover inside each row.
+        // No max-height / overflow on the UL: the list is normally at most 5
+        // views (the create cap), and a sixth from the create race still fits
+        // without a max-height. Any overflow:auto here would clip the
+        // absolutely-positioned ⋮ popover inside each row.
         <ul
           role="listbox"
           className="absolute z-20 mt-1 w-full bg-white border border-gray-300 rounded shadow-lg text-sm"

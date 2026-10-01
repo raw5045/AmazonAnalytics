@@ -72,6 +72,9 @@ export function SaveViewButton({
   if (pathname !== '/explorer') return null;
 
   const atLimit = savedViewsCount >= MAX_VIEWS_PER_USER;
+  // Views to delete before Save works again: one at the cap, more when two
+  // simultaneous creates left the member above it (every view stays listed).
+  const toDelete = savedViewsCount - MAX_VIEWS_PER_USER + 1;
 
   const handleSubmit = async (name: string) => {
     setIsSaving(true);
@@ -110,7 +113,7 @@ export function SaveViewButton({
   };
 
   const tooltip = atLimit
-    ? `You've reached the ${MAX_VIEWS_PER_USER}-view limit. Delete a saved view to add a new one.`
+    ? `You've reached the ${MAX_VIEWS_PER_USER}-view limit. Delete ${toDelete === 1 ? 'a saved view' : `${toDelete} saved views`} to add a new one.`
     : 'Save the currently applied filters as a new view';
 
   return (
@@ -120,7 +123,7 @@ export function SaveViewButton({
           2026-09-18). */}
       {atLimit && (
         <span id="save-view-cap-note" className="text-xs text-amber-700">
-          {savedViewsCount} of {MAX_VIEWS_PER_USER} views saved — delete one to save another.
+          {savedViewsCount} of {MAX_VIEWS_PER_USER} views saved — delete {toDelete === 1 ? 'one' : toDelete} to save another.
         </span>
       )}
       <button

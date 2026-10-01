@@ -304,6 +304,23 @@ describe('SavedViewsControls', () => {
     expect(button).toHaveAttribute('aria-describedby', note.id);
   });
 
+  it('above the cap (a sixth view from the create race) says how many to delete; back at the cap, "one"', () => {
+    const six = [1, 2, 3, 4, 5, 6].map((n) => savedView({ id: `0000000${n}-1111-4111-8111-111111111111`, name: `View ${n}` }));
+    const { rerender } = render(<SavedViewsControls views={six} />);
+    let button = screen.getByRole('button', { name: 'Save view' });
+    expect(button).toBeDisabled();
+    const note = screen.getByText('6 of 5 views saved — delete 2 to save another.');
+    expect(button).toHaveAttribute('aria-describedby', note.id);
+    expect(button).toHaveAttribute('title', "You've reached the 5-view limit. Delete 2 saved views to add a new one.");
+
+    // One deleted and the layout re-fetched: 5 of 5 is still the cap, so Save stays off.
+    rerender(<SavedViewsControls views={six.slice(1)} />);
+    button = screen.getByRole('button', { name: 'Save view' });
+    expect(button).toBeDisabled();
+    expect(screen.getByText('5 of 5 views saved — delete one to save another.')).toBeInTheDocument();
+    expect(button).toHaveAttribute('title', "You've reached the 5-view limit. Delete a saved view to add a new one.");
+  });
+
   it('shows no cap note below the limit', () => {
     render(<SavedViewsControls views={[savedView()]} />);
     expect(screen.queryByText(/views saved/)).toBeNull();
