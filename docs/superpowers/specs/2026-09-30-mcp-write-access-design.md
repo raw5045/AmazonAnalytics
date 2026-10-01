@@ -318,7 +318,7 @@ Rules, in the guide's existing style:
 `GUIDE_VERSION` becomes 2 (echoed in search provenance). `guide()` passes `workspace: actor.channel === 'mcp' && mcpWriteEnabled()`, so Ask AI's guide has no workspace section; it shares the error-code list (which now carries the three workspace codes, as it already carries the never-thrown `UNSUPPORTED_FILTER`) and `guideVersion` with the MCP guide.
 
 ### 9.2 Server instructions
-`lib/mcp/handler.ts`'s `instructions` string gains, when the flag is on: "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; the client asks the person before each write; confirm names and deletions."
+`lib/mcp/handler.ts`'s `instructions` string gains, when the flag is on: "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; clients normally ask the person before each write; confirm names and deletions."
 
 ### 9.3 Connect AI page
 - Intro sentence, flag on: "Let Claude or ChatGPT search KeywordQuarry directly while you work and, with your approval each time, save views, build custom categories and edit your watchlist. Beta, free while it lasts." Flag off: today's read-only sentence.

@@ -1976,7 +1976,7 @@ MSG
 - Test: `lib/workspace/tools.test.ts`
 - Modify (review amendment from Task 2): `lib/research/tools.test.ts` — the same strictness loop over `RESEARCH_TOOLS`
 
-> **Landed as 2f1f863 (2026-09-30).** `searchSpecSchema` via `.omit(...).shape` kept every field description; refined schemas type-check as `inputSchema` without casts. Implementer heads-ups for Task 8: `search.schemaVersion` is optional, so the service fills `1` before `parseSearchInput`; `run()` receives the SDK's parsed output with defaults (`leafMode: 'replace'`, `keywords: []`, `searchTermIds: []`) filled in. Spec review: compliant (an unused `WORKSPACE_TOOL_NAMES` import rightly dropped from tools.ts). Code-quality review (approve with fixes) → fix round 83d6f88: the two update tools carry `DESTRUCTIVE_ANNOTATIONS` (MCP defines `destructiveHint: false` as additive-only; `UPDATE_ANNOTATIONS` became `ADDITIVE_ANNOTATIONS`, used by `add_to_watchlist` only); ids and `searchTermIds` are lowercased with `z.uuid().toLowerCase()`; descriptions reworded (the delete-category consequence for saved views, what `leafMode` does, the returns, and "Clients normally ask the person before this runs."); annotation literals pinned; `Deleted*Response` renamed `Delete*Response`; `emptyInputSchema` re-exported from the research contracts; comment fixes. The code blocks below are the pre-fix text.
+> **Landed as 2f1f863 (2026-09-30).** `searchSpecSchema` via `.omit(...).shape` kept every field description; refined schemas type-check as `inputSchema` without casts. Implementer heads-ups for Task 8: `search.schemaVersion` is optional, so the service fills `1` before `parseSearchInput`; `run()` receives the SDK's parsed output with defaults (`leafMode: 'replace'`, `keywords: []`, `searchTermIds: []`) filled in. Spec review: compliant (an unused `WORKSPACE_TOOL_NAMES` import rightly dropped from tools.ts). Code-quality review (approve with fixes) → fix round 83d6f88: the two update tools carry `DESTRUCTIVE_ANNOTATIONS` (MCP defines `destructiveHint: false` as additive-only; `UPDATE_ANNOTATIONS` became `ADDITIVE_ANNOTATIONS`, used by `add_to_watchlist` only); ids and `searchTermIds` are lowercased with `z.uuid().toLowerCase()`; descriptions reworded (the delete-category consequence for saved views, what `leafMode` does, the returns, and "Clients normally ask the person before this runs."); annotation literals pinned; `Deleted*Response` renamed `Delete*Response`; `emptyInputSchema` re-exported from the research contracts; comment fixes. Deferred: `PREVIEW_LEAF_PATHS` (20) duplicates research's private `PREVIEW_PATHS` (20) — pin or share in a later nits pass. The code blocks below are the pre-fix text.
 
 - [ ] **Step 1: Failing tests — `lib/workspace/tools.test.ts`**
 
@@ -2368,11 +2368,13 @@ MSG
 - Create: `lib/workspace/service.ts`
 - Test: `lib/workspace/service.test.ts`
 
+> **Landed as 2073e14 (2026-09-30).** `service.ts` is byte-identical to Step 3 as amended by the reviews (errFields-only failure log, remove mode subtracting explicit paths verbatim, `Delete*Response` names). One typing fix in the test, now reflected below: `ReturnType<typeof vi.spyOn>` resolves to `any` under vitest 4.1.4 and made three callback parameters implicitly `any` under `pnpm typecheck`, so the spy is typed `MockInstance<typeof console.log>`. 15 tests; `lib/workspace` 3 files / 46 tests.
+
 - [ ] **Step 1: Failing tests — `lib/workspace/service.test.ts`**
 
 ```ts
 // @vitest-environment node
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test', APP_PUBLIC_URL: 'https://keywordquarry.com' } }));
 vi.mock('@/db/client', () => ({ db: {} }));
 
@@ -2429,7 +2431,7 @@ function makeDeps(over: Partial<WorkspaceServiceDeps> = {}): WorkspaceServiceDep
   };
 }
 
-let log: ReturnType<typeof vi.spyOn>;
+let log: MockInstance<typeof console.log>; // ReturnType<typeof vi.spyOn> resolves to `any` under vitest 4.1.4 and would untype the callbacks below
 beforeEach(() => { log = vi.spyOn(console, 'log').mockImplementation(() => {}); });
 afterEach(() => log.mockRestore());
 const lines = () => log.mock.calls.filter((c) => c[0] === '[workspace]').map((c) => JSON.parse(String(c[1])) as Record<string, unknown>);
@@ -2956,6 +2958,9 @@ MSG
 - Modify: `lib/research/contracts.ts` (the `SearchResponse` interface, after `resolvedCategoryScope`)
 - Modify: `lib/research/service.ts` (`search()`, after `resolveScope`, and the `build()` return)
 - Modify: `lib/research/service.test.ts` (new describe), `lib/mcp/tools/registerResearchTools.test.ts:85` (the search mock gains the two fields)
+- Modify (review amendment): `lib/research/contracts.ts` `customSelectionSchema` and `lib/research/contracts.test.ts`
+
+> **Amendment (2026-09-30, from the Task 7 code review):** this task also lowercases the research `customSelectionSchema` id — `z.strictObject({ kind: z.literal('custom'), id: z.uuid().toLowerCase() })` — because `resolveScope` matches custom ids in JavaScript against the lowercase ids Postgres returns, and the workspace schemas already lowercase theirs. A test appended to `lib/research/contracts.test.ts` parses `{ kind: 'custom', id: 'ABCDEF12-ABCD-4ABC-8ABC-ABCDEF123456' }` through `filtersSchema` and expects the lowercase id (and rejects `'not-a-uuid'`). The commit subject becomes `feat(research): explorerUrl + explorerNotes on every search_keywords answer; custom-selection ids lowercased at the schema (spec 2026-09-30 §3, §3.2)` and `lib/research/contracts.ts`/`contracts.test.ts` join the `git add` list.
 
 - [ ] **Step 1: Failing tests — append to `lib/research/service.test.ts`**
 
@@ -3396,7 +3401,7 @@ const BASE_INSTRUCTIONS =
   'KeywordQuarry research tools (beta). Call get_research_guide once per conversation; use resolve_categories before any category-scoped search; search_keywords takes exact filters and pages with {cursor} only; get_keyword_details and get_keyword_history read one keyword. Search volumes are estimates, capped results are labelled, and null means unknown, never zero.';
 /** Spec 2026-09-30 §9.2. */
 const WORKSPACE_INSTRUCTIONS =
-  "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; the client asks the person before each write; confirm names and deletions.";
+  "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; clients normally ask the person before each write; confirm names and deletions.";
 
 const mcp = createMcpHandler(
   (server) => {
