@@ -342,7 +342,7 @@ MSG
 - Create: `lib/workspace/explorerFilters.ts`
 - Test: `lib/workspace/explorerFilters.test.ts`
 
-> **Landed as 3f69c6d (2026-09-30; amended from 7968773).** The probe returned `{"sampled":200000,"mismatches":182658}`: the Explorer's broad category is Brand Analytics' own taxonomy ("Apparel" over "Clothing, Shoes & Jewelry", "Home" and "Kitchen" both over "Home & Kitchen"), so the department shortcut was dropped per the decision rule and spec §5.2 now says so. Two test corrections in the fix round: the band test's numbers (100000→50000) accidentally matched the `100k_to_50k` preset, so it now uses 100000→40000 to exercise the custom-jump path; and a pin test replaces the deleted department test ("a department alone expands to its leaves like any other selection"). 16 tests. Fix round 2 (d944c17, after the spec review): a prior bound on the side the jump never reads — a decline, or that bound alone — was dropped silently by the plan's own code, breaking spec §3.2's "empty notes = exact link"; it now notes `NOTE_JUMP_INVALID` (with a current bound) or `NOTE_PRIOR_ONLY` (alone). 17 tests; spec §5.3 gained the matching row.
+> **Landed as 3f69c6d (2026-09-30; amended from 7968773).** The probe returned `{"sampled":200000,"mismatches":182658}`: the Explorer's broad category is Brand Analytics' own taxonomy ("Apparel" over "Clothing, Shoes & Jewelry", "Home" and "Kitchen" both over "Home & Kitchen"), so the department shortcut was dropped per the decision rule and spec §5.2 now says so. Two test corrections in the fix round: the band test's numbers (100000→50000) accidentally matched the `100k_to_50k` preset, so it now uses 100000→40000 to exercise the custom-jump path; and a pin test replaces the deleted department test ("a department alone expands to its leaves like any other selection"). 16 tests. Fix round 2 (d944c17, after the spec review): a prior bound on the side the jump never reads — a decline, or that bound alone — was dropped silently by the plan's own code, breaking spec §3.2's "empty notes = exact link"; it now notes `NOTE_JUMP_INVALID` (with a current bound) or `NOTE_PRIOR_ONLY` (alone). 17 tests; spec §5.3 gained the matching row. Code-quality review: approve with fixes → fix round 3: the delta note said "the from/to move was kept" even when no move existed (reworded to say only what was lost), neutral baseline wording, `NOTE_JUMP_INVALID` renamed `NOTE_MOVE_UNSUPPORTED`, a self-check that adds `NOTE_EXPLORER_REREAD` when the saved-view normaliser would read the filters back differently (comma or doubled space inside an excluded term), `jumpMetric` always with a jump, canonical severities order, volume-shift and compact tests. Its SHA is in the Results table.
 
 - [ ] **Step 1: The production read-only probe for the department shortcut (§5.2)**
 
@@ -771,6 +771,8 @@ The route tests are written **against the routes as they are today** and must pa
 - Test (new, pins today's behaviour): `app/api/explorer/saved-views/route.test.ts`, `app/api/explorer/saved-views/[id]/route.test.ts`
 - Create: `lib/savedViews/commands.ts`, `lib/savedViews/commands.test.ts`
 - Modify: `app/api/explorer/saved-views/route.ts`, `app/api/explorer/saved-views/[id]/route.ts`
+
+> **Landed as d953890 + b2f53bb (2026-09-30).** The route tests passed against the untouched routes (14) and unchanged against the delegating routes. Spec review: compliant; two minor findings — the stray `export` keywords on the test helpers below were rightly dropped, and a JSON body of literal `null` 500'd (pre-existing on POST, new on PATCH with a bad id because the body is now read first) → b2f53bb hardens both routes with optional chaining and adds null-body tests. The import list in Step 7 was wrong about `savedViews`/`MAX_VIEWS_PER_USER`: `GET` still needs them; only imports that actually become unused are dropped.
 
 Before touching the routes, read `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/route.md` (route handlers; `params` is a Promise in this version).
 
@@ -1254,6 +1256,8 @@ Same shape as Task 4. Custom categories differ in three ways: names are unique c
 - Modify: `lib/customCategories/loadServer.ts` (add `loadCustomCategoryForUser`)
 - Modify: `app/api/category-builder/custom/route.ts`, `app/api/category-builder/custom/[id]/route.ts`
 
+> **Landed as ebea281 (2026-09-30).** Both routes were hardened against a `null` JSON body in the same commit (controller addendum, after the Task 4 finding), with null-body tests appended as separate describes. Spec review: compliant; one nit queued — the PATCH null-body test must also assert `status === 400` for both cases.
+
 - [ ] **Step 1: Route tests against today's routes**
 
 `app/api/category-builder/custom/route.test.ts`:
@@ -1698,6 +1702,8 @@ MSG
 - Modify: `lib/watchlist/bulkAdd.ts` (becomes a wrapper), `lib/watchlist/loadServer.ts` (add `listWatchlistWithKeywords`)
 - Test (existing, must stay green): `lib/watchlist/bulkAdd.test.ts`
 
+> **Landed as bab2b7d (2026-09-30).** `bulkAdd.test.ts` green unchanged. The wrapper's doc comment carries one extra sentence pointing at the 2026-05-29 bulk-add spec (added by the controller's prompt, not in the block below; accepted). Spec review: compliant. Nit queued: `resolveSelection` should lowercase ids at read-in (dedupe on the lowercase form, remember the caller's first spelling for `unmatched`, push lowercase ids) — `isValidUuid` and `z.uuid()` accept uppercase while Postgres returns lowercase, so an uppercase id of a watched keyword would be miscounted as new.
+
 - [ ] **Step 1: Failing tests — `lib/watchlist/commands.test.ts`**
 
 ```ts
@@ -1968,6 +1974,9 @@ MSG
 **Files:**
 - Create: `lib/workspace/contracts.ts`, `lib/workspace/tools.ts`
 - Test: `lib/workspace/tools.test.ts`
+- Modify (review amendment from Task 2): `lib/research/tools.test.ts` — the same strictness loop over `RESEARCH_TOOLS`
+
+> **Landed as 2f1f863 (2026-09-30).** `searchSpecSchema` via `.omit(...).shape` kept every field description; refined schemas type-check as `inputSchema` without casts. Implementer heads-ups for Task 8: `search.schemaVersion` is optional, so the service fills `1` before `parseSearchInput`; `run()` receives the SDK's parsed output with defaults (`leafMode: 'replace'`, `keywords: []`, `searchTermIds: []`) filled in.
 
 - [ ] **Step 1: Failing tests — `lib/workspace/tools.test.ts`**
 

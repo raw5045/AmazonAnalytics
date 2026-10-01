@@ -162,6 +162,7 @@ One converter serves the search link (§3.2), `create_saved_view` and `update_sa
 | `sort` | `sort` | §5.4 |
 | `presetIds` | — | expanded in step 2; nothing to map |
 | page, perPage | `page: 1`, `perPage: 100` | via `normalizeFilters` |
+| anything the Explorer's own parser would read back differently (today: an excluded term containing a comma or a doubled space, which `parseExcludeTerms` splits or collapses; a volume jump threshold above the int4 ceiling) | — | a self-check runs the finished filters through the saved-view normaliser; any difference adds the note "The Explorer reads part of these filters differently from the search (for example a comma or a doubled space inside an excluded term); check the filters it opens with." Added 2026-09-30 after the Task 3 code review; the upstream cure is a §14 follow-up. |
 
 Everything the search did not set stays at the Explorer's default or blank (`EXPLORER_DEFAULTS`), exactly as if the member had touched only those sidebar controls.
 
@@ -176,12 +177,12 @@ The Explorer's jump is "was on one side of `from`, is now past `to`", and always
 | rank: `prior.gt X` → from X; `prior.gte X` → from X−1; `current.lt Y` → to Y; `current.lte Y` → to Y+1 | `jump: <preset id>` when (metric, from, to) equals a preset in `lib/explorer/jumpPresets.ts`, else `jump: 'custom'` with `jumpFrom`/`jumpTo` |
 | volume: `prior.lt X` → from X; `prior.lte X` → from X+1; `current.gt Y` → to Y; `current.gte Y` → to Y−1 | same |
 | `baseline: 'include_not_observed'` | exact |
-| `baseline: 'observed_only'` (the default) | mapped as above, plus a note: "The Explorer's movement filter also counts keywords that had no earlier value, so it can show a few more rows than this search." |
+| `baseline: 'observed_only'` (the default) | mapped as above, plus a note: "The Explorer also counts keywords that had no earlier value, so it can show a few more rows than this search." (neutral wording, since the Explorer side may be a plain range rather than a movement filter) |
 | a `current` bound with **no** `prior` bound | not a jump: becomes the plain range on the same metric (`rankMin/Max` or `volMin/Max`), exact |
 | a `prior` bound with no `current` bound | dropped, with a note |
 | `prior` with bounds on both sides (a band) | the side the jump uses is mapped; the other side is dropped, with a note |
 | `current` with an extra bound the jump cannot carry (e.g. rank `current.gte`) | the extra bound becomes the plain range on the same metric when possible, otherwise dropped, with a note |
-| `delta` (volume only) | dropped, with a note: "The Explorer cannot filter on the size of the change itself; the from/to move was kept." |
+| `delta` (volume only) | dropped, with a note: "The Explorer cannot filter on the size of the change itself; that part of the movement filter was dropped." (Reworded 2026-09-30 after the Task 3 code review: the first wording claimed a move was kept even when none was, e.g. for the delta-only `growing_4w_v1` preset.) |
 | a from/to pair the Explorer would reject (rank needs from > to, volume needs from < to; `parseExplorerFilters` drops such a custom jump silently) | the jump is dropped, with a note; any current-side bound still becomes the plain range |
 | a prior bound on the side the jump does not read (rank `lt`/`lte`, volume `gt`/`gte`): a decline, an improvement within a band, or that bound alone | no jump. With a current bound the note says the Explorer cannot express the move; alone, the note says the earlier-value bound was dropped. Any current bound still becomes the plain range. (Added 2026-09-30 after the Task 3 spec review: the first draft dropped these silently, breaking §3.2's "empty notes = exact link".) |
 
@@ -200,7 +201,7 @@ The Explorer's jump is "was on one side of `from`, is now past `to`", and always
 
 ### 5.5 Compact filters (what the list and create results show)
 
-`compactExplorerFilters(f)` returns only the fields that differ from `EXPLORER_DEFAULTS`, never `page`/`perPage`, and `jumpMetric` only when `jump` is set. An empty object means "the default Explorer". This is what `list_saved_views`, `create_saved_view` and `update_saved_view` return as `filters`. There is no reverse translation into research vocabulary.
+`compactExplorerFilters(f)` returns only the fields that differ from `EXPLORER_DEFAULTS`, never `page`/`perPage`, and `jumpMetric` whenever `jump` is set (even for the default rank metric, so the AI never has to infer it). Severities are kept in canonical order so a reordered default still compacts away. An empty object means "the default Explorer". This is what `list_saved_views`, `create_saved_view` and `update_saved_view` return as `filters`. There is no reverse translation into research vocabulary.
 
 ### 5.6 Link length
 
@@ -379,6 +380,7 @@ Then `pnpm typecheck`, `pnpm lint`, the full `pnpm test`, and `pnpm build`.
 4. Add five keywords to the watchlist, remove two; the Watchlist page matches.
 5. Save a view under a name that already exists: the AI asks instead of inventing a name.
 6. Delete a view: gone from the dropdown.
+6b. Search a whole department: the answer has no link and its notes say to save it as a view (an encoded leaf path costs 70–100 bytes, so a link holds roughly 120–170 leaves). Save it as a view and open that instead.
 7. If ChatGPT is handy: repeat step 2 there.
 
 Done means: a member with Claude or ChatGPT can, with a prompt on each write, get Explorer links from searches, manage saved views, build and edit custom categories from category words, and edit their watchlist, and every change shows in the app on the next load. Nothing changes for members who never touch the tools. No database schema changes.
@@ -395,3 +397,4 @@ Owner steps before the push: set `MCP_WRITE_ENABLED=1` in Vercel (Production); l
 - A separate write scope if read-only connections are ever wanted.
 - A saved-view "update filters" control in the Explorer UI (the API and the MCP support it; the sidebar does not).
 - `list_watchlist` rows could carry current rank and volume; today the AI calls `get_keyword_details` for that.
+- Normalise `excludeTerms` upstream in the research schema (collapse whitespace runs, reject a comma inside a term, "one word or phrase per item") so the Explorer reads them exactly as the search did; today the converter adds a note instead (Task 3 code review, 2026-09-30). This changes the live search contract, so it is an owner decision.
