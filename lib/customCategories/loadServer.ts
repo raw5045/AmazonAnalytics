@@ -1,7 +1,8 @@
 import 'server-only';
-import { eq, desc } from 'drizzle-orm';
+import { and, eq, desc } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { customCategories } from '@/db/schema';
+import { isValidUuid } from './validation';
 
 export interface CustomCategoryDTO {
   id: string;
@@ -29,4 +30,15 @@ export async function listCustomCategoriesForUser(userId: string): Promise<Custo
     .where(eq(customCategories.userId, userId))
     .orderBy(desc(customCategories.createdAt));
   return rows.map(rowToDTO);
+}
+
+/** One category by id, scoped to the owner; null when missing, foreign or malformed (never leaks existence). */
+export async function loadCustomCategoryForUser(userId: string, id: string): Promise<CustomCategoryDTO | null> {
+  if (!isValidUuid(id)) return null;
+  const [row] = await db
+    .select()
+    .from(customCategories)
+    .where(and(eq(customCategories.id, id), eq(customCategories.userId, userId)))
+    .limit(1);
+  return row ? rowToDTO(row) : null;
 }
