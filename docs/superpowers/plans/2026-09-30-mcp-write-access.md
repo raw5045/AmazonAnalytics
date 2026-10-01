@@ -3092,7 +3092,10 @@ MSG
 
 **Files:**
 - Modify: `lib/research/contracts.ts` (`GuideResponse`), `lib/research/catalog.ts` (`GUIDE_VERSION`, `buildGuide`), `lib/research/catalog.test.ts`
-- Modify: `lib/research/service.ts` (`ResearchServiceDeps.workspaceEnabled`, `guide()`), `lib/research/service.test.ts` (`makeDeps`, `guideVersion`)
+- Modify: `lib/research/service.ts` (`guide()` only — `ResearchServiceDeps.workspaceEnabled` already exists), `lib/research/service.test.ts` (`guideVersion`, one new describe)
+- Modify (controller addendum I-3): `lib/research/toolErrors.ts`, `lib/research/toolErrors.test.ts`
+
+> **Amendments before dispatch (2026-09-30).** (1) `ResearchServiceDeps.workspaceEnabled: () => boolean`, `workspaceEnabled: mcpWriteEnabled` in `defaultResearchDeps()` and `workspaceEnabled: () => false` in `makeDeps()` already landed in the Task 9 fix round (48aadf7, for the channel-aware too-long note); Step 3's instructions to add them are superseded — only `guide()` changes. (2) `WORKSPACE_RULES` gains an eighth line before the last one — "A saved view built from custom categories alone follows later edits to those categories; a view that mixes a custom category with other categories stores its leaves as they were when it was saved." — and the catalog test asserts `'as they were when it was saved'` (spec §9.1). (3) Both fail-soft registration logs in `lib/mcp/handler.ts` write `...errFields(e)` (lib/ask/logSafe.ts) instead of `e.message`/`e.name`. (4) Controller addendum I-3: `lib/research/toolErrors.ts` `classifyToolError` logs `{ tool, ...errFields(e) }` (plus `detail: String(e)` for a primitive throw) and only the `    at …` frames of the stack, never the raw message — a `DrizzleQueryError`'s message embeds the bound params and its stack's first lines repeat it; `toolErrors.test.ts` is rewritten with a DrizzleQueryError-with-secret-param case. (5) The route test's `spies` array is typed `Array<{ mockRestore(): void }>` (`ReturnType<typeof vi.spyOn>` is `any` under vitest 4.1.4).
 - Create: `lib/mcp/tools/registerWorkspaceTools.ts`, `lib/mcp/tools/registerWorkspaceTools.test.ts`
 - Modify: `lib/mcp/handler.ts`, `app/api/mcp/route.test.ts`, `lib/ask/tools.test.ts`
 
@@ -3112,11 +3115,12 @@ describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
     expect(WORKSPACE_RULES.some((r) => r.includes('Never create, change or delete anything the person did not ask for'))).toBe(true);
     expect(WORKSPACE_RULES.some((r) => r.includes('DUPLICATE_NAME'))).toBe(true);
     expect(WORKSPACE_RULES.some((r) => r.includes('explorerUrl'))).toBe(true);
+    expect(WORKSPACE_RULES.some((r) => r.includes('as they were when it was saved'))).toBe(true);
   });
 });
 ```
 
-In `lib/research/service.test.ts`: change `guideVersion: 1` on the provenance assertion to `guideVersion: 2`; add `workspaceEnabled: () => false,` to `makeDeps()` (after `audience`); and append:
+In `lib/research/service.test.ts`: change `guideVersion: 1` on the provenance assertion to `guideVersion: 2` (`makeDeps()` already has `workspaceEnabled: () => false` since 48aadf7 — keep it); and append:
 
 ```ts
 describe('guide: workspace section', () => {
@@ -3319,6 +3323,7 @@ export const WORKSPACE_RULES: readonly string[] = Object.freeze([
   'Edits and deletes take ids from list_saved_views, list_custom_categories or list_watchlist. Confirm the item\'s name with the person before deleting. Deleting is permanent; removing from the watchlist is not.',
   'Names must be unique per account. On DUPLICATE_NAME, ask the person for a different name; never invent one.',
   `Caps: ${MAX_VIEWS_PER_USER} saved views, ${MAX_CUSTOM_CATEGORIES} custom categories, ${MAX_WATCHED_KEYWORDS} watched keywords. At a cap, tell the person what they could remove; do not delete anything to make room unless they say so.`,
+  'A saved view built from custom categories alone follows later edits to those categories; a view that mixes a custom category with other categories stores its leaves as they were when it was saved.',
   'Never create, change or delete anything the person did not ask for in this conversation.',
 ]);
 ```
@@ -3342,14 +3347,7 @@ change the signature to `export function buildGuide(ctx: { datasetWeek: string |
       : {}),
 ```
 
-`lib/research/service.ts`: add `import { mcpAudience, mcpWriteEnabled } from '@/lib/mcp/config';` (extending the existing import), add to `ResearchServiceDeps` after `audience`:
-
-```ts
-  /** Whether the workspace (write) tools are on — the guide describes them only then, and only to the MCP channel (spec 2026-09-30 §9.1). */
-  workspaceEnabled: () => boolean;
-```
-
-set `workspaceEnabled: mcpWriteEnabled,` in `defaultResearchDeps()` after `audience: mcpAudience,`, and in `guide()` replace the `buildGuide(...)` call with:
+`lib/research/service.ts`: `ResearchServiceDeps.workspaceEnabled` and `workspaceEnabled: mcpWriteEnabled` in `defaultResearchDeps()` already exist (48aadf7); in `guide()` replace the `buildGuide(...)` call with:
 
 ```ts
     const response = buildGuide({

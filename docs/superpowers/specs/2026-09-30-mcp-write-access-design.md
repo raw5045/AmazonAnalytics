@@ -313,9 +313,10 @@ Rules, in the guide's existing style:
 - "Edits and deletes take ids from list_saved_views, list_custom_categories or list_watchlist. Confirm the item's name with the person before deleting. Deleting is permanent; removing from the watchlist is not."
 - "Names must be unique per account. On DUPLICATE_NAME, ask the person for a different name; never invent one."
 - "Caps: 5 saved views, 25 custom categories, 100 watched keywords. At a cap, tell the person what they could remove; do not delete anything to make room unless they say so."
+- "A saved view built from custom categories alone follows later edits to those categories; a view that mixes a custom category with other categories stores its leaves as they were when it was saved." (added 2026-09-30 after the Task 9 re-review; the §5.2 mixed-scope rule)
 - "Never create, change or delete anything the person did not ask for in this conversation."
 
-`GUIDE_VERSION` becomes 2 (echoed in search provenance). `guide()` passes `workspace: actor.channel === 'mcp' && mcpWriteEnabled()`, so Ask AI's guide has no workspace section; it shares the error-code list (which now carries the three workspace codes, as it already carries the never-thrown `UNSUPPORTED_FILTER`) and `guideVersion` with the MCP guide.
+`GUIDE_VERSION` becomes 2 (echoed in search provenance). `guide()` passes `workspace: actor.channel === 'mcp' && deps.workspaceEnabled()` (the `ResearchServiceDeps` member the Task 9 fix round introduced for §5.6's note; default `mcpWriteEnabled`), so Ask AI's guide has no workspace section; it shares the error-code list (which now carries the three workspace codes, as it already carries the never-thrown `UNSUPPORTED_FILTER`) and `guideVersion` with the MCP guide.
 
 ### 9.2 Server instructions
 `lib/mcp/handler.ts`'s `instructions` string gains, when the flag is on: "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; clients normally ask the person before each write; confirm names and deletions."
