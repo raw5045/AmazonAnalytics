@@ -5,7 +5,7 @@ import { ASK_LIMITS, isAskModelId, type AskModelId } from './config';
 
 /** Spec §7. Single-statement writes (neon-http has no transactions). */
 export interface AskConversation {
-  id: string; userId: string; title: string; model: AskModelId; messageCount: number; inFlightSince: Date | null; createdAt: Date; updatedAt: Date;
+  id: string; userId: string; title: string; model: AskModelId; messageCount: number; inFlightSince: Date | null; changesApprovedAt: Date | null; createdAt: Date; updatedAt: Date;
 }
 export type MessageStatus = 'complete' | 'stopped' | 'failed';
 export type StoredMessage = { id: string; seq: number; role: 'user' | 'assistant'; parts: unknown[]; status: MessageStatus };
@@ -19,7 +19,7 @@ export interface AskMessageMetadata { status?: MessageStatus; conversationId?: s
 export type AskUIMessage = UIMessage<AskMessageMetadata>;
 export type DeleteOutcome = 'deleted' | 'busy' | 'missing';
 
-type ConvRow = { id: string; user_id: string; title: string; model: string; message_count: number; in_flight_since: string | Date | null; created_at: string | Date; updated_at: string | Date };
+type ConvRow = { id: string; user_id: string; title: string; model: string; message_count: number; in_flight_since: string | Date | null; changes_approved_at: string | Date | null; created_at: string | Date; updated_at: string | Date };
 
 /** Throws on a model the code no longer recognizes: retiring a model id needs a data migration, not a silent pass-through. */
 function toConv(r: ConvRow): AskConversation {
@@ -27,9 +27,10 @@ function toConv(r: ConvRow): AskConversation {
   return {
     id: r.id, userId: r.user_id, title: r.title, model: r.model, messageCount: Number(r.message_count),
     inFlightSince: r.in_flight_since === null ? null : new Date(r.in_flight_since), createdAt: new Date(r.created_at), updatedAt: new Date(r.updated_at),
+    changesApprovedAt: r.changes_approved_at === null || r.changes_approved_at === undefined ? null : new Date(r.changes_approved_at),
   };
 }
-const CONV_COLUMNS = sql.raw('id, user_id, title, model, message_count, in_flight_since, created_at, updated_at');
+const CONV_COLUMNS = sql.raw('id, user_id, title, model, message_count, in_flight_since, changes_approved_at, created_at, updated_at');
 /** Spec §7: a stale in-flight flag (the route crashed mid-turn) expires this long after it was set. */
 const IN_FLIGHT_EXPIRY = sql.raw(`interval '${ASK_LIMITS.inFlightExpiryMinutes} minutes'`);
 
@@ -169,6 +170,24 @@ export async function acquireTurnLock(userId: string, conversationId: string): P
  */
 export async function releaseTurnLock(conversationId: string): Promise<void> {
   await db.execute(sql`UPDATE ask_conversations SET in_flight_since = NULL WHERE id = ${conversationId}::uuid`);
+}
+
+/** Spec 2026-10-01 §6: "Approve" on a change card allows changes for the rest of this chat. First stamp wins; never cleared by the app. */
+export async function stampChangesApproved(userId: string, conversationId: string, now: Date): Promise<boolean> {
+  const r = await db.execute(sql`
+    UPDATE ask_conversations SET changes_approved_at = COALESCE(changes_approved_at, ${now.toISOString()}::timestamptz)
+    WHERE id = ${conversationId}::uuid AND user_id = ${userId}::uuid RETURNING id`);
+  return r.rows.length > 0;
+}
+
+/**
+ * Rewrites one stored message's parts — used only to record an approval's answer and outcome on
+ * the assistant message that asked (spec 2026-10-01 §6). Scoped to the conversation the route has
+ * already loaded and locked under the owner's id, so no user_id predicate is needed here.
+ */
+export async function replaceMessageParts(conversationId: string, messageId: string, parts: unknown[]): Promise<boolean> {
+  const r = await db.execute(sql`UPDATE ask_messages SET parts = ${cleanPartsJson(parts)}::jsonb WHERE id = ${messageId}::uuid AND conversation_id = ${conversationId}::uuid RETURNING id`);
+  return r.rows.length > 0;
 }
 
 /**

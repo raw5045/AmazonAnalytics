@@ -4,7 +4,7 @@ const envMock = vi.hoisted(() => ({ env: {} as Record<string, string | undefined
 vi.mock('@/lib/env', () => envMock);
 
 import {
-  ASK_MODELS, DEFAULT_MODEL, ASK_LIMITS, MICRO, usdToMicro, isAskModelId, askAiEnabled, anthropicApiKey,
+  ASK_MODELS, DEFAULT_MODEL, ASK_LIMITS, MICRO, usdToMicro, isAskModelId, askAiEnabled, askAiWritesEnabled, anthropicApiKey,
   dailyMessageLimit, globalMonthlyCeilingMicro, defaultAllowanceMicro, resetAskConfigForTests,
 } from './config';
 
@@ -107,5 +107,16 @@ describe('ask config', () => {
     expect(defaultAllowanceMicro()).toBe(10_000_000);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0][0])).toContain('ASK_AI_DEFAULT_ALLOWANCE_USD');
+  });
+});
+
+describe('askAiWritesEnabled', () => {
+  beforeEach(() => { envMock.env = {}; resetAskConfigForTests(); });
+
+  it('is on only for the exact string "1"', () => {
+    for (const [value, expected] of [['1', true], ['true', false], ['', false], [undefined, false]] as const) {
+      envMock.env.ASK_AI_WRITES_ENABLED = value;
+      expect(askAiWritesEnabled()).toBe(expected);
+    }
   });
 });

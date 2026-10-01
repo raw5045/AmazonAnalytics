@@ -6,6 +6,8 @@ import { getTableConfig } from 'drizzle-orm/pg-core';
 import { askConversations, askMessages, askAccounts, askLedger, askGlobalUsage } from './askAi';
 
 const MIGRATION_PATH = path.join(__dirname, '..', 'migrations', '0048_ask_ai.sql');
+// Arc 4 (spec 2026-10-01 §7): 0049 adds columns to ask_accounts and ask_conversations with ALTER TABLE.
+const ADD_COLUMNS_MIGRATION_PATH = path.join(__dirname, '..', 'migrations', '0049_ask_writes.sql');
 const TABLES = [askConversations, askMessages, askAccounts, askLedger, askGlobalUsage];
 
 function readMigration() {
@@ -29,6 +31,15 @@ function createStatements(sql: string) {
 function indexStatementsFor(sql: string, tableName: string) {
   const onThisTable = new RegExp(`\\bON ${tableName}\\b`);
   return statements(sql).filter((s) => /^CREATE INDEX IF NOT EXISTS /.test(s) && onThisTable.test(s));
+}
+
+// Columns a later migration adds to an existing table (`ALTER TABLE <table> ... ADD COLUMN IF NOT
+// EXISTS <name> ...`): the Drizzle column set is compared against 0048's CREATE plus these.
+function addedColumnsFor(sql: string, tableName: string) {
+  const altersThisTable = new RegExp(`^ALTER TABLE ${tableName}\\b`, 'm');
+  return statements(sql)
+    .filter((s) => altersThisTable.test(s))
+    .flatMap((s) => [...s.matchAll(/ADD COLUMN IF NOT EXISTS (\w+)/g)].map((m) => m[1]));
 }
 
 describe('ask ai schema', () => {
@@ -63,6 +74,7 @@ describe('ask ai schema', () => {
   it('every Drizzle column, check, unique constraint and index name is mirrored in the SQL migration', () => {
     const sql = readMigration();
     const creates = createStatements(sql);
+    const addColumnsSql = readFileSync(ADD_COLUMNS_MIGRATION_PATH, 'utf8');
 
     TABLES.forEach((table, i) => {
       const config = getTableConfig(table);
@@ -78,6 +90,7 @@ describe('ask ai schema', () => {
         .slice(1)
         .map((l) => l.trim().split(/\s+/)[0])
         .filter((w) => /^[a-z_0-9]+$/.test(w));
+      sqlCols.push(...addedColumnsFor(addColumnsSql, getTableName(table)));
       expect([...sqlCols].sort()).toEqual(config.columns.map((c) => c.name).sort());
 
       for (const c of config.checks) {

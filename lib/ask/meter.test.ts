@@ -6,7 +6,7 @@ vi.mock('@/lib/env', () => ({ env: {} }));
 // meterFor never touches `db` itself, so an empty stub is enough.
 vi.mock('@/db/client', () => ({ db: {} }));
 import { meterFor } from './meter';
-const acct = { userId: 'u1', access: true, monthlyAllowanceMicro: 10_000_000, allowanceUsedMicro: 2_500_000, periodStart: '2026-09-01', creditMicro: 0, conversationCount: 1 };
+const acct = { userId: 'u1', access: true, monthlyAllowanceMicro: 10_000_000, allowanceUsedMicro: 2_500_000, periodStart: '2026-09-01', creditMicro: 0, conversationCount: 1, autoApproveChanges: false, autoApproveDeletes: false };
 describe('meterFor', () => {
   it('percent used, questions left for the model, credit flag, exhausted flag', () => {
     expect(meterFor(acct, 'claude-sonnet-5', false)).toEqual({ percentUsed: 25, questionsLeft: 187, hasCredit: false, exhausted: false, admin: false });

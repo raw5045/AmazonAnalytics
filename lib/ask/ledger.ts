@@ -17,6 +17,9 @@ export interface AskAccount {
   periodStart: string;
   creditMicro: number;
   conversationCount: number;
+  /** Spec 2026-10-01 §3: "Always approve" remembered — changes (create/update/add/remove) and deletes separately. */
+  autoApproveChanges: boolean;
+  autoApproveDeletes: boolean;
 }
 
 // A `type` alias, not an `interface`: db.execute<TRow>'s TRow extends Record<string, unknown>, and
@@ -24,7 +27,7 @@ export interface AskAccount {
 // that constraint — a structurally identical `interface` does not (see the Task 5 deviation note).
 type AccountRow = {
   user_id: string; access: boolean; monthly_allowance_micro: string | number; allowance_used_micro: string | number;
-  period_start: string; credit_micro: string | number; conversation_count: number;
+  period_start: string; credit_micro: string | number; conversation_count: number; auto_approve_changes: boolean; auto_approve_deletes: boolean;
 };
 
 const num = (v: string | number | null | undefined): number => (v === null || v === undefined ? 0 : Number(v));
@@ -33,10 +36,11 @@ function toAccount(r: AccountRow): AskAccount {
   return {
     userId: r.user_id, access: r.access, monthlyAllowanceMicro: num(r.monthly_allowance_micro), allowanceUsedMicro: num(r.allowance_used_micro),
     periodStart: String(r.period_start).slice(0, 10), creditMicro: num(r.credit_micro), conversationCount: Number(r.conversation_count),
+    autoApproveChanges: r.auto_approve_changes === true, autoApproveDeletes: r.auto_approve_deletes === true,
   };
 }
 
-const ACCOUNT_COLUMNS = sql.raw('user_id, access, monthly_allowance_micro, allowance_used_micro, period_start::text AS period_start, credit_micro, conversation_count');
+const ACCOUNT_COLUMNS = sql.raw('user_id, access, monthly_allowance_micro, allowance_used_micro, period_start::text AS period_start, credit_micro, conversation_count, auto_approve_changes, auto_approve_deletes');
 
 export function monthStartUtc(now: Date): string {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString().slice(0, 10);
@@ -79,6 +83,10 @@ export async function ensureAccount(userId: string, now: Date, opts: { access: b
  * period_start against the same `month` literal still derives the right answer, unlike trusting
  * the raw column. Both reasons are why this mirrored form is preferred over re-reading the row
  * after the statement.
+ *
+ * The two write toggles (arc 4) are read straight from the row — `due` never changes them — but
+ * they must stay in this hand-written list: the gates and the /ask page take their account from
+ * here, and toAccount maps a missing toggle to false.
  */
 export async function resetPeriodIfDue(userId: string, now: Date): Promise<AskAccount | null> {
   const month = monthStartUtc(now);
@@ -94,8 +102,20 @@ export async function resetPeriodIfDue(userId: string, now: Date): Promise<AskAc
     SELECT user_id, access, monthly_allowance_micro,
            CASE WHEN period_start < ${month}::date THEN 0 ELSE allowance_used_micro END AS allowance_used_micro,
            GREATEST(period_start, ${month}::date)::text AS period_start,
-           credit_micro, conversation_count
+           credit_micro, conversation_count, auto_approve_changes, auto_approve_deletes
     FROM ask_accounts WHERE user_id = ${userId}::uuid`);
+  return r.rows[0] ? toAccount(r.rows[0]) : null;
+}
+
+/** Spec 2026-10-01 §8: a partial update of the two write toggles; null means "leave as is". Owner-scoped by primary key. */
+export async function setAutoApprove(userId: string, patch: { changes?: boolean; deletes?: boolean }): Promise<AskAccount | null> {
+  const r = await db.execute<AccountRow>(sql`
+    UPDATE ask_accounts
+    SET auto_approve_changes = COALESCE(${patch.changes ?? null}::boolean, auto_approve_changes),
+        auto_approve_deletes = COALESCE(${patch.deletes ?? null}::boolean, auto_approve_deletes),
+        updated_at = now()
+    WHERE user_id = ${userId}::uuid
+    RETURNING ${ACCOUNT_COLUMNS}`);
   return r.rows[0] ? toAccount(r.rows[0]) : null;
 }
 

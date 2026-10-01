@@ -15,6 +15,11 @@ export function askAiEnabled(): boolean {
   return env.ASK_AI_ENABLED === '1';
 }
 
+/** Spec 2026-10-01 §2: the eleven workspace tools inside the chat. Reaches a deployment on its next deploy only. */
+export function askAiWritesEnabled(): boolean {
+  return env.ASK_AI_WRITES_ENABLED === '1';
+}
+
 export function anthropicApiKey(): string | null {
   const key = env.ANTHROPIC_API_KEY?.trim();
   return key ? key : null;

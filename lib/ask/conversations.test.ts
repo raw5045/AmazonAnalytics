@@ -3,7 +3,7 @@ vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
 const { execute } = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock('@/db/client', () => ({ db: { execute } }));
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { titleFrom, listConversations, loadConversation, createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage, acquireTurnLock, releaseTurnLock, deleteConversation, storedToUiMessage } from './conversations';
+import { titleFrom, listConversations, loadConversation, createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage, acquireTurnLock, releaseTurnLock, deleteConversation, storedToUiMessage, stampChangesApproved, replaceMessageParts } from './conversations';
 
 // Renders the real SQL text (placeholders as $1, $2…) and the bound parameter values separately,
 // mirroring lib/ask/ledger.test.ts (Task 5 review) — a sql.raw() fragment (e.g. the maxChats/
@@ -12,7 +12,7 @@ import { titleFrom, listConversations, loadConversation, createConversationWithF
 const dialect = new PgDialect();
 const sqlOf = (i = 0) => dialect.sqlToQuery(execute.mock.calls[i][0]).sql;
 const paramsOf = (i = 0) => dialect.sqlToQuery(execute.mock.calls[i][0]).params;
-const convRow = { id: 'c1', user_id: 'u1', title: 'Lighting keywords', model: 'claude-sonnet-5', message_count: 2, in_flight_since: null, created_at: '2026-09-28T10:00:00.000Z', updated_at: '2026-09-28T10:05:00.000Z' };
+const convRow = { id: 'c1', user_id: 'u1', title: 'Lighting keywords', model: 'claude-sonnet-5', message_count: 2, in_flight_since: null, changes_approved_at: null, created_at: '2026-09-28T10:00:00.000Z', updated_at: '2026-09-28T10:05:00.000Z' };
 const userMsg = { id: '11111111-1111-4111-8111-111111111111', role: 'user' as const, parts: [{ type: 'text' as const, text: 'Show me lighting keywords' }] };
 
 describe('conversations', () => {
@@ -154,5 +154,33 @@ describe('conversations', () => {
   });
   it('storedToUiMessage carries status as metadata', () => {
     expect(storedToUiMessage({ id: 'm', seq: 1, role: 'assistant', parts: [], status: 'failed' })).toEqual({ id: 'm', role: 'assistant', parts: [], metadata: { status: 'failed' } });
+  });
+});
+
+describe('write approval state (arc 4)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('loads changesApprovedAt (null until stamped) and the stamp is owner-scoped', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ ...convRow, changes_approved_at: '2026-10-01T12:00:00.000Z' }] }).mockResolvedValueOnce({ rows: [] });
+    const loaded = await loadConversation('u1', 'c1');
+    expect(loaded?.conversation.changesApprovedAt).toEqual(new Date('2026-10-01T12:00:00.000Z'));
+    expect(sqlOf()).toContain('changes_approved_at');
+    execute.mockResolvedValueOnce({ rows: [{ id: 'c1' }] });
+    await expect(stampChangesApproved('u1', 'c1', new Date('2026-10-01T12:00:00.000Z'))).resolves.toBe(true);
+    expect(sqlOf(2)).toContain('UPDATE ask_conversations SET changes_approved_at = COALESCE(changes_approved_at, $1::timestamptz)');
+    expect(sqlOf(2)).toContain('WHERE id = $2::uuid AND user_id = $3::uuid');
+    expect(paramsOf(2)).toEqual(['2026-10-01T12:00:00.000Z', 'c1', 'u1']);
+    execute.mockResolvedValueOnce({ rows: [] });
+    await expect(stampChangesApproved('u2', 'c1', new Date('2026-10-01T12:00:00.000Z'))).resolves.toBe(false);
+    execute.mockResolvedValueOnce({ rows: [convRow] });
+    await expect(listConversations('u1')).resolves.toMatchObject([{ changesApprovedAt: null }]);
+  });
+  it('replaceMessageParts rewrites one message\'s parts inside its conversation and cleans NULs', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ id: 'm2' }] });
+    await expect(replaceMessageParts('c1', 'm2', [{ type: 'text', text: 'a\u0000b' }])).resolves.toBe(true);
+    expect(sqlOf()).toContain('UPDATE ask_messages SET parts = $1::jsonb WHERE id = $2::uuid AND conversation_id = $3::uuid');
+    expect(paramsOf()).toEqual([JSON.stringify([{ type: 'text', text: 'ab' }]), 'm2', 'c1']);
+    execute.mockResolvedValueOnce({ rows: [] });
+    await expect(replaceMessageParts('c1', 'm9', [])).resolves.toBe(false);
   });
 });

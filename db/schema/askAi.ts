@@ -21,6 +21,8 @@ export const askConversations = pgTable(
     model: varchar('model', { length: 64 }).notNull(),
     messageCount: integer('message_count').notNull().default(0),
     inFlightSince: timestamp('in_flight_since', { withTimezone: true }),
+    // Migration 0049 (spec 2026-10-01 §6, §7): the first "Approve" on a change card in this chat; never cleared by the app.
+    changesApprovedAt: timestamp('changes_approved_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -67,6 +69,9 @@ export const askAccounts = pgTable(
      *   ) c WHERE c.user_id = a.user_id AND a.conversation_count <> c.n;
      */
     conversationCount: integer('conversation_count').notNull().default(0),
+    // Migration 0049 (spec 2026-10-01 §3, §7): "Always approve" remembered, changes and deletes separately.
+    autoApproveChanges: boolean('auto_approve_changes').notNull().default(false),
+    autoApproveDeletes: boolean('auto_approve_deletes').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

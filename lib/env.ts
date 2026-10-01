@@ -39,6 +39,8 @@ const serverSchema = z.object({
   ASK_AI_GLOBAL_MONTHLY_CEILING_USD: z.string().optional(),
   ASK_AI_PRICES_JSON: z.string().optional(),
   ASK_AI_DEFAULT_ALLOWANCE_USD: z.string().optional(),
+  // Write tools inside the chat (spec 2026-10-01 §2); independent of MCP_WRITE_ENABLED.
+  ASK_AI_WRITES_ENABLED: z.string().optional(),
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 });
 
