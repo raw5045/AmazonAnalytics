@@ -258,6 +258,38 @@ describe('SavedViewsControls', () => {
     expect(body.filters.volMin).toBe(10_000);
   });
 
+  // A loaded view whose stored sort is the default, so a sort the URL adds shows in the POST.
+  const lamps = savedView({
+    id: '33333333-1111-4111-8111-111111111111',
+    name: 'Loaded',
+    filters: { ...EXPLORER_DEFAULTS, q: 'lamp', rankMax: 5000, sort: 'rank' },
+  });
+
+  it("saves a SORTED loaded view as the view's filters with the new sort, never the whole catalogue", async () => {
+    // A column-header click keeps the view tag and adds `sort`; the page renders the view, re-sorted.
+    nav.state.params = new URLSearchParams(`view=${lamps.id}&sort=imp`);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView({ name: 'Lamps by impressions' }) }));
+    render(<SavedViewsControls views={[lamps]} />);
+    await saveThroughModal('Lamps by impressions');
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.filters.q).toBe('lamp');
+    expect(body.filters.sort).toBe('imp');
+    // Exactly what the page shows for this URL (lib/explorer/resolveFilters.ts).
+    expect(body.filters).toEqual({ ...lamps.filters, sort: 'imp' });
+  });
+
+  it('saves the URL filters when a real filter param sits next to the view tag, as before', async () => {
+    nav.state.params = new URLSearchParams(`view=${lamps.id}&q=desk`);
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView({ name: 'Desks' }) }));
+    render(<SavedViewsControls views={[lamps]} />);
+    await saveThroughModal('Desks');
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string);
+    expect(body.filters.q).toBe('desk');
+    expect(body.filters.rankMax).toBeNull();
+  });
+
   it('counts the optimistic view toward the per-user limit', async () => {
     const existing = [1, 2, 3, 4].map((n) => savedView({ id: `0000000${n}-1111-4111-8111-111111111111`, name: `View ${n}` }));
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { view: savedView() }));

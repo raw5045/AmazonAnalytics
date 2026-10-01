@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { parseExplorerFilters } from '@/lib/explorer/parseFilters';
+import { resolveExplorerFilters } from '@/lib/explorer/resolveFilters';
 import { searchParamsToLike } from '@/lib/explorer/export/query';
 import type { SavedView } from '@/lib/savedViews/types';
 import { NameViewModal } from './NameViewModal';
@@ -15,8 +15,8 @@ import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
  * URL) — not unapplied pending changes in the sidebar. To save a
  * tweaked state, users hit Apply in the sidebar first, then Save here.
  *
- * Derives filters from `useSearchParams()` + `parseExplorerFilters`
- * (same parsing path the server uses). Because the layout doesn't
+ * Derives filters from `useSearchParams()` + `resolveExplorerFilters`
+ * (the resolver the page itself uses). Because the layout doesn't
  * have access to searchParams, doing this client-side keeps the data
  * flow consistent without adding a second server-side parse.
  *
@@ -47,26 +47,24 @@ export function SaveViewButton({
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Convert URLSearchParams → SearchParamsLike → ExplorerFilters
-  // using the same parser the server uses, so what we save exactly
-  // matches what's currently rendered.
+  // Convert URLSearchParams → SearchParamsLike → ExplorerFilters with the
+  // page's own resolver, so what we save exactly matches what's currently
+  // rendered.
   const filters = useMemo(() => {
     // Repeated keys (`leaf=A&leaf=B`) must stay arrays — collapsing them to
     // the last value silently saved a single leaf category.
     const sp = searchParamsToLike(new URLSearchParams(searchParams?.toString() ?? ''));
-    // Bookmark form (`?view=<id>`, no filter params): the applied filters are
-    // the loaded view's stored ones. The URL carries none, so parsing it saved
-    // the DEFAULTS — every "wiped" view of 2026-09-18 was saved while another
-    // view was loaded. Mirrors the page's own resolution (activeView &&
-    // !urlHasFilters); the hybrid shape `?view=<id>&<filters>` keeps URL-wins.
+    // A loaded view (`?view=<id>`, alone or with the `sort` / `page` / `per_page`
+    // the column headers and the pager add) saves its stored filters with that
+    // overlay; parsing the URL instead saved the DEFAULTS (every "wiped" view of
+    // 2026-09-18) or, for a sorted view, the whole catalogue (until 2026-10-01).
+    // Any real filter param next to the view tag means the URL wins. Same
+    // function as page.tsx (lib/explorer/resolveFilters.ts), so the button and
+    // the page stay in sync by construction — never re-implement the rule here.
     // First value wins for a repeated `view`, as the page's getOne does.
     const viewId = Array.isArray(sp.view) ? sp.view[0] : sp.view ?? null;
-    const urlHasFilters = Object.keys(sp).some((k) => k !== 'view' && k !== 'page' && k !== 'per_page');
-    if (viewId && !urlHasFilters) {
-      const loaded = views.find((v) => v.id === viewId);
-      if (loaded) return loaded.filters;
-    }
-    return parseExplorerFilters(sp);
+    const loaded = viewId ? views.find((v) => v.id === viewId) ?? null : null;
+    return resolveExplorerFilters(sp, loaded).filters;
   }, [searchParams, views]);
 
   // Only show on the main explorer page — saving from the keyword
