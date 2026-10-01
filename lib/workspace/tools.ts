@@ -35,7 +35,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'list_saved_views',
     title: 'List saved views',
-    description: () => `This account's saved Explorer views (up to ${MAX_VIEWS_PER_USER}): id, name, Explorer link and the stored filters in compact form. Use the id for update_saved_view and delete_saved_view.`,
+    description: () => `This account's saved Explorer views (up to ${MAX_VIEWS_PER_USER}): id, name, Explorer link and the stored filters in compact form (leaf categories are previewed: the first ${PREVIEW_LEAF_PATHS} of leafCount). Use the id for update_saved_view and delete_saved_view.`,
     inputSchema: emptyInputSchema,
     run: (service, actor, args) => service.listSavedViews(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
@@ -62,7 +62,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'create_saved_view',
     title: 'Create saved view',
-    description: () => `Saves the exact criteria you searched with as a named Explorer view: pass the same presetIds, filters, sort and comparisonWindow (never a cursor). Returns the view with its link, and notes for anything the Explorer could not carry over; relay the notes to the person. ${ASKS}`,
+    description: () => `Saves the exact criteria you searched with as a named Explorer view: pass the same presetIds, filters, sort and comparisonWindow (never a cursor). Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes for anything the Explorer could not carry over; relay the notes to the person. ${ASKS}`,
     inputSchema: createSavedViewInputSchema,
     run: (service, actor, args) => service.createSavedView(actor, args),
     annotations: CREATE_ANNOTATIONS,
@@ -71,7 +71,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'update_saved_view',
     title: 'Update saved view',
-    description: () => `Renames a saved view and/or replaces its filters with a new search (no merge). Takes the id from list_saved_views. Returns the view with its link and notes. ${ASKS}`,
+    description: () => `Renames a saved view and/or replaces its filters with a new search (no merge). Takes the id from list_saved_views. Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes. ${ASKS}`,
     inputSchema: updateSavedViewInputSchema,
     run: (service, actor, args) => service.updateSavedView(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,

@@ -82,8 +82,12 @@ export interface SavedViewSummary {
   id: string;
   name: string;
   explorerUrl: string;
-  /** The stored Explorer filters with defaults stripped (§5.5); {} is the default Explorer. */
+  /** The stored Explorer filters with defaults stripped (§5.5); {} is the default Explorer. `leafPaths`, when present, is a preview: the first 20 of leafCount, in stored order. */
   filters: Partial<ExplorerFilters>;
+  /** How many leaf categories the stored filters name; 0 when none. */
+  leafCount: number;
+  /** True when filters.leafPaths holds every one of them. */
+  previewComplete: boolean;
   createdAt: string;
   updatedAt: string;
 }

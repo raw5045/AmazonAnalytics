@@ -11,15 +11,17 @@ import { countUserActivityToday } from '@/lib/activity/readToday';
 import * as categoryCommands from '@/lib/customCategories/commands';
 import { listCustomCategoriesForUser, loadCustomCategoryForUser, type CustomCategoryDTO } from '@/lib/customCategories/loadServer';
 import { MAX_CUSTOM_CATEGORIES, MAX_LEAF_PATHS_PER_CATEGORY } from '@/lib/customCategories/validation';
+import { isPoolConnectTimeout } from '@/lib/db/tcpPool';
 import { env } from '@/lib/env';
 import type { ExplorerFilters } from '@/lib/explorer/types';
 import { applyPresets } from '@/lib/research/catalog';
 import { defaultCategoryDeps, resolveScope, type CategoryDeps } from '@/lib/research/categories';
 import { invalid, parseSearchInput, type Filters } from '@/lib/research/contracts';
-import { ResearchError } from '@/lib/research/errors';
+import { poolBusyError, ResearchError, type ResearchErrorCode } from '@/lib/research/errors';
 import { researchLimits, type ResearchLimits } from '@/lib/research/limits';
 import { keywordUrlFor } from '@/lib/research/links';
 import type { ResearchActor } from '@/lib/research/service';
+import { SAFE_TOOL_FAILURE } from '@/lib/research/toolErrors';
 import { recordResearchActivity, reserveResearchRequest } from '@/lib/research/usage';
 import * as savedViewCommands from '@/lib/savedViews/commands';
 import { listSavedViewsForUser } from '@/lib/savedViews/loadServer';
@@ -32,7 +34,7 @@ import {
   createCustomCategoryInputSchema, createSavedViewInputSchema, deleteCustomCategoryInputSchema, deleteSavedViewInputSchema, emptyInputSchema,
   PREVIEW_LEAF_PATHS, updateCustomCategoryInputSchema, updateSavedViewInputSchema, watchlistSelectionInputSchema,
   type AddToWatchlistResponse, type CustomCategorySummary, type CustomCategoryWriteResponse, type DeleteCustomCategoryResponse,
-  type DeleteSavedViewResponse, type ListCustomCategoriesResponse, type ListSavedViewsResponse, type ListWatchlistResponse,
+  type DeleteSavedViewResponse, type LeafMode, type ListCustomCategoriesResponse, type ListSavedViewsResponse, type ListWatchlistResponse,
   type RemoveFromWatchlistResponse, type SavedViewSummary, type SavedViewWriteResponse, type SearchSpec, type WorkspaceService, type WorkspaceToolName,
 } from './contracts';
 import { compactExplorerFilters, customCategoryUrlFor, savedViewUrlFor, toExplorerFilters } from './explorerFilters';
@@ -118,13 +120,31 @@ function toResearchError(r: CommandFailure, kind: keyof typeof NOT_FOUND_MESSAGE
       return new ResearchError('DUPLICATE_NAME', r.message);
     case 'not_found':
       return new ResearchError('NOT_FOUND', NOT_FOUND_MESSAGE[kind]);
-    default:
-      // invalid_id / invalid_name / nothing_to_update / no_leaves — input problems the schemas mostly prevent.
+    // Input problems the schemas mostly prevent; the command's own sentence says what was wrong.
+    case 'invalid_id':
+    case 'invalid_name':
+    case 'nothing_to_update':
+    case 'no_leaves':
       return new ResearchError('INVALID_FILTERS', r.message);
+    default: {
+      // A command code added later fails the typecheck here instead of silently becoming INVALID_FILTERS.
+      const _exhaustive: never = r.code;
+      void _exhaustive;
+      return new ResearchError('INVALID_FILTERS', r.message);
+    }
   }
 }
 
-/** §8.6: one line per call — tool, outcome, code or error name, account id, timing. Never names, keywords or paths. */
+/** ResearchError codes that mean the infrastructure failed, not that the request was wrong: logged as `failed`, like an unexpected error, so one alert on outcome=failed sees them. */
+const INFRA_CODES: ReadonlySet<ResearchErrorCode> = new Set<ResearchErrorCode>(['DATA_UNAVAILABLE', 'QUERY_TIMEOUT']);
+
+/**
+ * §8.6: one line per call — tool, outcome, code or error name, account id, timing. Never names, keywords or paths.
+ * A ResearchError is already a safe, client-facing shape and passes through unchanged. Anything else is replaced by a
+ * fresh ResearchError carrying nothing from the original (no message, no cause): the MCP adapter's classifyToolError
+ * logs a raw error's message and stack, and a DrizzleQueryError's message embeds the bound params (view names, filter
+ * JSON, category names, leaf paths, keyword text).
+ */
 function logged<T>(tool: WorkspaceToolName, actor: ResearchActor, fn: () => Promise<T>): Promise<T> {
   const started = Date.now();
   const line = (fields: Record<string, unknown>) =>
@@ -135,16 +155,36 @@ function logged<T>(tool: WorkspaceToolName, actor: ResearchActor, fn: () => Prom
       return out;
     },
     (e: unknown) => {
-      if (e instanceof ResearchError) line({ outcome: 'refused', code: e.code });
-      else {
-        // A DrizzleQueryError's own name is just "Error" and its message embeds the bound params, so log
-        // the unwrapped name and SQLSTATE only (lib/ask/logSafe.ts reads the cause) — never a message.
-        const { error, code } = errFields(e);
-        line({ outcome: 'failed', error, ...(code ? { code } : {}) });
+      if (e instanceof ResearchError) {
+        line({ outcome: INFRA_CODES.has(e.code) ? 'failed' : 'refused', code: e.code });
+        throw e;
       }
-      throw e;
+      // A DrizzleQueryError's own name is just "Error" and its message embeds the bound params, so log
+      // the unwrapped name and SQLSTATE only (lib/ask/logSafe.ts reads the cause) — never a message.
+      const { error, code } = errFields(e);
+      line({ outcome: 'failed', error, ...(code ? { code } : {}) });
+      throw isPoolConnectTimeout(e) ? poolBusyError() : new ResearchError('DATA_UNAVAILABLE', SAFE_TOOL_FAILURE.message, { retryable: true });
     },
   );
+}
+
+/**
+ * §6.2: the leaves a custom category ends with after an update. `expansion` is what the caller expanded from the request's
+ * categories — in remove mode only its `selections`, through the catalog. `explicitPaths` are the request's own leaf paths,
+ * which remove subtracts verbatim (trimmed): a stale stored leaf the catalog no longer has must stay removable.
+ */
+export function applyLeafMode(args: { stored: string[]; mode: LeafMode; explicitPaths: string[]; expansion: string[] }): string[] {
+  const { stored, mode, explicitPaths, expansion } = args;
+  switch (mode) {
+    case 'replace':
+      return expansion;
+    case 'add':
+      return [...new Set([...stored, ...expansion])];
+    case 'remove': {
+      const drop = new Set([...explicitPaths.map((path) => path.trim()), ...expansion]);
+      return stored.filter((path) => !drop.has(path));
+    }
+  }
 }
 
 export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceService {
@@ -168,9 +208,16 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     if (write) deps.bumpWrite(actor.localUserId);
   }
 
-  const viewSummary = (v: SavedView): SavedViewSummary => ({
-    id: v.id, name: v.name, explorerUrl: savedViewUrlFor(deps.appUrl, v.id), filters: compactExplorerFilters(v.filters), createdAt: v.createdAt, updatedAt: v.updatedAt,
-  });
+  /** Like categorySummary: a department saved as a view can name up to 2,000 leaves, so the summary previews the first PREVIEW_LEAF_PATHS and says how many there are. */
+  const viewSummary = (v: SavedView): SavedViewSummary => {
+    const filters = compactExplorerFilters(v.filters); // a fresh object, so trimming its leafPaths never touches the stored view
+    const leafCount = v.filters.leafPaths.length;
+    if (filters.leafPaths) filters.leafPaths = filters.leafPaths.slice(0, PREVIEW_LEAF_PATHS);
+    return {
+      id: v.id, name: v.name, explorerUrl: savedViewUrlFor(deps.appUrl, v.id), filters, leafCount, previewComplete: leafCount <= PREVIEW_LEAF_PATHS,
+      createdAt: v.createdAt, updatedAt: v.updatedAt,
+    };
+  };
   const categorySummary = (c: CustomCategoryDTO): CustomCategorySummary => ({
     id: c.id, name: c.name, leafCount: c.leafPaths.length, previewPaths: c.leafPaths.slice(0, PREVIEW_LEAF_PATHS), previewComplete: c.leafPaths.length <= PREVIEW_LEAF_PATHS,
     explorerUrl: customCategoryUrlFor(deps.appUrl, c.id), createdAt: c.createdAt, updatedAt: c.updatedAt,
@@ -179,6 +226,7 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
   /** §5.1: the search's own validation (schema → presets → full scope), then the taxonomy-only leaves for the converter. */
   async function convertSearch(userId: string, search: SearchSpec): Promise<{ filters: ExplorerFilters; notes: string[] }> {
     const parsed = parseSearchInput({ schemaVersion: 1, ...search });
+    // Unreachable: searchSpecSchema is strict and omits `cursor`, so parseSearchInput never sees one here. Kept only so `parsed` narrows to the new-search branch.
     if (parsed.kind === 'continuation') throw new ResearchError('INVALID_FILTERS', 'Pass the search criteria, never a cursor.');
     const { filters, sort, comparisonWindow } = applyPresets(parsed.request);
     const full = await resolveScope(userId, filters.categories, deps.limits.maxExpandedLeaves, deps.categories);
@@ -275,18 +323,13 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     if (p.data.categories) {
       const existing = await deps.customCategories.load(actor.localUserId, p.data.id);
       if (!existing) throw new ResearchError('NOT_FOUND', NOT_FOUND_MESSAGE.category);
-      if (p.data.leafMode === 'remove') {
-        // Explicit paths are subtracted verbatim: a stale stored leaf must be removable even when the
-        // catalog no longer has it (resolveScope would reject it). Only selections go through the catalog.
-        const expanded = p.data.categories.selections.length > 0
-          ? await expandForCategory(actor.localUserId, { selections: p.data.categories.selections, leafPaths: [] })
-          : [];
-        const drop = new Set([...p.data.categories.leafPaths.map((path) => path.trim()), ...expanded]);
-        leafPaths = existing.leafPaths.filter((path) => !drop.has(path));
-      } else {
-        const expansion = await expandForCategory(actor.localUserId, p.data.categories);
-        leafPaths = p.data.leafMode === 'replace' ? expansion : [...new Set([...existing.leafPaths, ...expansion])];
-      }
+      const { selections, leafPaths: explicitPaths } = p.data.categories;
+      const mode = p.data.leafMode;
+      // Remove expands only the selections through the catalog: its explicit paths are subtracted verbatim by applyLeafMode,
+      // so a stale stored leaf the catalog no longer has (resolveScope would reject it) stays removable. The other modes expand everything.
+      const toExpand: Filters['categories'] = mode === 'remove' ? { selections, leafPaths: [] } : p.data.categories;
+      const expansion = toExpand.selections.length + toExpand.leafPaths.length > 0 ? await expandForCategory(actor.localUserId, toExpand) : [];
+      leafPaths = applyLeafMode({ stored: existing.leafPaths, mode, explicitPaths, expansion });
     }
     const r = await deps.customCategories.update(actor.localUserId, p.data.id, { name: p.data.name, leafPaths });
     if (!r.ok) throw toResearchError(r, 'category');
@@ -309,8 +352,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     if (!p.success) throw invalid(p.error);
     await beforeWrite(actor);
     const r = await deps.watchlist.add(actor.localUserId, { keywords: p.data.keywords, searchTermIds: p.data.searchTermIds });
-    const watching = await deps.watchlist.count(actor.localUserId);
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
+    const watching = await deps.watchlist.count(actor.localUserId);
     return { ...r, watching, limit: MAX_WATCHED_KEYWORDS };
   }
 
@@ -319,8 +363,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     if (!p.success) throw invalid(p.error);
     await beforeWrite(actor);
     const r = await deps.watchlist.remove(actor.localUserId, { keywords: p.data.keywords, searchTermIds: p.data.searchTermIds });
-    const watching = await deps.watchlist.count(actor.localUserId);
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
+    const watching = await deps.watchlist.count(actor.localUserId);
     return { ...r, watching, limit: MAX_WATCHED_KEYWORDS };
   }
 

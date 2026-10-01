@@ -7,7 +7,7 @@ import { READ_ONLY_ANNOTATIONS } from '@/lib/research/tools';
 import type { ResearchActor } from '@/lib/research/service';
 import { MAX_NAME_LENGTH as SAVED_VIEW_NAME_MAX } from '@/lib/savedViews/validation';
 import {
-  createCustomCategoryInputSchema, createSavedViewInputSchema, deleteSavedViewInputSchema, updateCustomCategoryInputSchema, updateSavedViewInputSchema,
+  createCustomCategoryInputSchema, createSavedViewInputSchema, deleteSavedViewInputSchema, PREVIEW_LEAF_PATHS, updateCustomCategoryInputSchema, updateSavedViewInputSchema,
   watchlistSelectionInputSchema, WORKSPACE_TOOL_NAMES, type WorkspaceService,
 } from './contracts';
 import { ADDITIVE_ANNOTATIONS, CREATE_ANNOTATIONS, DESTRUCTIVE_ANNOTATIONS, WORKSPACE_TOOLS, workspaceToolByName } from './tools';
@@ -47,6 +47,12 @@ describe('WORKSPACE_TOOLS', () => {
     expect(workspaceToolByName('delete_saved_view').description(DEFAULT_LIMITS)).toContain('permanently');
     expect(workspaceToolByName('delete_custom_category').description(DEFAULT_LIMITS)).toContain('shows every category');
     expect(workspaceToolByName('remove_from_watchlist').description(DEFAULT_LIMITS)).toContain('Not permanent');
+  });
+  it('the saved-view descriptions say the stored leaf categories are previewed, with leafCount', () => {
+    expect(workspaceToolByName('list_saved_views').description(DEFAULT_LIMITS)).toContain(`leaf categories are previewed: the first ${PREVIEW_LEAF_PATHS} of leafCount`);
+    for (const n of ['create_saved_view', 'update_saved_view'] as const) {
+      expect(workspaceToolByName(n).description(DEFAULT_LIMITS), n).toContain('its compact filters (leaf categories previewed, with leafCount)');
+    }
   });
   it('every write description ends with the confirmation sentence and no list description carries it', () => {
     for (const t of WORKSPACE_TOOLS) {

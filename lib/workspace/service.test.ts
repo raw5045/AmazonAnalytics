@@ -3,13 +3,17 @@ import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } fr
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test', APP_PUBLIC_URL: 'https://keywordquarry.com' } }));
 vi.mock('@/db/client', () => ({ db: {} }));
 
+import { inspect } from 'node:util';
 import { DrizzleQueryError } from 'drizzle-orm';
-import { createWorkspaceService, type WorkspaceServiceDeps } from './service';
+import { applyLeafMode, createWorkspaceService, type WorkspaceServiceDeps } from './service';
 import { buildCategoryCatalog } from '@/lib/research/categories';
+import { dataUnavailableError, poolBusyError, queryTimeoutError, ResearchError } from '@/lib/research/errors';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import type { ResearchActor } from '@/lib/research/service';
+import { SAFE_TOOL_FAILURE } from '@/lib/research/toolErrors';
 import { normalizeFilters } from '@/lib/savedViews/validation';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
+import { consoleLines } from '@/tests/unit/consoleLines';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
 const VIEW_ID = '11111111-1111-4111-8111-111111111111';
@@ -57,8 +61,15 @@ function makeDeps(over: Partial<WorkspaceServiceDeps> = {}): WorkspaceServiceDep
 }
 
 let log: MockInstance<typeof console.log>;
-beforeEach(() => { log = vi.spyOn(console, 'log').mockImplementation(() => {}); });
-afterEach(() => log.mockRestore());
+let errorLog: MockInstance<typeof console.error>;
+beforeEach(() => {
+  log = vi.spyOn(console, 'log').mockImplementation(() => {});
+  errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+afterEach(() => {
+  log.mockRestore();
+  errorLog.mockRestore();
+});
 const lines = () => log.mock.calls.filter((c) => c[0] === '[workspace]').map((c) => JSON.parse(String(c[1])) as Record<string, unknown>);
 
 describe('list tools', () => {
@@ -67,7 +78,7 @@ describe('list tools', () => {
     const svc = createWorkspaceService(deps);
     const res = await svc.listSavedViews(actor, {});
     expect(deps.reserve).toHaveBeenCalledWith(expect.objectContaining({ userId: 'u1', channel: 'mcp', rows: 0 }));
-    expect(res).toEqual({ views: [{ id: VIEW_ID, name: 'Lamps', explorerUrl: `https://keywordquarry.com/explorer?view=${VIEW_ID}`, filters: { q: 'lamp' }, createdAt: view.createdAt, updatedAt: view.updatedAt }], count: 1, limit: 5 });
+    expect(res).toEqual({ views: [{ id: VIEW_ID, name: 'Lamps', explorerUrl: `https://keywordquarry.com/explorer?view=${VIEW_ID}`, filters: { q: 'lamp' }, leafCount: 0, previewComplete: true, createdAt: view.createdAt, updatedAt: view.updatedAt }], count: 1, limit: 5 });
     expect(deps.record).toHaveBeenCalledWith('u1', 0, 'mcp');
     expect(deps.countWritesToday).not.toHaveBeenCalled();
     expect(deps.bumpWrite).not.toHaveBeenCalled();
@@ -81,6 +92,23 @@ describe('list tools', () => {
     const deps = makeDeps();
     await expect(createWorkspaceService(deps).listSavedViews(actor, { page: 2 })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
     expect(deps.reserve).not.toHaveBeenCalled();
+  });
+  it('previews a saved view with many leaf categories like a custom category does: the first 20, with leafCount and previewComplete', async () => {
+    const leaves = Array.from({ length: 25 }, (_, i) => `Dept › Leaf ${String(i).padStart(2, '0')}`);
+    const big = { ...view, filters: normalizeFilters({ leafPaths: leaves }) };
+    const exactly20 = { ...view, filters: normalizeFilters({ leafPaths: leaves.slice(0, 20) }) };
+    const deps = makeDeps({ savedViews: { ...makeDeps().savedViews, list: vi.fn(async () => [big, exactly20, view]) } });
+    const res = await createWorkspaceService(deps).listSavedViews(actor, {});
+    const [a, b, c] = res.views;
+    expect(big.filters.leafPaths).toHaveLength(25); // the fixture really stores 25
+    expect(a).toMatchObject({ leafCount: 25, previewComplete: false });
+    expect(a.filters.leafPaths).toHaveLength(20);
+    expect(a.filters.leafPaths).toEqual(big.filters.leafPaths.slice(0, 20));
+    expect(big.filters.leafPaths).toHaveLength(25); // the stored view is previewed, not trimmed in place
+    expect(b).toMatchObject({ leafCount: 20, previewComplete: true });
+    expect(b.filters.leafPaths).toEqual(exactly20.filters.leafPaths);
+    expect(c).toMatchObject({ leafCount: 0, previewComplete: true });
+    expect(c.filters).not.toHaveProperty('leafPaths');
   });
 });
 
@@ -133,6 +161,40 @@ describe('create_saved_view', () => {
     const cap = makeDeps({ savedViews: { ...makeDeps().savedViews, create: vi.fn(async () => ({ ok: false as const, code: 'cap_reached' as const, message: "You've reached the 5-view limit. Delete a saved view to add a new one." })) } });
     await expect(createWorkspaceService(cap).createSavedView(actor, { name: 'Sixth', search: {} })).rejects.toMatchObject({ code: 'LIMIT_REACHED' });
   });
+  it('the 200th write of the day is still allowed: 199 already counted against a cap of 200', async () => {
+    const deps = makeDeps({ limits: { ...DEFAULT_LIMITS, writesPerDay: 200 }, countWritesToday: vi.fn(async () => 199) });
+    await expect(createWorkspaceService(deps).createSavedView(actor, { name: 'L', search: {} })).resolves.toBeTruthy();
+    expect(deps.savedViews.create).toHaveBeenCalledTimes(1);
+    expect(deps.bumpWrite).toHaveBeenCalledWith('u1');
+  });
+  it('a per-minute RATE_LIMITED from reserve stops a write before the daily count, the catalog and any command', async () => {
+    const limited = new ResearchError('RATE_LIMITED', 'Rate limit reached (60 requests or 6000 rows per minute per account). Try again in 12 seconds.', { retryable: true, retryAfterSeconds: 12 });
+    const loadCatalog = vi.fn(async () => catalog);
+    const deps = makeDeps({ reserve: vi.fn(async () => { throw limited; }), categories: { ...makeDeps().categories, loadCatalog } });
+    await expect(createWorkspaceService(deps).createSavedView(actor, { name: 'L', search: {} })).rejects.toBe(limited);
+    expect(deps.countWritesToday).not.toHaveBeenCalled();
+    expect(loadCatalog).not.toHaveBeenCalled();
+    expect(deps.savedViews.create).not.toHaveBeenCalled();
+    expect(deps.record).not.toHaveBeenCalled();
+    expect(deps.bumpWrite).not.toHaveBeenCalled();
+    expect(lines()).toEqual([expect.objectContaining({ tool: 'create_saved_view', outcome: 'refused', code: 'RATE_LIMITED' })]);
+  });
+  it('a schema failure on a write is INVALID_FILTERS and reserves nothing', async () => {
+    const deps = makeDeps();
+    await expect(createWorkspaceService(deps).createSavedView(actor, { name: '   ', search: {} })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
+    expect(deps.reserve).not.toHaveBeenCalled();
+    expect(deps.countWritesToday).not.toHaveBeenCalled();
+    expect(deps.record).not.toHaveBeenCalled();
+    expect(lines()).toEqual([expect.objectContaining({ tool: 'create_saved_view', outcome: 'refused', code: 'INVALID_FILTERS' })]);
+  });
+  it('runs in the documented order: reserve, daily cap, command, record, then the write bump', async () => {
+    const deps = makeDeps();
+    await createWorkspaceService(deps).createSavedView(actor, { name: 'L', search: {} });
+    const at = (fn: unknown) => (fn as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const order = [deps.reserve, deps.countWritesToday, deps.savedViews.create, deps.record, deps.bumpWrite].map(at);
+    expect(order.every((n) => typeof n === 'number')).toBe(true); // every step ran
+    expect(order).toEqual([...order].sort((a, b) => a - b)); // and in this order
+  });
 });
 
 describe('update and delete saved view', () => {
@@ -158,7 +220,7 @@ describe('update and delete saved view', () => {
 });
 
 describe('custom categories', () => {
-  it('create expands selections against the catalog with the 12,000-leaf cap and stores the leaves', async () => {
+  it('create expands selections against the catalog and stores the leaves', async () => {
     const deps = makeDeps();
     const res = await createWorkspaceService(deps).createCustomCategory(actor, { name: 'Lighting', categories: { selections: [{ kind: 'taxonomy', path: 'Lighting', includeDescendants: true }] } });
     expect(deps.customCategories.create).toHaveBeenCalledWith('u1', { name: 'Lighting', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'] });
@@ -188,6 +250,37 @@ describe('custom categories', () => {
     const deps = makeDeps({ customCategories: { ...makeDeps().customCategories, update: vi.fn(async () => ({ ok: false as const, code: 'no_leaves' as const, message: 'A category needs at least one leaf.' })) } });
     await expect(createWorkspaceService(deps).updateCustomCategory(actor, { id: CAT_ID, categories: { leafPaths: ['Lighting › Lamps', 'Old › Leaf'] }, leafMode: 'remove' })).rejects.toMatchObject({ code: 'INVALID_FILTERS', message: 'A category needs at least one leaf.' });
   });
+  it('expands up to the category column\'s 12,000 leaves, not the search\'s 2,000: a 2,001-leaf department saves as a category but is refused as a saved-view search', async () => {
+    // The live taxonomy has ~11.4k leaves in all, so a true over-12,000 case cannot be built from real data; this pins that the column's cap, not the search's, applies.
+    const big = buildCategoryCatalog({ snapshotVersion: 'snap', datasetWeek: '2026-09-26' }, Array.from({ length: 2001 }, (_, i) => ({ categoryPath: `Big Department › Leaf ${String(i).padStart(4, '0')}`, allCount: 1 })));
+    const create = vi.fn(async (_userId: string, input: { name: unknown; leafPaths: unknown }) => ({
+      ok: true as const,
+      category: { id: CAT_ID, name: String(input.name), leafPaths: input.leafPaths as string[], createdAt: category.createdAt, updatedAt: category.updatedAt },
+    }));
+    const deps = makeDeps({
+      categories: { loadCatalog: async () => big, loadCustomRows: async () => [], listCustom: async () => [] },
+      customCategories: { ...makeDeps().customCategories, create },
+    });
+    const svc = createWorkspaceService(deps);
+    const department = { selections: [{ kind: 'taxonomy', path: 'Big Department', includeDescendants: true }] };
+    // Control: the same department as a saved-view search is over limits.maxExpandedLeaves (2,000).
+    await expect(svc.createSavedView(actor, { name: 'Big', search: { filters: { categories: department } } })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
+    const res = await svc.createCustomCategory(actor, { name: 'Big', categories: department });
+    expect(create.mock.calls[0][1].leafPaths).toHaveLength(2001);
+    expect(res.category).toMatchObject({ leafCount: 2001, previewComplete: false });
+    expect(res.category.previewPaths).toHaveLength(20);
+  });
+  it('delete returns what it removed (id, name, leaf count) and bumps the write counter', async () => {
+    const deps = makeDeps();
+    await expect(createWorkspaceService(deps).deleteCustomCategory(actor, { id: CAT_ID })).resolves.toEqual({ deleted: { id: CAT_ID, name: 'Lighting', leafCount: 2 } });
+    expect(deps.customCategories.delete).toHaveBeenCalledWith('u1', CAT_ID);
+    expect(deps.bumpWrite).toHaveBeenCalledWith('u1');
+  });
+  it('a foreign or missing category id is NOT_FOUND with the account-scoped sentence, and does not bump', async () => {
+    const deps = makeDeps({ customCategories: { ...makeDeps().customCategories, delete: vi.fn(async () => ({ ok: false as const, code: 'not_found' as const, message: 'Not found' })) } });
+    await expect(createWorkspaceService(deps).deleteCustomCategory(actor, { id: CAT_ID })).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'No custom category with that id belongs to this account.' });
+    expect(deps.bumpWrite).not.toHaveBeenCalled();
+  });
 });
 
 describe('watchlist', () => {
@@ -199,13 +292,88 @@ describe('watchlist', () => {
     await expect(svc.removeFromWatchlist(actor, { keywords: ['desk lamp'] })).resolves.toEqual({ removed: 1, notWatching: 0, unmatched: [], watching: 7, limit: 100 });
     expect(deps.bumpWrite).toHaveBeenCalledTimes(2);
   });
-  it('an unexpected failure is logged as failed with the error name only, and rethrown', async () => {
+  it('an unexpected failure is logged as failed with the error name only, and surfaces as a safe DATA_UNAVAILABLE, never the raw error', async () => {
     // The production shape: drizzle wraps the driver error, whose SQLSTATE sits on `cause`; the wrapper's
-    // message embeds the bound params (here an email), which must never reach the log.
+    // message embeds the bound params (here an email), which must never reach the log or the thrown error.
     const wrapped = new DrizzleQueryError('insert into "watchlist_items" ("user_id", "keyword_id") values ($1, $2)', ['u1', 'u1@example.com'], Object.assign(new Error('relation "watchlist_items" does not exist'), { code: '42P01' }));
     const deps = makeDeps({ watchlist: { ...makeDeps().watchlist, add: vi.fn(async () => { throw wrapped; }) } });
-    await expect(createWorkspaceService(deps).addToWatchlist(actor, { keywords: ['x'] })).rejects.toBe(wrapped);
+    const err = await createWorkspaceService(deps).addToWatchlist(actor, { keywords: ['x'] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResearchError);
+    expect(err).not.toBe(wrapped);
+    expect(err).toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message, retryable: true });
+    expect((err as ResearchError).cause).toBeUndefined();
+    expect(inspect(err, { depth: 6 })).not.toContain('example.com'); // no message, cause or stack from the original
     expect(lines()[0]).toEqual(expect.objectContaining({ tool: 'add_to_watchlist', outcome: 'failed', error: 'Error', code: '42P01', userId: 'u1' }));
     expect(JSON.stringify(lines())).not.toContain('example.com');
+  });
+  it('records the write before the trailing count read, so a write that landed still counts when that read fails', async () => {
+    const deps = makeDeps({ watchlist: { ...makeDeps().watchlist, count: vi.fn(async () => { throw new Error('count read failed'); }) } });
+    const svc = createWorkspaceService(deps);
+    await expect(svc.addToWatchlist(actor, { keywords: ['desk lamp'] })).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message });
+    await expect(svc.removeFromWatchlist(actor, { keywords: ['desk lamp'] })).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message });
+    expect(deps.watchlist.add).toHaveBeenCalledTimes(1);
+    expect(deps.watchlist.remove).toHaveBeenCalledTimes(1);
+    expect(deps.record).toHaveBeenCalledTimes(2);
+    expect(deps.bumpWrite).toHaveBeenCalledTimes(2);
+    expect(lines().map((l) => l.outcome)).toEqual(['failed', 'failed']);
+  });
+});
+
+describe('unexpected failures', () => {
+  it('a command failure puts none of the request\'s data in any console line or on the thrown error, and logs only the error name and SQLSTATE', async () => {
+    const wrapped = new DrizzleQueryError('insert into "saved_views" ("user_id", "name", "filters") values ($1, $2, $3)', ['u1', 'SECRET-VIEW-NAME', '{}'], Object.assign(new Error('boom'), { code: '08006' }));
+    const deps = makeDeps({ savedViews: { ...makeDeps().savedViews, create: vi.fn(async () => { throw wrapped; }) } });
+    const err = await createWorkspaceService(deps).createSavedView(actor, { name: 'SECRET-VIEW-NAME', search: {} }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message, retryable: true });
+    expect(lines()).toEqual([expect.objectContaining({ tool: 'create_saved_view', outcome: 'failed', error: 'Error', code: '08006' })]);
+    expect([...consoleLines(log, errorLog), inspect(err, { depth: 6 })].join('\n')).not.toContain('SECRET-VIEW-NAME');
+    expect(deps.bumpWrite).not.toHaveBeenCalled(); // the write did not land
+  });
+  it('a pool connect timeout surfaces as the pool-busy answer with its short retry', async () => {
+    const busy = poolBusyError();
+    const deps = makeDeps({ savedViews: { ...makeDeps().savedViews, delete: vi.fn(async () => { throw new Error('timeout exceeded when trying to connect'); }) } });
+    const err = await createWorkspaceService(deps).deleteSavedView(actor, { id: VIEW_ID }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResearchError);
+    expect(err).toMatchObject({ code: busy.code, message: busy.message, retryable: true, retryAfterSeconds: busy.retryAfterSeconds });
+    expect((err as ResearchError).cause).toBeUndefined();
+    expect(lines()).toEqual([expect.objectContaining({ tool: 'delete_saved_view', outcome: 'failed', error: 'Error' })]);
+    expect(lines()[0]).not.toHaveProperty('code');
+    expect(deps.bumpWrite).not.toHaveBeenCalled();
+  });
+  it('logs infrastructure ResearchErrors (DATA_UNAVAILABLE, QUERY_TIMEOUT) as failed and other refusals as refused; the error itself passes through unchanged', async () => {
+    const unavailable = dataUnavailableError();
+    const timeout = queryTimeoutError(3000, { guidance: 'Category lookup timed out; try again.', retryAfterSeconds: 5 });
+    const failingCatalog = (e: ResearchError) => createWorkspaceService(makeDeps({ categories: { ...makeDeps().categories, loadCatalog: async () => { throw e; } } }));
+    await expect(failingCatalog(unavailable).createSavedView(actor, { name: 'L', search: {} })).rejects.toBe(unavailable);
+    await expect(failingCatalog(timeout).createSavedView(actor, { name: 'L', search: {} })).rejects.toBe(timeout);
+    await expect(createWorkspaceService(makeDeps()).createSavedView(actor, { name: 'L', search: { filters: { categories: { leafPaths: ['Nope › Nothing'] } } } })).rejects.toMatchObject({ code: 'CATEGORY_NOT_AVAILABLE' });
+    expect(lines().map((l) => [l.outcome, l.code])).toEqual([['failed', 'DATA_UNAVAILABLE'], ['failed', 'QUERY_TIMEOUT'], ['refused', 'CATEGORY_NOT_AVAILABLE']]);
+  });
+});
+
+describe('applyLeafMode', () => {
+  const stored = ['Dept › A', 'Dept › B', 'Other › C'];
+  it('replace: exactly the expansion; the stored leaves are dropped', () => {
+    expect(applyLeafMode({ stored, mode: 'replace', explicitPaths: [], expansion: ['New › X'] })).toEqual(['New › X']);
+  });
+  it('add: the stored leaves first, then the new ones, without duplicates', () => {
+    expect(applyLeafMode({ stored, mode: 'add', explicitPaths: [], expansion: ['Other › C', 'New › X', 'New › X'] })).toEqual(['Dept › A', 'Dept › B', 'Other › C', 'New › X']);
+  });
+  it('remove: subtracts the expansion of the selections and the explicit paths, keeping the stored order', () => {
+    expect(applyLeafMode({ stored, mode: 'remove', explicitPaths: ['Other › C'], expansion: ['Dept › A'] })).toEqual(['Dept › B']);
+  });
+  it('remove: explicit paths are taken verbatim (trimmed), so a stale stored leaf the catalog no longer has can still be removed', () => {
+    expect(applyLeafMode({ stored: [...stored, 'Old › Gone'], mode: 'remove', explicitPaths: ['  Old › Gone '], expansion: [] })).toEqual(stored);
+  });
+  it('remove: a path that is not stored changes nothing, and removing every leaf yields an empty list (the command refuses that)', () => {
+    expect(applyLeafMode({ stored, mode: 'remove', explicitPaths: ['Nope › Z'], expansion: [] })).toEqual(stored);
+    expect(applyLeafMode({ stored, mode: 'remove', explicitPaths: [...stored], expansion: [] })).toEqual([]);
+  });
+  it('never mutates its inputs', () => {
+    const s = [...stored];
+    const e = ['New › X'];
+    for (const mode of ['replace', 'add', 'remove'] as const) applyLeafMode({ stored: s, mode, explicitPaths: ['Dept › A'], expansion: e });
+    expect(s).toEqual(stored);
+    expect(e).toEqual(['New › X']);
   });
 });
