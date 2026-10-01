@@ -1,0 +1,95 @@
+// @vitest-environment node
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const { mockRequireUser, mockDb } = vi.hoisted(() => ({
+  mockRequireUser: vi.fn(),
+  mockDb: { select: vi.fn(), insert: vi.fn(), update: vi.fn(), delete: vi.fn() },
+}));
+vi.mock('@/lib/env', () => ({ env: {} }));
+vi.mock('@clerk/nextjs/server', () => ({ auth: vi.fn(), currentUser: vi.fn() }));
+vi.mock('@/db/client', () => ({ db: mockDb }));
+vi.mock('@/lib/auth/requireAuthenticatedUser', () => ({ requireAuthenticatedUser: mockRequireUser }));
+vi.mock('@/lib/auth/requireAdmin', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/auth/AuthError')>('@/lib/auth/AuthError');
+  return { AuthError: actual.AuthError };
+});
+
+import { GET, POST } from './route';
+import { AuthError } from '@/lib/auth/AuthError';
+import { normalizeFilters } from '@/lib/savedViews/validation';
+
+const USER = { id: '00000000-0000-4000-8000-000000000001', email: 'm@example.com', role: 'standard_user' };
+const VIEW_ID = '11111111-1111-4111-8111-111111111111';
+const row = {
+  id: VIEW_ID, userId: USER.id, name: 'Lamps', filters: normalizeFilters({ q: 'lamp' }),
+  createdAt: new Date('2026-09-30T10:00:00Z'), updatedAt: new Date('2026-09-30T10:00:00Z'),
+};
+const dto = { id: VIEW_ID, name: 'Lamps', filters: row.filters, createdAt: '2026-09-30T10:00:00.000Z', updatedAt: '2026-09-30T10:00:00.000Z' };
+const uniqueViolation = () => Object.assign(new Error('duplicate key value violates unique constraint'), { code: '23505' });
+
+/** Next `db.select(...).from(...).where(...)` resolves to `rows` (the COUNT query). */
+function selectWhere(rows: unknown[]) {
+  mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where: vi.fn().mockResolvedValueOnce(rows) }) } as never);
+}
+/** Next `db.select().from().where().orderBy().limit()` resolves to `rows` (the list query). */
+function selectList(rows: unknown[]) {
+  mockDb.select.mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: vi.fn().mockResolvedValueOnce(rows) }) }) }) } as never);
+}
+function insertReturning(result: unknown[] | Error) {
+  const returning = result instanceof Error ? vi.fn().mockRejectedValueOnce(result) : vi.fn().mockResolvedValueOnce(result);
+  mockDb.insert.mockReturnValueOnce({ values: vi.fn().mockReturnValueOnce({ returning }) } as never);
+}
+
+const post = (body: unknown) => POST(new Request('https://keywordquarry.com/api/explorer/saved-views', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+
+describe('GET /api/explorer/saved-views', () => {
+  beforeEach(() => { vi.clearAllMocks(); mockRequireUser.mockResolvedValue(USER); });
+  it('lists the caller\'s views as DTOs', async () => {
+    selectList([row]);
+    const res = await GET();
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ views: [dto] });
+  });
+  it('is 401 when not signed in', async () => {
+    mockRequireUser.mockRejectedValueOnce(new AuthError('UNAUTHENTICATED', 'Not signed in'));
+    const res = await GET();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Not signed in' });
+  });
+});
+
+describe('POST /api/explorer/saved-views', () => {
+  beforeEach(() => { vi.clearAllMocks(); mockRequireUser.mockResolvedValue(USER); });
+  it('creates a view and returns its DTO', async () => {
+    selectWhere([{ n: 2 }]);
+    insertReturning([row]);
+    const res = await post({ name: ' Lamps ', filters: { q: 'lamp' } });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ view: dto });
+    expect(mockDb.insert).toHaveBeenCalledTimes(1);
+  });
+  it('rejects a missing name with the validateName message', async () => {
+    const res = await post({ filters: {} });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'name must be a string' });
+    expect(mockDb.select).not.toHaveBeenCalled();
+  });
+  it('refuses the sixth view with the cap sentence', async () => {
+    selectWhere([{ n: 5 }]);
+    const res = await post({ name: 'Sixth', filters: {} });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "You've reached the 5-view limit. Delete a saved view to add a new one." });
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+  it('maps a unique violation to 409 naming the clash', async () => {
+    selectWhere([{ n: 1 }]);
+    insertReturning(uniqueViolation());
+    const res = await post({ name: 'Lamps', filters: {} });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'You already have a view named "Lamps". Choose a different name or update the existing one.' });
+  });
+  it('is 401 when not signed in', async () => {
+    mockRequireUser.mockRejectedValueOnce(new AuthError('UNAUTHENTICATED', 'Not signed in'));
+    expect((await post({ name: 'x', filters: {} })).status).toBe(401);
+  });
+});

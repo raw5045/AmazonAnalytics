@@ -7,110 +7,40 @@
  * existence.
  */
 import { NextResponse } from 'next/server';
-import { eq, and } from 'drizzle-orm';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
-import { db } from '@/db/client';
-import { savedViews } from '@/db/schema';
-import { normalizeFilters, validateName } from '@/lib/savedViews/validation';
+import { deleteSavedView, updateSavedView, type SavedViewCommandCode } from '@/lib/savedViews/commands';
 
 export const runtime = 'nodejs';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const STATUS: Record<SavedViewCommandCode, number> = {
+  invalid_id: 400, invalid_name: 400, nothing_to_update: 400, cap_reached: 400, duplicate_name: 409, not_found: 404,
+};
 
-export async function PATCH(
-  req: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
   let user;
   try {
     user = await requireAuthenticatedUser();
   } catch (e) {
     return handleAuthError(e);
   }
-
   const { id } = await params;
-  if (!UUID_RE.test(id)) {
-    return NextResponse.json({ error: 'invalid view id' }, { status: 400 });
-  }
-
-  const body = (await req.json().catch(() => ({}))) as {
-    name?: unknown;
-    filters?: unknown;
-  };
-
-  // Build an update payload from whichever fields are present.
-  const updates: { name?: string; filters?: unknown; updatedAt: Date } = {
-    updatedAt: new Date(),
-  };
-  if (body.name !== undefined) {
-    const nameResult = validateName(body.name);
-    if (!nameResult.ok) {
-      return NextResponse.json({ error: nameResult.error }, { status: 400 });
-    }
-    updates.name = nameResult.name;
-  }
-  if (body.filters !== undefined) {
-    updates.filters = normalizeFilters(body.filters);
-  }
-
-  if (updates.name === undefined && updates.filters === undefined) {
-    return NextResponse.json({ error: 'nothing to update' }, { status: 400 });
-  }
-
-  try {
-    const [updated] = await db
-      .update(savedViews)
-      .set(updates)
-      .where(and(eq(savedViews.id, id), eq(savedViews.userId, user.id)))
-      .returning();
-    if (!updated) {
-      return NextResponse.json({ error: 'view not found' }, { status: 404 });
-    }
-    return NextResponse.json({
-      view: {
-        id: updated.id,
-        name: updated.name,
-        filters: updated.filters,
-        createdAt: updated.createdAt.toISOString(),
-        updatedAt: updated.updatedAt.toISOString(),
-      },
-    });
-  } catch (e) {
-    if (isUniqueViolation(e)) {
-      return NextResponse.json(
-        { error: `You already have a view with that name.` },
-        { status: 409 },
-      );
-    }
-    throw e;
-  }
+  const body = (await req.json().catch(() => ({}))) as { name?: unknown; filters?: unknown };
+  const result = await updateSavedView(user.id, id, { name: body.name, filters: body.filters });
+  if (!result.ok) return NextResponse.json({ error: result.message }, { status: STATUS[result.code] });
+  return NextResponse.json({ view: result.view });
 }
 
-export async function DELETE(
-  _req: Request,
-  { params }: { params: Promise<{ id: string }> },
-) {
+export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
   let user;
   try {
     user = await requireAuthenticatedUser();
   } catch (e) {
     return handleAuthError(e);
   }
-
   const { id } = await params;
-  if (!UUID_RE.test(id)) {
-    return NextResponse.json({ error: 'invalid view id' }, { status: 400 });
-  }
-
-  const result = await db
-    .delete(savedViews)
-    .where(and(eq(savedViews.id, id), eq(savedViews.userId, user.id)))
-    .returning({ id: savedViews.id });
-
-  if (result.length === 0) {
-    return NextResponse.json({ error: 'view not found' }, { status: 404 });
-  }
+  const result = await deleteSavedView(user.id, id);
+  if (!result.ok) return NextResponse.json({ error: result.message }, { status: STATUS[result.code] });
   return NextResponse.json({ ok: true });
 }
 
@@ -122,13 +52,4 @@ function handleAuthError(e: unknown): NextResponse {
     );
   }
   throw e;
-}
-
-function isUniqueViolation(e: unknown): boolean {
-  return Boolean(
-    e &&
-      typeof e === 'object' &&
-      'code' in e &&
-      (e as { code: string }).code === '23505',
-  );
 }
