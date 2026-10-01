@@ -48,19 +48,25 @@ export async function reserveDailyQuestion(userId: string, now: Date): Promise<{
  * refused for any reason below it (no balance, the global ceiling) — and, at the route, one refused
  * for being busy, at the chat cap, chat-full or not configured — still spends one of today's slots,
  * because `reserveDailyQuestion` runs before those checks and is not rolled back on a refusal.
+ *
+ * `countQuestion: false` is for a resume (an approval answer): it is a model call but not a new
+ * question (spec 2026-10-01 §6), so it is not reserved against the daily limit; every other gate
+ * (eligibility, period reset, balance, global ceiling) still applies.
  */
-export async function runGates(input: { user: { id: string; role: 'admin' | 'standard_user' }; now: Date }): Promise<GateOutcome> {
+export async function runGates(input: { user: { id: string; role: 'admin' | 'standard_user' }; now: Date }, opts: { countQuestion?: boolean } = {}): Promise<GateOutcome> {
   const { user, now } = input;
   let account = await getAccount(user.id);
   if (!askAiEligible(user.role, account)) return { ok: false, refusal: { status: 404, code: 'not_eligible', message: 'Not found' } };
   if (!account) account = await ensureAccount(user.id, now, { access: false, allowanceMicro: 0 });
   account = (await resetPeriodIfDue(user.id, now)) ?? account;
 
-  const limit = dailyMessageLimit();
-  const { requests } = await reserveDailyQuestion(user.id, now);
-  if (requests > limit) {
-    const retryAfterSeconds = secondsToNextUtcDay(now);
-    return { ok: false, refusal: { status: 429, code: 'daily_limit', message: dailyLimitMessage(limit, retryAfterSeconds), retryAfterSeconds } };
+  if (opts.countQuestion !== false) {
+    const limit = dailyMessageLimit();
+    const { requests } = await reserveDailyQuestion(user.id, now);
+    if (requests > limit) {
+      const retryAfterSeconds = secondsToNextUtcDay(now);
+      return { ok: false, refusal: { status: 429, code: 'daily_limit', message: dailyLimitMessage(limit, retryAfterSeconds), retryAfterSeconds } };
+    }
   }
   if (user.role !== 'admin' && balanceMicro(account) <= 0) {
     return { ok: false, refusal: { status: 402, code: 'no_balance', message: NO_BALANCE_MESSAGE } };

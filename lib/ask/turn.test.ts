@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: {} }));
 import { z } from 'zod';
 import { simulateReadableStream, tool, APICallError } from 'ai';
@@ -37,7 +37,9 @@ const toolCallStream = (u = usage({ noCache: 100, cacheRead: 0, cacheWrite: 0, o
 });
 const user = (text: string, id = crypto.randomUUID()): AskUIMessage => ({ id, role: 'user', parts: [{ type: 'text', text }] });
 const assistantMsg = (id: string, text = 'a'): AskUIMessage => ({ id, role: 'assistant', parts: [{ type: 'text', text }] });
-const tools = { get_research_guide: tool({ description: 'guide', inputSchema: z.object({}), execute: async () => ({ ok: true }) }) };
+/** A vi.fn so the approval tests can tell a paused call from an executed one; never cleared globally, so those tests clear it first. */
+const guideExecute = vi.fn(async () => ({ ok: true }));
+const tools = { get_research_guide: tool({ description: 'guide', inputSchema: z.object({}), execute: guideExecute }) };
 
 async function run(model: MockLanguageModelV4, extra: Partial<Parameters<typeof runTurn>[0]> = {}) {
   // vi.fn's generic is given explicitly (rather than inferred from the zero-arg stub) so
@@ -422,5 +424,53 @@ describe('helpers', () => {
       const q = user('q', 'u1');
       expect(trimHistoryForReplay([stray, q])).toEqual([stray, q]);
     });
+  });
+});
+
+describe('runTurn — tool approval (arc 4)', () => {
+  beforeEach(() => guideExecute.mockClear());
+
+  it('passes the toolApproval map to streamText, stores an assistant message whose only output is an approval request, and reports approvalsRequested', async () => {
+    const model = new MockLanguageModelV4({ doStream: [toolCallStream()] });
+    const { body, onEnd } = await run(model, { toolApproval: { get_research_guide: 'user-approval' } });
+    expect(body).toContain('"type":"tool-approval-request"');
+    const outcome = onEnd.mock.calls[0][0];
+    expect(outcome.assistant).not.toBeNull();
+    expect(outcome.assistant!.parts.some((p) => p.type === 'tool-get_research_guide' && (p as { state: string }).state === 'approval-requested')).toBe(true);
+    // The stored part carries the call id and the approval id the route will match the member's answer against.
+    const part = outcome.assistant!.parts.find((p) => p.type === 'tool-get_research_guide') as { toolCallId: string; approval?: { id?: unknown } } | undefined;
+    expect(part?.toolCallId).toBe('c1');
+    expect(typeof part?.approval?.id).toBe('string');
+    expect(outcome.approvalsRequested).toBe(1);
+    expect(outcome.status).toBe('complete');
+    // The SDK ends the step on the request: one model call, a tool-calls finish, the tool never run.
+    expect(outcome.finishReason).toBe('tool-calls');
+    expect(outcome.steps).toBe(1);
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(guideExecute).not.toHaveBeenCalled();
+  });
+  it('without the map the same call executes as before and approvalsRequested is 0', async () => {
+    const model = new MockLanguageModelV4({ doStream: [toolCallStream(), textStream('Done')] });
+    const { onEnd } = await run(model);
+    expect(guideExecute).toHaveBeenCalledTimes(1);
+    expect(onEnd.mock.calls[0][0]).toMatchObject({ status: 'complete', approvalsRequested: 0 });
+  });
+  it('a resume runs with no new user message: the history\'s last message is sent as is (never trimmed)', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('Continuing') });
+    const outcome: AskUIMessage = { id: 'o1', role: 'user', parts: [{ type: 'text', text: '[approval-result] The person approved x and it ran. Result: {}' }] };
+    const { body, onEnd } = await run(model, { history: [user('save it'), assistantMsg('a1', 'Saving.'), outcome], newMessage: undefined });
+    expect(body).toContain('Continuing');
+    const prompt = model.doStreamCalls[0].prompt;
+    expect(prompt[prompt.length - 1]).toMatchObject({ role: 'user' });
+    expect(JSON.stringify(prompt[prompt.length - 1])).toContain('[approval-result]');
+    expect(prompt.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'user']);
+    expect(prompt[prompt.length - 1]).toMatchObject({ content: [{ type: 'text', text: '[approval-result] The person approved x and it ran. Result: {}' }] });
+    expect(onEnd.mock.calls[0][0]).toMatchObject({ status: 'complete', approvalsRequested: 0 });
+  });
+  it('a resume needs the outcome (a user message) as the last history entry: an empty or assistant-last history throws before any model call', async () => {
+    const model = new MockLanguageModelV4({ doStream: textStream('x') });
+    await expect(run(model, { history: [], newMessage: undefined })).rejects.toThrow('last history entry');
+    await expect(run(model, { history: [user('q'), assistantMsg('a1')], newMessage: undefined })).rejects.toThrow('last history entry');
+    expect(model.doStreamCalls).toHaveLength(0);
   });
 });

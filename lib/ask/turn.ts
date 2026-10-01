@@ -20,12 +20,16 @@ export interface TurnInput {
   tools: ToolSet;
   /** Already windowed by the caller (windowHistory). */
   history: AskUIMessage[];
-  newMessage: AskUIMessage;
+  /** Absent on a resume (an approval answer, spec 2026-10-01 §6): the hidden outcome message is then history's last entry. */
+  newMessage?: AskUIMessage;
   abortSignal: AbortSignal;
   generateMessageId: () => string;
   /** Attached to the assistant message when the stream starts — the new conversation's id on a first send. */
   startMetadata?: AskUIMessage['metadata'];
-  onEnd: (outcome: { assistant: AskUIMessage | null; status: MessageStatus; usage: TurnUsage; steps: number; finishReason?: string; stopReason?: 'deadline' | 'user' }) => Promise<void>;
+  /** Spec 2026-10-01 §6: the tools whose next call must pause for a card (streamText's toolApproval map). */
+  toolApproval?: Record<string, 'user-approval'>;
+  /** `approvalsRequested`: the tool calls in the answer that paused for a card (spec 2026-10-01 §6). */
+  onEnd: (outcome: { assistant: AskUIMessage | null; status: MessageStatus; usage: TurnUsage; steps: number; finishReason?: string; stopReason?: 'deadline' | 'user'; approvalsRequested: number }) => Promise<void>;
 }
 
 const CACHE = { anthropic: { cacheControl: { type: 'ephemeral' as const } } };
@@ -107,9 +111,12 @@ export function statusFor(f: { isAborted: boolean; errored: boolean }): MessageS
   return f.errored ? 'failed' : 'complete';
 }
 
-/** Spec §12: store an assistant message only if it produced real output — never a lone step-start or a dangling in-progress tool call left by a cancel. */
+/**
+ * Spec §12: store an assistant message only if it produced real output — never a lone step-start or a dangling in-progress tool call left by a cancel.
+ * A call paused for an approval card counts too (spec 2026-10-01 §6): the route finds the pending cards on the stored message.
+ */
 function hasOutput(m: UIMessage): boolean {
-  return m.parts.some((p) => (p.type === 'text' && p.text.trim() !== '') || (isToolUIPart(p) && (p.state === 'output-available' || p.state === 'output-error')));
+  return m.parts.some((p) => (p.type === 'text' && p.text.trim() !== '') || (isToolUIPart(p) && (p.state === 'output-available' || p.state === 'output-error' || p.state === 'approval-requested')));
 }
 
 export async function runTurn(input: TurnInput): Promise<Response> {
@@ -126,7 +133,16 @@ export async function runTurn(input: TurnInput): Promise<Response> {
   const cancelled = new AbortController();
   const abortSignal = AbortSignal.any([input.abortSignal, cancelled.signal]);
 
-  const original = [...trimHistoryForReplay(input.history), input.newMessage];
+  // A resume (spec 2026-10-01 §6) has no new message: the last history message is the hidden outcome
+  // message (a user message) and is passed as is. trimHistoryForReplay never touches user messages
+  // anyway, but the explicit split documents the contract. The route always appends that message
+  // before a resume; anything else would end the prompt on an assistant turn, so it fails here, early.
+  if (!input.newMessage && input.history[input.history.length - 1]?.role !== 'user') {
+    throw new Error('runTurn: a resume needs the outcome message (a user message) as the last history entry');
+  }
+  const original = input.newMessage
+    ? [...trimHistoryForReplay(input.history), input.newMessage]
+    : [...trimHistoryForReplay(input.history.slice(0, -1)), ...input.history.slice(-1)];
   const messages: ModelMessage[] = await convertToModelMessages(original, { tools: input.tools, ignoreIncompleteToolCalls: true });
   const last = messages[messages.length - 1];
   if (last) messages[messages.length - 1] = { ...last, providerOptions: { ...last.providerOptions, ...CACHE } } as ModelMessage;
@@ -141,6 +157,9 @@ export async function runTurn(input: TurnInput): Promise<Response> {
     instructions: [{ role: 'system', content: input.instructions, providerOptions: CACHE }],
     messages,
     tools: input.tools,
+    // A listed tool's call ends the step with a tool-approval-request instead of executing; a tool
+    // absent from the map runs as before (spec 2026-10-01 §6).
+    toolApproval: input.toolApproval,
     providerOptions,
     stopWhen: isStepCount(ASK_LIMITS.maxSteps),
     maxOutputTokens: ASK_LIMITS.maxOutputTokens,
@@ -189,6 +208,7 @@ export async function runTurn(input: TurnInput): Promise<Response> {
         const finalMessage = responseMessage as AskUIMessage;
         const assistant = hasOutput(responseMessage) ? finalMessage : null;
         const status = statusFor({ isAborted: isAborted || isCancelled === true, errored: errored || outcome?.status === 'failed' });
+        const approvalsRequested = responseMessage.parts.filter((p) => isToolUIPart(p) && p.state === 'approval-requested').length;
         // Read off the message's own metadata first — messageMetadata's 'abort' branch above already
         // set it there for a live abort part, merged in regardless of whether hasOutput ends up
         // keeping or discarding the message for storage (Minor 7, final review — ops needs stopReason
@@ -199,7 +219,7 @@ export async function runTurn(input: TurnInput): Promise<Response> {
         // Stop on Vercel can land as either, per Task 9 review). Fall back to 'user' whenever isCancelled
         // is what triggered the stop (nit 2, final re-review).
         try {
-          await input.onEnd({ assistant, status, usage, steps, finishReason, stopReason: finalMessage.metadata?.stopReason ?? (isCancelled ? 'user' : undefined) });
+          await input.onEnd({ assistant, status, usage, steps, finishReason, stopReason: finalMessage.metadata?.stopReason ?? (isCancelled ? 'user' : undefined), approvalsRequested });
         } catch (e) {
           // The stream has already been rendered to the browser by this point; a persistence
           // failure here must never surface as a broken response. Log-safe (Task 8 re-review): the

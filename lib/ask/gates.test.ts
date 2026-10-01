@@ -101,4 +101,31 @@ describe('gates', () => {
     expect(dailyLimitMessage(3, 3_599)).toBe("You've reached today's limit of 3 questions. It resets in less than an hour.");
     expect(dailyLimitMessage(3, 3_600)).toBe("You've reached today's limit of 3 questions. It resets in 1 hour.");
   });
+  it('countQuestion: false (an approval resume) skips the daily reservation but keeps every other gate', async () => {
+    ledger.getAccount.mockResolvedValueOnce(account);
+    // Today's bucket is already past the limit: a resume must still pass, because it never reserves.
+    execute.mockResolvedValue({ rows: [{ requests: 99 }] });
+    const out = await runGates({ user: member, now }, { countQuestion: false });
+    expect(out.ok).toBe(true);
+    expect(execute.mock.calls.map((c) => dialect.sqlToQuery(c[0]).sql).some((s) => s.includes('research_usage_buckets'))).toBe(false);
+  });
+  it('countQuestion: false still refuses on eligibility, balance and the global ceiling', async () => {
+    ledger.getAccount.mockResolvedValueOnce(null);
+    expect(await runGates({ user: member, now }, { countQuestion: false })).toMatchObject({ ok: false, refusal: { code: 'not_eligible' } });
+    const empty = { ...account, allowanceUsedMicro: 10_000_000 };
+    ledger.getAccount.mockResolvedValueOnce(empty);
+    ledger.resetPeriodIfDue.mockResolvedValueOnce(empty);
+    expect(await runGates({ user: member, now }, { countQuestion: false })).toMatchObject({ ok: false, refusal: { code: 'no_balance' } });
+    ledger.getAccount.mockResolvedValueOnce(account);
+    ledger.globalUsageForMonth.mockResolvedValueOnce({ month: '2026-09-01', costMicro: 1_000_000, questions: 9, alerted80At: null, alerted100At: null });
+    expect(await runGates({ user: member, now }, { countQuestion: false })).toMatchObject({ ok: false, refusal: { code: 'global_ceiling' } });
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it('by default (and with countQuestion: true) every call reserves the daily question: one research_usage_buckets statement each', async () => {
+    ledger.getAccount.mockResolvedValueOnce(account);
+    expect((await runGates({ user: member, now })).ok).toBe(true);
+    ledger.getAccount.mockResolvedValueOnce(account);
+    expect((await runGates({ user: member, now }, { countQuestion: true })).ok).toBe(true);
+    expect(execute.mock.calls.map((c) => dialect.sqlToQuery(c[0]).sql).filter((s) => s.includes('research_usage_buckets'))).toHaveLength(2);
+  });
 });
