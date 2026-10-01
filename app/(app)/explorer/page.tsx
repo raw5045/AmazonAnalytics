@@ -8,7 +8,8 @@
  *   4. Render FilterSidebar + ResultsTable + Pagination
  */
 import type { Metadata } from 'next';
-import { parseExplorerFilters, EXPLORER_DEFAULTS, type SearchParamsLike } from '@/lib/explorer/parseFilters';
+import { EXPLORER_DEFAULTS, type SearchParamsLike } from '@/lib/explorer/parseFilters';
+import { resolveExplorerFilters } from '@/lib/explorer/resolveFilters';
 import { runExplorerQuery } from '@/lib/explorer/runQuery';
 import { expandCustomCategories } from '@/lib/customCategories/expand';
 import { listCategories } from '@/lib/explorer/listCategories';
@@ -107,23 +108,18 @@ async function ExplorerResults({ sp }: { sp: SearchParamsLike }) {
   ]);
   const watchedKeywordIds = new Set(watchlistItems.map((w) => w.keywordId));
 
-  // Two URL shapes are supported:
-  //   1. Bookmark form: `/explorer?view=<id>` (no other filter params)
-  //      → hydrate filters from the view's stored JSON.
-  //   2. Full form: `/explorer?<filter params>` (no view tag)
-  //      → use the URL filters directly. The dropdown stays blank.
-  //
-  // Apply in FilterSidebar always drops the view tag, so the moment a
-  // user modifies a loaded view the URL becomes shape (2), the chip
-  // blanks out, and the URL is the single source of truth. The hybrid
-  // shape `?view=<id>&<filters>` is no longer produced by the UI but
-  // is still accepted (URL filters win, view tag = metadata only).
-  const urlHasFilters = Object.keys(sp).some(
-    (k) => k !== 'view' && k !== 'page' && k !== 'per_page',
-  );
-  const filters = activeView && !urlHasFilters
-    ? activeView.filters
-    : parseExplorerFilters(sp);
+  // Three URL shapes are supported (lib/explorer/resolveFilters.ts):
+  //   1. Bookmark form: `/explorer?view=<id>` → the view's stored JSON.
+  //   2. View + overlay: `?view=<id>&sort=…` / `&page=…` / `&per_page=…` → the
+  //      view's stored JSON with that sort / page applied. The column headers and
+  //      the pager keep the current URL and set one of these, so sorting or
+  //      paging a view must not throw its filters away (until 2026-10-01 it did).
+  //   3. Full form: `/explorer?<filter params>` (no view tag) → the URL filters.
+  //      Apply in FilterSidebar always drops the view tag, so the moment a member
+  //      changes a loaded view's criteria the URL becomes this shape and the chip
+  //      blanks out. A hybrid `?view=<id>&<filter params>` from elsewhere is read
+  //      as shape 3 (URL wins, view tag = metadata only).
+  const { filters } = resolveExplorerFilters(sp, activeView);
 
   // Build the back-URL that detail pages will return to. Re-serializes
   // the current filter state so users don't lose their filters when
@@ -354,7 +350,7 @@ function getOne(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
-function filtersAreCustomized(f: ReturnType<typeof parseExplorerFilters>): boolean {
+function filtersAreCustomized(f: ExplorerFilters): boolean {
   return (
     f.window !== EXPLORER_DEFAULTS.window ||
     f.q !== null ||
