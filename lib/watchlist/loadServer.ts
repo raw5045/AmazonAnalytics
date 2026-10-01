@@ -1,7 +1,7 @@
 import 'server-only';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
-import { watchlistItems } from '@/db/schema';
+import { searchTerms, watchlistItems } from '@/db/schema';
 import type { WatchlistItem } from './types';
 
 /**
@@ -39,4 +39,21 @@ export async function isKeywordWatched(userId: string, keywordId: string): Promi
     .where(and(eq(watchlistItems.userId, userId), eq(watchlistItems.keywordId, keywordId)))
     .limit(1);
   return Boolean(row);
+}
+
+export interface WatchlistItemWithKeyword {
+  keywordId: string;
+  keyword: string;
+  addedAt: string;
+}
+
+/** The watchlist with each keyword's text, newest first — what the MCP `list_watchlist` tool returns (spec 2026-09-30 §3). */
+export async function listWatchlistWithKeywords(userId: string): Promise<WatchlistItemWithKeyword[]> {
+  const rows = await db
+    .select({ keywordId: watchlistItems.keywordId, keyword: searchTerms.searchTermRaw, addedAt: watchlistItems.addedAt })
+    .from(watchlistItems)
+    .innerJoin(searchTerms, eq(searchTerms.id, watchlistItems.keywordId))
+    .where(eq(watchlistItems.userId, userId))
+    .orderBy(desc(watchlistItems.addedAt));
+  return rows.map((r) => ({ keywordId: r.keywordId, keyword: r.keyword, addedAt: r.addedAt.toISOString() }));
 }
