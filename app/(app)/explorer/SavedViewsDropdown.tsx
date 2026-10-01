@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
+import { createPortal } from 'react-dom';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { buildViewHref } from '@/lib/savedViews/serialize';
 import type { SavedView } from '@/lib/savedViews/types';
@@ -49,15 +50,19 @@ export function SavedViewsDropdown({
   const currentSearch = searchParams?.toString() ?? '';
   // A pick shows at once: the URL, and so `?view=`, only changes when the pick's
   // navigation commits (view load + Explorer query, seconds on a cold hit).
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [pendingSearch, setPendingSearch] = useState('');
+  // searchAtPick is the URL at the time of the pick, not the pick's destination.
+  const [pickedId, setPickedId] = useState<string | null>(null);
+  const [searchAtPick, setSearchAtPick] = useState('');
   // React's "adjust state when a prop changes" pattern (as in SavedViewsControls):
   // the first render whose URL differs from the one at the pick ends it, because
   // the navigation committed (the URL now carries the id, so the label carries on)
   // or the member went elsewhere (the URL wins). False right after, so no loop.
-  if (pendingId !== null && currentSearch !== pendingSearch) setPendingId(null);
+  // Keyed to the URL, not to the transition settling: clearing on settle would
+  // mislabel a save-then-re-pick (the re-pick settles with the URL unchanged, and
+  // the just-saved view's active bridge would take the label back).
+  if (pickedId !== null && currentSearch !== searchAtPick) setPickedId(null);
   const urlViewId = searchParams?.get('view') ?? null;
-  const viewId = pendingId ?? activeIdOverride ?? urlViewId;
+  const viewId = pickedId ?? activeIdOverride ?? urlViewId;
   const activeView = useMemo(
     () => (viewId ? views.find((v) => v.id === viewId) ?? null : null),
     [viewId, views],
@@ -85,7 +90,7 @@ export function SavedViewsDropdown({
   // Only the pick runs in a transition. A transition around router.push resolves
   // when the navigation commits (like the sidebar's router.replace), so isPending
   // drives the loading overlay and aria-busy for exactly the view load + Explorer
-  // query, while pendingId shows the pick at once. The push stays synchronous
+  // query, while pickedId shows the pick at once. The push stays synchronous
   // inside startTransition, never after an await.
   // Delete and rename stay unwrapped on purpose: these handlers used to wrap their
   // router calls in startTransition + drive a `disabled={isPending}` on the
@@ -95,8 +100,8 @@ export function SavedViewsDropdown({
   // permanently disabled. Their direct router calls need no pending state.
   const applyView = (view: SavedView) => {
     setOpen(false);
-    setPendingId(view.id);
-    setPendingSearch(currentSearch);
+    setPickedId(view.id);
+    setSearchAtPick(currentSearch);
     startTransition(() => {
       router.push(buildViewHref(view));
     });
@@ -157,9 +162,12 @@ export function SavedViewsDropdown({
 
   return (
     <div ref={containerRef} className="relative">
-      {/* A pick in flight. fixed inset-0 covers the viewport from here; it stacks in the
-          saved-views bar's z-20 layer, so only the z-30 top nav stays above it. */}
-      <LoadingOverlay show={isPending} />
+      {/* A pick in flight, portaled into <body> as FeedbackButton does: rendered here
+          it would stack inside the saved-views bar's sticky z-20 layer, leaving the
+          z-30 top nav undimmed and clickable mid-pick, and a click there can discard
+          the pick's navigation while the picked label stays. isPending is false on
+          the server and during hydration, so document.body is only read in the browser. */}
+      {isPending && createPortal(<LoadingOverlay show />, document.body)}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}

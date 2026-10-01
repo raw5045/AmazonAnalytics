@@ -255,7 +255,7 @@ describe('SavedViewsControls', () => {
     expect(picker).toHaveAttribute('aria-busy', 'false');
   });
 
-  it('keeps the picked view when its navigation commits (the URL then carries its id)', () => {
+  it('keeps the picked view when its navigation commits (the URL then carries its id), and that clears the pick', () => {
     nav.push.mockImplementationOnce(() => {});
     const { rerender } = render(<SavedViewsControls views={[savedView(), desks]} />);
     pickView('Desks');
@@ -264,6 +264,12 @@ describe('SavedViewsControls', () => {
     nav.state.params = new URLSearchParams(`view=${desks.id}`);
     rerender(<SavedViewsControls views={[savedView(), desks]} />);
     expect(screen.getByTitle('Currently loaded: Desks')).toHaveTextContent('Desks');
+
+    // Cleared there, not merely outranked by the URL: back on the URL the pick was made
+    // from (no view), the placeholder shows rather than a stale pick.
+    nav.state.params = new URLSearchParams();
+    rerender(<SavedViewsControls views={[savedView(), desks]} />);
+    expect(screen.getByTitle('Pick a saved view')).toHaveTextContent('Saved views');
   });
 
   it('follows the URL when it moves anywhere else before the pick commits', () => {
