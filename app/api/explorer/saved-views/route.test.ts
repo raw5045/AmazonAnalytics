@@ -33,9 +33,9 @@ const uniqueViolation = () => new DrizzleQueryError('insert into "saved_views" (
 function selectWhere(rows: unknown[]) {
   mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where: vi.fn().mockResolvedValueOnce(rows) }) } as never);
 }
-/** Next `db.select().from().where().orderBy().limit()` resolves to `rows` (the list query). */
+/** Next `db.select().from().where().orderBy()` resolves to `rows` (the list query — never capped). */
 function selectList(rows: unknown[]) {
-  mockDb.select.mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: () => ({ limit: vi.fn().mockResolvedValueOnce(rows) }) }) }) } as never);
+  mockDb.select.mockReturnValueOnce({ from: () => ({ where: () => ({ orderBy: vi.fn().mockResolvedValueOnce(rows) }) }) } as never);
 }
 function insertReturning(result: unknown[] | Error) {
   const returning = result instanceof Error ? vi.fn().mockRejectedValueOnce(result) : vi.fn().mockResolvedValueOnce(result);
@@ -51,6 +51,12 @@ describe('GET /api/explorer/saved-views', () => {
     const res = await GET();
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ views: [dto] });
+  });
+  it('lists all six views when the create race left one over the cap (nothing is hidden from the picker)', async () => {
+    selectList([6, 5, 4, 3, 2, 1].map((i) => ({ ...row, id: `${row.id.slice(0, -1)}${i}`, name: `View ${i}` })));
+    const res = await GET();
+    expect(res.status).toBe(200);
+    expect((await res.json()).views.map((v: { name: string }) => v.name)).toEqual(['View 6', 'View 5', 'View 4', 'View 3', 'View 2', 'View 1']);
   });
   it('is 401 when not signed in', async () => {
     mockRequireUser.mockRejectedValueOnce(new AuthError('UNAUTHENTICATED', 'Not signed in'));

@@ -8,7 +8,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
 import { isUuid } from '@/lib/db/uuid';
-import { MAX_VIEWS_PER_USER, normalizeFiltersBlob } from '@/lib/savedViews/validation';
+import { normalizeFiltersBlob } from '@/lib/savedViews/validation';
 import type { SavedView } from './types';
 
 /** A saved_views row → the typed SavedView the app and the MCP tools share (filters normalised from the stored blob). */
@@ -17,18 +17,20 @@ export function rowToSavedView(r: typeof savedViews.$inferSelect): SavedView {
 }
 
 /**
- * Fetch all of the user's saved views (up to MAX_VIEWS_PER_USER),
- * newest first. Stored `filters` JSON is normalized through
- * parseExplorerFilters so callers get a fully-populated typed object
- * even if the stored JSON is missing newer fields.
+ * Every one of the user's saved views, newest first — deliberately NOT capped at
+ * MAX_VIEWS_PER_USER. The cap is enforced on create (lib/savedViews/commands.ts);
+ * two creates in the same instant can both pass its count-then-insert check and
+ * leave a sixth view, which must stay visible to the picker and to the MCP's
+ * list_saved_views so it can be deleted (arc-3 final review, 2026-10-01). Stored
+ * `filters` JSON is normalised so callers get a fully-populated typed object even
+ * if the blob predates newer fields.
  */
 export async function listSavedViewsForUser(userId: string): Promise<SavedView[]> {
   const rows = await db
     .select()
     .from(savedViews)
     .where(eq(savedViews.userId, userId))
-    .orderBy(desc(savedViews.createdAt))
-    .limit(MAX_VIEWS_PER_USER);
+    .orderBy(desc(savedViews.createdAt));
 
   return rows.map(rowToSavedView);
 }

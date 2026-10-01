@@ -11,7 +11,6 @@ import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { AuthError } from '@/lib/auth/requireAdmin';
 import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
-import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
 import { createSavedView } from '@/lib/savedViews/commands';
 import { SAVED_VIEW_HTTP_STATUS } from '@/lib/savedViews/httpStatus';
 
@@ -25,12 +24,12 @@ export async function GET() {
     return handleAuthError(e);
   }
 
+  // Never capped: a sixth view from the create race must stay listable (see listSavedViewsForUser).
   const rows = await db
     .select()
     .from(savedViews)
     .where(eq(savedViews.userId, user.id))
-    .orderBy(desc(savedViews.createdAt))
-    .limit(MAX_VIEWS_PER_USER);
+    .orderBy(desc(savedViews.createdAt));
 
   return NextResponse.json({
     views: rows.map((r) => ({
