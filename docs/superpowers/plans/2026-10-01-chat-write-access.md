@@ -4,7 +4,7 @@
 
 **Goal:** The in-app Ask AI chat can save views, build custom categories and change the watchlist with the eleven arc-3 workspace tools, asking the member first through Deny / Approve / Always approve cards (once per chat for changes, every time for deletes, never when the matching account toggle is on), behind `ASK_AI_WRITES_ENABLED`.
 
-**Architecture:** The chat's tool set gains the workspace definitions bound to the signed-in member (same commands, caps, logging as the MCP). Per turn the server computes which write tools need a card and passes a `toolApproval` map to the SDK, which ends the turn with an approval request the thread renders as a card. The member's answer comes back as a small approval request; the server verifies it against the chat's stored last message, **executes the approved tool itself**, records the outcome on that stored message, appends a hidden system-reported user message describing the outcome, and runs a normal turn from there. (The paused tool call is never replayed to the model: arc 2 already found that replaying a stored assistant tool step without its thinking block is rejected by Anthropic under adaptive thinking, and `trimHistoryForReplay` exists for that reason — so the resume rides the proven "new turn with a user message" path instead. This amends spec §5/§6, see Task 10.) Two account toggles and a per-chat stamp (migration 0049) decide when cards are skipped.
+**Architecture:** The chat's tool set gains the workspace definitions bound to the signed-in member (same commands, caps, logging as the MCP). Per turn the server computes which write tools need a card and passes a `toolApproval` map to the SDK, which ends the turn with an approval request the thread renders as a card. The member's answers come back as one small approval request (one answer per card: the model can pause several calls in one step, so the thread waits until every card on the message is answered and sends them together); the server verifies them against the chat's stored last message, **executes each approved tool itself**, in part order, records the outcomes on that stored message, appends one hidden system-reported user message describing every outcome (a tool that answered with an error is reported as a failure, never as "it ran"), and runs a normal turn from there. (The paused tool call is never replayed to the model: arc 2 already found that replaying a stored assistant tool step without its thinking block is rejected by Anthropic under adaptive thinking, and `trimHistoryForReplay` exists for that reason — so the resume rides the proven "new turn with a user message" path instead. This amends spec §5/§6, see Task 10.) Two account toggles and a per-chat stamp (migration 0049) decide when cards are skipped.
 
 **Tech Stack:** Next.js 16 App Router, `ai` 7.0.118 (`streamText` `toolApproval`, UI tool parts in `approval-requested` state), `@ai-sdk/react` `useChat` (`addToolApprovalResponse`, `sendMessage()` resend), zod 4, drizzle-orm 0.45 over neon-http (single-statement SQL, no transactions), vitest 4.1.4 + Testing Library, TypeScript 5.9.
 
@@ -32,7 +32,7 @@
 | `lib/ask/transport.ts` | the approval wire body |
 | `app/(app)/ask/ApprovalCard.tsx`, `useWorkspaceNames.ts`, `Thread.tsx`, `ToolActivity.tsx`, `WriteSwitches.tsx`, `AskAi.tsx`, `page.tsx` | the card, the id→name lookup, hidden outcome messages, labels, the switches |
 
-**Client-safety rule:** `lib/workspace/tools.ts` reaches `@/lib/env` and the query builder through `lib/research/tools.ts` and `lib/research/limits.ts`, so nothing rendered in the browser may import it. The card and the summaries use the pure modules `lib/ask/writeKinds.ts` and `lib/ask/approvalSummaries.ts`, each parity-tested (in node) against the workspace definitions so they cannot drift.
+**Client-safety rule:** nothing rendered in the browser imports `lib/workspace/tools.ts` or `lib/ask/tools.ts`. The definitions' runtime graph is pure (the `limits` import is type-only, so `@/lib/env` is not reached) but it is ~124 KB of source — zod schemas, the research contracts, the Explorer query builder — that the chat page must not ship; `lib/ask/tools.ts` itself IS server-only (it reaches `lib/env.ts` through `researchLimits` and drizzle through `logSafe`). The card and the summaries use the pure modules `lib/ask/writeKinds.ts` and `lib/ask/approvalSummaries.ts`, each parity-tested (in node) against the workspace definitions so they cannot drift.
 
 ---
 
@@ -537,17 +537,29 @@ describe('respondedParts', () => {
 
 describe('the hidden outcome message', () => {
   it('reports an approved run with the tool name and its result, under the prefix', () => {
-    const m = approvalOutcomeMessage({ toolName: 'create_saved_view', approved: true, output: { view: { id: 'v1', name: 'Lamps' } } });
+    const m = approvalOutcomeMessage([{ toolName: 'create_saved_view', approved: true, output: { view: { id: 'v1', name: 'Lamps' } } }]);
     expect(m.role).toBe('user');
     expect(m.parts).toEqual([{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} The person approved create_saved_view and it ran. Result: {"view":{"id":"v1","name":"Lamps"}}` }]);
     expect(isApprovalResultMessage(m)).toBe(true);
   });
   it('reports a denial and tells the model not to retry', () => {
-    const m = approvalOutcomeMessage({ toolName: 'delete_saved_view', approved: false });
+    const m = approvalOutcomeMessage([{ toolName: 'delete_saved_view', approved: false }]);
     expect(m.parts).toEqual([{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} The person denied delete_saved_view. Continue without it and do not retry it or try another way to get the same result.` }]);
   });
+  it('reports an approved run whose tool answered with an error as a failure, never as "it ran"', () => {
+    const m = approvalOutcomeMessage([{ toolName: 'create_saved_view', approved: true, output: { error: { code: 'DUPLICATE_NAME', message: 'You already have a view named "Lamps".', retryable: false } } }]);
+    expect((m.parts[0] as { text: string }).text).toBe(`${APPROVAL_RESULT_PREFIX} The person approved create_saved_view but it failed: {"code":"DUPLICATE_NAME","message":"You already have a view named \\"Lamps\\".","retryable":false}`);
+  });
+  it('lists several outcomes, one line each, in the order given (the model can pause several calls in one step)', () => {
+    const m = approvalOutcomeMessage([{ toolName: 'delete_saved_view', approved: true, output: { deleted: true } }, { toolName: 'delete_custom_category', approved: false }]);
+    expect((m.parts[0] as { text: string }).text.split('\n')).toEqual([
+      `${APPROVAL_RESULT_PREFIX} The person approved delete_saved_view and it ran. Result: {"deleted":true}`,
+      'The person denied delete_custom_category. Continue without it and do not retry it or try another way to get the same result.',
+    ]);
+    expect(isApprovalResultMessage(m)).toBe(true);
+  });
   it('caps a huge result at 20,000 characters', () => {
-    const m = approvalOutcomeMessage({ toolName: 'add_to_watchlist', approved: true, output: { big: 'x'.repeat(30_000) } });
+    const m = approvalOutcomeMessage([{ toolName: 'add_to_watchlist', approved: true, output: { big: 'x'.repeat(30_000) } }]);
     expect((m.parts[0] as { text: string }).text.length).toBeLessThanOrEqual(20_000 + 200);
     expect((m.parts[0] as { text: string }).text.endsWith('…')).toBe(true);
   });
@@ -603,17 +615,20 @@ export function respondedParts(parts: AskUIMessage['parts'], approvalId: string,
   });
 }
 
-/** The hidden user message the model continues from. */
-export function approvalOutcomeMessage(a: { toolName: string; approved: boolean; output?: unknown }): AskUIMessage {
-  let text: string;
-  if (a.approved) {
-    let result = JSON.stringify(a.output ?? null);
-    if (result.length > MAX_RESULT_CHARS) result = `${result.slice(0, MAX_RESULT_CHARS)}…`;
-    text = `${APPROVAL_RESULT_PREFIX} The person approved ${a.toolName} and it ran. Result: ${result}`;
-  } else {
-    text = `${APPROVAL_RESULT_PREFIX} The person denied ${a.toolName}. Continue without it and do not retry it or try another way to get the same result.`;
-  }
-  return { id: randomUUID(), role: 'user', parts: [{ type: 'text', text }] };
+export interface ApprovalOutcome { toolName: string; approved: boolean; output?: unknown }
+
+function outcomeLine(a: ApprovalOutcome): string {
+  if (!a.approved) return `The person denied ${a.toolName}. Continue without it and do not retry it or try another way to get the same result.`;
+  // runWorkspaceTool answers `{ error }` for a refusal or a failed write (DUPLICATE_NAME, LIMIT_REACHED, …): report it as a failure.
+  const failed = typeof a.output === 'object' && a.output !== null && 'error' in a.output;
+  let result = JSON.stringify(failed ? (a.output as { error: unknown }).error : (a.output ?? null));
+  if (result.length > MAX_RESULT_CHARS) result = `${result.slice(0, MAX_RESULT_CHARS)}…`;
+  return failed ? `The person approved ${a.toolName} but it failed: ${result}` : `The person approved ${a.toolName} and it ran. Result: ${result}`;
+}
+
+/** The hidden user message the model continues from: one line per answered card, in part order. */
+export function approvalOutcomeMessage(outcomes: ApprovalOutcome[]): AskUIMessage {
+  return { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} ${outcomes.map(outcomeLine).join('\n')}` }] };
 }
 
 export function isApprovalResultMessage(m: Pick<AskUIMessage, 'role' | 'parts'>): boolean {
@@ -920,7 +935,7 @@ Extend the mocks at the top: `conv` gains `replaceMessageParts: vi.fn(), stampCh
 describe('writes (arc 4, spec 2026-10-01)', () => {
   const pendingAssistant = { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'Saving.' }, { type: 'tool-create_saved_view', toolCallId: 'call_1', state: 'approval-requested', input: { name: 'Lamps', search: {} }, approval: { id: 'ap_1' } }], metadata: { status: 'complete' } };
   const loaded = (last = pendingAssistant, conversation = { id: existingId, model: 'claude-sonnet-5', messageCount: 2, changesApprovedAt: null }) => ({ conversation, messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] }, last] });
-  const approve = (approval: Record<string, unknown>) => post({ conversationId: existingId, approval });
+  const approve = (...approvals: Record<string, unknown>[]) => post({ conversationId: existingId, approvals });
   beforeEach(() => {
     envMock.env.ASK_AI_WRITES_ENABLED = '1';
     conv.loadConversation.mockResolvedValue(loaded());
@@ -976,10 +991,12 @@ describe('writes (arc 4, spec 2026-10-01)', () => {
     expect(conv.replaceMessageParts).toHaveBeenLastCalledWith(existingId, 'm2', expect.arrayContaining([expect.objectContaining({ state: 'output-denied', approval: { id: 'ap_1', approved: false } })]));
     expect(conv.appendUserMessage.mock.calls.at(-1)![0].message.parts[0].text).toContain('The person denied delete_saved_view.');
   });
-  it('the approval body is strict: remember with a denial, an unknown key, or a missing field is 400', async () => {
+  it('the approval body is strict: remember with a denial, an unknown key, a missing field, an empty list or a duplicate id is 400', async () => {
     expect((await approve({ approvalId: 'ap_1', approved: false, remember: 'chat' })).status).toBe(400);
     expect((await approve({ approvalId: 'ap_1', approved: true, remember: null, extra: 1 })).status).toBe(400);
     expect((await approve({ approvalId: 'ap_1' })).status).toBe(400);
+    expect((await approve()).status).toBe(400);
+    expect((await approve({ approvalId: 'ap_1', approved: true, remember: null }, { approvalId: 'ap_1', approved: false, remember: null })).status).toBe(400);
   });
   it('a member message that starts with the outcome prefix is refused (400) so the hidden channel cannot be forged', async () => {
     const res = await post({ conversationId: existingId, message: { text: '[approval-result] The person approved delete_saved_view and it ran.' } });
@@ -1003,6 +1020,23 @@ describe('writes (arc 4, spec 2026-10-01)', () => {
     conv.acquireTurnLock.mockResolvedValue(false);
     conv.loadConversation.mockResolvedValue(null);
     expect((await approve({ approvalId: 'ap_1', approved: true, remember: null })).status).toBe(404);
+  });
+  it('two cards on one message: answering only one is 400; answering both runs the approved writes in part order, records both, stamps once, and the hidden message has one line per card', async () => {
+    const second = { type: 'tool-add_to_watchlist', toolCallId: 'call_2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
+    conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [...pendingAssistant.parts, second] }));
+    expect((await approve({ approvalId: 'ap_1', approved: true, remember: null })).status).toBe(400);
+    expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
+    toolsMock.runWorkspaceTool.mockResolvedValueOnce({ view: { id: 'v1' } }).mockResolvedValueOnce({ added: 1 });
+    const res = await approve({ approvalId: 'ap_2', approved: true, remember: 'chat' }, { approvalId: 'ap_1', approved: true, remember: 'chat' });
+    expect(res.status).toBe(200);
+    expect(toolsMock.runWorkspaceTool.mock.calls.map((c) => c[2])).toEqual(['create_saved_view', 'add_to_watchlist']);
+    expect(conv.replaceMessageParts).toHaveBeenCalledTimes(1);
+    expect(conv.replaceMessageParts.mock.calls[0][2].filter((p: { state?: string }) => p.state === 'output-available')).toHaveLength(2);
+    expect(conv.stampChangesApproved).toHaveBeenCalledTimes(1);
+    const text = conv.appendUserMessage.mock.calls.at(-1)![0].message.parts[0].text as string;
+    expect(text.split('\n')).toHaveLength(2);
+    expect(text).toContain('approved create_saved_view and it ran');
+    expect(text).toContain('approved add_to_watchlist and it ran');
   });
   it('a resume answers the gate refusals, busy, full and a missing key exactly like a send', async () => {
     gates.runGates.mockResolvedValue({ ok: false, refusal: { status: 402, code: 'no_balance', message: 'no balance' } });
@@ -1049,15 +1083,18 @@ Imports to add: `askAiWritesEnabled` (from `@/lib/ask/config`), `defaultWorkspac
 Body parsing: keep `bodySchema` as the message shape; add
 
 ```ts
+const approvalAnswerSchema = z
+  .strictObject({ approvalId: z.string().min(1).max(128), approved: z.boolean(), remember: z.enum(['chat', 'always']).nullable() })
+  .refine((a) => a.approved || a.remember === null, { message: 'remember needs an approval' });
+/** One answer per pending card on the last assistant message — the thread sends them all at once (the model can pause several calls in one step). */
 const approvalBodySchema = z
-  .strictObject({
-    conversationId: z.uuid(),
-    approval: z.strictObject({ approvalId: z.string().min(1).max(128), approved: z.boolean(), remember: z.enum(['chat', 'always']).nullable() }),
-  })
-  .refine((b) => b.approval.approved || b.approval.remember === null, { message: 'remember needs an approval' });
+  .strictObject({ conversationId: z.uuid(), approvals: z.array(approvalAnswerSchema).min(1).max(MAX_APPROVALS_PER_TURN) })
+  .refine((b) => new Set(b.approvals.map((a) => a.approvalId)).size === b.approvals.length, { message: 'duplicate approval' });
 ```
 
-and after `JSON.parse` succeeds: `const isApproval = typeof parsedJson === 'object' && parsedJson !== null && 'approval' in parsedJson;` — the approval shape is parsed with `approvalBodySchema` (any failure → `json({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' }, 400)`), the message shape exactly as today plus one refinement on the text: `.refine((t) => !t.startsWith(APPROVAL_RESULT_PREFIX))` (a 400 like any other schema failure; `APPROVAL_RESULT_PREFIX` from `@/lib/ask/approvals`), so the hidden outcome channel is server-only (spec §10).
+(`MAX_APPROVALS_PER_TURN = 16`, a module constant next to the schema: more pending cards than that cannot occur in one step under `ASK_LIMITS`.)
+
+and after `JSON.parse` succeeds: `const isApproval = typeof parsedJson === 'object' && parsedJson !== null && 'approvals' in parsedJson;` — the approval shape is parsed with `approvalBodySchema` (any failure → `json({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' }, 400)`), the message shape exactly as today plus one refinement on the text: `.refine((t) => !t.startsWith(APPROVAL_RESULT_PREFIX))` (a 400 like any other schema failure; `APPROVAL_RESULT_PREFIX` from `@/lib/ask/approvals`), so the hidden outcome channel is server-only (spec §10).
 
 The writes decision, shared by both paths, computed once the gate passed and the conversation is loaded:
 
@@ -1089,12 +1126,10 @@ and pass `workspace: writes !== null` into `buildGuide(...)`. The `[ask turn]` s
         for (const p of pending) parts = respondedParts(parts, p.approvalId, false);
         await replaceMessageParts(loaded.conversation.id, lastLoaded.id, parts);
         loaded.messages[loaded.messages.length - 1] = { ...lastLoaded, parts };
-        for (const p of pending) {
-          const denial = approvalOutcomeMessage({ toolName: p.toolName, approved: false });
-          const r = await appendUserMessage({ conversationId: loaded.conversation.id, userId: user.id, message: denial, now });
-          if (r === 'full') { await releaseTurnLock(loaded.conversation.id).catch(() => {}); return json({ error: CHAT_FULL_MESSAGE, code: 'chat_full' }, 409); }
-          loaded.messages.push(denial);
-        }
+        const denial = approvalOutcomeMessage(pending.map((p) => ({ toolName: p.toolName, approved: false })));   // ONE hidden message, one line per card
+        const r = await appendUserMessage({ conversationId: loaded.conversation.id, userId: user.id, message: denial, now });
+        if (r === 'full') { await releaseTurnLock(loaded.conversation.id).catch(() => {}); return json({ error: CHAT_FULL_MESSAGE, code: 'chat_full' }, 409); }
+        loaded.messages.push(denial);
       }
     }
 ```
@@ -1110,24 +1145,34 @@ wrapped in the same try/catch shape as the existing append (log `pending_denied_
     if (!(await acquireTurnLock(user.id, id))) { /* exactly the send path's busy-vs-missing check */ }
     let loaded = await loadConversation(user.id, id, { lastN: ASK_LIMITS.historyWindowMessages }) — same try/catch + release + 503 as the send path; null → release + 404
     const last = loaded.messages[loaded.messages.length - 1];
-    const pending = last ? pendingApprovals(last).find((p) => p.approvalId === approvalBody.approval.approvalId) : undefined;
-    if (!pending) { await releaseTurnLock(id).catch(() => {}); return new NextResponse(null, { status: 404, headers: NO_STORE }); }
-    const kind = writeKind(pending.toolName);
-    if (kind === null) { release; 404 }  // a pending approval on a non-write cannot exist; fail closed
-    const { approved, remember } = approvalBody.approval;
+    const pending = last ? pendingApprovals(last) : [];                       // every card still open on the last assistant message, in part order
+    const answers = new Map(approvalBody.approvals.map((a) => [a.approvalId, a]));
+    const pendingIds = new Set(pending.map((p) => p.approvalId));
+    if ([...answers.keys()].some((k) => !pendingIds.has(k))) { release; 404 }  // an unknown or already-answered id: nothing open by that id
+    if (pending.some((p) => !answers.has(p.approvalId)) || pending.some((p) => writeKind(p.toolName) === null)) { release; 400 bad_request }
+    // ↑ the thread always answers the whole set; a partial answer is a client bug. A pending approval on a non-write cannot exist: fail closed.
     const actor: ResearchActor = { localUserId: user.id, clerkUserId: user.clerkUserId, clientId: 'ask-ai', channel: 'chat' };
     const workspace = defaultWorkspaceService();
-    let output: unknown;
-    if (approved) output = await runWorkspaceTool(workspace, actor, pending.toolName, pending.input);
-    const patched = respondedParts(last!.parts, pending.approvalId, approved, output);
-    await replaceMessageParts(id, last!.id, patched);        // failure → log 'approval_record_failed', release, 503
-    if (approved && remember === 'chat') await stampChangesApproved(user.id, id, now);
-    if (approved && remember === 'always') await setAutoApprove(user.id, kind === 'delete' ? { deletes: true } : { changes: true });
-    const outcome = approvalOutcomeMessage({ toolName: pending.toolName, approved, output });
+    let parts = last!.parts;
+    const outcomes: ApprovalOutcome[] = [];
+    const remembered = { chat: false, changes: false, deletes: false };
+    for (const p of pending) {                                                // part order; approved writes run one after another
+      const { approved, remember } = answers.get(p.approvalId)!;
+      const kind = writeKind(p.toolName)!;
+      const output = approved ? await runWorkspaceTool(workspace, actor, p.toolName, p.input) : undefined;   // never throws
+      parts = respondedParts(parts, p.approvalId, approved, output);
+      outcomes.push({ toolName: p.toolName, approved, output });
+      if (approved && remember === 'chat') remembered.chat = true;
+      if (approved && remember === 'always') remembered[kind === 'delete' ? 'deletes' : 'changes'] = true;
+    }
+    await replaceMessageParts(id, last!.id, parts);          // once, after the loop; failure → log 'approval_record_failed', release, 503
+    if (remembered.chat) await stampChangesApproved(user.id, id, now);
+    if (remembered.changes || remembered.deletes) await setAutoApprove(user.id, { ...(remembered.changes ? { changes: true } : {}), ...(remembered.deletes ? { deletes: true } : {}) });
+    const outcome = approvalOutcomeMessage(outcomes);                         // ONE hidden message, one line per card
     const appended = await appendUserMessage({ conversationId: id, userId: user.id, message: outcome, now }); // 'full' → release + 409 chat_full
     conversationId = id; model = loaded.conversation.model;
-    history = [...loaded.messages.slice(0, -1), { ...last!, parts: patched }, outcome];
-    writes = { allowChanges: gate.account.autoApproveChanges || loaded.conversation.changesApprovedAt !== null || (approved && remember === 'chat') || (approved && remember === 'always' && kind === 'change'), allowDeletes: gate.account.autoApproveDeletes || (approved && remember === 'always' && kind === 'delete') };
+    history = [...loaded.messages.slice(0, -1), { ...last!, parts }, outcome];
+    writes = { allowChanges: gate.account.autoApproveChanges || loaded.conversation.changesApprovedAt !== null || remembered.chat || remembered.changes, allowDeletes: gate.account.autoApproveDeletes || remembered.deletes };
     isResume = true;  // no bumpUserActivity('ask_question'); turnInput.newMessage stays undefined; startMetadata undefined
 ```
 
@@ -1255,10 +1300,11 @@ Read `node_modules/next/dist/docs/01-app/` (client components) and all of `app/(
 Append to `lib/ask/transport.test.ts`:
 
 ```ts
-  it('an approval resend carries only conversationId and the approval — no message text (spec 2026-10-01 §6)', async () => {
-    await send({ conversationId: 'c1', approval: { approvalId: 'ap_1', approved: true, remember: 'chat' } }, [userMessage('save it'), { id: 'm2', role: 'assistant', parts: [{ type: 'tool-create_saved_view', toolCallId: 't', state: 'approval-responded', input: {}, approval: { id: 'ap_1', approved: true } }] } as never]);
+  it('an approval resend carries only conversationId and the answers — no message text (spec 2026-10-01 §6)', async () => {
+    const approvals = [{ approvalId: 'ap_1', approved: true, remember: 'chat' }];
+    await send({ conversationId: 'c1', approvals }, [userMessage('save it'), { id: 'm2', role: 'assistant', parts: [{ type: 'tool-create_saved_view', toolCallId: 't', state: 'approval-responded', input: {}, approval: { id: 'ap_1', approved: true } }] } as never, { id: 'p1', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] } as never]);
     const [, init] = vi.mocked(fetch).mock.calls[0];
-    expect(JSON.parse(init?.body as string)).toEqual({ conversationId: 'c1', approval: { approvalId: 'ap_1', approved: true, remember: 'chat' } });
+    expect(JSON.parse(init?.body as string)).toEqual({ conversationId: 'c1', approvals });
   });
 ```
 
@@ -1342,7 +1388,17 @@ Append to `app/(app)/ask/Thread.test.tsx` (the file's `chat` mock gains `addTool
       const updater = chat.setMessages.mock.calls[0][0];
       const next = typeof updater === 'function' ? updater(chat.messages) : updater;
       expect(isApprovalResultMessage(next[next.length - 1])).toBe(true);
-      expect(chat.sendMessage).toHaveBeenCalledWith(undefined, { body: { conversationId: 'c1', approval: { approvalId: 'ap_1', approved: true, remember: 'chat' } } });
+      expect(chat.sendMessage).toHaveBeenCalledWith(undefined, { body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }] } });
+    });
+    it('with two cards pending, the first answer only records; the second sends both answers in part order', () => {
+      const second = { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] }, { ...pending, parts: [...pending.parts, second] }];
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
+      fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[1]);   // answer the SECOND card first (the watchlist one): Deny
+      expect(chat.addToolApprovalResponse).toHaveBeenCalledWith({ id: 'ap_2', approved: false });
+      expect(chat.sendMessage).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));                                              // the first card (the view)
+      expect(chat.sendMessage).toHaveBeenCalledWith(undefined, { body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] } });
     });
     it('a card on an earlier message is a record, not interactive', () => {
       chat.messages = [pending, { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'later' }] }, { id: 'm4', role: 'assistant', parts: [{ type: 'text', text: 'ok' }] }];
@@ -1366,8 +1422,8 @@ Append to `app/(app)/ask/Thread.test.tsx` (the file's `chat` mock gains `addTool
 
 ```ts
     prepareSendMessagesRequest: ({ messages, body }) =>
-      body && 'approval' in body
-        ? { body: { conversationId: body.conversationId, approval: body.approval } }
+      body && 'approvals' in body
+        ? { body: { conversationId: body.conversationId, approvals: body.approvals } }
         : { body: { ...(body ?? {}), message: { text: lastUserText(messages) } } },
 ```
 
@@ -1424,8 +1480,8 @@ export function ApprovalCard({ part, names, interactive, busy, onAnswer, record 
 `app/(app)/ask/Thread.tsx`:
 - `useChat` destructuring gains `addToolApprovalResponse`.
 - `const names = useWorkspaceNames(messages.some((m) => m.parts.some((p) => isToolUIPart(p) && 'approval' in p)))`.
-- `const [records, setRecords] = useState<Record<string, 'chat' | 'always' | null>>({})` (approvalId → remember, for this tab's labels).
-- `answerApproval = (a: ApprovalAnswer) => { setRecords((r) => ({ ...r, [a.approvalId]: a.remember })); void addToolApprovalResponse({ id: a.approvalId, approved: a.approved }); setMessages((ms) => [...ms, { id: `approval-${a.approvalId}`, role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} pending` }] }]); void sendMessage(undefined, { body: { conversationId: knownChatId, approval: a } }); }` — the placeholder is a hidden user message, so `useChat` starts a fresh assistant message for the resumed answer (with an assistant message last, the SDK would append the new parts to the message that holds the card, and the live thread would differ from a reload). The transport ignores it (the approval body carries no text); the server appends its own outcome message. `setMessages` is already destructured from `useChat` in this file.
+- `const [answers, setAnswers] = useState<Record<string, ApprovalAnswer>>({})` (approvalId → the member's answer; drives each card's record label through its `record` prop, `answers[id]?.remember`, and the send below).
+- `answerApproval = (a: ApprovalAnswer) => { … }`: record the answer (`setAnswers`), `void addToolApprovalResponse({ id: a.approvalId, approved: a.approved })` (the card collapses to its record), then compute the pending set = the `approval-requested` tool parts of the LAST assistant message in part order; if every one of them now has an answer (the one just given counts — read it from a local `next = { ...answers, [a.approvalId]: a }`, not from state), append the hidden placeholder `setMessages((ms) => [...ms, { id: `approval-${last.id}`, role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} pending` }] }])` and `void sendMessage(undefined, { body: { conversationId: knownChatId, approvals: pending.map((p) => next[p.approval.id]) } })`; otherwise do nothing more (the other cards stay live). The model can pause several calls in one step, so one request carries every answer, in part order. The placeholder is a hidden user message, so `useChat` starts a fresh assistant message for the resumed answer (with an assistant message last, the SDK would append the new parts to the message that holds the cards, and the live thread would differ from a reload). The transport ignores it (the approval body carries no text); the server appends its own outcome message. `setMessages` is already destructured from `useChat` in this file.
 - In the message map: skip `isApprovalResultMessage(m)` (`return null` before rendering the `<li>`); for an assistant message render, before `ToolActivity`, one `ApprovalCard` per tool part whose state is `approval-requested`, `approval-responded`, `output-denied`, or `output-available` with an `approval` field; `interactive = m === last && status === 'ready' && !open?.inFlight`; `busy = streaming || cooldown || leaving`.
 - `ToolActivity` receives the tool parts WITHOUT the card parts' approval-requested entries? No: keep passing all tool parts; `ToolActivity` already excludes the card states from "pending" after the change above.
 
@@ -1483,7 +1539,7 @@ MSG
 - Modify: `docs/superpowers/specs/2026-10-01-chat-write-access-design.md`
 - Create (UNTRACKED, never committed): `scripts/applyMigration0049.ts`
 
-- [ ] **Step 1: Amend the spec** (the controller does this with an edit script; recorded here so the plan is self-contained): §1 row 5 and §3 — "SDK tool approval" is the `streamText` `toolApproval` map (`'user-approval'` per tool needing a card), not a tool-level flag; §6 "Resuming (server)" — the server executes the approved tool itself (`runWorkspaceTool`, input re-validated), records the outcome on the stored assistant message (`output-available` with the result, or `output-denied`), appends a hidden user message starting with `[approval-result]` (the thread hides it; the prompt explains it; it is what the model continues from), and runs a normal turn with no new member message; the resumed answer is a new assistant message. Why: replaying the paused tool call to Anthropic without its thinking block fails under adaptive thinking (arc 2, `trimHistoryForReplay`). §4 gains the `[approval-result]` prompt line. §5 the record labels ("Approved for this chat" / "Always approved" are known only to the tab that clicked; a reload shows "Approved"), and the note that the resumed answer is its own assistant message both live and after a reload (the thread appends a hidden placeholder before the resend). §9 adds the `pending_denied_failed` / `approval_record_failed` / `approval_append_failed` log outcomes. §10 adds: a member message starting with `[approval-result]` is refused (400), so only the server writes to the hidden channel; the stored tool input is re-validated against the tool's schema before an approved run.
+- [ ] **Step 1: Amend the spec** (the controller does this with an edit script; recorded here so the plan is self-contained): §1 row 5 and §3 — "SDK tool approval" is the `streamText` `toolApproval` map (`'user-approval'` per tool needing a card), not a tool-level flag; §6 "Resuming (server)" — the server executes the approved tool itself (`runWorkspaceTool`, input re-validated), records the outcome on the stored assistant message (`output-available` with the result, or `output-denied`), appends a hidden user message starting with `[approval-result]` (the thread hides it; the prompt explains it; it is what the model continues from), and runs a normal turn with no new member message; the resumed answer is a new assistant message. Why: replaying the paused tool call to Anthropic without its thinking block fails under adaptive thinking (arc 2, `trimHistoryForReplay`). §4 gains the `[approval-result]` prompt line. §5 the record labels ("Approved for this chat" / "Always approved" are known only to the tab that clicked; a reload shows "Approved"), and the note that the resumed answer is its own assistant message both live and after a reload (the thread appends a hidden placeholder before the resend). §9 adds the `pending_denied_failed` / `approval_record_failed` / `approval_append_failed` log outcomes. §10 adds: a member message starting with `[approval-result]` is refused (400), so only the server writes to the hidden channel; the stored tool input is re-validated against the tool's schema before an approved run. §6 body: `{ conversationId, approvals: [{ approvalId, approved, remember }] }` — one answer per card still open on the last assistant message (the model can pause several calls in one step; the thread sends the whole set once every card is answered); the ids must be exactly the open set (an unknown or already-answered id → 404; an incomplete set or a duplicate → 400); approved writes run in part order; one hidden outcome message with one line per card; a tool that answers `{ error }` is reported as "approved … but it failed", never as "it ran"; `remember` is merged (any `'chat'` stamps once; `'always'` sets the toggle for each kind seen). §3: `buildAskTools(service, actor, limits, workspace)` is positional (the spec's options object with `writes` was not adopted; the route computes the `toolApproval` map separately with `toolApprovalFor`), and `DELETE_TOOLS` / `CHANGE_TOOLS` / `writeKind` live in the pure, browser-safe `lib/ask/writeKinds.ts`, not in `lib/ask/tools.ts`.
 
 - [ ] **Step 2: Write `scripts/applyMigration0049.ts`** (untracked; same shape as `scripts/applyMigration0048.ts`: `APPLY_0049=yes` guard, `DATABASE_URL` check, split `db/migrations/0049_ask_writes.sql` on `--> statement-breakpoint`, BEGIN/COMMIT, then assert via `information_schema.columns` that `ask_accounts.auto_approve_changes`, `ask_accounts.auto_approve_deletes` and `ask_conversations.changes_approved_at` exist, and that the two booleans default to `false` (`column_default = 'false'`)). Confirm `git status` shows it untracked and leave it so.
 
