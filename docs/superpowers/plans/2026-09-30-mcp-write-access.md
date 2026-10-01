@@ -1256,7 +1256,7 @@ Same shape as Task 4. Custom categories differ in three ways: names are unique c
 - Modify: `lib/customCategories/loadServer.ts` (add `loadCustomCategoryForUser`)
 - Modify: `app/api/category-builder/custom/route.ts`, `app/api/category-builder/custom/[id]/route.ts`
 
-> **Landed as ebea281 (2026-09-30).** Both routes were hardened against a `null` JSON body in the same commit (controller addendum, after the Task 4 finding), with null-body tests appended as separate describes. Spec review: compliant; one nit queued — the PATCH null-body test must also assert `status === 400` for both cases.
+> **Landed as ebea281 (2026-09-30).** Both routes were hardened against a `null` JSON body in the same commit (controller addendum, after the Task 4 finding), with null-body tests appended as separate describes. Spec review: compliant. Code-quality review (approve with fixes) → fix round 8165cda: `isUniqueViolation` is now a re-export of the shared `lib/db/pgErrorCode.ts` (the Step 5 version read only the top-level `code`, which drizzle never sets — duplicates answered 500 in production); the duplicate guard is `isUniqueViolation(e) && updates.name !== undefined`; PgDialect owner-scoping pins on COUNT/update/delete plus a new `loadServer.test.ts`; `too_many_leaves` on update; `expectError(res, status, msg)` on every route error case incl. PATCH `too_many_leaves`, the null-body cases and 401s; `lib/customCategories/httpStatus.ts` used by every route. 6 files / 44 tests. Do not reintroduce the top-level-only `code` check shown in Step 5.
 
 - [ ] **Step 1: Route tests against today's routes**
 
@@ -1976,7 +1976,7 @@ MSG
 - Test: `lib/workspace/tools.test.ts`
 - Modify (review amendment from Task 2): `lib/research/tools.test.ts` — the same strictness loop over `RESEARCH_TOOLS`
 
-> **Landed as 2f1f863 (2026-09-30).** `searchSpecSchema` via `.omit(...).shape` kept every field description; refined schemas type-check as `inputSchema` without casts. Implementer heads-ups for Task 8: `search.schemaVersion` is optional, so the service fills `1` before `parseSearchInput`; `run()` receives the SDK's parsed output with defaults (`leafMode: 'replace'`, `keywords: []`, `searchTermIds: []`) filled in.
+> **Landed as 2f1f863 (2026-09-30).** `searchSpecSchema` via `.omit(...).shape` kept every field description; refined schemas type-check as `inputSchema` without casts. Implementer heads-ups for Task 8: `search.schemaVersion` is optional, so the service fills `1` before `parseSearchInput`; `run()` receives the SDK's parsed output with defaults (`leafMode: 'replace'`, `keywords: []`, `searchTermIds: []`) filled in. Spec review: compliant (an unused `WORKSPACE_TOOL_NAMES` import rightly dropped from tools.ts). Code-quality review (approve with fixes) → fix round 83d6f88: the two update tools carry `DESTRUCTIVE_ANNOTATIONS` (MCP defines `destructiveHint: false` as additive-only; `UPDATE_ANNOTATIONS` became `ADDITIVE_ANNOTATIONS`, used by `add_to_watchlist` only); ids and `searchTermIds` are lowercased with `z.uuid().toLowerCase()`; descriptions reworded (the delete-category consequence for saved views, what `leafMode` does, the returns, and "Clients normally ask the person before this runs."); annotation literals pinned; `Deleted*Response` renamed `Delete*Response`; `emptyInputSchema` re-exported from the research contracts; comment fixes. The code blocks below are the pre-fix text.
 
 - [ ] **Step 1: Failing tests — `lib/workspace/tools.test.ts`**
 
@@ -3742,6 +3742,8 @@ describe('workspace commands (integration, real Postgres)', () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     expect(created.category.leafPaths).toEqual([leaf.path]);
+    // The only real-database check of the lower(name) unique index → 23505 → duplicate_name chain (case-insensitive).
+    expect(await createCustomCategory(userId!, { name: 'ITEST Category', leafPaths: [leaf.path] })).toMatchObject({ ok: false, code: 'duplicate_name' });
     expect(await loadCustomCategoryForUser(userId!, created.category.id)).toMatchObject({ name: 'itest category' });
     expect(await updateCustomCategory(userId!, created.category.id, { leafPaths: [leaf.path, 'Zed › Extra'] })).toMatchObject({ ok: true, category: { leafPaths: [leaf.path, 'Zed › Extra'] } });
     expect(await deleteCustomCategory(userId!, created.category.id)).toEqual({ ok: true, deleted: { id: created.category.id, name: 'itest category', leafCount: 2 } });
