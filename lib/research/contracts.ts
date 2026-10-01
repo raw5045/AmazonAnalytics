@@ -522,4 +522,9 @@ export interface GuideResponse {
   >;
   pagination: string;
   errorCodes: string[];
+  /** Present only on a channel with the workspace (write) tools — the MCP with MCP_WRITE_ENABLED (spec 2026-09-30 §9.1). */
+  workspace?: {
+    rules: string[];
+    caps: { savedViews: number; customCategories: number; watchedKeywords: number; leavesPerCategory: number; writesPerDay: number };
+  };
 }

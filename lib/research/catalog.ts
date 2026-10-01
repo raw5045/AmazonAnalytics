@@ -1,12 +1,15 @@
 import { isDeepStrictEqual } from 'node:util';
+import { MAX_CUSTOM_CATEGORIES, MAX_LEAF_PATHS_PER_CATEGORY } from '@/lib/customCategories/validation';
 import { COUNT_CAP } from '@/lib/explorer/buildQuery';
+import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
+import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
 import type { Filters, GuideResponse, PresetApplication, PresetId, SearchRequest, Sort, Window } from './contracts';
 import { DEFAULT_SORT, filtersSchema, SCHEMA_VERSION, SORT_FIELDS, WINDOWS } from './contracts';
 import { RESEARCH_ERROR_CODES, ResearchError } from './errors';
 import type { ResearchLimits } from './limits';
 
 export const CATALOG_VERSION = 1;
-export const GUIDE_VERSION = 1;
+export const GUIDE_VERSION = 2;
 export const QUERY_VERSION = 1;
 
 export interface PresetDefinition {
@@ -209,7 +212,19 @@ export const METRIC_DEFINITIONS: Array<{ name: string; definition: string }> = [
   { name: 'severity', definition: 'Fake-volume indicator: none, warning, critical, or null (never evaluated). Indicators, not proof.' },
 ];
 
-export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' | 'all'; limits: ResearchLimits }): GuideResponse {
+/** Spec 2026-09-30 §9.1. Same voice as categoryRules: short imperative lines the AI follows. */
+export const WORKSPACE_RULES: readonly string[] = Object.freeze([
+  'Run the search first, show the results, then save. Pass the exact search object (presetIds, filters, sort, comparisonWindow) to create_saved_view; never a cursor. Relay every entry in notes to the person.',
+  'Every search answer carries explorerUrl: the Explorer opened with the same filters. Offer it when the person wants to see or refine the results in the app.',
+  'Resolve category words with resolve_categories first and pass the returned selections to create_custom_category or update_custom_category; the server expands them to leaves.',
+  'Edits and deletes take ids from list_saved_views, list_custom_categories or list_watchlist. Confirm the item\'s name with the person before deleting. Deleting is permanent; removing from the watchlist is not.',
+  'Names must be unique per account. On DUPLICATE_NAME, ask the person for a different name; never invent one.',
+  `Caps: ${MAX_VIEWS_PER_USER} saved views, ${MAX_CUSTOM_CATEGORIES} custom categories, ${MAX_WATCHED_KEYWORDS} watched keywords. At a cap, tell the person what they could remove; do not delete anything to make room unless they say so.`,
+  'A saved view built from custom categories alone follows later edits to those categories; a view that mixes a custom category with other categories stores its leaves as they were when it was saved.',
+  'Never create, change or delete anything the person did not ask for in this conversation.',
+]);
+
+export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' | 'all'; limits: ResearchLimits; workspace?: boolean }): GuideResponse {
   return {
     guideVersion: GUIDE_VERSION,
     schemaVersion: SCHEMA_VERSION,
@@ -267,5 +282,19 @@ export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' 
     },
     pagination: 'Pages are computed live from a signed cursor: continue with {cursor} only. A weekly data refresh expires cursors (SEARCH_EXPIRED); a mid-week product sync can shift a review-sorted page by a few rows.',
     errorCodes: [...RESEARCH_ERROR_CODES],
+    ...(ctx.workspace
+      ? {
+          workspace: {
+            rules: [...WORKSPACE_RULES],
+            caps: {
+              savedViews: MAX_VIEWS_PER_USER,
+              customCategories: MAX_CUSTOM_CATEGORIES,
+              watchedKeywords: MAX_WATCHED_KEYWORDS,
+              leavesPerCategory: MAX_LEAF_PATHS_PER_CATEGORY,
+              writesPerDay: ctx.limits.writesPerDay,
+            },
+          },
+        }
+      : {}),
   };
 }

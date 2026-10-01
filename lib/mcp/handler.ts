@@ -1,11 +1,14 @@
 import { createMcpHandler, withMcpAuth } from 'mcp-handler';
 import type { AuthInfo } from '@modelcontextprotocol/server';
+import { errFields } from '@/lib/ask/logSafe';
 import { env } from '@/lib/env';
 import { defaultResearchService } from '@/lib/research/service';
-import { MCP_SCOPE, MCP_SERVER_INFO, mcpAllowedClientIds, mcpAudience, mcpResourceUrl } from './config';
+import { defaultWorkspaceService } from '@/lib/workspace/service';
+import { MCP_SCOPE, MCP_SERVER_INFO, mcpAllowedClientIds, mcpAudience, mcpResourceUrl, mcpWriteEnabled } from './config';
 import { getMcpConnection, touchMcpConnection, type McpConnectionState } from './connections';
 import { registerWhoami } from './tools/whoami';
 import { registerResearchTools } from './tools/registerResearchTools';
+import { registerWorkspaceTools } from './tools/registerWorkspaceTools';
 import {
   authorizeMcpAccount,
   authorizeMcpClient,
@@ -35,6 +38,12 @@ import {
  */
 const PROTECTED_RESOURCE_METADATA_PREFIX = '/.well-known/oauth-protected-resource';
 
+const BASE_INSTRUCTIONS =
+  'KeywordQuarry research tools (beta). Call get_research_guide once per conversation; use resolve_categories before any category-scoped search; search_keywords takes exact filters and pages with {cursor} only; get_keyword_details and get_keyword_history read one keyword. Search volumes are estimates, capped results are labelled, and null means unknown, never zero.';
+/** Spec 2026-09-30 §9.2. */
+const WORKSPACE_INSTRUCTIONS =
+  "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; clients normally ask the person before each write; confirm names and deletions.";
+
 const mcp = createMcpHandler(
   (server) => {
     registerWhoami(server);
@@ -43,14 +52,22 @@ const mcp = createMcpHandler(
     } catch (e) {
       // A research-deps failure (e.g. the pool cannot be constructed) must not take the whole
       // connection down: whoami stays registered and keeps serving as a diagnostic even when
-      // the five research tools cannot be.
-      console.error('[mcp]', JSON.stringify({ outcome: 'research_tools_unavailable', error: e instanceof Error ? e.message : String(e) }));
+      // the five research tools cannot be. Log-safe fields only (lib/ask/logSafe.ts): a
+      // DrizzleQueryError's own message embeds the bound params.
+      console.error('[mcp]', JSON.stringify({ outcome: 'research_tools_unavailable', ...errFields(e) }));
+    }
+    if (mcpWriteEnabled()) {
+      try {
+        registerWorkspaceTools(server, defaultWorkspaceService());
+      } catch (e) {
+        // Same fail-soft rule.
+        console.error('[mcp]', JSON.stringify({ outcome: 'workspace_tools_unavailable', ...errFields(e) }));
+      }
     }
   },
   {
     serverInfo: MCP_SERVER_INFO,
-    instructions:
-      'KeywordQuarry research tools (beta). Call get_research_guide once per conversation; use resolve_categories before any category-scoped search; search_keywords takes exact filters and pages with {cursor} only; get_keyword_details and get_keyword_history read one keyword. Search volumes are estimates, capped results are labelled, and null means unknown, never zero.',
+    instructions: mcpWriteEnabled() ? `${BASE_INSTRUCTIONS} ${WORKSPACE_INSTRUCTIONS}` : BASE_INSTRUCTIONS,
   },
 );
 

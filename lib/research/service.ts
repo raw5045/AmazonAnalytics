@@ -398,7 +398,12 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
   async function guide(actor: ResearchActor): Promise<GuideResponse> {
     await reserveFor(deps, actor, RESERVE_NO_ROWS);
     const meta = await deps.meta();
-    const response = buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: deps.audience(), limits: deps.limits });
+    const response = buildGuide({
+      datasetWeek: meta?.currentWeekEndDate ?? null,
+      audience: deps.audience(),
+      limits: deps.limits,
+      workspace: actor.channel === 'mcp' && deps.workspaceEnabled(),
+    });
     // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
     // (the request counter of the actor's channel: mcp_request or ask_tool_call) must count this
     // the same as search/details/history.

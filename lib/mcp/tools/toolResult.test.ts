@@ -81,7 +81,7 @@ describe('errorResult', () => {
     spy.mockRestore();
   });
 
-  it('maps a plain Error to a generic retryable DATA_UNAVAILABLE, logs tool/name/message/code plus the stack on a second line, and never echoes the real message', () => {
+  it('maps a plain Error to a generic retryable DATA_UNAVAILABLE, logs the tool with the log-safe fields (error name, code, capped detail) plus the stack frames on a second line, and never echoes the real message', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const err = Object.assign(new Error('super secret db connection string leaked here'), { code: 'ECONNREFUSED' });
     const r = errorResult(err, 'get_keyword_details');
@@ -95,11 +95,12 @@ describe('errorResult', () => {
     expect(spy.mock.calls[0][0]).toBe('[mcp tool]');
     expect(JSON.parse(spy.mock.calls[0][1] as string)).toEqual({
       tool: 'get_keyword_details',
-      name: 'Error',
-      message: 'super secret db connection string leaked here',
+      error: 'Error',
       code: 'ECONNREFUSED',
+      detail: 'super secret db connection string leaked here',
     });
-    expect(spy.mock.calls[1]).toEqual([err.stack]);
+    // Only the `    at …` frames: a stack's leading lines repeat the message (lib/research/toolErrors.ts).
+    expect(spy.mock.calls[1]).toEqual([err.stack!.split('\n').filter((line) => /^\s+at /.test(line)).join('\n')]);
     spy.mockRestore();
   });
 
@@ -109,9 +110,9 @@ describe('errorResult', () => {
     expect(r.isError).toBe(true);
     expect(JSON.parse((r.content[0] as { text: string }).text).error.code).toBe('DATA_UNAVAILABLE');
     expect(spy).toHaveBeenCalledTimes(1);
-    // Task 15 minor 2: a primitive throw has no `.message`, so `message` falls back to
-    // String(e) — `throw 'boom'` must still log its own value, not just `tool`.
-    expect(JSON.parse(spy.mock.calls[0][1] as string)).toEqual({ tool: 'search_keywords', message: 'a bare string throw' });
+    // Task 15 minor 2: a primitive throw has no fields of its own, so its String(e) value is kept
+    // as `detail` — `throw 'boom'` must still log its own value, not just `tool`.
+    expect(JSON.parse(spy.mock.calls[0][1] as string)).toEqual({ tool: 'search_keywords', error: 'string', detail: 'a bare string throw' });
     spy.mockRestore();
   });
 });
@@ -129,7 +130,7 @@ describe('runTool', () => {
       throw new Error('boom');
     });
     expect(r.isError).toBe(true);
-    expect(JSON.parse((spy.mock.calls[0][1] as string))).toMatchObject({ tool: 'search_keywords', message: 'boom' });
+    expect(JSON.parse((spy.mock.calls[0][1] as string))).toMatchObject({ tool: 'search_keywords', error: 'Error', detail: 'boom' });
     spy.mockRestore();
   });
 });

@@ -23,6 +23,13 @@ const { fakeService } = vi.hoisted(() => ({
     history: vi.fn(async () => ({ points: [] })),
   },
 }));
+const { fakeWorkspace } = vi.hoisted(() => ({
+  fakeWorkspace: {
+    listSavedViews: vi.fn(async () => ({ views: [], count: 0, limit: 5 })),
+    listCustomCategories: vi.fn(), listWatchlist: vi.fn(), createSavedView: vi.fn(), updateSavedView: vi.fn(), deleteSavedView: vi.fn(),
+    createCustomCategory: vi.fn(), updateCustomCategory: vi.fn(), deleteCustomCategory: vi.fn(), addToWatchlist: vi.fn(), removeFromWatchlist: vi.fn(),
+  },
+}));
 
 vi.mock('@clerk/nextjs/server', () => ({ auth: mockAuth }));
 vi.mock('@/db/client', () => ({ db: { query: { users: { findFirst: mockFindFirst } } } }));
@@ -30,6 +37,7 @@ vi.mock('@/lib/mcp/datasetWeek', () => ({ currentDatasetWeek: mockDatasetWeek })
 vi.mock('@/lib/mcp/connections', () => ({ getMcpConnection: mockGetConnection, touchMcpConnection: mockTouch }));
 vi.mock('@/lib/env', () => envMock);
 vi.mock('@/lib/research/service', () => ({ defaultResearchService: () => fakeService }));
+vi.mock('@/lib/workspace/service', () => ({ defaultWorkspaceService: () => fakeWorkspace }));
 
 import { GET, POST } from './route';
 
@@ -166,6 +174,7 @@ describe('/api/mcp', () => {
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami']);
       expect(tools[0].annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+      expect(client.getInstructions()).not.toContain('Workspace tools');
 
       const result = await client.callTool({ name: 'whoami', arguments: {} });
       expect(result.isError).toBeFalsy();
@@ -276,5 +285,50 @@ describe('/api/mcp', () => {
     expect(res.headers.get('www-authenticate')).toBeNull();
     expect(res.headers.get('retry-after')).toBe('30');
     expect((await res.json()).error).toBe('temporarily_unavailable');
+  });
+});
+
+describe('/api/mcp with MCP_WRITE_ENABLED=1 (spec 2026-09-30 §2)', () => {
+  const spies: Array<{ mockRestore(): void }> = [];
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // lib/mcp/handler.ts reads the flag and builds its instructions when the module loads, so
+    // each test here re-imports the route (below) after setting the flag.
+    vi.resetModules();
+    envMock.env.MCP_ENABLED = '1';
+    envMock.env.MCP_WRITE_ENABLED = '1';
+    delete envMock.env.MCP_AUDIENCE;
+    delete envMock.env.MCP_ALLOWED_CLIENT_IDS;
+    mockAuth.mockResolvedValue(clerkOauth());
+    mockFindFirst.mockResolvedValue(adminRow);
+    mockGetConnection.mockResolvedValue(null);
+    mockDatasetWeek.mockResolvedValue('2026-09-12');
+    for (const m of ['log', 'warn', 'error'] as const) spies.push(vi.spyOn(console, m).mockImplementation(() => {}));
+  });
+  afterEach(() => {
+    delete envMock.env.MCP_WRITE_ENABLED;
+    spies.splice(0).forEach((s) => s.mockRestore());
+  });
+
+  it('lists the five research tools, whoami and the eleven workspace tools, says so in the instructions, and runs a workspace tool with the gate-supplied actor', async () => {
+    const route = await import('./route');
+    const fetchFresh = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+      const req = new Request(typeof input === 'string' ? input : input.toString(), init);
+      return req.method === 'POST' ? route.POST(req) : req.method === 'GET' ? route.GET(req) : new Response(null, { status: 405 });
+    };
+    const client = new Client({ name: 'route-test-writes', version: '0.0.0' });
+    await client.connect(new StreamableHTTPClientTransport(new URL(URL_MCP), { fetch: fetchFresh, requestInit: { headers: { authorization: `Bearer ${TOKEN}` } } }));
+    try {
+      const { tools } = await client.listTools();
+      expect(tools).toHaveLength(17);
+      expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['list_saved_views', 'create_saved_view', 'delete_custom_category', 'remove_from_watchlist', 'whoami', 'search_keywords']));
+      expect(client.getInstructions()).toContain('Workspace tools');
+      const r = await client.callTool({ name: 'list_saved_views', arguments: {} });
+      expect(r.isError).toBeFalsy();
+      expect(fakeWorkspace.listSavedViews).toHaveBeenCalledWith({ localUserId: 'uuid-admin', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp' }, {});
+      expect(r.structuredContent).toEqual({ views: [], count: 0, limit: 5 });
+    } finally {
+      await client.close().catch(() => {});
+    }
   });
 });

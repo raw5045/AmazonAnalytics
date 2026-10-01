@@ -5,7 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 // reaches @/lib/env mocks it the same way (see lib/research/limits.test.ts); this file
 // only needs the static DEFAULT_LIMITS constant, so an empty env is enough.
 vi.mock('@/lib/env', () => ({ env: {} }));
-import { applyPresets, applyPresetDefinitions, PRESETS, buildGuide, CATALOG_VERSION, METRIC_DEFINITIONS, type PresetDefinition } from './catalog';
+import { applyPresets, applyPresetDefinitions, PRESETS, buildGuide, CATALOG_VERSION, GUIDE_VERSION, METRIC_DEFINITIONS, WORKSPACE_RULES, type PresetDefinition } from './catalog';
 import { searchRequestSchema, filtersSchema, DEFAULT_SORT, type PresetId } from './contracts';
 import { DEFAULT_LIMITS } from './limits';
 
@@ -214,5 +214,20 @@ describe('buildGuide', () => {
   it('documents excludeTerms in the population rules', () => {
     const g = buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS });
     expect(g.populationRules.some((r) => r.includes('excludeTerms'))).toBe(true);
+  });
+});
+
+describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
+  it('is absent unless asked for, and then carries the rules and the caps', () => {
+    expect(GUIDE_VERSION).toBe(2);
+    const off = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS });
+    expect(off.guideVersion).toBe(2);
+    expect(off.workspace).toBeUndefined();
+    const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: { ...DEFAULT_LIMITS, writesPerDay: 42 }, workspace: true });
+    expect(on.workspace).toEqual({ rules: WORKSPACE_RULES, caps: { savedViews: 5, customCategories: 25, watchedKeywords: 100, leavesPerCategory: 12000, writesPerDay: 42 } });
+    expect(WORKSPACE_RULES.some((r) => r.includes('Never create, change or delete anything the person did not ask for'))).toBe(true);
+    expect(WORKSPACE_RULES.some((r) => r.includes('DUPLICATE_NAME'))).toBe(true);
+    expect(WORKSPACE_RULES.some((r) => r.includes('explorerUrl'))).toBe(true);
+    expect(WORKSPACE_RULES.some((r) => r.includes('as they were when it was saved'))).toBe(true);
   });
 });

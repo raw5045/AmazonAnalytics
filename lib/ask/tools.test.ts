@@ -5,6 +5,7 @@ import { ResearchError } from '@/lib/research/errors';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { SAFE_TOOL_FAILURE } from '@/lib/research/toolErrors';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
+import { WORKSPACE_TOOL_NAMES } from '@/lib/workspace/contracts';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat' };
 const service = {
@@ -38,5 +39,8 @@ describe('buildAskTools', () => {
     await expect(exec('get_keyword_details', { searchTermId: 'x' })).resolves.toEqual({ error: SAFE_TOOL_FAILURE });
     expect(error.mock.calls[0][0]).toBe('[ask tool]');
     expect(String(error.mock.calls[0][1])).toContain('get_keyword_details');
+  });
+  it('never exposes a workspace tool (spec 2026-09-30 §2: the chat stays read-only)', () => {
+    for (const name of WORKSPACE_TOOL_NAMES) expect(tools[name]).toBeUndefined();
   });
 });

@@ -70,7 +70,7 @@ describe('search: a new request', () => {
     expect(res.pagination.expiresAt).toBe('2026-09-21T12:15:00.000Z');
     const cursor = verifyCursor(res.pagination.nextCursor!, 'test-secret', 0);
     expect(cursor).toMatchObject({ off: 50, ps: 50, snap: 'snap-a', uid: 'u1', ch: 'mcp', tm: { kind: 'exact', value: 137 } });
-    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 1, queryVersion: 1 });
+    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 2, queryVersion: 1 });
     expect(res.warnings.map((w) => w.code)).toEqual(['ESTIMATED_VOLUME', 'LIVE_PAGINATION']);
     expect(deps.record).toHaveBeenCalledWith('u1', 50, 'mcp');
     const call = (deps.runSearch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -470,5 +470,15 @@ describe('search: the Explorer link (spec 2026-09-30 §3.2)', () => {
     expect(await notesFor(writesOn(), actor)).toEqual([NOTE_DELTA, NOTE_LINK_TOO_LONG]);
     // The in-app chat never has the workspace tools, even when they are on: it is still told to narrow the categories.
     expect(await notesFor(writesOn(), chatActor)).toEqual([NOTE_DELTA, NOTE_LINK_TOO_LONG_READONLY]);
+  });
+});
+
+describe('guide: workspace section', () => {
+  it('is present for an MCP actor when the flag is on, never for the chat actor', async () => {
+    const on = createResearchService(makeDeps({ workspaceEnabled: () => true }));
+    expect((await on.guide(actor)).workspace).toBeDefined();
+    expect((await on.guide({ ...actor, clientId: 'ask-ai', channel: 'chat' })).workspace).toBeUndefined();
+    const off = createResearchService(makeDeps({ workspaceEnabled: () => false }));
+    expect((await off.guide(actor)).workspace).toBeUndefined();
   });
 });
