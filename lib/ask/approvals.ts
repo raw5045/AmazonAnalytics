@@ -1,16 +1,15 @@
 /**
- * Spec 2026-10-01 §6 (as amended in the plan): the member's answers to the cards never replay
- * the paused tool calls to the model. The server runs (or declines) each tool itself, records
- * the outcomes on the stored assistant message, and tells the model through ONE hidden user
- * message carrying APPROVAL_RESULT_PREFIX. The thread hides such messages; the prompt explains
- * them; the chat route refuses a member message that starts with the prefix (only the server
- * writes this channel).
+ * The approval lifecycle on stored messages (spec 2026-10-01 §6, as amended in the plan): the
+ * member's answers to the cards never replay the paused tool calls to the model. The chat route
+ * (arc 4 Task 6) runs or declines each tool itself, records the outcomes on the stored assistant
+ * message (respondedParts) and tells the model through the hidden outcome message
+ * (approvalOutcomeMessage); ./approvalResult describes that channel.
  *
- * Server-only: `randomUUID` is node:crypto's (as in app/api/ask/chat/route.ts), and the chat route
- * imports this module. Browser code imports ./approvalResult instead: the prefix and
- * isApprovalResultMessage live there, free of runtime imports, and are re-exported here so server
- * code keeps one import path. No logging here.
+ * Server-only (the marker below; `randomUUID` is node:crypto's, as in app/api/ask/chat/route.ts):
+ * the chat route (arc 4 Task 6) imports this module. Browser code imports ./approvalResult instead;
+ * its two names are re-exported here so server code keeps one import path. No logging here.
  */
+import 'server-only';
 import { randomUUID } from 'node:crypto';
 import { getToolName, isToolUIPart } from 'ai';
 import { APPROVAL_RESULT_PREFIX } from './approvalResult';
@@ -19,6 +18,11 @@ import type { AskUIMessage } from './conversations';
 export { APPROVAL_RESULT_PREFIX, isApprovalResultMessage } from './approvalResult';
 
 const MAX_RESULT_CHARS = 20_000;
+/**
+ * U+0085, U+2028, U+2029: JSON.stringify escapes \n and the other C0 controls but leaves these
+ * three line breaks raw. Built from char codes so this source holds no raw separator.
+ */
+const RAW_LINE_BREAKS = new RegExp(`[${String.fromCharCode(0x85, 0x2028, 0x2029)}]`, 'g');
 
 type Part = AskUIMessage['parts'][number];
 
@@ -57,13 +61,16 @@ function outcomeLine(a: ApprovalOutcome): string {
   // runWorkspaceTool answers `{ error }` for a refusal or a failed write (DUPLICATE_NAME, LIMIT_REACHED, …): report it as a failure.
   const failed = typeof a.output === 'object' && a.output !== null && 'error' in a.output;
   let result = JSON.stringify((failed ? (a.output as { error: unknown }).error : a.output) ?? null);
+  // A member-authored name could otherwise start a fake outcome line for a reader that honours
+  // Unicode line breaks; the \uXXXX escape keeps the result valid JSON. Done before the cut.
+  result = result.replace(RAW_LINE_BREAKS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
   // The cut counts UTF-16 units, so it can split an emoji; toWellFormed() repairs the lone half
   // (not valid UTF-8 — the same repair conversations.ts applies before Postgres sees a string).
   if (result.length > MAX_RESULT_CHARS) result = `${result.slice(0, MAX_RESULT_CHARS).toWellFormed()}…`;
   return failed ? `The person approved ${a.toolName} but it failed: ${result}` : `The person approved ${a.toolName} and it ran. Result: ${result}`;
 }
 
-/** The hidden user message the model continues from: one line per answered card, in part order. */
+/** The hidden user message the model continues from: one line per answered card, in the order given (the route passes part order). */
 export function approvalOutcomeMessage(outcomes: ApprovalOutcome[]): AskUIMessage {
   return { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} ${outcomes.map(outcomeLine).join('\n')}` }] };
 }
