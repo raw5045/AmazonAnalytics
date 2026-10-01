@@ -30,6 +30,7 @@ const USER_METRICS = {
   explorerExport: 'explorer_export',
   mcpRequest: 'mcp_request',
   mcpRows: 'mcp_rows',
+  mcpWrite: 'mcp_write',
 } satisfies Record<string, UserActivityMetric>;
 
 /**
@@ -61,6 +62,7 @@ export function assemblePerUserActivity(
         exports: 0,
         mcpRequests: 0,
         mcpRows: 0,
+        mcpWrites: 0,
       };
       byUser.set(userId, row);
     }
@@ -74,6 +76,7 @@ export function assemblePerUserActivity(
     else if (c.metric === USER_METRICS.explorerExport) row.exports = c.count;
     else if (c.metric === USER_METRICS.mcpRequest) row.mcpRequests = c.count;
     else if (c.metric === USER_METRICS.mcpRows) row.mcpRows = c.count;
+    else if (c.metric === USER_METRICS.mcpWrite) row.mcpWrites = c.count;
     // unknown metrics: row still marks the user active, but no column moves
   }
   for (const [userId, n] of creations.watchlistAdds) rowFor(userId).watchlistAdds = n;

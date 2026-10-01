@@ -28,6 +28,7 @@ function userWith(overrides: Partial<PerUserActivity>): PerUserActivity {
     exports: 0,
     mcpRequests: 0,
     mcpRows: 0,
+    mcpWrites: 0,
     ...overrides,
   };
 }
@@ -125,5 +126,12 @@ describe('evaluateFlags', () => {
       activeUsers: [userWith({ explorerQueries: 3000 })], // red
     });
     expect(flags.map((f) => f.severity)).toEqual(['red', 'amber']);
+  });
+
+  it('flags more than 100 MCP writes in a day as amber (spec 2026-09-30 §8.4)', () => {
+    const stats = { ...quietStats(), activeUsers: [userWith({ mcpWrites: 101 })] };
+    expect(evaluateFlags(stats)).toEqual([{ severity: 'amber', message: 'a@x.com: 101 MCP writes (amber threshold: 100)' }]);
+    expect(evaluateFlags({ ...quietStats(), activeUsers: [userWith({ mcpWrites: 100 })] })).toEqual([]);
+    expect(THRESHOLDS.userMcpWritesPerDay).toEqual({ amber: 100 });
   });
 });

@@ -25,6 +25,8 @@ export interface PerUserActivity {
   mcpRequests: number;
   /** Rows returned by MCP tools (mcp_rows counter). */
   mcpRows: number;
+  /** Workspace writes through the MCP (mcp_write counter): saved views, custom categories and watchlist changes, +1 per successful call. Enforced at 200/day (spec 2026-09-30 §8.2). */
+  mcpWrites: number;
 }
 
 /** Per-user activity over a trailing window of ET days (inclusive bounds). */

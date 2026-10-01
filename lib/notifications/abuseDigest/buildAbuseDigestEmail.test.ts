@@ -33,6 +33,7 @@ function activeUser(i: number, reads: number): PerUserActivity {
     exports: 0,
     mcpRequests: 0,
     mcpRows: 0,
+    mcpWrites: 0,
   };
 }
 
@@ -231,6 +232,14 @@ describe('buildAbuseDigestEmail — MCP columns', () => {
     expect(calls).toBeGreaterThan(built.html.indexOf('>Exports</th>'));
     expect(built.html.indexOf('>MCP rows</th>')).toBeGreaterThan(calls);
     expect(built.html.indexOf('>12</td>')).toBeLessThan(built.html.indexOf('>480</td>'));
+  });
+
+  it('shows MCP writes next to MCP calls in both the text and the HTML table', () => {
+    const stats = { ...quietStats(), activeUsers: [{ ...activeUser(1, 3), mcpRequests: 5, mcpRows: 250, mcpWrites: 2 }] };
+    const { text, html } = buildAbuseDigestEmail(stats, []);
+    expect(text).toContain('5 MCP calls (250 rows), 2 MCP writes');
+    expect(html).toContain('<th style="padding:5px 0 5px 8px;text-align:right;">MCP writes</th>');
+    expect(html).toMatch(/<td[^>]*>2<\/td>\s*<\/tr>/);
   });
 });
 

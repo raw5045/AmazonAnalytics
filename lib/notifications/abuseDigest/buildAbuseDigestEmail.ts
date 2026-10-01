@@ -158,7 +158,7 @@ function activityTextLines(users: PerUserActivity[]): string[] {
     (u) =>
       `  ${u.email}: ${u.explorerQueries} queries, ${u.detailViews} detail views, ` +
       `${u.watchlistAdds} watchlist adds, ${u.savedViewsCreated} views, ${u.customCategoriesCreated} categories, ${u.exports} exports` +
-      `, ${u.mcpRequests} MCP calls (${u.mcpRows} rows)`,
+      `, ${u.mcpRequests} MCP calls (${u.mcpRows} rows), ${u.mcpWrites} MCP writes`,
   );
   if (dropped > 0) lines.push(`  ...and ${dropped} more active users`);
   return lines;
@@ -180,6 +180,7 @@ function activityTableHtml(users: PerUserActivity[], emptyText: string): string 
           <th style="padding:5px 0 5px 8px;text-align:right;">Exports</th>
           <th style="padding:5px 0 5px 8px;text-align:right;">MCP calls</th>
           <th style="padding:5px 0 5px 8px;text-align:right;">MCP rows</th>
+          <th style="padding:5px 0 5px 8px;text-align:right;">MCP writes</th>
         </tr></thead>
         <tbody>${shown
           .map(
@@ -193,6 +194,7 @@ function activityTableHtml(users: PerUserActivity[], emptyText: string): string 
           <td style="padding:5px 0 5px 8px;text-align:right;">${u.exports.toLocaleString()}</td>
           <td style="padding:5px 0 5px 8px;text-align:right;">${u.mcpRequests.toLocaleString()}</td>
           <td style="padding:5px 0 5px 8px;text-align:right;">${u.mcpRows.toLocaleString()}</td>
+          <td style="padding:5px 0 5px 8px;text-align:right;">${u.mcpWrites.toLocaleString()}</td>
         </tr>`,
           )
           .join('')}</tbody>

@@ -24,6 +24,8 @@ export const THRESHOLDS = {
   // created in a single day.
   userSavedViewsPerDay: { amber: MAX_VIEWS_PER_USER - 1 },
   userCustomCategoriesPerDay: { amber: 10 }, // cap is 25 (MAX_CUSTOM_CATEGORIES) — 11-25 reachable
+  // Workspace writes are capped at 200/day by the service (spec 2026-09-30 §8.2); amber at half.
+  userMcpWritesPerDay: { amber: 100 },
   honeypotTripsPerDay: { amber: 20 },
   contactSubmissionsPerDay: { amber: 10 },
 } as const;
@@ -59,6 +61,9 @@ export function evaluateFlags(stats: AbuseDigestStats): Flag[] {
     );
     banded(u.customCategoriesCreated, THRESHOLDS.userCustomCategoriesPerDay, (v, th, sev) =>
       `${u.email}: ${v} custom categories created (${sev} threshold: ${th})`,
+    );
+    banded(u.mcpWrites, THRESHOLDS.userMcpWritesPerDay, (v, th, sev) =>
+      `${u.email}: ${v} MCP writes (${sev} threshold: ${th})`,
     );
   }
 
