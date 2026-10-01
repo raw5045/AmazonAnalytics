@@ -1,17 +1,21 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: {} }));
+import { MAX_NAME_LENGTH as CUSTOM_CATEGORY_NAME_MAX } from '@/lib/customCategories/validation';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { READ_ONLY_ANNOTATIONS } from '@/lib/research/tools';
 import type { ResearchActor } from '@/lib/research/service';
+import { MAX_NAME_LENGTH as SAVED_VIEW_NAME_MAX } from '@/lib/savedViews/validation';
 import {
-  createCustomCategoryInputSchema, createSavedViewInputSchema, updateCustomCategoryInputSchema, updateSavedViewInputSchema,
+  createCustomCategoryInputSchema, createSavedViewInputSchema, deleteSavedViewInputSchema, updateCustomCategoryInputSchema, updateSavedViewInputSchema,
   watchlistSelectionInputSchema, WORKSPACE_TOOL_NAMES, type WorkspaceService,
 } from './contracts';
-import { CREATE_ANNOTATIONS, DESTRUCTIVE_ANNOTATIONS, UPDATE_ANNOTATIONS, WORKSPACE_TOOLS, workspaceToolByName } from './tools';
+import { ADDITIVE_ANNOTATIONS, CREATE_ANNOTATIONS, DESTRUCTIVE_ANNOTATIONS, WORKSPACE_TOOLS, workspaceToolByName } from './tools';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
 const ID = '11111111-1111-4111-8111-111111111111';
+// Has hex letters, unlike ID (all digits, so uppercasing it changes nothing): for the id-lowercasing test.
+const HEX_ID = 'abcdef12-abcd-4abc-8abc-abcdef123456';
 
 describe('WORKSPACE_TOOLS', () => {
   it('lists the eleven tools in order: three read-only lists, then the eight writes that need confirmation', () => {
@@ -31,14 +35,23 @@ describe('WORKSPACE_TOOLS', () => {
       expect(t.requiresConfirmation).toBe(!t.annotations.readOnlyHint);
     }
   });
-  it('annotates per spec §3: lists read-only, creates non-idempotent, updates and adds idempotent, deletes and removes destructive', () => {
+  it('annotates per spec §3: lists read-only, creates non-idempotent, the watchlist add additive, updates/deletes/removals destructive', () => {
     for (const n of ['list_saved_views', 'list_custom_categories', 'list_watchlist'] as const) expect(workspaceToolByName(n).annotations).toEqual(READ_ONLY_ANNOTATIONS);
     for (const n of ['create_saved_view', 'create_custom_category'] as const) expect(workspaceToolByName(n).annotations).toEqual(CREATE_ANNOTATIONS);
-    for (const n of ['update_saved_view', 'update_custom_category', 'add_to_watchlist'] as const) expect(workspaceToolByName(n).annotations).toEqual(UPDATE_ANNOTATIONS);
-    for (const n of ['delete_saved_view', 'delete_custom_category', 'remove_from_watchlist'] as const) expect(workspaceToolByName(n).annotations).toEqual(DESTRUCTIVE_ANNOTATIONS);
+    expect(workspaceToolByName('add_to_watchlist').annotations).toEqual(ADDITIVE_ANNOTATIONS);
+    for (const n of ['update_saved_view', 'update_custom_category', 'delete_saved_view', 'delete_custom_category', 'remove_from_watchlist'] as const) expect(workspaceToolByName(n).annotations).toEqual(DESTRUCTIVE_ANNOTATIONS);
+    // Literal pins, so a flipped flag in a constant cannot pass by comparing the constant with itself.
+    expect(CREATE_ANNOTATIONS).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
+    expect(ADDITIVE_ANNOTATIONS).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     expect(DESTRUCTIVE_ANNOTATIONS).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
     expect(workspaceToolByName('delete_saved_view').description(DEFAULT_LIMITS)).toContain('permanently');
+    expect(workspaceToolByName('delete_custom_category').description(DEFAULT_LIMITS)).toContain('shows every category');
     expect(workspaceToolByName('remove_from_watchlist').description(DEFAULT_LIMITS)).toContain('Not permanent');
+  });
+  it('every write description ends with the confirmation sentence and no list description carries it', () => {
+    for (const t of WORKSPACE_TOOLS) {
+      expect(t.description(DEFAULT_LIMITS).endsWith('Clients normally ask the person before this runs.'), t.name).toBe(t.requiresConfirmation);
+    }
   });
   it('every input schema is strict: an unknown key is rejected with unrecognized_keys, never silently dropped', () => {
     for (const t of WORKSPACE_TOOLS) {
@@ -90,5 +103,16 @@ describe('input schemas', () => {
     expect(watchlistSelectionInputSchema.safeParse({ searchTermIds: [ID] }).success).toBe(true);
     expect(watchlistSelectionInputSchema.safeParse({ searchTermIds: ['nope'] }).success).toBe(false);
     expect(watchlistSelectionInputSchema.safeParse({ keywords: Array.from({ length: 60 }, (_, i) => `k${i}`), searchTermIds: Array.from({ length: 41 }, () => ID) }).success).toBe(false);
+  });
+  it('accepts an empty search (the service fills schemaVersion), an 80-character name, and 50 + 50 watchlist items; rejects a whitespace-only name', () => {
+    expect(createSavedViewInputSchema.safeParse({ name: 'Lamps', search: {} }).success).toBe(true);
+    expect(createSavedViewInputSchema.safeParse({ name: 'x'.repeat(80), search: {} }).success).toBe(true);
+    expect(createSavedViewInputSchema.safeParse({ name: '   ', search: {} }).success).toBe(false);
+    expect(watchlistSelectionInputSchema.safeParse({ keywords: Array.from({ length: 50 }, (_, i) => `k${i}`), searchTermIds: Array.from({ length: 50 }, () => ID) }).success).toBe(true);
+    expect(SAVED_VIEW_NAME_MAX).toBe(CUSTOM_CATEGORY_NAME_MAX); // one nameSchema serves both resources
+  });
+  it('lowercases ids, so an uppercase uuid still reaches the owner-scoped lookups', () => {
+    expect(deleteSavedViewInputSchema.parse({ id: HEX_ID.toUpperCase() }).id).toBe(HEX_ID);
+    expect(watchlistSelectionInputSchema.parse({ searchTermIds: [HEX_ID.toUpperCase()] }).searchTermIds).toEqual([HEX_ID]);
   });
 });

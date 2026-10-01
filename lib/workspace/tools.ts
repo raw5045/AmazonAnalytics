@@ -16,15 +16,17 @@ import {
 
 export type WorkspaceToolDefinition = ToolDefinition<WorkspaceService, WorkspaceToolName>;
 
-/** A create is not idempotent: calling it twice makes two items (or a DUPLICATE_NAME). */
+/** Not idempotent: a repeat with the same name fails with DUPLICATE_NAME instead of returning the existing item, so clients must not retry it blindly. */
 export const CREATE_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } as const);
-/** Updates and watchlist adds converge: repeating them changes nothing more. */
-export const UPDATE_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const);
-/** Deletes and removals: clients flag these as destructive in their prompts. */
+/** Additive, idempotent writes (watchlist adds): repeating them changes nothing more. */
+export const ADDITIVE_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const);
+/** Deletes, removals and the two updates (which replace or drop stored data — MCP defines destructiveHint:false as additive-only): clients flag these as destructive in their prompts. */
 export const DESTRUCTIVE_ANNOTATIONS = Object.freeze({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false } as const);
 
-const ASKS = 'The client asks the person before this runs.';
+// "normally": a member can choose Always allow, and some clients auto-run.
+const ASKS = 'Clients normally ask the person before this runs.';
 
+// Same reason as lib/research/tools.ts's frozenTool: Object.freeze on the literal itself would lose the contextual type.
 function frozenTool(def: WorkspaceToolDefinition): WorkspaceToolDefinition {
   return Object.freeze(def);
 }
@@ -72,13 +74,13 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
     description: () => `Renames a saved view and/or replaces its filters with a new search (no merge). Takes the id from list_saved_views. Returns the view with its link and notes. ${ASKS}`,
     inputSchema: updateSavedViewInputSchema,
     run: (service, actor, args) => service.updateSavedView(actor, args),
-    annotations: UPDATE_ANNOTATIONS,
+    annotations: DESTRUCTIVE_ANNOTATIONS,
     requiresConfirmation: true,
   }),
   frozenTool({
     name: 'delete_saved_view',
     title: 'Delete saved view',
-    description: () => `Deletes one saved view by id, permanently. Confirm the view's name with the person first; list_saved_views has the ids. ${ASKS}`,
+    description: () => `Deletes one saved view by id, permanently. Confirm the view's name with the person first; list_saved_views has the ids. Returns the deleted view's id and name. ${ASKS}`,
     inputSchema: deleteSavedViewInputSchema,
     run: (service, actor, args) => service.deleteSavedView(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,
@@ -96,16 +98,16 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'update_custom_category',
     title: 'Update custom category',
-    description: () => `Renames a custom category and/or changes its leaves with leafMode replace (default), add or remove, using the same categories object create_custom_category takes. Takes the id from list_custom_categories. ${ASKS}`,
+    description: () => `Renames a custom category and/or changes its leaves, using the same categories object create_custom_category takes. leafMode replace (the default) makes the category exactly these leaves and drops the rest; add and remove change only the leaves given. Takes the id from list_custom_categories. Returns the category with its leaf count, preview paths and link. ${ASKS}`,
     inputSchema: updateCustomCategoryInputSchema,
     run: (service, actor, args) => service.updateCustomCategory(actor, args),
-    annotations: UPDATE_ANNOTATIONS,
+    annotations: DESTRUCTIVE_ANNOTATIONS,
     requiresConfirmation: true,
   }),
   frozenTool({
     name: 'delete_custom_category',
     title: 'Delete custom category',
-    description: () => `Deletes one custom category by id, permanently; a saved view that referenced it simply stops matching it. Confirm the category's name with the person first. ${ASKS}`,
+    description: () => `Deletes one custom category by id, permanently. A saved view that filters on it loses that category filter; if it was the view's only category filter, the view then shows every category. Confirm the category's name with the person first; list_custom_categories has the ids. Returns the deleted category's id, name and leaf count. ${ASKS}`,
     inputSchema: deleteCustomCategoryInputSchema,
     run: (service, actor, args) => service.deleteCustomCategory(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,
@@ -114,10 +116,10 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'add_to_watchlist',
     title: 'Add to watchlist',
-    description: () => `Adds up to ${MAX_WATCHLIST_ITEMS_PER_CALL} keywords, by text and/or searchTermId from search rows, to the watchlist (cap ${MAX_WATCHED_KEYWORDS}). Reports added, already watching, unmatched, and skipped at the cap. Re-adding is harmless. ${ASKS}`,
+    description: () => `Adds up to ${MAX_WATCHLIST_ITEMS_PER_CALL} keywords, by text and/or searchTermId from search rows, to the watchlist, which holds at most ${MAX_WATCHED_KEYWORDS}. Reports added, already watching, unmatched, and skipped at the cap. Re-adding is harmless. ${ASKS}`,
     inputSchema: watchlistSelectionInputSchema,
     run: (service, actor, args) => service.addToWatchlist(actor, args),
-    annotations: UPDATE_ANNOTATIONS,
+    annotations: ADDITIVE_ANNOTATIONS,
     requiresConfirmation: true,
   }),
   frozenTool({
