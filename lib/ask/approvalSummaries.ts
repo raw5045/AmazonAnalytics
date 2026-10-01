@@ -1,10 +1,11 @@
 /**
- * Spec 2026-10-01 §5: one plain-English line per pending write, built from the tool's own input,
- * for the approval card. Pure and import-free: imported by browser code (ApprovalCard), so the
- * workspace definitions cannot be imported here; TITLES copies their titles and
- * approvalSummaries.test.ts pins the parity. Never throws — a malformed input falls back to the
- * tool's title: a line is built only when the input carries what it needs (a name to create, an
- * id to update or delete, something to change, at least one item).
+ * Spec 2026-10-01 §5: one plain-English line per write, built from the tool's own input, for the
+ * approval card — the pending question and the one-line record it collapses to once answered.
+ * Pure and import-free: imported by browser code (ApprovalCard), so the workspace definitions
+ * cannot be imported here; TITLES copies their titles and approvalSummaries.test.ts pins the
+ * parity. Never throws. A malformed input falls back to the tool's title (a line is built only
+ * when the input carries what it needs: a name to create, an id to update or delete, something to
+ * change, at least one item), and an unknown tool to its raw name.
  */
 
 /** The eleven titles, copied from lib/workspace/tools.ts (parity-tested). */
@@ -35,7 +36,11 @@ const strings = (v: unknown): string[] => list(v).filter((x): x is string => typ
 /** A map's own entry only: a key such as 'constructor' or '__proto__' never reads Object.prototype. */
 const own = (m: Readonly<Record<string, unknown>>, key: string): string | null => (Object.hasOwn(m, key) ? str(m[key]) : null);
 
-/** ‘Name’ from the member's lists, else the id's last 8 characters (while the lists load, or if they fail); null without an id. */
+/**
+ * ‘Name’ from the member's lists, else the id's last 8 characters: while the lists load, if they
+ * fail, and for an id they do not hold (stale, unknown, or created after they loaded). Null
+ * without an id.
+ */
 function nameOf(kind: keyof ApprovalNames, id: unknown, names: ApprovalNames): string | null {
   const s = str(id);
   if (!s) return null;
@@ -43,18 +48,19 @@ function nameOf(kind: keyof ApprovalNames, id: unknown, names: ApprovalNames): s
   return known ? q(known) : shortId(s);
 }
 
-/** "2 selections", "1 leaf path", "2 selections and 1 leaf path" — from a categories input ({ selections, leafPaths }); null when it names nothing. */
+/** "2 selections", "1 leaf category", "2 selections and 1 leaf category" — from a categories input ({ selections, leafPaths }); null when it names nothing. */
 function categoriesCount(v: unknown): string | null {
   if (!isRecord(v)) return null;
   const selections = list(v.selections).filter(isRecord).length;
   const leafPaths = strings(v.leafPaths).length;
-  if (selections > 0 && leafPaths > 0) return `${plural(selections, 'selection')} and ${plural(leafPaths, 'leaf path')}`;
+  const leafCategories = plural(leafPaths, 'leaf category', 'leaf categories');
+  if (selections > 0 && leafPaths > 0) return `${plural(selections, 'selection')} and ${leafCategories}`;
   if (selections > 0) return plural(selections, 'selection');
-  if (leafPaths > 0) return plural(leafPaths, 'leaf path');
+  if (leafPaths > 0) return leafCategories;
   return null;
 }
 
-/** An update's leaf change with its leafMode in words: "add 1 selection", "replace its leaves with 2 leaf paths"; null without one. */
+/** An update's leaf change with its leafMode in words: "add 1 selection", "replace its leaves with 2 leaf categories"; null without one. */
 function leafChange(input: Record<string, unknown>): string | null {
   const count = categoriesCount(input.categories);
   if (!count) return null;
@@ -73,6 +79,12 @@ function keywordsPhrase(input: Record<string, unknown>): { count: number; sample
   return { count, sample };
 }
 
+/**
+ * The approval card's line for one workspace tool call, built from the call's own input, with
+ * view and category ids resolved through `names`. Never throws. Two fallbacks: the tool's title
+ * when the input is malformed or lacks what the line needs (a list tool, which never needs a card,
+ * always reads as its title), and the raw `toolName` for a tool this module does not know.
+ */
 export function summarizeApproval(toolName: string, input: unknown, names: ApprovalNames): string {
   const fallback = own(TITLES, toolName) ?? toolName;
   try {
@@ -84,12 +96,15 @@ export function summarizeApproval(toolName: string, input: unknown, names: Appro
       }
       case 'update_saved_view': {
         const view = nameOf('views', input.id, names);
-        const name = str(input.name);
-        const filters = isRecord(input.search);
         if (!view) return fallback;
-        if (name && filters) return `Rename the view ${view} to ${q(name)} and replace its filters`;
-        if (name) return `Rename the view ${view} to ${q(name)}`;
-        if (filters) return `Replace the filters of the view ${view}`;
+        const name = str(input.name);
+        const replacesFilters = isRecord(input.search);
+        // Once the rename has run, the member's lists already hold the new name (a reloaded record):
+        // name it once. A short id never matches: it is not quoted.
+        const subject = name && view === q(name) ? 'the view' : `the view ${view}`;
+        if (name && replacesFilters) return `Rename ${subject} to ${q(name)} and replace its filters`;
+        if (name) return `Rename ${subject} to ${q(name)}`;
+        if (replacesFilters) return `Replace the filters of the view ${view}`;
         return fallback;
       }
       case 'delete_saved_view': {
@@ -103,12 +118,14 @@ export function summarizeApproval(toolName: string, input: unknown, names: Appro
       }
       case 'update_custom_category': {
         const category = nameOf('categories', input.id, names);
+        if (!category) return fallback;
         const name = str(input.name);
         const change = leafChange(input);
-        if (!category) return fallback;
-        if (name && change) return `Rename the category ${category} to ${q(name)} and ${change}`;
+        // As for a view: a reloaded rename record names the category once.
+        const subject = name && category === q(name) ? 'the category' : `the category ${category}`;
+        if (name && change) return `Rename ${subject} to ${q(name)} and ${change}`;
         if (change) return `Change the category ${category}: ${change}`;
-        if (name) return `Rename the category ${category} to ${q(name)}`;
+        if (name) return `Rename ${subject} to ${q(name)}`;
         return fallback;
       }
       case 'delete_custom_category': {

@@ -41,9 +41,9 @@ describe('summarizeApproval (spec 2026-10-01 §5)', () => {
   });
   it('custom categories', () => {
     expect(summarizeApproval('create_custom_category', { name: 'Lighting', categories: { selections: [{ kind: 'taxonomy', path: 'A' }, { kind: 'taxonomy', path: 'B' }], leafPaths: [] } }, names)).toBe('Create the category ‘Lighting’ from 2 selections');
-    expect(summarizeApproval('create_custom_category', { name: 'Lighting', categories: { selections: [], leafPaths: ['A › B'] } }, names)).toBe('Create the category ‘Lighting’ from 1 leaf path');
+    expect(summarizeApproval('create_custom_category', { name: 'Lighting', categories: { selections: [], leafPaths: ['A › B'] } }, names)).toBe('Create the category ‘Lighting’ from 1 leaf category');
     expect(summarizeApproval('update_custom_category', { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', categories: { selections: [{ kind: 'taxonomy', path: 'A' }], leafPaths: [] }, leafMode: 'add' }, names)).toBe('Change the category ‘Lighting’: add 1 selection');
-    expect(summarizeApproval('update_custom_category', { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', categories: { selections: [], leafPaths: ['A › B', 'A › C'] }, leafMode: 'remove' }, names)).toBe('Change the category ‘Lighting’: remove 2 leaf paths');
+    expect(summarizeApproval('update_custom_category', { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', categories: { selections: [], leafPaths: ['A › B', 'A › C'] }, leafMode: 'remove' }, names)).toBe('Change the category ‘Lighting’: remove 2 leaf categories');
     expect(summarizeApproval('update_custom_category', { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', name: 'Lamps & lights' }, names)).toBe('Rename the category ‘Lighting’ to ‘Lamps & lights’');
     expect(summarizeApproval('delete_custom_category', { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, names)).toBe('Delete the category ‘Lighting’ — permanent; saved views that filter on it lose that filter');
   });
@@ -53,9 +53,8 @@ describe('summarizeApproval (spec 2026-10-01 §5)', () => {
     expect(summarizeApproval('remove_from_watchlist', { keywords: ['desk lamp'], searchTermIds: [] }, names)).toBe('Remove 1 keyword from the watchlist: desk lamp');
   });
   it('never throws on malformed input — falls back to the tool\'s title', () => {
-    const title = (name: string) => WORKSPACE_TOOLS.find((d) => d.name === name)!.title;
-    expect(summarizeApproval('create_saved_view', null, names)).toBe(title('create_saved_view'));
-    expect(summarizeApproval('add_to_watchlist', { keywords: 'nope' }, names)).toBe(title('add_to_watchlist'));
+    expect(summarizeApproval('create_saved_view', null, names)).toBe(titleOf('create_saved_view'));
+    expect(summarizeApproval('add_to_watchlist', { keywords: 'nope' }, names)).toBe(titleOf('add_to_watchlist'));
     expect(summarizeApproval('not_a_tool', {}, names)).toBe('not_a_tool');
   });
   it('TITLES is exactly the workspace definitions\' titles (the module cannot import them: it is imported by browser code)', () => {
@@ -63,18 +62,27 @@ describe('summarizeApproval (spec 2026-10-01 §5)', () => {
     expect(Object.isFrozen(TITLES)).toBe(true);
   });
 
-  it('update_custom_category: leafMode in words (replace is the schema default), and a rename with a leaf change says both', () => {
+  it('update_custom_category: leafMode in words (replace is the schema default, and an unrecognised mode reads as replace), and a rename with a leaf change says both', () => {
     const two = { selections: [{ kind: 'taxonomy', path: 'Tools & Home Improvement › Lighting', includeDescendants: true }, { kind: 'custom', id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }], leafPaths: [] };
     expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, categories: two }, names)).toBe('Change the category ‘Lighting’: replace its leaves with 2 selections');
     expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, categories: two, leafMode: 'replace' }, names)).toBe('Change the category ‘Lighting’: replace its leaves with 2 selections');
+    expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, categories: { selections: [], leafPaths: ['A › B'] }, leafMode: 'merge' }, names)).toBe('Change the category ‘Lighting’: replace its leaves with 1 leaf category');
     expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, name: 'Lamps', categories: { selections: [{ kind: 'taxonomy', path: 'A' }], leafPaths: [] }, leafMode: 'add' }, names)).toBe('Rename the category ‘Lighting’ to ‘Lamps’ and add 1 selection');
-    expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, name: 'Lamps', categories: { selections: [], leafPaths: ['A › B'] } }, names)).toBe('Rename the category ‘Lighting’ to ‘Lamps’ and replace its leaves with 1 leaf path');
+    expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, name: 'Lamps', categories: { selections: [], leafPaths: ['A › B'] } }, names)).toBe('Rename the category ‘Lighting’ to ‘Lamps’ and replace its leaves with 1 leaf category');
     // The parsed shape: the schema fills in leafMode 'replace', so a rename-only call carries it too.
     expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, name: 'Lamps & lights', leafMode: 'replace' }, names)).toBe('Rename the category ‘Lighting’ to ‘Lamps & lights’');
   });
+  it('a rename to the name the lists already hold (a reloaded record) names its subject once; a case-only rename names both', () => {
+    expect(summarizeApproval('update_saved_view', { id: VIEW_ID, name: 'Lamps', search: {} }, names)).toBe('Rename the view to ‘Lamps’ and replace its filters');
+    expect(summarizeApproval('update_saved_view', { id: VIEW_ID, name: 'Lamps' }, names)).toBe('Rename the view to ‘Lamps’');
+    expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, name: 'Lighting', leafMode: 'replace' }, names)).toBe('Rename the category to ‘Lighting’');
+    expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, name: 'Lighting', categories: { selections: [{ kind: 'taxonomy', path: 'A' }], leafPaths: [] }, leafMode: 'add' }, names)).toBe('Rename the category to ‘Lighting’ and add 1 selection');
+    const lowercase = { views: {}, categories: { [CATEGORY_ID]: 'lighting' } };
+    expect(summarizeApproval('update_custom_category', { id: CATEGORY_ID, name: 'Lighting' }, lowercase)).toBe('Rename the category ‘lighting’ to ‘Lighting’');
+  });
   it('counts selections and leaf paths together, and only well-formed items', () => {
-    expect(summarizeApproval('create_custom_category', { name: 'Lighting', categories: { selections: [{ kind: 'taxonomy', path: 'A' }, { kind: 'custom', id: CATEGORY_ID }], leafPaths: ['A › B'] } }, names)).toBe('Create the category ‘Lighting’ from 2 selections and 1 leaf path');
-    expect(summarizeApproval('create_custom_category', { name: '  Lighting ', categories: { selections: [null, 'A', { kind: 'taxonomy', path: 'A' }], leafPaths: [7, 'A › B', 'A › C'] } }, names)).toBe('Create the category ‘Lighting’ from 1 selection and 2 leaf paths');
+    expect(summarizeApproval('create_custom_category', { name: 'Lighting', categories: { selections: [{ kind: 'taxonomy', path: 'A' }, { kind: 'custom', id: CATEGORY_ID }], leafPaths: ['A › B'] } }, names)).toBe('Create the category ‘Lighting’ from 2 selections and 1 leaf category');
+    expect(summarizeApproval('create_custom_category', { name: '  Lighting ', categories: { selections: [null, 'A', { kind: 'taxonomy', path: 'A' }], leafPaths: [7, 'A › B', 'A › C'] } }, names)).toBe('Create the category ‘Lighting’ from 1 selection and 2 leaf categories');
   });
   it('shows an id\'s last 8 characters until the member\'s lists load, and finds an uppercase id', () => {
     const loading = { views: {}, categories: {} };
