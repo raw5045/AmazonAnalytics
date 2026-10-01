@@ -53,10 +53,10 @@ All names are snake_case like the research tools. "Read-only" tools carry `READ_
 
 | Tool | Annotations beyond read-only | Input (zod, strict) | Returns |
 |---|---|---|---|
-| `list_saved_views` | read-only | `{}` | `{ views: [{ id, name, explorerUrl, filters, createdAt, updatedAt }], count, limit: 5 }` — `filters` is the stored Explorer filter set, compacted (§5.5) |
+| `list_saved_views` | read-only | `{}` | `{ views: [{ id, name, explorerUrl, filters, leafCount, previewComplete, createdAt, updatedAt }], count, limit: 5 }` — `filters` is the stored Explorer filter set, compacted (§5.5); its `leafPaths`, when present, is a preview of the first 20 of `leafCount` (added 2026-09-30 after the Task 8 code review: a department-wide view would otherwise echo up to 2,000 paths per view) |
 | `list_custom_categories` | read-only | `{}` | `{ categories: [{ id, name, leafCount, previewPaths, previewComplete, explorerUrl, createdAt, updatedAt }], count, limit: 25 }` — `previewPaths` = first 20 stored paths, `previewComplete` = leafCount ≤ 20 |
 | `list_watchlist` | read-only | `{}` | `{ items: [{ searchTermId, keyword, keywordUrl, addedAt }], count, limit: 100 }`, newest first |
-| `create_saved_view` | `destructiveHint: false, idempotentHint: false` | `{ name, search }` | `{ view: { id, name, explorerUrl, filters }, notes }` |
+| `create_saved_view` | `destructiveHint: false, idempotentHint: false` | `{ name, search }` | `{ view: { id, name, explorerUrl, filters, leafCount, previewComplete }, notes }` |
 | `update_saved_view` | `destructiveHint: true, idempotentHint: true` (it replaces the stored filters wholesale; MCP defines `destructiveHint: false` as additive-only — changed 2026-09-30 after the Task 7 code review) | `{ id, name?, search? }` (at least one of `name`, `search`) | same as create |
 | `delete_saved_view` | `destructiveHint: true, idempotentHint: true` | `{ id }` | `{ deleted: { id, name } }` |
 | `create_custom_category` | `destructiveHint: false, idempotentHint: false` | `{ name, categories }` | `{ category: { id, name, leafCount, previewPaths, previewComplete, explorerUrl }, notes }` |
@@ -135,7 +135,7 @@ One converter serves the search link (§3.2), `create_saved_view` and `update_sa
 
 ### 5.1 Pipeline
 
-1. `parseSearchInput(search)` — a continuation (`cursor`) is not accepted here: the strict schema rejects the key; the message says to pass the criteria, not a cursor.
+1. `parseSearchInput({ schemaVersion: 1, ...search })` — a continuation (`cursor`) never reaches this step: the strict `searchSpecSchema` omits the key, so `invalid()` renders the schema's own `Unrecognized key: "cursor"` as `INVALID_FILTERS` before the service runs, and the tool description says never to pass one. The service keeps a continuation guard after the parse only for the type narrowing; it is unreachable (Task 8 reviews, 2026-09-30).
 2. `applyPresets(request)` → `filters`, `sort`, `comparisonWindow`, `applications`. Presets are filter bundles, so this step is lossless.
 3. `resolveScope(userId, { selections: taxonomy selections only, leafPaths }, limits.maxExpandedLeaves, deps)` → the expanded, sorted leaf list (max 2000, the Explorer's own `MAX_LEAF_PATHS`). Custom selections are left out of this expansion on purpose: they reach the Explorer by id (§5.2). Inside `search()` this is a second `resolveScope` call after the search's own; it reads the same cached catalog, loads no custom rows, and its leaf set is a subset of the search's, so it cannot fail where the search succeeded.
 4. `toExplorerFilters({ filters, sort, window: comparisonWindow, leaves })` → `{ filters: ExplorerFilters, notes: string[] }` (custom selections are read from `filters.categories`).
@@ -201,7 +201,7 @@ The Explorer's jump is "was on one side of `from`, is now past `to`", and always
 
 ### 5.5 Compact filters (what the list and create results show)
 
-`compactExplorerFilters(f)` returns only the fields that differ from `EXPLORER_DEFAULTS`, never `page`/`perPage`, and `jumpMetric` whenever `jump` is set (even for the default rank metric, so the AI never has to infer it). Severities are kept in canonical order so a reordered default still compacts away. An empty object means "the default Explorer". This is what `list_saved_views`, `create_saved_view` and `update_saved_view` return as `filters`. There is no reverse translation into research vocabulary.
+`compactExplorerFilters(f)` returns only the fields that differ from `EXPLORER_DEFAULTS`, never `page`/`perPage`, and `jumpMetric` whenever `jump` is set (even for the default rank metric, so the AI never has to infer it). Severities are kept in canonical order so a reordered default still compacts away. An empty object means "the default Explorer". This is what `list_saved_views`, `create_saved_view` and `update_saved_view` return as `filters`. There is no reverse translation into research vocabulary. The summary also carries `leafCount` (how many leaf categories the stored filters name; 0 when none) and `previewComplete`; `filters.leafPaths`, when present, is cut to the first 20 stored paths, like a category's `previewPaths` — a department-wide view would otherwise echo up to 2,000 paths (~120 KB) per view, five views per list, twice per tool result (Task 8 code review, 2026-09-30). The link and the stored view itself are untouched.
 
 ### 5.6 Link length
 
@@ -260,13 +260,13 @@ The workspace service throws `ResearchError`s so the MCP adapter's `errorResult`
 
 | Code | When | Message |
 |---|---|---|
-| `LIMIT_REACHED` | a resource cap: 5 views, 25 categories, 12,000 leaves | the app's own sentence, e.g. "You've reached the 5-view limit. Delete a saved view to add a new one." |
+| `LIMIT_REACHED` | a resource cap: 5 views, 25 categories, or a leaf list that would exceed 12,000 after an `add`-mode union (the command's `too_many_leaves`) | the app's own sentence, e.g. "You've reached the 5-view limit. Delete a saved view to add a new one." A single selection that would itself expand past 12,000 leaves is refused earlier by `resolveScope` as `INVALID_FILTERS` ("…the limit is 12000. Choose a narrower branch."), the same guard search uses; the whole taxonomy is ~11.4k leaves today, so that path is theoretical (Task 8 spec review, 2026-09-30). |
 | `DUPLICATE_NAME` | 23505 on a name | the app's own sentence, e.g. `You already have a view named "Lamps". Choose a different name or update the existing one.` |
 | `NOT_FOUND` | an id that is not the caller's or no longer exists | "No saved view with that id belongs to this account." / "No custom category with that id belongs to this account." |
 | `INVALID_FILTERS` (existing) | schema failures, `nothing_to_update`, `no_leaves`, a `cursor` in `search` | `invalid()`'s rendering, or the command's sentence |
 | `CATEGORY_NOT_AVAILABLE` (existing) | category expansion, as in search | unchanged |
 | `RATE_LIMITED` (existing) | the per-minute bucket, or the daily write cap | per-minute: unchanged; daily: "Daily limit of 200 saves reached. Try again tomorrow." with `retryAfterSeconds` = seconds until the next Eastern midnight |
-| `DATA_UNAVAILABLE` (existing) | anything unexpected | `SAFE_TOOL_FAILURE`, never `e.message` |
+| `DATA_UNAVAILABLE` (existing) | anything unexpected | `SAFE_TOOL_FAILURE`, never `e.message`. The service converts the raw error itself after its log line (§8.6), so the shared classifier never sees a drizzle error from a workspace tool; a pool connect timeout becomes `poolBusyError()` as in search |
 
 The watchlist cap is not an error: `add_to_watchlist` reports `skippedAtCap`, and the guide tells the AI to say what could be removed.
 
@@ -288,7 +288,7 @@ Enforced in the shared commands with the app's wording: 5 saved views, 25 custom
 Every command is scoped to `actor.localUserId`. A foreign or missing id is `NOT_FOUND`, never a silent success, so the AI cannot report a delete that did not happen. Removing a keyword that was not watched is `notWatching`, not an error. Deletes are permanent; the guide says so.
 
 ### 8.6 Logging
-One line per workspace call: `console.log('[workspace]', JSON.stringify({ tool, outcome: 'ok' | 'refused' | 'failed', code?, userId, durationMs }))`. Never names, keyword text or leaf paths. Unexpected errors go through `classifyToolError` as today.
+One line per workspace call: `console.log('[workspace]', JSON.stringify({ tool, outcome: 'ok' | 'refused' | 'failed', code?, error?, userId, durationMs }))`. Never names, keyword text or leaf paths. `refused` = a `ResearchError` the caller can act on; `failed` = anything else, logged with `errFields` (the unwrapped error name and SQLSTATE only — a `DrizzleQueryError`'s own message embeds the bound params) — and also a `ResearchError` whose code is `DATA_UNAVAILABLE` or `QUERY_TIMEOUT` (infrastructure, e.g. a category loader), so incidents stay searchable. After the line, the service rethrows a `ResearchError` of its own — `poolBusyError()` for a pool connect timeout, otherwise `DATA_UNAVAILABLE` with `SAFE_TOOL_FAILURE`'s sentence and no `cause` — never the raw error, which `classifyToolError` would otherwise log with its message and stack (Task 8 code review, 2026-09-30; the classifier itself is hardened in Task 10).
 
 ### 8.7 Known soft spot
 Cap checks are count-then-insert without a transaction (neon-http), as in the routes today. Two racing writes can land one row over a cap. Accepted: the per-minute limit and the AI's one-at-a-time calls make it rare, and the app already lives with it. Two refinements from the 2026-09-30 reviews: (1) the custom-category leaf modes are likewise an untransacted load → expand → update, so a Category Builder save landing in between is overwritten — the same accepted trade-off; (2) "one-at-a-time" is an assumption — Claude and ChatGPT can issue parallel tool calls, and "Always allow" removes the pacing, so N concurrent creates could overshoot a cap by N−1. A hard cap would need a per-user advisory lock plus a conditional insert inside one `db.batch()` (drizzle's neon-http batch runs as one transaction). An owner decision for later; nothing changes now.
