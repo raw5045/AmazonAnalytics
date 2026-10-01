@@ -354,6 +354,31 @@ MSG
 - [ ] **Step 3 (owner-gated): push** — `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts` (no Keepa run, no importing batch), then, on the owner's explicit go, a bare `git push origin main`; watch `gh api repos/raw5045/AmazonAnalytics/commits/<sha>/status --jq '"overall: \(.state)", (.statuses[] | "\(.context): \(.state) @ \(.updated_at)")'` to both `success`.
 - [ ] **Step 4 (owner): smoke** — open a saved view in the Explorer, click a column header: the rows stay the view's, now sorted, and the picker still names the view; click Next: page 2 of the view; change a sidebar filter and Apply: the chip blanks as before. Ask Claude for `list_saved_views`: unchanged shape.
 
+### Task 4 (added 2026-10-01, owner request): the picker reflects a pick immediately and shows the loading circle
+
+**Why:** picking a saved view calls `router.push('/explorer?view=<id>')` with nothing wrapped; the picker derives its label from the URL, which only changes when the server render (view load + Explorer query) commits, so for a few seconds the box stays on "Saved views" (or the old name) with no spinner — it looks like the pick failed. The filter sidebar, the pager and the column headers all drive `LoadingOverlay` from a `useTransition` around their `router.replace`; the pick gets the same treatment, plus an optimistic label. Delete and rename are NOT wrapped: `SavedViewsDropdown.tsx`'s own comment records that a transition around `router.refresh()` after a delete got stuck pending in Next 16, and nothing changes there.
+
+**Files:**
+- Modify: `app/(app)/explorer/SavedViewsDropdown.tsx`
+- Test: `app/(app)/explorer/SavedViewsControls.test.tsx` (the picker is exercised through it) or a new `SavedViewsDropdown.test.tsx` with the same `next/navigation` mocks
+
+**Design (exact):**
+- `const [isPending, startTransition] = useTransition();` and `const [pendingId, setPendingId] = useState<string | null>(null);`.
+- `applyView(view)`: `setOpen(false); setPendingId(view.id); startTransition(() => { router.push(buildViewHref(view)); });` — the push stays synchronous inside the transition (as `FilterSidebar` does), never after an `await`.
+- Optimistic label: the active id is `pendingId` while the URL has not caught up, else as today: `const urlViewId = searchParams?.get('view') ?? null; const viewId = pendingId ?? activeIdOverride ?? urlViewId;` with `pendingId` cleared by the "adjust state when a prop changes" pattern already used in `SavedViewsControls`: remember the search string at the pick (`pendingSearch`); on the first render where `searchParams.toString()` differs from it (the navigation committed, or the member went elsewhere), `setPendingId(null)`. Once committed the URL carries the same id, so the label is continuous; if the member navigates elsewhere first, the URL wins.
+- `<LoadingOverlay show={isPending} />` rendered by the dropdown (the overlay is `fixed inset-0`, so where it sits in the tree does not matter), and `aria-busy={isPending}` on the picker button.
+- Update the comment block above `applyView` to say: only the pick is wrapped (a `router.push` transition resolves when the navigation commits, like the sidebar's); delete/rename stay unwrapped for the recorded reason.
+
+**Tests (TDD):**
+1. Picking a view shows its name in the picker button immediately, while `useSearchParams` still returns the old URL (mock stays static), and `router.push` was called with `buildViewHref(view)`.
+2. When the URL then changes to `?view=<that id>` (re-render with the mocked search params updated), the label stays on that view and `pendingId` no longer matters; when the URL instead changes to something else (e.g. a full-form filter URL), the label follows the URL (placeholder or the other view).
+3. The overlay: with `react`'s `useTransition` mocked to `[true, (fn) => fn()]` for one test, the dropdown renders the `role="status"` loading overlay and the button has `aria-busy="true"`; with the real hook it does not render after the click settles.
+4. Existing delete/rename tests unchanged and green.
+
+**Run:** `pnpm vitest run "app/(app)/explorer" && pnpm typecheck && pnpm exec eslint <files>`.
+
+**Commit:** `feat(explorer): picking a saved view shows it immediately and spins the loading overlay (transition around the pick only)` + the trailer.
+
 ## Results
 
 | Check | Outcome |
