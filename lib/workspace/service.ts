@@ -37,7 +37,7 @@ import {
   type DeleteSavedViewResponse, type LeafMode, type ListCustomCategoriesResponse, type ListSavedViewsResponse, type ListWatchlistResponse,
   type RemoveFromWatchlistResponse, type SavedViewSummary, type SavedViewWriteResponse, type SearchSpec, type WorkspaceService, type WorkspaceToolName,
 } from './contracts';
-import { compactExplorerFilters, customCategoryUrlFor, savedViewUrlFor, toExplorerFilters } from './explorerFilters';
+import { compactExplorerFilters, customCategoryUrlFor, explorerUrlFor, NOTE_VIEW_TOO_WIDE, savedViewUrlFor, toExplorerFilters } from './explorerFilters';
 
 export interface WorkspaceServiceDeps {
   limits: ResearchLimits;
@@ -226,7 +226,8 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
   /**
    * §5.1: the search's own validation (schema → presets → one resolveScope); the converter then decides between custom ids and the
    * expanded leaves (§5.2). A `pageSize` copied from the search is dropped: a saved view has no page size (the Explorer's perPage is
-   * fixed by normalizeFilters).
+   * fixed by normalizeFilters). The notes are the converter's, then NOTE_VIEW_TOO_WIDE when the filters would not fit in a link: the
+   * view is still saved as asked and opens from its short ?view= link, but the Explorer's Export and Apply re-serialise its filters into URLs.
    */
   async function convertSearch(userId: string, search: SearchSpec): Promise<{ filters: ExplorerFilters; notes: string[] }> {
     const parsed = parseSearchInput({ schemaVersion: 1, ...search, pageSize: undefined });
@@ -234,7 +235,9 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     if (parsed.kind === 'continuation') throw new ResearchError('INVALID_FILTERS', 'Pass the search criteria, never a cursor.');
     const { filters, sort, comparisonWindow } = applyPresets(parsed.request);
     const full = await resolveScope(userId, filters.categories, deps.limits.maxExpandedLeaves, deps.categories);
-    return toExplorerFilters({ filters, sort, window: comparisonWindow, leaves: full.leaves });
+    const converted = toExplorerFilters({ filters, sort, window: comparisonWindow, leaves: full.leaves });
+    const tooWide = explorerUrlFor(deps.appUrl, converted.filters) === null;
+    return { filters: converted.filters, notes: tooWide ? [...converted.notes, NOTE_VIEW_TOO_WIDE] : converted.notes };
   }
 
   /** §6.2: a category may hold a whole department, so the cap here is the column's, not the search's. */

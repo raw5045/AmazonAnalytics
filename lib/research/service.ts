@@ -53,7 +53,7 @@ export interface ResearchServiceDeps {
   appUrl: string;
   cursorSecret: string;
   audience: () => 'admin' | 'all';
-  /** Whether the workspace (write) tools are on. The too-long note offers "save it as a view" only then, and only to the MCP channel; Task 10 also keys the guide's workspace section on it (spec 2026-09-30 §5.6, §9.1). */
+  /** Whether the workspace (write) tools are on. The too-long note offers the custom-category route only then, and only to the MCP channel; Task 10 also keys the guide's workspace section on it (spec 2026-09-30 §5.6, §9.1). */
   workspaceEnabled: () => boolean;
   now: () => Date;
   reserve: typeof reserveResearchRequest;
@@ -220,7 +220,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     // Spec 2026-09-30 §3.2: the Explorer link for this exact search. One resolution serves the query and
     // the link: the converter gets the full scope.leaves and decides between custom ids (a custom-only
     // scope) and expanded leaves (every other scope) — §5.2. When the link is too long (§5.6), the note
-    // says what the reader can do: only the MCP channel with the workspace tools on can save a view.
+    // says what the reader can do: only the MCP channel with the workspace tools on can save the leaves as a custom category.
     const explorer = toExplorerFilters({ filters, sort, window: comparisonWindow, leaves: scope.leaves });
     const explorerUrl = explorerUrlFor(deps.appUrl, explorer.filters);
     const explorerNotes = explorerUrl === null

@@ -216,6 +216,7 @@ export const METRIC_DEFINITIONS: Array<{ name: string; definition: string }> = [
 export const WORKSPACE_RULES: readonly string[] = Object.freeze([
   'Run the search first, show the results, then save. Pass the exact search object (presetIds, filters, sort, comparisonWindow) to create_saved_view; never a cursor. Relay every entry in notes to the person.',
   'Every search answer carries explorerUrl: the Explorer opened with the same filters. Offer it when the person wants to see or refine the results in the app.',
+  'A view that names more than about a hundred leaf categories opens but cannot be exported or refined in the Explorer. Save those categories as a custom category and search or save with it instead.',
   'Resolve category words with resolve_categories first and pass the returned selections to create_custom_category or update_custom_category; the server expands them to leaves.',
   'Edits and deletes take ids from list_saved_views, list_custom_categories or list_watchlist. Confirm the item\'s name with the person before deleting. Deleting is permanent; removing from the watchlist is not.',
   'Names must be unique per account. On DUPLICATE_NAME, ask the person for a different name; never invent one.',

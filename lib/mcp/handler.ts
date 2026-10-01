@@ -67,7 +67,7 @@ const mcp = createMcpHandler(
   },
   {
     serverInfo: MCP_SERVER_INFO,
-    // Fixed per process: lib/env parses once and a Vercel env change redeploys, so this always agrees with the per-request check above.
+    // Fixed per process: lib/env parses once, and a Vercel env change only reaches the next deployment, so this always agrees with the per-request check above.
     instructions: mcpWriteEnabled() ? `${BASE_INSTRUCTIONS} ${WORKSPACE_INSTRUCTIONS}` : BASE_INSTRUCTIONS,
   },
 );

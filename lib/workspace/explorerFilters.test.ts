@@ -7,6 +7,7 @@ import { filtersSchema, type Filters, type Sort, type Window } from '@/lib/resea
 import {
   compactExplorerFilters, customCategoryUrlFor, explorerUrlFor, savedViewUrlFor, toExplorerFilters,
   NOTE_BASELINE, NOTE_DELTA, NOTE_EXPLORER_REREAD, NOTE_MOVE_UNSUPPORTED, NOTE_PRIOR_BAND, NOTE_PRIOR_ONLY, NOTE_WORD_COUNT_SORT,
+  NOTE_LINK_TOO_LONG, NOTE_LINK_TOO_LONG_READONLY, NOTE_VIEW_TOO_WIDE,
 } from './explorerFilters';
 
 const APP = 'https://keywordquarry.com';
@@ -234,5 +235,11 @@ describe('links', () => {
     const leaves = Array.from({ length: 400 }, (_, i) => `Department › Section ${i} › A fairly long leaf category name ${i}`);
     expect(explorerUrlFor(APP, { ...EXPLORER_DEFAULTS, leafPaths: leaves })).toBeNull();
     expect(explorerUrlFor(APP, { ...EXPLORER_DEFAULTS, leafPaths: leaves.slice(0, 3) })).toContain('leaf=');
+  });
+  // What the AI relays when a search link or a saved view is too wide (§5.6), word for word, so a wording change is deliberate.
+  it('pins the too-long and too-wide notes', () => {
+    expect(NOTE_LINK_TOO_LONG).toBe('Too many leaf categories for a link; save them as a custom category first, then search or save a view with it.');
+    expect(NOTE_LINK_TOO_LONG_READONLY).toBe('Too many leaf categories for a link; narrow the categories to get one.');
+    expect(NOTE_VIEW_TOO_WIDE).toBe('This view names more leaf categories than the Explorer can export or refine; it opens as saved. For a view you can export and change, save these categories as a custom category and save a view that uses it.');
   });
 });

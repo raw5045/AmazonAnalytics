@@ -228,6 +228,7 @@ describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
     expect(WORKSPACE_RULES.some((r) => r.includes('Never create, change or delete anything the person did not ask for'))).toBe(true);
     expect(WORKSPACE_RULES.some((r) => r.includes('DUPLICATE_NAME'))).toBe(true);
     expect(WORKSPACE_RULES.some((r) => r.includes('explorerUrl'))).toBe(true);
+    expect(WORKSPACE_RULES.some((r) => r.includes('cannot be exported or refined'))).toBe(true);
     expect(WORKSPACE_RULES.some((r) => r.includes('as they were when it was saved'))).toBe(true);
   });
 });

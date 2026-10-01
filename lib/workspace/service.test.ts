@@ -13,7 +13,9 @@ import type { ResearchActor } from '@/lib/research/service';
 import { SAFE_TOOL_FAILURE } from '@/lib/research/toolErrors';
 import { normalizeFilters } from '@/lib/savedViews/validation';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
+import type { ExplorerFilters } from '@/lib/explorer/types';
 import { consoleLines } from '@/tests/unit/consoleLines';
+import { explorerUrlFor, NOTE_VIEW_TOO_WIDE, NOTE_WORD_COUNT_SORT } from './explorerFilters';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
 const VIEW_ID = '11111111-1111-4111-8111-111111111111';
@@ -241,6 +243,48 @@ describe('update and delete saved view', () => {
     const deps = makeDeps();
     await expect(createWorkspaceService(deps).deleteSavedView(actor, { id: VIEW_ID })).resolves.toEqual({ deleted: { id: VIEW_ID, name: 'Lamps' } });
     expect(deps.bumpWrite).toHaveBeenCalledWith('u1');
+  });
+});
+
+// A saved view opens from its short ?view= link, but the Explorer's Export and the sidebar's Apply re-serialise its stored filters into
+// URLs, and past the search link's 12,000-byte cap both fail. The save still lands as asked; its notes say so and name the way out.
+describe('a saved view too wide for the Explorer to export or refine', () => {
+  // 150 long leaf paths under one department: about 12,600 bytes as a link. A custom category holding them passes by id instead.
+  const wideLeaves = Array.from({ length: 150 }, (_, i) => `Department › Section ${i} › A fairly long leaf category name ${i}`);
+  const wide = buildCategoryCatalog({ snapshotVersion: 'snap', datasetWeek: '2026-09-26' }, wideLeaves.map((categoryPath) => ({ categoryPath, allCount: 1 })));
+  const wideDeps = () => makeDeps({ categories: { loadCatalog: async () => wide, loadCustomRows: async () => [{ id: CUSTOM_ID, leafPaths: wideLeaves }], listCustom: async () => [] } });
+  const department = { filters: { categories: { selections: [{ kind: 'taxonomy', path: 'Department', includeDescendants: true }] } } };
+  /** The filters the service handed to the command's latest call (its last argument). */
+  const savedFilters = (command: unknown) => ((command as ReturnType<typeof vi.fn>).mock.lastCall!.at(-1) as { filters: ExplorerFilters }).filters;
+
+  it('create stores all 150 leaves as asked and adds NOTE_VIEW_TOO_WIDE, on the search link\'s own 12,000-byte cap', async () => {
+    const deps = wideDeps();
+    const res = await createWorkspaceService(deps).createSavedView(actor, { name: 'Wide', search: department });
+    const filters = savedFilters(deps.savedViews.create);
+    expect(filters.leafPaths).toEqual([...wideLeaves].sort());
+    expect(explorerUrlFor('https://keywordquarry.com', filters)).toBeNull();
+    expect(res.notes).toEqual([NOTE_VIEW_TOO_WIDE]);
+    expect(deps.bumpWrite).toHaveBeenCalledWith('u1'); // saved, not refused
+  });
+  it('update with a new search adds it too, after the converter\'s own notes; a rename converts nothing and adds none', async () => {
+    const deps = wideDeps();
+    const svc = createWorkspaceService(deps);
+    const res = await svc.updateSavedView(actor, { id: VIEW_ID, search: department });
+    expect(savedFilters(deps.savedViews.update).leafPaths).toHaveLength(150);
+    expect(res.notes).toEqual([NOTE_VIEW_TOO_WIDE]);
+    const byWords = await svc.updateSavedView(actor, { id: VIEW_ID, search: { ...department, sort: { field: 'wordCount', direction: 'asc' } } });
+    expect(byWords.notes).toEqual([NOTE_WORD_COUNT_SORT, NOTE_VIEW_TOO_WIDE]);
+    expect((await svc.updateSavedView(actor, { id: VIEW_ID, name: 'Renamed' })).notes).toEqual([]);
+  });
+  it('a scope that fits in a link gets no such note, and neither do the same 150 leaves as a custom category, which pass by id', async () => {
+    const deps = wideDeps();
+    const svc = createWorkspaceService(deps);
+    const one = await svc.createSavedView(actor, { name: 'One', search: { filters: { categories: { leafPaths: [wideLeaves[1]] } } } });
+    expect(savedFilters(deps.savedViews.create).leafPaths).toEqual([wideLeaves[1]]);
+    expect(one.notes).toEqual([]);
+    const custom = await svc.createSavedView(actor, { name: 'Custom', search: { filters: { categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }] } } } });
+    expect(savedFilters(deps.savedViews.create)).toMatchObject({ customCategoryIds: [CUSTOM_ID], leafPaths: [] });
+    expect(custom.notes).toEqual([]);
   });
 });
 

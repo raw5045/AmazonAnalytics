@@ -459,7 +459,7 @@ describe('search: the Explorer link (spec 2026-09-30 §3.2)', () => {
     expect(long.explorerUrl).toBeNull();
     expect(long.explorerNotes).toEqual([NOTE_LINK_TOO_LONG_READONLY]); // workspaceEnabled is off in makeDeps: nobody can save a view
   });
-  it('lists the converter\'s notes before the too-long note, and offers "save it as a view" only to the MCP channel with the workspace tools on (spec §5.6)', async () => {
+  it('lists the converter\'s notes before the too-long note, and offers the custom-category route only to the MCP channel with the workspace tools on (spec §5.6)', async () => {
     const request = { schemaVersion: 1, presetIds: ['growing_4w_v1'], filters: { categories: { leafPaths: wideLeaves } } };
     const notesFor = async (deps: ResearchServiceDeps, who: ResearchActor) => (await createResearchService(deps).search(who, request)).explorerNotes;
     const chatActor: ResearchActor = { ...actor, clientId: 'ask-ai', channel: 'chat' };

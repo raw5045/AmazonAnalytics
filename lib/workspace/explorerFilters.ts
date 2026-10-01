@@ -38,9 +38,18 @@ export const NOTE_PRIOR_BAND = 'The Explorer takes a single from-value for a mov
 export const NOTE_MOVE_UNSUPPORTED = 'The Explorer only accepts a move from a worse rank to a better one, or from a lower volume to a higher one; this move was dropped.';
 export const NOTE_WORD_COUNT_SORT = 'The Explorer cannot sort by word count; the view opens sorted by rank.';
 export const NOTE_EXPLORER_REREAD = 'The Explorer reads part of these filters differently from the search (for example a comma or a doubled space inside an excluded term); check the filters it opens with.';
-export const NOTE_LINK_TOO_LONG = 'Too many leaf categories for a link; save it as a view instead.';
-/** The too-long note for a reader who cannot save a view: Ask AI, or the MCP with the workspace tools off (§5.6). */
+/**
+ * The too-long note for the MCP with the workspace tools on. It points at a custom category, not a saved view: a view of these leaves
+ * would open but could not be exported or refined (NOTE_VIEW_TOO_WIDE), while a custom-only scope passes just its ids (§5.2, §5.6).
+ */
+export const NOTE_LINK_TOO_LONG = 'Too many leaf categories for a link; save them as a custom category first, then search or save a view with it.';
+/** The too-long note for a reader who cannot save a custom category: Ask AI, or the MCP with the workspace tools off (§5.6). */
 export const NOTE_LINK_TOO_LONG_READONLY = 'Too many leaf categories for a link; narrow the categories to get one.';
+/**
+ * A saved view whose filters would not fit in a link. It opens from its short ?view= link, but the Explorer's Export and the sidebar's
+ * Apply re-serialise the stored filters into URLs, which then fail; the predicate is the same 12,000-byte cap as explorerUrlFor's.
+ */
+export const NOTE_VIEW_TOO_WIDE = 'This view names more leaf categories than the Explorer can export or refine; it opens as saved. For a view you can export and change, save these categories as a custom category and save a view that uses it.';
 /** Vercel's CDN rejects URLs over 14 KB (§5.6); stay well under it. */
 export const MAX_EXPLORER_URL_BYTES = 12_000;
 

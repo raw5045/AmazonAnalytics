@@ -10,15 +10,18 @@ import { listWatchlistWithKeywords } from '@/lib/watchlist/loadServer';
 import { createTestUser, deleteTestUser } from './helpers';
 
 // Run: RUN_INTEGRATION=1 pnpm vitest run tests/integration/workspaceCommands.test.ts
-// Real tables, one synthetic itest user, every row removed in afterAll (users cascade to
-// saved_views, custom_categories and watchlist_items). Spec 2026-09-30 §11.9 / plan Task 13.
+// Real tables, synthetic itest users (a second one only for the watchlist's cross-account case), every
+// row removed in afterAll (users cascade to saved_views, custom_categories and watchlist_items).
+// Spec 2026-09-30 §11.9 / plan Task 13.
 describe('workspace commands (integration, real Postgres)', () => {
   let userId: string | undefined;
+  let otherUserId: string | undefined;
   beforeAll(async () => {
     userId = (await createTestUser('itest')).id;
   });
   afterAll(async () => {
     await deleteTestUser(userId);
+    await deleteTestUser(otherUserId);
   });
 
   it('saved views: create, duplicate, rename, delete, delete again', async () => {
@@ -47,10 +50,14 @@ describe('workspace commands (integration, real Postgres)', () => {
     expect(await deleteCustomCategory(userId!, created.category.id)).toEqual({ ok: true, deleted: { id: created.category.id, name: 'itest category', leafCount: 2 } });
   });
 
-  it('watchlist: add by text and id, list with keyword text, remove', async () => {
+  it('watchlist: add by text and id, list with keyword text, another account cannot remove it, remove', async () => {
     const [kw] = await db.select({ id: searchTerms.id, raw: searchTerms.searchTermRaw }).from(searchTerms).limit(1);
     const added = await addToWatchlist(userId!, { keywords: [kw.raw, 'zzz no such keyword itest'], searchTermIds: [kw.id] });
     expect(added).toEqual({ added: 1, alreadyWatching: 0, unmatched: ['zzz no such keyword itest'], skippedAtCap: 0 });
+    expect(await listWatchlistWithKeywords(userId!)).toEqual([{ keywordId: kw.id, keyword: kw.raw, addedAt: expect.any(String) }]);
+    // Owner scoping on the real table: another account removing the same keyword removes nothing, and this one still watches it.
+    otherUserId = (await createTestUser('itest')).id;
+    expect(await removeFromWatchlist(otherUserId, { keywords: [], searchTermIds: [kw.id] })).toEqual({ removed: 0, notWatching: 1, unmatched: [] });
     expect(await listWatchlistWithKeywords(userId!)).toEqual([{ keywordId: kw.id, keyword: kw.raw, addedAt: expect.any(String) }]);
     expect(await removeFromWatchlist(userId!, { keywords: [], searchTermIds: [kw.id] })).toEqual({ removed: 1, notWatching: 0, unmatched: [] });
     expect(await listWatchlistWithKeywords(userId!)).toEqual([]);
