@@ -1578,11 +1578,11 @@ MSG
 
 | Check | Outcome |
 |---|---|
-| `pnpm vitest run` | |
-| `pnpm typecheck` | |
-| `pnpm build` | |
-| Reviews | |
-| Migration 0049 + integration tests | |
-| Push / deploy | |
-| Smoke | |
-| Cost per question with the eleven extra tool definitions | |
+| `pnpm vitest run` | 2026-10-02 at 14c84c8: 195 files, 2,103 tests, all passing (integration excluded; `RUN_INTEGRATION` unset) |
+| `pnpm typecheck` | clean at every task commit and at the final review |
+| `pnpm build` | clean (Next 16.2.3 / Turbopack, no warnings); the route list gains exactly `/api/ask/account`; the `/ask` client chunk carries the cards and switches but no workspace tool definitions and no server-only module |
+| Reviews | Tasks 1–9: spec-compliance review + code-quality review each, with a fix/nits round per task (all landed and re-checked where the round was substantial); final whole-diff review 2026-10-02 = **Ship** (its should-fix — a superseded card reported as superseded, not denied — landed in 16938fc with four minors; re-check = Ship) |
+| Migration 0049 + integration tests | pending — owner-gated (`APPLY_0049=yes node --env-file=.env.local --import tsx scripts/applyMigration0049.ts`, then the real-row cases) |
+| Push / deploy | pending — owner-gated (apply 0049 FIRST; `checkActiveJobs`; bare `git push origin main` on the owner's go) |
+| Smoke | pending — owner (spec §11; the final review's 16-item list is in the session notes) |
+| Cost per question with the eleven extra tool definitions | pending — read from `ask_ledger` after the smoke (a question = its send + its resumes) against 3.6¢ Sonnet 5 / 3.95¢ Opus 5.5 |
