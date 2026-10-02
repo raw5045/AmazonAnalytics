@@ -19,7 +19,7 @@
 | `lib/env.ts`, `lib/ask/config.ts`, `.env.example` | the `ASK_AI_WRITES_ENABLED` flag |
 | `db/migrations/0049_ask_writes.sql`, `db/schema/askAi.ts` | two account toggles, the per-chat stamp |
 | `lib/ask/ledger.ts` | `AskAccount.autoApproveChanges/Deletes`, `setAutoApprove` |
-| `lib/ask/conversations.ts` | `AskConversation.changesApprovedAt`, `stampChangesApproved`, `replaceMessageParts` |
+| `lib/ask/conversations.ts` | `AskConversation.changesApprovedAt`, `stampChangesApproved`, `recordAnswersAndAppend` (one statement: the answered parts + the hidden outcome message; it replaced the plan's `replaceMessageParts` in Task 6's fix round) |
 | `lib/ask/writeKinds.ts` | pure, client-safe: `DELETE_TOOLS`, `CHANGE_TOOLS`, `writeKind` (parity-tested against the workspace definitions) |
 | `lib/ask/tools.ts` | workspace tools in the chat, `toolApprovalFor`, `runWorkspaceTool` |
 | `lib/ask/approvalResult.ts` | pure, browser-safe: `APPROVAL_RESULT_PREFIX`, `isApprovalResultMessage` (the thread hides these messages) |
