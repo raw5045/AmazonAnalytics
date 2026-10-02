@@ -76,6 +76,17 @@ describe('ApprovalCard (spec 2026-10-01 §5)', () => {
     rerender(<ApprovalCard part={requested} names={names} interactive busy={false} onAnswer={vi.fn()} />);
     expect(screen.getByText('Save a view named ‘Lamps’')).toHaveClass('wrap-anywhere');
   });
+  it('with writes switched off, a pending card is a read-only line — its summary and "Writes are off — send a message to continue." — and an answered one stays its record', () => {
+    const { rerender } = render(<ApprovalCard part={requested} names={names} interactive busy={false} onAnswer={vi.fn()} writesOff />);
+    expect(screen.getByText('Save a view named ‘Lamps’')).toHaveClass('wrap-anywhere');
+    expect(screen.getByText('Writes are off — send a message to continue.')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByText('Waiting for an answer')).toBeNull();
+    const answered = { ...(requested as object), state: 'output-available', output: {}, approval: { id: 'ap_1', approved: true } } as never;
+    rerender(<ApprovalCard part={answered} names={names} interactive busy={false} onAnswer={vi.fn()} writesOff />);
+    expect(screen.getByText('Approved')).toBeInTheDocument();
+    expect(screen.queryByText('Writes are off — send a message to continue.')).toBeNull();
+  });
   it('renders nothing for a tool part without an approval', () => {
     const plain = { type: 'tool-list_saved_views', toolCallId: 'c3', state: 'output-available', input: {}, output: {} } as never;
     const { container } = render(<ApprovalCard part={plain} names={names} interactive busy={false} onAnswer={vi.fn()} />);

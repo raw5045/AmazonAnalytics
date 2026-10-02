@@ -24,8 +24,13 @@ const SECONDARY = `${BUTTON} border border-slate-300 bg-white text-slate-800 hov
  * cards are told apart) and carries `data-approval-id`, which the thread uses to move focus to the
  * next open card after an answer given from the keyboard.
  */
-export function ApprovalCard({ part, names, interactive, busy, onAnswer, record }: {
+export function ApprovalCard({ part, names, interactive, busy, onAnswer, record, writesOff = false }: {
   part: ToolUIPart; names: ApprovalNames; interactive: boolean; busy: boolean;
+  /**
+   * Writes are switched off (the page no longer offers them): a pending card can only be read — an
+   * answer would get the route's 404 — and the member's next message resolves it. Records are unchanged.
+   */
+  writesOff?: boolean;
   /**
    * `viaKeyboard`: the button was activated from the keyboard (a click whose `detail` is 0), so the
    * thread may move focus on; a mouse click or a touch tap moves none. Kept out of the answer itself,
@@ -47,6 +52,14 @@ export function ApprovalCard({ part, names, interactive, busy, onAnswer, record 
       ? 'Denied'
       : record === 'chat' ? 'Approved for this chat' : record === 'always' ? 'Always approved' : 'Approved';
     return <p className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 wrap-anywhere"><span className="font-medium">{label}</span> — {summary}</p>;
+  }
+  if (writesOff) {
+    return (
+      <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+        <p className="wrap-anywhere">{summary}</p>
+        <p className="mt-1 font-medium">Writes are off — send a message to continue.</p>
+      </div>
+    );
   }
   if (!interactive) {
     return <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 wrap-anywhere"><span className="font-medium">Waiting for an answer</span> — {summary}</p>;

@@ -23,7 +23,7 @@ const appOrigin = 'https://keywordquarry.com';
  */
 function Harness({ initialDraft = '', ...rest }: Partial<React.ComponentProps<typeof Thread>> & { initialDraft?: string }) {
   const [draft, setDraft] = useState(initialDraft);
-  return <Thread open={null} defaultModel="claude-sonnet-5" cantSendReason={null} atCap={false} appOrigin={appOrigin} {...rest} draft={draft} onDraftChange={setDraft} />;
+  return <Thread open={null} defaultModel="claude-sonnet-5" cantSendReason={null} atCap={false} appOrigin={appOrigin} writesEnabled {...rest} draft={draft} onDraftChange={setDraft} />;
 }
 
 describe('Thread', () => {
@@ -567,6 +567,15 @@ describe('Thread', () => {
       expect(screen.queryByRole('button', { name: 'Approve for this chat' })).toBeNull();
       expect(screen.getByText('Waiting for an answer')).toBeInTheDocument();
     });
+    it('writes switched off (writesEnabled false): a pending card is a read-only line with its summary and no buttons — a new message resolves it', () => {
+      chat.messages = [question, pending];
+      render(<Harness open={openChat()} writesEnabled={false} />);
+      expect(screen.getByText('Writes are off — send a message to continue.')).toBeInTheDocument();
+      expect(screen.getByText('Save a view named ‘Lamps’')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Approve for this chat' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+      expect(screen.queryByText('Waiting for an answer')).toBeNull();
+    });
     it('a first send whose answer paused on a card holds the card\'s buttons while the page moves to the new chat (N2)', () => {
       chat.messages = [question, { ...pending, metadata: { conversationId: 'c9' } }];
       render(<Harness />);
@@ -645,6 +654,21 @@ describe('Thread', () => {
         expect(chat.messages).toEqual([question, answeredHere]);
         expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+      });
+      it('a 400 (the server\'s open cards differ from this tab\'s, e.g. a Stop between two approval chunks) keeps the records and shows the chat-gone line, since only a reload resyncs; the next request clears that line', () => {
+        const err = new APICallError({ message: JSON.stringify({ error: 'Bad request.', code: 'bad_request' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 400 });
+        const view = answerThenFail(err);
+        expect(chat.messages).toEqual([question, answeredHere]);
+        expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+        chat.error = err;
+        view.rerender(<Harness open={openChat()} />);
+        expect(screen.getByRole('alert')).toHaveTextContent('This chat is no longer available. Reload the page.');
+        expect(screen.getByRole('alert')).not.toHaveTextContent('Bad request.');
+        fireEvent.change(screen.getByLabelText('Your question'), { target: { value: 'never mind' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+        chat.error = new Error(JSON.stringify({ error: 'Wait for the current answer to finish.', code: 'busy' }));
+        view.rerender(<Harness open={openChat()} />);
+        expect(screen.getByRole('alert')).toHaveTextContent('Wait for the current answer to finish.');
       });
       it('a full chat disables the reopened cards: a resume needs room for one more message, so they could never succeed', () => {
         const view = answerThenFail(new APICallError({ message: JSON.stringify({ error: 'This chat is full. Start a new one.', code: 'chat_full' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 409 }));

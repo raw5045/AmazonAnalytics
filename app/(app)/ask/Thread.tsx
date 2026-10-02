@@ -8,7 +8,7 @@ import { ASK_MODELS, type AskModelId } from '@/lib/ask/models';
 import type { AskUIMessage } from '@/lib/ask/conversations';
 import { EXAMPLE_QUESTIONS } from '@/lib/ask/examples';
 import {
-  BUSY_MESSAGE, CHAT_CAP_MESSAGE, CUT_OFF_MESSAGE, FAILED_MESSAGE, NO_ANSWER_MESSAGE, RAN_OUT_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE,
+  BUSY_MESSAGE, CHAT_CAP_MESSAGE, CHAT_GONE_MESSAGE, CUT_OFF_MESSAGE, FAILED_MESSAGE, NO_ANSWER_MESSAGE, RAN_OUT_MESSAGE, STOPPED_LINE, TOO_LONG_TURN_MESSAGE,
 } from '@/lib/ask/messages';
 import { describeChatError } from '@/lib/ask/clientErrors';
 import { createAskTransport } from '@/lib/ask/transport';
@@ -137,12 +137,14 @@ function statusLineFor(m: AskUIMessage, isLive: boolean, isLast: boolean, chatSt
  * set), sent with a hidden placeholder user message so the resumed answer arrives as a new message
  * after the cards — what a reload shows. The route's own hidden outcome messages are never rendered.
  */
-export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, draft, onDraftChange, onAlwaysApproved }: {
+export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, draft, onDraftChange, onAlwaysApproved, writesEnabled }: {
   open: OpenConversation | null; defaultModel: AskModelId;
   /** The server-computed reason (no balance / chat full), or null — the cap case is decided below, since only this component knows about a chat id already learned from the stream (item 6). */
   cantSendReason: string | null;
   atCap: boolean; appOrigin: string;
   draft: string; onDraftChange: (v: string) => void;
+  /** The writes switch as the page last saw it (spec 2026-10-01 §2): off, a card still waiting is read-only — an answer would get a 404 — and the next message resolves it. */
+  writesEnabled: boolean;
   /** An "Always approve" answer landed (the resend's answer reached the thread): the matching "always allow" switch is now on (spec 2026-10-01 §8). */
   onAlwaysApproved?: (kind: 'changes' | 'deletes') => void;
 }) {
@@ -178,6 +180,9 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   // Where focus goes once a card answered from the keyboard collapses: the next open card (its approval id), else the composer (null).
   const [focusAfterAnswer, setFocusAfterAnswer] = useState<{ approvalId: string | null } | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
+  // A resend refused with 400 (the route's open cards differ from this tab's): the alert shows the
+  // chat-gone line, since only a reload resyncs. Cleared by the next request (send / answerApproval).
+  const [cardsOutOfSync, setCardsOutOfSync] = useState(false);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -240,29 +245,35 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
     },
     onError: (err) => {
       // Arc 4 (spec 2026-10-01 §6, §9): a resend that failed before anything streamed — refused by
-      // the route (409 busy or full, 402, 400, 5xx) or lost on the network — still has the hidden
+      // the route (409 busy or full, 402, 5xx) or lost on the network — still has the hidden
       // placeholder last. Its cards reopen for one more click (the alert says what happened; they
       // are live in useChat's error state): nothing was recorded, or (approval_record_failed) the
-      // writes ran but were not recorded — the accepted double-run window. Two answers keep the
+      // writes ran but were not recorded — the accepted double-run window. Three answers keep the
       // records instead (the placeholder goes, nothing reopens): a 404, the cards being gone
-      // (answered elsewhere, the chat deleted, writes switched off), with the chat-gone line; and a
-      // setup failure after the route had stored the answers, which it marks `answered: true`, with
-      // the setup-failed line. Once anything streamed the answers are stored, so the guard on the
-      // placeholder being last leaves the records and the partial answer alone. Checked before the
-      // HTTP-only early return below, so a network failure is covered too. `undone` is set inside
-      // the updater, which @ai-sdk/react runs once, synchronously (M5 below), on the current messages.
+      // (answered elsewhere, the chat deleted, writes switched off), with the chat-gone line; a 400,
+      // the route's open cards differing from this tab's (a Stop between two parallel approval
+      // chunks), which only a reload resyncs — the chat-gone line too, where "Bad request." would
+      // greet every retry; and a setup failure after the route had stored the answers, which it
+      // marks `answered: true`, with the setup-failed line. Once anything streamed the answers are
+      // stored, so the guard on the placeholder being last leaves the records and the partial answer
+      // alone. Checked before the HTTP-only early return below, so a network failure is covered
+      // too. `undone` is set inside the updater, which @ai-sdk/react runs once, synchronously (M5
+      // below), on the current messages.
       const sent = resendInFlight.current;
       if (sent) {
-        const answered = APICallError.isInstance(err) && (err.statusCode === 404 || saysAnswered(err.message));
+        const status = APICallError.isInstance(err) ? err.statusCode : undefined;
+        const outOfSync = status === 400;
+        const keepRecords = status === 404 || outOfSync || (APICallError.isInstance(err) && saysAnswered(err.message));
         let undone = false;
         setMessages((msgs) => {
           if (msgs[msgs.length - 1]?.id !== placeholderIdFor(sent.messageId)) return msgs;
           undone = true;
           const kept = msgs.slice(0, -1);
-          return answered ? kept : kept.map((m) => (m.id === sent.messageId ? reopenCards(m, sent.ids) : m));
+          return keepRecords ? kept : kept.map((m) => (m.id === sent.messageId ? reopenCards(m, sent.ids) : m));
         });
         if (undone) {
-          if (!answered) setAnswers((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !sent.ids.has(id))));
+          if (!keepRecords) setAnswers((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !sent.ids.has(id))));
+          if (outOfSync) setCardsOutOfSync(true);
           return;
         }
       }
@@ -344,6 +355,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   const send = (text: string) => {
     onDraftChange('');
     setStoppedBeforeAnswer(false);
+    setCardsOutOfSync(false);
     void sendMessage({ text }, { body: { conversationId: knownChatId, ...(knownChatId ? {} : { model }) } });
   };
   /**
@@ -377,6 +389,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       ids: new Set(waiting.map((p) => p.approval.id)),
       always: new Set(waiting.filter((p) => next[p.approval.id].remember === 'always').map((p): 'changes' | 'deletes' => (writeKind(getToolName(p)) === 'delete' ? 'deletes' : 'changes'))),
     };
+    setCardsOutOfSync(false);
     void sendMessage(
       { id: placeholderIdFor(last.id), role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} pending` }] },
       { body: { conversationId: knownChatId, approvals: waiting.map((p) => next[p.approval.id]) } },
@@ -478,6 +491,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
                     busy={cardsBusy}
                     onAnswer={answerApproval}
                     record={answers[p.approval.id]?.remember}
+                    writesOff={!writesEnabled}
                   />
                 ))}
                 {line && <p className={`mt-1 text-xs ${m.metadata?.status === 'failed' ? 'text-red-700' : 'text-slate-500'}`}>{line}</p>}
@@ -488,7 +502,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
         {bottomLine && <li className="text-sm text-slate-600">{bottomLine}</li>}
         {error && (
           <li role="alert" className="text-sm text-red-700">
-            {describeChatError(error)}
+            {cardsOutOfSync ? CHAT_GONE_MESSAGE : describeChatError(error)}
             {/* item 6: a first send that then errored still created the chat — a manual way back
                 to it, since a first-send error deliberately never auto-navigates (item 3). */}
             {!open && streamedCid && <> <Link href={`/ask?c=${encodeURIComponent(streamedCid)}`} className="underline">Open this chat</Link></>}

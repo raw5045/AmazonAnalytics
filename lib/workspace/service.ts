@@ -139,7 +139,8 @@ function toResearchError(r: CommandFailure, kind: keyof typeof NOT_FOUND_MESSAGE
 const INFRA_CODES: ReadonlySet<ResearchErrorCode> = new Set<ResearchErrorCode>(['DATA_UNAVAILABLE', 'QUERY_TIMEOUT']);
 
 /**
- * §8.6: one line per call — tool, outcome, code or error name, account id, timing. Never names, keywords or paths.
+ * §8.6: one line per call — tool, outcome, code or error name, account id, channel ('mcp' | 'chat', so chat writes and
+ * MCP writes can be told apart), timing. Never names, keywords or paths.
  * A ResearchError is already a safe, client-facing shape and passes through unchanged. Anything else is replaced by a
  * fresh ResearchError carrying nothing from the original (no message, no cause): the MCP adapter's classifyToolError
  * logs a raw error's message and stack, and a DrizzleQueryError's message embeds the bound params (view names, filter
@@ -148,7 +149,7 @@ const INFRA_CODES: ReadonlySet<ResearchErrorCode> = new Set<ResearchErrorCode>([
 function logged<T>(tool: WorkspaceToolName, actor: ResearchActor, fn: () => Promise<T>): Promise<T> {
   const started = Date.now();
   const line = (fields: Record<string, unknown>) =>
-    console.log('[workspace]', JSON.stringify({ tool, ...fields, userId: actor.localUserId, durationMs: Date.now() - started }));
+    console.log('[workspace]', JSON.stringify({ tool, ...fields, userId: actor.localUserId, channel: actor.channel, durationMs: Date.now() - started }));
   return fn().then(
     (out) => {
       line({ outcome: 'ok' });

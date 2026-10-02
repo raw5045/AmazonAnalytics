@@ -141,6 +141,26 @@ describe('AskAi', () => {
       expect(deletesBox()).toBeNull();
     });
 
+    it('a card still waiting when writes are switched off (writes null) is read-only — "Writes are off — send a message to continue." and no buttons; with writes on it keeps its buttons', () => {
+      const paused = {
+        id: 'c1', model: 'claude-sonnet-5' as const, messageCount: 2, inFlight: false,
+        messages: [
+          { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] },
+          { id: 'm2', role: 'assistant', parts: [{ type: 'tool-create_saved_view', toolCallId: 'c1', state: 'approval-requested', input: { name: 'Lamps', search: {} }, approval: { id: 'ap_1' } }] },
+        ] as never,
+      };
+      chat.messages = paused.messages as unknown[];
+      const page = (writes: WriteToggles | null) => <AskAi conversations={[]} open={paused} meter={meter} preview={false} appOrigin={appOrigin} writes={writes} />;
+      const { rerender } = render(page(null));
+      expect(threadProps().writesEnabled).toBe(false);
+      expect(screen.getByText('Writes are off — send a message to continue.')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Approve for this chat' })).toBeNull();
+      rerender(page(OFF));
+      expect(threadProps().writesEnabled).toBe(true);
+      expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+      expect(screen.queryByText('Writes are off — send a message to continue.')).toBeNull();
+    });
+
     it('a click on a switch goes through AskAi\'s state: it shows at once, then the answer (the row) lands', async () => {
       fetchMock.mockResolvedValueOnce(Response.json({ autoApproveChanges: true, autoApproveDeletes: true }));
       render(ui(OFF));

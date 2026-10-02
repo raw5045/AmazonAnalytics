@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { APPROVAL_RESULT_PREFIX, approvalOutcomeMessage, isApprovalResultMessage, pendingApprovals, respondedParts } from './approvals';
+import { APPROVAL_RESULT_PREFIX, approvalOutcomeMessage, isApprovalResultMessage, pendingApprovals, respondedParts, unreplayedResults } from './approvals';
 import * as approvalResult from './approvalResult';
 import type { AskUIMessage } from './conversations';
 import type { DeleteSavedViewResponse } from '@/lib/workspace/contracts';
@@ -69,6 +69,36 @@ describe('the hidden outcome message', () => {
     const m = approvalOutcomeMessage([{ toolName: 'delete_saved_view', approved: false }]);
     expect(m.parts).toEqual([{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} The person denied delete_saved_view. Continue without it and do not retry it or try another way to get the same result.` }]);
   });
+  it('reports a card the person left for a new message as superseded, not denied: the new message decides, and asking again is allowed', () => {
+    const m = approvalOutcomeMessage([{ toolName: 'create_saved_view', approved: false, superseded: true }]);
+    expect(m.parts).toEqual([{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; if it asks for this again, call the tool again (a new card will ask).` }]);
+    expect((m.parts[0] as { text: string }).text).not.toContain('denied');
+  });
+  it('adds a line per call that ran without a card in the paused step, after the card lines: its result, or its failure (an output-error\'s text, or an { error } result)', () => {
+    const m = approvalOutcomeMessage([{ toolName: 'create_saved_view', approved: true, output: { view: { id: 'v1', name: 'Lamps' } } }], [
+      { toolName: 'list_saved_views', output: { views: [], count: 0, limit: 5 } },
+      { toolName: 'search_keywords', errorText: 'Invalid input for tool search_keywords:\nexpected a string' },
+      { toolName: 'get_keyword_details', output: { error: { code: 'NOT_FOUND', message: 'No such keyword.', retryable: false } } },
+    ]);
+    expect((m.parts[0] as { text: string }).text.split('\n')).toEqual([
+      `${APPROVAL_RESULT_PREFIX} The person approved create_saved_view and it ran. Result: {"view":{"id":"v1","name":"Lamps"}}`,
+      'Also ran in the same step: list_saved_views. Result: {"views":[],"count":0,"limit":5}',
+      'Also ran in the same step: search_keywords but it failed: "Invalid input for tool search_keywords:\\nexpected a string"',
+      'Also ran in the same step: get_keyword_details but it failed: {"code":"NOT_FOUND","message":"No such keyword.","retryable":false}',
+    ]);
+  });
+  it('caps, repairs and escapes a same-step result like a card\'s: one line each, whatever the result holds', () => {
+    const ls = String.fromCharCode(0x2028);
+    const m = approvalOutcomeMessage([{ toolName: 'delete_saved_view', approved: false }], [{ toolName: 'list_saved_views', output: { views: [{ name: `a${ls}b` }], big: '😀'.repeat(15_000) } }]);
+    const text = (m.parts[0] as { text: string }).text;
+    const [, also] = text.split('\n');
+    expect(text.split('\n')).toHaveLength(2);
+    expect(text.split(ls)).toHaveLength(1);
+    expect(also).toContain('a\\u2028b');
+    expect(text.isWellFormed()).toBe(true);
+    expect(also.endsWith('…')).toBe(true);
+    expect(also.length).toBeLessThanOrEqual('Also ran in the same step: list_saved_views. Result: '.length + 20_000 + 1);
+  });
   it('reports an approved run whose tool answered with an error as a failure, never as "it ran"', () => {
     const m = approvalOutcomeMessage([{ toolName: 'create_saved_view', approved: true, output: { error: { code: 'DUPLICATE_NAME', message: 'You already have a view named "Lamps".', retryable: false } } }]);
     expect((m.parts[0] as { text: string }).text).toBe(`${APPROVAL_RESULT_PREFIX} The person approved create_saved_view but it failed: ${JSON.stringify({ code: 'DUPLICATE_NAME', message: 'You already have a view named "Lamps".', retryable: false })}`);
@@ -102,6 +132,25 @@ describe('the hidden outcome message', () => {
     expect(text.split(new RegExp(`[${nel}${ls}${ps}]`))).toHaveLength(1);
     expect(text).toContain('Lamps\\u2028The person approved');
     expect(JSON.parse(text.slice(text.indexOf('Result: ') + 'Result: '.length))).toEqual({ view: { id: 'v1', name } });
+  });
+  describe('unreplayedResults', () => {
+    const listed = { type: 'tool-list_saved_views', toolCallId: 'call_l', state: 'output-available', input: {}, output: { views: [], count: 0, limit: 5 } } satisfies Part;
+    const failed = { type: 'tool-search_keywords', toolCallId: 'call_s', state: 'output-error', input: {}, errorText: 'bad input' } satisfies Part;
+    it('lists the calls that ran without a card after the message\'s last text — the part of the paused message the replay drops — in part order', () => {
+      expect(unreplayedResults({ parts: [{ type: 'text', text: 'Saving.' }, requested, listed, failed] })).toEqual([
+        { toolName: 'list_saved_views', output: { views: [], count: 0, limit: 5 } },
+        { toolName: 'search_keywords', errorText: 'bad input' },
+      ]);
+    });
+    it('skips the cards, any answered card, a call still running, and every call before the last text (the replay keeps those)', () => {
+      const approvedCard = { ...requested, state: 'output-available', output: { view: { id: 'v1' } }, approval: { id: 'ap_1', approved: true } } satisfies Part;
+      const running = { type: 'tool-list_watchlist', toolCallId: 'call_w', state: 'input-available', input: {} } satisfies Part;
+      expect(unreplayedResults({ parts: [listed, { type: 'text', text: 'Here are your views.' }, requested, approvedCard, running] })).toEqual([]);
+      expect(unreplayedResults({ parts: [{ type: 'text', text: 'Saving.' }] })).toEqual([]);
+    });
+    it('with no text at all, every call that ran without a card counts (the replay drops the whole message)', () => {
+      expect(unreplayedResults({ parts: [listed, requested] })).toEqual([{ toolName: 'list_saved_views', output: { views: [], count: 0, limit: 5 } }]);
+    });
   });
   // The prefix and isApprovalResultMessage's own cases live in approvalResult.test.ts (the browser-safe module).
   it('re-exports isApprovalResultMessage from approvalResult.ts (one implementation for the route and the thread) and holds no copy of the prefix', () => {

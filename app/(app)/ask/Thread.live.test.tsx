@@ -41,9 +41,9 @@ const openConversation = { id: 'c1', model: 'claude-sonnet-5' as const, messageC
 const appOrigin = 'https://keywordquarry.com';
 
 /** Stands in for AskAi's lifted draft state (item 8) — Thread no longer owns it. */
-function Harness(props: Omit<React.ComponentProps<typeof Thread>, 'draft' | 'onDraftChange'>) {
+function Harness(props: Omit<React.ComponentProps<typeof Thread>, 'draft' | 'onDraftChange' | 'writesEnabled'> & { writesEnabled?: boolean }) {
   const [draft, setDraft] = useState('');
-  return <Thread {...props} draft={draft} onDraftChange={setDraft} />;
+  return <Thread writesEnabled {...props} draft={draft} onDraftChange={setDraft} />;
 }
 
 async function typeAndSend(text: string) {
@@ -252,6 +252,17 @@ describe('approval cards with the real useChat (arc 4, spec 2026-10-01 §5, §6)
     await screen.findByText('Saved the view.');
     const both = { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] };
     expect(chatBodies(spy)).toEqual([both, both]);
+  });
+
+  it('a resend refused with 400 (the server\'s open cards differ from this tab\'s) keeps the record with no buttons and shows the chat-gone line: only a reload resyncs', async () => {
+    mockRoutes({ status: 400, body: { error: 'Bad request.', code: 'bad_request' } });
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('This chat is no longer available. Reload the page.');
+    await pastThrottle();
+    expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+    expect(screen.queryByText(/approval-result/)).toBeNull();
   });
 
   it('a resend that STREAMED and then failed keeps its records and its partial answer: the server stored the answers before it streamed, so nothing reopens', async () => {

@@ -142,6 +142,8 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
           draft={draft}
           onDraftChange={setDraft}
           onAlwaysApproved={onAlwaysApproved}
+          // The server's current value, not the local toggles: writes switched off make a waiting card read-only.
+          writesEnabled={writes !== null}
         />
       </div>
     </div>

@@ -10,15 +10,16 @@
  * Order: kill switch → same-origin → session → body (an approval body also needs the writes switch:
  * off → bodyless 404 before the gates) → gates (a resume skips only the daily question guard) → API
  * key → the request lifetime (below) → conversation: create on a first send (already locked), or
- * lock + load, then a send resolves any open card as denied and appends the member's message
- * (prepareFollowUp), and a resume saves `remember` (fail-closed, before any write), runs the
- * approved writes, and records the answers together with the hidden outcome message in one statement
- * (prepareResume) → turn setup AND the turn itself (a throw from `runTurn` before it starts
- * streaming, e.g. convertToModelMessages or its resume guard, answers 503 like any setup failure;
- * see the Task 6 re-review amendment under ### Task 8 in the plan; on a resume whose answers were
- * already stored, that 503 says `answered: true`, so the thread keeps the cards' records) → stream.
- * Settlement runs in the turn's onEnd BEFORE the answer is saved (money first); a resume settles as
- * a billed turn that is not a question (settleTurn's countQuestion: false).
+ * lock + load, then a send resolves any open card (stored as denied, reported to the model as
+ * superseded) and appends the member's message (prepareFollowUp), and a resume saves `remember`
+ * (fail-closed, before any write), runs the approved writes, and records the answers together with
+ * the hidden outcome message in one statement (prepareResume) → turn setup AND the turn itself (a
+ * throw from `runTurn` before it starts streaming, e.g. convertToModelMessages or its resume guard,
+ * answers 503 like any setup failure; see the Task 6 re-review amendment under ### Task 8 in
+ * docs/superpowers/plans/2026-09-28-ask-ai.md; on a resume whose answers were already stored, that
+ * 503 says `answered: true`, so the thread keeps the cards' records) → stream. Settlement runs in
+ * the turn's onEnd BEFORE the answer is saved (money first); a resume settles as a billed turn that
+ * is not a question (settleTurn's countQuestion: false).
  *
  * Lifetime (Task 8 review, I3; registered before any lock since the arc-4 Task 6 review):
  * `vercel.json` sets `supportsCancellation` for this route, so a client disconnect (Stop, leaving for
@@ -55,7 +56,7 @@ import { isSameOrigin } from '@/lib/ask/sameOrigin';
 import { buildSystemPrompt } from '@/lib/ask/prompt';
 import { buildAskTools, runWorkspaceTool, toolApprovalFor, type WriteSettings } from '@/lib/ask/tools';
 import { writeKind } from '@/lib/ask/writeKinds';
-import { APPROVAL_RESULT_PREFIX, approvalOutcomeMessage, pendingApprovals, respondedParts, type ApprovalOutcome } from '@/lib/ask/approvals';
+import { APPROVAL_RESULT_PREFIX, approvalOutcomeMessage, pendingApprovals, respondedParts, unreplayedResults, type ApprovalOutcome } from '@/lib/ask/approvals';
 import { runTurn, windowHistory, TURN_DEADLINE } from '@/lib/ask/turn';
 import { costMicro } from '@/lib/ask/pricing';
 import { setAutoApprove, settleTurn, type AskAccount } from '@/lib/ask/ledger';
@@ -425,11 +426,14 @@ const NOT_REMEMBERED = 'remember: nothing to save it on';
 
 /**
  * A follow-up send, with the chat locked and loaded: first resolves every card still open on the
- * last assistant message as denied — its stored parts become output-denied and ONE hidden denial
- * message, one line per card, goes in ahead of the member's (spec 2026-10-01 §6) — then appends the
- * member's message. Regardless of the writes switch: a card left open when it went off is still
- * resolved (§9), and a denial touches no workspace data. Returns the history for the turn (without
- * the member's message, which runTurn adds), or an early response with the lock released.
+ * last assistant message — its stored parts become output-denied (the record reads "Denied") and
+ * ONE hidden message, one line per card, goes in ahead of the member's (spec 2026-10-01 §6) — then
+ * appends the member's message. The hidden lines report each card as superseded, not denied: the
+ * prompt's no-retry rule covers only a denial given in a card, so a member who types "yes, save it"
+ * instead of clicking can still be served. Regardless of the writes switch: a card left open when it
+ * went off is still resolved (§9), and the resolution touches no workspace data. Returns the history
+ * for the turn (without the member's message, which runTurn adds), or an early response with the
+ * lock released.
  */
 async function prepareFollowUp(a: { userId: string; loaded: LoadedChat; message: AskUIMessage; now: Date }): Promise<{ history: AskUIMessage[] } | { response: NextResponse }> {
   const { conversation, messages } = a.loaded;
@@ -445,9 +449,9 @@ async function prepareFollowUp(a: { userId: string; loaded: LoadedChat; message:
   if (last && pending.length > 0) {
     let parts = last.parts;
     for (const p of pending) parts = respondedParts(parts, p.approvalId, false);
-    const denial = approvalOutcomeMessage(pending.map((p) => ({ toolName: p.toolName, approved: false })));
+    const denial = approvalOutcomeMessage(pending.map((p) => ({ toolName: p.toolName, approved: false, superseded: true })));
     try {
-      // The denials and the hidden denial message, in one statement (recordAnswersAndAppend).
+      // The resolved parts and the hidden message, in one statement (recordAnswersAndAppend).
       const recorded = await recordAnswersAndAppend({ conversationId: cid, userId: a.userId, messageId: last.id, parts, message: denial, now: a.now });
       if (recorded === 'full') return { response: await released(cid, chatFull()) };
       if (recorded === 'missing') throw new Error(NOT_RECORDED);
@@ -487,7 +491,9 @@ async function prepareFollowUp(a: { userId: string; loaded: LoadedChat; message:
  * 3. The writes, in part order, from the input the server stored when the model asked
  *    (runWorkspaceTool re-validates it and never throws; the paused call itself is never replayed to
  *    the model), then the answers and ONE hidden outcome message, one line per card, written
- *    together (recordAnswersAndAppend).
+ *    together (recordAnswersAndAppend). The message also carries a line per call that ran without
+ *    a card after the paused message's last text (unreplayedResults): the history replay drops
+ *    that part of the message, so the model would otherwise never see those results.
  * So a resume that answers 200 has its writes, their record and the preferences all landed. Returns
  * the turn's history (ending with the outcome message) and its writes decision, or an early
  * response with the lock released.
@@ -555,7 +561,7 @@ async function prepareResume(a: {
       parts = respondedParts(parts, p.approvalId, approved, output);
       outcomes.push({ toolName: p.toolName, approved, output });
     }
-    outcome = approvalOutcomeMessage(outcomes);
+    outcome = approvalOutcomeMessage(outcomes, unreplayedResults(last));
     recorded = await recordAnswersAndAppend({ conversationId: cid, userId: a.userId, messageId: last.id, parts, message: outcome, now: a.now });
     if (recorded === 'missing') throw new Error(NOT_RECORDED);
   } catch (e) {

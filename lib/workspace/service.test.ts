@@ -90,6 +90,12 @@ describe('list tools', () => {
     expect(wl).toEqual({ items: [{ searchTermId: KW, keyword: 'desk lamp', keywordUrl: `https://keywordquarry.com/explorer/keyword/${KW}`, addedAt: '2026-09-30T09:00:00.000Z' }], count: 1, limit: 100 });
     expect(lines().map((l) => l.outcome)).toEqual(['ok', 'ok', 'ok']);
   });
+  it('each log line names the channel (a coded value), so chat writes and MCP writes can be told apart', async () => {
+    const svc = createWorkspaceService(makeDeps());
+    await svc.listSavedViews(actor, {});
+    await svc.listSavedViews({ ...actor, clientId: 'ask-ai', channel: 'chat' }, {});
+    expect(lines().map((l) => l.channel)).toEqual(['mcp', 'chat']);
+  });
   it('rejects an unexpected key before reserving', async () => {
     const deps = makeDeps();
     await expect(createWorkspaceService(deps).listSavedViews(actor, { page: 2 })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });

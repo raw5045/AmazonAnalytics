@@ -788,14 +788,16 @@ describe('POST /api/ask/chat', () => {
       expect(outcomesLogged(error)).toEqual(['setup_failed', 'setup_failed', 'approval_record_failed', 'setup_failed']);
       error.mockRestore();
     });
-    it('a new message while a card is pending resolves it as denied first: the stored part becomes output-denied, a hidden denial precedes the member\'s message, and the turn starts from the member\'s message', async () => {
+    it('a new message while a card is pending resolves it first: the stored part becomes output-denied, a hidden line reports the card as superseded (not denied), and the turn starts from the member\'s message', async () => {
       await post({ conversationId: existingId, message: { text: 'never mind, show me lamps' } });
-      // The denial is recorded and the hidden denial message appended in ONE statement…
+      // The record and the hidden message are written in ONE statement…
       expect(conv.recordAnswersAndAppend).toHaveBeenCalledTimes(1);
       const denied = recordedCall();
       expect(denied).toMatchObject({ conversationId: existingId, userId: 'u1', messageId: 'm2' });
       expect(denied.parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
-      expect(denied.message.parts[0].text).toContain('The person denied create_saved_view.');
+      // Superseded, not denied: the prompt's no-retry rule covers only a denial given in a card, so a
+      // member who types "yes, save it" instead of clicking can still be served.
+      expect(denied.message.parts[0].text).toBe('[approval-result] The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; if it asks for this again, call the tool again (a new card will ask).');
       // …then the member's own message, after it.
       expect(conv.appendUserMessage).toHaveBeenCalledTimes(1);
       expect(conv.appendUserMessage.mock.calls[0][0].message.parts[0].text).toBe('never mind, show me lamps');
@@ -811,6 +813,18 @@ describe('POST /api/ask/chat', () => {
       conv.recordAnswersAndAppend.mockClear();
       await post({ conversationId: existingId, message: { text: 'and now?' } });
       expect(recordedCall().parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
+    });
+    it('a resume reports the calls that ran without a card in the paused step — the replay drops everything after the last text — one line each after the card lines; the send path\'s superseded message has none', async () => {
+      const listed = { type: 'tool-list_saved_views', toolCallId: 'call_l', state: 'output-available', input: {}, output: { views: [], count: 0, limit: 5 } };
+      conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [...pendingAssistant.parts, listed] }));
+      await approve({ approvalId: 'ap_1', approved: true, remember: null });
+      expect(recordedCall().message.parts[0].text.split('\n')).toEqual([
+        '[approval-result] The person approved create_saved_view and it ran. Result: {"view":{"id":"v1","name":"Lamps"}}',
+        'Also ran in the same step: list_saved_views. Result: {"views":[],"count":0,"limit":5}',
+      ]);
+      conv.recordAnswersAndAppend.mockClear();
+      await post({ conversationId: existingId, message: { text: 'never mind' } });
+      expect(recordedCall().message.parts[0].text).not.toContain('Also ran');
     });
     it('a send one message short of the cap with a card pending is 409 chat_full with nothing written (the denial and the message would be two appends); without a card the same chat takes its last message', async () => {
       conv.loadConversation.mockResolvedValue(loaded(pendingAssistant, { id: existingId, model: 'claude-sonnet-5', messageCount: 199, changesApprovedAt: null }));

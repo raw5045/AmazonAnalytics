@@ -27,7 +27,9 @@ function toConv(r: ConvRow): AskConversation {
   return {
     id: r.id, userId: r.user_id, title: r.title, model: r.model, messageCount: Number(r.message_count),
     inFlightSince: r.in_flight_since === null ? null : new Date(r.in_flight_since),
-    // The undefined guard: a missing column reads as not approved, so the card shows.
+    // The `undefined` check only serves rows built without the column (test fixtures and mocks), which
+    // then read as not approved: CONV_COLUMNS names the column, so a database that lacks it fails the
+    // SELECT itself rather than ever reaching this line.
     changesApprovedAt: r.changes_approved_at === null || r.changes_approved_at === undefined ? null : new Date(r.changes_approved_at),
     createdAt: new Date(r.created_at), updatedAt: new Date(r.updated_at),
   };
