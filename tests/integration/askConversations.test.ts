@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { grantAccess, getAccount } from '@/lib/ask/ledger';
-import { createConversationWithFirstMessage, deleteConversation, listConversations, acquireTurnLock, releaseTurnLock, appendUserMessage, appendAssistantMessage, loadConversation } from '@/lib/ask/conversations';
+import { createConversationWithFirstMessage, deleteConversation, listConversations, acquireTurnLock, releaseTurnLock, appendUserMessage, appendAssistantMessage, loadConversation, stampChangesApproved, recordAnswersAndAppend } from '@/lib/ask/conversations';
 import { createTestUser, deleteTestUser } from './helpers';
 
 // Run (owner-gated, after migration 0048): RUN_INTEGRATION=1 pnpm vitest run tests/integration/askConversations.test.ts
@@ -70,6 +70,68 @@ describe('ask conversations (integration, real Postgres)', () => {
     expect(await appendAssistantMessage({ conversationId: id, message: { id: crypto.randomUUID(), parts: [{ type: 'text' as const, text: 'past the cap' }] }, status: 'complete', now })).toBe(true);
     const last = await db.execute<{ seq: number }>(sql`SELECT seq FROM ask_messages WHERE conversation_id = ${id}::uuid ORDER BY seq DESC LIMIT 1`);
     expect(last.rows[0].seq).toBe(201);
+  });
+
+  it('arc 4 (migration 0049): the changes stamp is first-wins and owner-scoped; recordAnswersAndAppend writes the answers and the hidden message together, or nothing', async () => {
+    const now = new Date('2030-06-01T12:00:00Z');
+    // The previous test forced one chat to the cap (message_count 200 + an assistant reply past it); the others hold one message each.
+    const byCount = await db.execute<{ id: string; message_count: number }>(sql`SELECT id, message_count FROM ask_conversations WHERE user_id = ${userId}::uuid ORDER BY message_count DESC`);
+    const full = byCount.rows[0].id;
+    const open = byCount.rows[byCount.rows.length - 1].id;
+    expect(byCount.rows[0].message_count).toBeGreaterThanOrEqual(200);
+    expect(byCount.rows[byCount.rows.length - 1].message_count).toBeLessThan(10);
+
+    // --- the stamp: first wins, re-stamping is a no-op that still answers true, another member writes nothing ---
+    expect((await loadConversation(userId!, open))!.conversation.changesApprovedAt).toBeNull();
+    expect(await stampChangesApproved(userId!, open, now)).toBe(true);
+    expect(await stampChangesApproved(userId!, open, new Date('2030-06-02T00:00:00Z'))).toBe(true);
+    expect((await loadConversation(userId!, open))!.conversation.changesApprovedAt).toEqual(now);
+    const stranger = await createTestUser('itest');
+    try {
+      expect(await stampChangesApproved(stranger.id, open, new Date('2030-06-03T00:00:00Z'))).toBe(false);
+    } finally {
+      await deleteTestUser(stranger.id);
+    }
+    expect((await loadConversation(userId!, open))!.conversation.changesApprovedAt).toEqual(now);
+
+    // --- record + append: one statement, all or nothing ---
+    const paused = { id: crypto.randomUUID(), parts: [{ type: 'text', text: 'Saving.' }, { type: 'tool-create_saved_view', toolCallId: 'c1', state: 'approval-requested', input: { name: 'Lamps', search: {} }, approval: { id: 'ap_1' } }] };
+    expect(await appendAssistantMessage({ conversationId: open, message: paused as never, status: 'complete', now })).toBe(true);
+    const before = (await loadConversation(userId!, open))!;
+    const answered = [paused.parts[0], { ...paused.parts[1], state: 'output-available', output: { view: { id: 'v1', name: 'Lamps' } }, approval: { id: 'ap_1', approved: true } }];
+    const hidden = () => ({ id: crypto.randomUUID(), parts: [{ type: 'text' as const, text: '[approval-result] The person approved create_saved_view and it ran. Result: {"view":{"id":"v1","name":"Lamps"}}' }] });
+    // A message id that belongs to another chat → 'missing', nothing written anywhere.
+    expect(await recordAnswersAndAppend({ conversationId: full, userId: userId!, messageId: paused.id, parts: answered, message: hidden(), now })).toBe('missing');
+    // A user-role message → 'missing' (the role guard).
+    const userMessageId = before.messages.find((m) => m.role === 'user')!.id;
+    expect(await recordAnswersAndAppend({ conversationId: open, userId: userId!, messageId: userMessageId, parts: answered, message: hidden(), now })).toBe('missing');
+    // Another member → 'missing'.
+    const stranger2 = await createTestUser('itest');
+    try {
+      expect(await recordAnswersAndAppend({ conversationId: open, userId: stranger2.id, messageId: paused.id, parts: answered, message: hidden(), now })).toBe('missing');
+    } finally {
+      await deleteTestUser(stranger2.id);
+    }
+    const untouched = (await loadConversation(userId!, open))!;
+    expect(untouched.messages.map((m) => m.id)).toEqual(before.messages.map((m) => m.id));
+    expect(untouched.conversation.messageCount).toBe(before.conversation.messageCount);
+    expect(untouched.messages.find((m) => m.id === paused.id)!.parts[1]).toMatchObject({ state: 'approval-requested' });
+    // Success: the parts are rewritten AND the hidden row exists with seq = the new count.
+    const outcome = hidden();
+    expect(await recordAnswersAndAppend({ conversationId: open, userId: userId!, messageId: paused.id, parts: answered, message: outcome, now })).toBe('ok');
+    const after = (await loadConversation(userId!, open))!;
+    expect(after.conversation.messageCount).toBe(before.conversation.messageCount + 1);
+    expect(after.messages.find((m) => m.id === paused.id)!.parts[1]).toMatchObject({ state: 'output-available', output: { view: { id: 'v1', name: 'Lamps' } }, approval: { id: 'ap_1', approved: true } });
+    const last = after.messages[after.messages.length - 1];
+    expect([last.id, last.role]).toEqual([outcome.id, 'user']);
+    const seqRow = await db.execute<{ seq: number; n: number }>(sql`SELECT m.seq, c.message_count AS n FROM ask_messages m JOIN ask_conversations c ON c.id = m.conversation_id WHERE m.id = ${outcome.id}::uuid`);
+    expect(seqRow.rows[0].seq).toBe(seqRow.rows[0].n);
+    // A full chat → 'full': neither the parts nor a new row.
+    const fullLast = await db.execute<{ id: string }>(sql`SELECT id FROM ask_messages WHERE conversation_id = ${full}::uuid AND role = 'assistant' ORDER BY seq DESC LIMIT 1`);
+    const snapshot = () => db.execute<{ n: string; parts: unknown }>(sql`SELECT (SELECT count(*) FROM ask_messages WHERE conversation_id = ${full}::uuid)::text AS n, parts FROM ask_messages WHERE id = ${fullLast.rows[0].id}::uuid`);
+    const fullBefore = await snapshot();
+    expect(await recordAnswersAndAppend({ conversationId: full, userId: userId!, messageId: fullLast.rows[0].id, parts: answered, message: hidden(), now })).toBe('full');
+    expect((await snapshot()).rows[0]).toEqual(fullBefore.rows[0]);
   });
 
   it('deleting the user cascades every ask_* row', async () => {
