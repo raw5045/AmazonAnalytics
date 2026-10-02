@@ -225,7 +225,7 @@ describe('AskAi + Thread: a refresh during the member\'s own streaming turn must
     const conv = (id: string) => ({ id, title: `Chat ${id}`, model: 'claude-sonnet-5' as const, updatedAt: '2026-09-28T10:00:00.000Z' });
     const meter = { percentUsed: 0, questionsLeft: 10, hasCredit: false, exhausted: false, admin: false };
     const open = { id: 'c1', model: 'claude-sonnet-5' as const, messageCount: 2, messages: [q('m1', 'old q'), a('m2', 'old answer')] as never, inFlight: false };
-    const view = render(<AskAi conversations={[conv('c1'), conv('c2')]} open={open} meter={meter} preview={false} appOrigin={appOrigin} />);
+    const view = render(<AskAi conversations={[conv('c1'), conv('c2')]} open={open} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />);
     fireEvent.change(screen.getByLabelText('Your question'), { target: { value: 'new question' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await screen.findByText('streaming answer');
@@ -241,6 +241,7 @@ describe('AskAi + Thread: a refresh during the member\'s own streaming turn must
         meter={meter}
         preview={false}
         appOrigin={appOrigin}
+        writes={null}
       />,
     );
     await new Promise((r) => setTimeout(r, 30));

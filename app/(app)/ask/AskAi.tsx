@@ -7,6 +7,7 @@ import { CHAT_FULL_MESSAGE, NO_BALANCE_MESSAGE } from '@/lib/ask/messages';
 import { Meter } from './Meter';
 import { Rail, type RailConversation } from './Rail';
 import { Thread, type OpenConversation } from './Thread';
+import { WriteSwitches, type WriteToggles } from './WriteSwitches';
 
 export interface AskAiProps {
   conversations: RailConversation[];
@@ -15,9 +16,11 @@ export interface AskAiProps {
   preview: boolean;
   /** The origin of env.APP_PUBLIC_URL (page.tsx), threaded down to AnswerMarkdown so it can tell an internal keyword link from an external one (Task 9 D9). */
   appOrigin: string;
+  /** The account's two "always allow" toggles (spec 2026-10-01 §8); null hides the switches: writes off, or no account row yet (page.tsx). */
+  writes: WriteToggles | null;
 }
 
-export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiProps) {
+export function AskAi({ conversations, open, meter, preview, appOrigin, writes }: AskAiProps) {
   const atCap = conversations.length >= ASK_LIMITS.maxChats;
   const full = open !== null && open.messageCount >= ASK_LIMITS.maxMessagesPerChat;
   // The chat-cap reason is decided in Thread instead (fix round 2, item 6) — only it knows about a
@@ -33,6 +36,13 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
   // — an in-page expanding panel below `md`, not an overlay; Rail is a fixed column at md+. Plain
   // state, no effects. Closed automatically once a chat is picked (fix round 2, item 5 minor).
   const [railOpen, setRailOpen] = useState(false);
+  // Spec 2026-10-01 §8: the switches' values, seeded from the page once — a refresh after a turn
+  // does not reset them. A switch saves through PATCH /api/ask/account and reports the answer here;
+  // an "Always approve" answered on a card turns its switch on, with no request: the resend that
+  // carried it reached the thread, so the route had already saved it.
+  const [toggles, setToggles] = useState(writes);
+  const onAlwaysApproved = (kind: 'changes' | 'deletes') =>
+    setToggles((t) => t && { ...t, [kind === 'changes' ? 'autoApproveChanges' : 'autoApproveDeletes']: true });
   /**
    * B1 (Task 9 round-2 re-review): Thread must remount only on a busy→idle transition, never
    * idle→busy. Keying it directly by `open.inFlight` (the previous shape) remounted on ANY
@@ -72,7 +82,9 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
   return (
     <div className="mx-auto max-w-6xl px-6 py-6 text-slate-800">
       <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
+        {/* self-start: with the switches under the meter, that column is the taller one, and the
+            title stays at the top instead of dropping to its foot (no change without them). */}
+        <div className="self-start">
           {/* The chip is a sibling, not a child, of the h1: nested text would join the heading's
               accessible name ("Ask AIAdmin preview"), which breaks an exact "Ask AI" name lookup
               and is poor accessibility besides — a badge should not be read as part of the title. */}
@@ -82,7 +94,10 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
           </div>
           <p className="mt-1 text-sm text-slate-600">Ask questions about keywords, categories and trends. Same data as the Explorer, answered in plain language.</p>
         </div>
-        <Meter meter={meter} />
+        <div className="flex flex-col gap-3">
+          <Meter meter={meter} />
+          {toggles && <WriteSwitches value={toggles} onChange={setToggles} />}
+        </div>
       </header>
       <button
         type="button"
@@ -106,6 +121,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin }: AskAiP
           appOrigin={appOrigin}
           draft={draft}
           onDraftChange={setDraft}
+          onAlwaysApproved={onAlwaysApproved}
         />
       </div>
     </div>

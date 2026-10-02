@@ -1,15 +1,16 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { z } from 'zod';
-import { isToolUIPart } from 'ai';
+import { getToolName, isToolUIPart } from 'ai';
 import { requireAuthenticatedUser } from '@/lib/auth/requireAuthenticatedUser';
 import { env } from '@/lib/env';
-import { askAiEnabled, ASK_LIMITS, DEFAULT_MODEL } from '@/lib/ask/config';
+import { askAiEnabled, askAiWritesEnabled, ASK_LIMITS, DEFAULT_MODEL } from '@/lib/ask/config';
 import { askAiEligible } from '@/lib/ask/eligibility';
 import { countMemberAccountsWithAccess, getAccount, resetPeriodIfDue } from '@/lib/ask/ledger';
 import { listConversations, loadConversation, type AskUIMessage } from '@/lib/ask/conversations';
 import { meterFor } from '@/lib/ask/meter';
 import { SWITCHED_OFF_MESSAGE } from '@/lib/ask/messages';
+import { CHANGE_TOOLS, DELETE_TOOLS } from '@/lib/ask/writeKinds';
 import { AskAi } from './AskAi';
 
 export const metadata: Metadata = { title: 'Ask AI' };
@@ -25,12 +26,40 @@ export const dynamic = 'force-dynamic';
  * React's server-component serialisation writes an `undefined` prop value as the literal string
  * `"$undefined"`, so the key survives on the wire with no payload behind it (Task 9 fix round 2,
  * item 5 — corrects the "absent from the serialised JSON" claim above).
+ *
+ * The exception (arc 4): the eight workspace writes keep a reduced output. The approval cards name
+ * a view or category from the chat's own results (useWorkspaceNames), so without it a reloaded
+ * delete record would show the id's last 8 characters instead of the name. A few dozen bytes
+ * (reducedWriteOutput below), where a list or research output can be a page of rows.
  */
 function withoutToolOutputs(messages: AskUIMessage[]): AskUIMessage[] {
   return messages.map((m) => ({
     ...m,
-    parts: m.parts.map((p) => (isToolUIPart(p) ? { ...p, output: undefined } : p)) as AskUIMessage['parts'],
+    parts: m.parts.map((p) => {
+      if (!isToolUIPart(p)) return p;
+      const name = getToolName(p);
+      const write = CHANGE_TOOLS.has(name) || DELETE_TOOLS.has(name);
+      return { ...p, output: write ? reducedWriteOutput(p.output) : undefined };
+    }) as AskUIMessage['parts'],
   }));
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * What a workspace write's stored output keeps on a reload (lib/workspace/contracts.ts): the
+ * `{ id, name }` of a create/update result's `view` / `category` or a delete result's `deleted` —
+ * the keys useWorkspaceNames reads — or the `{ error }` of a failed write. Nothing for anything
+ * else (a watchlist result, a card still waiting: no output).
+ */
+function reducedWriteOutput(output: unknown): unknown {
+  if (!isRecord(output)) return undefined;
+  if ('error' in output) return { error: output.error };
+  for (const key of ['view', 'category', 'deleted'] as const) {
+    const item = output[key];
+    if (isRecord(item) && typeof item.id === 'string' && typeof item.name === 'string') return { [key]: { id: item.id, name: item.name } };
+  }
+  return undefined;
 }
 
 /** Spec §11. Server: gate, load the rail, the open chat (?c=<uuid>) and the meter; the client component does the rest. */
@@ -78,6 +107,9 @@ export default async function AskPage({ searchParams }: { searchParams: Promise<
       meter={meterFor(account, model, isAdmin)}
       preview={isAdmin && memberAccounts === 0}
       appOrigin={new URL(env.APP_PUBLIC_URL).origin}
+      // Spec 2026-10-01 §8. No row yet (an admin before their first turn: the gates create it then)
+      // means no switches until the next page load.
+      writes={askAiWritesEnabled() && account ? { autoApproveChanges: account.autoApproveChanges, autoApproveDeletes: account.autoApproveDeletes } : null}
     />
   );
 }
