@@ -19,4 +19,24 @@ describe('ToolActivity', () => {
     const { container } = render(<ToolActivity streaming={false} parts={[]} />);
     expect(container).toBeEmptyDOMElement();
   });
+  it('labels the workspace tools and never shows "Working…" for a part that is waiting on a card or was denied', () => {
+    render(<ToolActivity parts={[{ type: 'tool-create_saved_view', toolCallId: 'a', state: 'approval-requested', input: {}, approval: { id: 'x' } } as never, { type: 'tool-list_saved_views', toolCallId: 'b', state: 'output-available', input: {}, output: {} } as never]} streaming />);
+    expect(screen.queryByText(/Working/)).toBeNull();
+    expect(screen.getByText('Used 2 tools')).toBeInTheDocument();
+    expect(screen.getByText('Listing saved views')).toBeInTheDocument();
+  });
+  it('an answered card (approval-responded) or a denied one (output-denied) is not running either; a running workspace tool shows its own label', () => {
+    render(<ToolActivity streaming parts={[part('tool-update_custom_category', 'approval-responded'), part('tool-delete_saved_view', 'output-denied'), part('tool-add_to_watchlist', 'input-available')]} />);
+    expect(screen.getByText('Adding to the watchlist…')).toBeInTheDocument();
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+  });
+  it('has a label for each of the eleven workspace tools', () => {
+    const labels: Record<string, string> = {
+      list_saved_views: 'Listing saved views', create_saved_view: 'Saving a view', update_saved_view: 'Changing a view', delete_saved_view: 'Deleting a view',
+      list_custom_categories: 'Listing custom categories', create_custom_category: 'Creating a category', update_custom_category: 'Changing a category', delete_custom_category: 'Deleting a category',
+      list_watchlist: 'Listing the watchlist', add_to_watchlist: 'Adding to the watchlist', remove_from_watchlist: 'Removing from the watchlist',
+    };
+    render(<ToolActivity streaming={false} parts={Object.keys(labels).map((name) => part(`tool-${name}`, 'output-available'))} />);
+    for (const label of Object.values(labels)) expect(screen.getByText(label)).toBeInTheDocument();
+  });
 });

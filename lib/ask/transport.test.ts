@@ -38,4 +38,11 @@ describe('createAskTransport', () => {
     const [, init] = vi.mocked(fetch).mock.calls[0];
     expect(JSON.parse(init?.body as string)).toEqual({ conversationId: 'c1', message: { text: 'second' } });
   });
+
+  it('an approval resend carries only conversationId and the answers — no message text (spec 2026-10-01 §6)', async () => {
+    const approvals = [{ approvalId: 'ap_1', approved: true, remember: 'chat' }];
+    await send({ conversationId: 'c1', approvals }, [userMessage('save it'), { id: 'm2', role: 'assistant', parts: [{ type: 'tool-create_saved_view', toolCallId: 't', state: 'approval-responded', input: {}, approval: { id: 'ap_1', approved: true } }] } as never, { id: 'p1', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] } as never]);
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(init?.body as string)).toEqual({ conversationId: 'c1', approvals });
+  });
 });

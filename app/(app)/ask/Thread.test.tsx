@@ -6,9 +6,13 @@ const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 const chat = vi.hoisted(() => ({
   messages: [] as unknown[], sendMessage: vi.fn(), status: 'ready', stop: vi.fn(),
-  error: undefined as Error | undefined, clearError: vi.fn(), setMessages: vi.fn(), lastOptions: null as unknown,
+  error: undefined as Error | undefined, clearError: vi.fn(), setMessages: vi.fn(), addToolApprovalResponse: vi.fn(), lastOptions: null as unknown,
 }));
 vi.mock('@ai-sdk/react', () => ({ useChat: (opts: unknown) => { chat.lastOptions = opts; return chat; } }));
+// The id → name lookup has its own tests (useWorkspaceNames.test.ts); here it is a fixed map, so no test fetches.
+const workspaceNames = vi.hoisted(() => ({ value: { views: {} as Record<string, string>, categories: {} as Record<string, string> } }));
+vi.mock('./useWorkspaceNames', () => ({ useWorkspaceNames: () => workspaceNames.value }));
+import { isApprovalResultMessage } from '@/lib/ask/approvalResult';
 import { Thread } from './Thread';
 
 const appOrigin = 'https://keywordquarry.com';
@@ -23,7 +27,7 @@ function Harness({ initialDraft = '', ...rest }: Partial<React.ComponentProps<ty
 }
 
 describe('Thread', () => {
-  beforeEach(() => { vi.clearAllMocks(); chat.messages = []; chat.status = 'ready'; chat.error = undefined; });
+  beforeEach(() => { vi.clearAllMocks(); chat.messages = []; chat.status = 'ready'; chat.error = undefined; workspaceNames.value = { views: {}, categories: {} }; });
 
   it('a new chat shows the model picker and the example prompts, and sends with the chosen model', () => {
     render(<Harness />);
@@ -410,6 +414,211 @@ describe('Thread', () => {
       expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
       act(() => { vi.advanceTimersByTime(1); });
       expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+    });
+  });
+
+  describe('approval cards (arc 4)', () => {
+    const pending = { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'Saving.' }, { type: 'tool-create_saved_view', toolCallId: 'c1', state: 'approval-requested', input: { name: 'Lamps', search: {} }, approval: { id: 'ap_1' } }] };
+    const question = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] };
+    const openChat = (extra: { inFlight?: boolean } = {}) => ({ id: 'c1', model: 'claude-sonnet-5' as const, messageCount: chat.messages.length, messages: chat.messages as never, inFlight: false, ...extra });
+    type FinishEvent = { message: { id: string; role: string; metadata?: unknown }; messages: unknown[]; isAbort: boolean; isError: boolean };
+    const finish = (e: FinishEvent) => act(() => { (chat.lastOptions as { onFinish: (e: FinishEvent) => void }).onFinish(e); });
+    /** The resend's answer streamed: its message is in the thread when onFinish fires. */
+    const finishAnswered = () => { const answer = { id: 'a2', role: 'assistant', parts: [] }; finish({ message: answer, messages: [...chat.messages, answer], isAbort: false, isError: false }); };
+    /** A refused resend (404/400/409/5xx): onFinish gets a shell that never reached the thread. */
+    const finishRefused = () => finish({ message: { id: 'shell', role: 'assistant' }, messages: chat.messages, isAbort: false, isError: true });
+
+    it('renders a live card on the last assistant message and answers it through addToolApprovalResponse + a resend carrying the approval', () => {
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] }, pending];
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+      expect(chat.addToolApprovalResponse).toHaveBeenCalledWith({ id: 'ap_1', approved: true });
+      // The resend's message is a hidden placeholder outcome message, so the SDK starts a NEW assistant
+      // message for the resumed answer instead of continuing the one that holds the card — the live
+      // thread then matches what a reload renders from the store. (Appending it with setMessages and
+      // resending with sendMessage(undefined) does not do that: the SDK's approval resend continues the
+      // card's message — Thread.live.test.tsx drives the real hook.)
+      const [sent, options] = chat.sendMessage.mock.calls[0];
+      expect(isApprovalResultMessage(sent)).toBe(true);
+      expect(options).toEqual({ body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }] } });
+      expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+    });
+    it('with two cards pending, the first answer only records; the second sends both answers in part order', () => {
+      const second = { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] }, { ...pending, parts: [...pending.parts, second] }];
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
+      fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[1]);   // answer the SECOND card first (the watchlist one): Deny
+      expect(chat.addToolApprovalResponse).toHaveBeenCalledWith({ id: 'ap_2', approved: false });
+      expect(chat.sendMessage).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));                                              // the first card (the view)
+      expect(chat.sendMessage).toHaveBeenCalledWith(expect.anything(), { body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] } });
+    });
+    it('a card on an earlier message is a record, not interactive', () => {
+      chat.messages = [pending, { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'later' }] }, { id: 'm4', role: 'assistant', parts: [{ type: 'text', text: 'ok' }] }];
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 3, messages: chat.messages as never, inFlight: false }} />);
+      expect(screen.queryByRole('button', { name: 'Approve for this chat' })).toBeNull();
+      // 'later' was sent while the card was open, and the route denies open cards on a send.
+      expect(screen.getByText('Denied')).toBeInTheDocument();
+    });
+    it('hides the system-reported outcome messages from the thread', () => {
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] }, { id: 'o1', role: 'user', parts: [{ type: 'text', text: '[approval-result] The person approved create_saved_view and it ran. Result: {}' }] }, { id: 'm4', role: 'assistant', parts: [{ type: 'text', text: 'Saved.' }] }];
+      render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 3, messages: chat.messages as never, inFlight: false }} />);
+      expect(screen.queryByText(/approval-result/)).toBeNull();
+      expect(screen.getByText('Saved.')).toBeInTheDocument();
+      expect(screen.getAllByLabelText('You')).toHaveLength(1);
+    });
+    it('a delete card names its view from the lookup and sends no remember with "Approve this delete"', () => {
+      workspaceNames.value = { views: { 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa': 'Lamps' }, categories: {} };
+      chat.messages = [question, { id: 'm2', role: 'assistant', parts: [{ type: 'tool-delete_saved_view', toolCallId: 'c1', state: 'approval-requested', input: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }, approval: { id: 'ap_1' } }] }];
+      render(<Harness open={openChat()} />);
+      expect(screen.getByText('Delete the view ‘Lamps’ — permanent')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Approve this delete' }));
+      expect(chat.sendMessage.mock.calls[0][1]).toEqual({ body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: null }] } });
+    });
+    it('a reloaded chat shows the stored answers as records (Approved / Denied), with no ran-out line under them', () => {
+      chat.messages = [
+        question,
+        { id: 'm2', role: 'assistant', parts: [
+          { type: 'tool-create_saved_view', toolCallId: 'c1', state: 'output-available', input: { name: 'Lamps', search: {} }, output: undefined, approval: { id: 'ap_1', approved: true } },
+          { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'output-denied', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2', approved: false } },
+        ], metadata: { status: 'complete' } },
+        { id: 'o1', role: 'user', parts: [{ type: 'text', text: '[approval-result] The person approved create_saved_view and it ran.' }] },
+        { id: 'm3', role: 'assistant', parts: [{ type: 'text', text: 'Saved.' }], metadata: { status: 'complete' } },
+      ];
+      render(<Harness open={openChat()} />);
+      expect(screen.getByText('Approved')).toBeInTheDocument();
+      expect(screen.getByText('Denied')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+      expect(screen.queryByText(/ran out of steps/)).toBeNull();
+    });
+    it('no ran-out line under a card: a paused turn (finishReason "tool-calls", no text), live and stored', () => {
+      const card = pending.parts[1];
+      chat.messages = [question, { id: 'm2', role: 'assistant', parts: [card], metadata: { finishReason: 'tool-calls' } }];
+      const { unmount } = render(<Harness open={openChat()} />);
+      expect(screen.queryByText(/ran out of steps/)).toBeNull();
+      unmount();
+      chat.messages = [question, { id: 'm2', role: 'assistant', parts: [card], metadata: { status: 'complete' } }];
+      render(<Harness open={openChat()} />);
+      expect(screen.queryByText(/ran out of steps/)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+    });
+    it('a plain finishReason "tool-calls" answer without a card still gets the ran-out line', () => {
+      chat.messages = [question, { id: 'm2', role: 'assistant', parts: [{ type: 'tool-search_keywords', toolCallId: 't', state: 'output-available', input: {} }], metadata: { finishReason: 'tool-calls' } }];
+      render(<Harness open={openChat()} />);
+      expect(screen.getByText('I ran out of steps before finishing. Try a narrower question.')).toBeInTheDocument();
+    });
+    it('not interactive while the server reports the chat busy (open.inFlight)', () => {
+      chat.messages = [question, pending];
+      render(<Harness open={openChat({ inFlight: true })} />);
+      expect(screen.queryByRole('button', { name: 'Approve for this chat' })).toBeNull();
+      expect(screen.getByText('Waiting for an answer')).toBeInTheDocument();
+    });
+    it('a first send whose answer paused on a card holds the card\'s buttons while the page moves to the new chat (N2)', () => {
+      chat.messages = [question, { ...pending, metadata: { conversationId: 'c9' } }];
+      render(<Harness />);
+      expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+      finish({ message: { id: 'm2', role: 'assistant', metadata: { conversationId: 'c9' } }, messages: chat.messages, isAbort: false, isError: false });
+      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
+      expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeDisabled();
+    });
+    it('a new message sent while a card is open denies it, as the route does on that send: the record reads "Denied" at once — and a refused send, taken back out, leaves it open again', () => {
+      const sent = { id: 'u3', role: 'user', parts: [{ type: 'text', text: 'never mind, show me lamps' }] };
+      chat.messages = [question, pending];
+      const { rerender } = render(<Harness open={openChat()} initialDraft="never mind, show me lamps" />);
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+      expect(chat.sendMessage).toHaveBeenCalledWith({ text: 'never mind, show me lamps' }, { body: { conversationId: 'c1' } });
+      chat.messages = [question, pending, sent];                    // useChat adds the member's message
+      rerender(<Harness open={openChat()} />);
+      expect(screen.getByText('Denied')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Approve for this chat' })).toBeNull();
+      chat.messages = [question, pending];                          // refused (e.g. 409 chat_full): onError strips it
+      rerender(<Harness open={openChat()} />);
+      expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+    });
+    it('answers that went out with the hidden placeholder keep their own records, even after later messages', () => {
+      chat.messages = [
+        question,
+        { ...pending, parts: [pending.parts[0], { ...pending.parts[1], state: 'approval-responded', approval: { id: 'ap_1', approved: true } }] },
+        { id: 'approval-m2', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] },
+        { id: 'a2', role: 'assistant', parts: [{ type: 'text', text: 'Saved.' }] },
+        { id: 'u5', role: 'user', parts: [{ type: 'text', text: 'thanks' }] },
+        { id: 'a5', role: 'assistant', parts: [{ type: 'text', text: 'You are welcome.' }] },
+      ];
+      render(<Harness open={openChat()} />);
+      expect(screen.getByText('Approved')).toBeInTheDocument();
+      expect(screen.queryByText('Denied')).toBeNull();
+    });
+    it('a refused resend (an HTTP error) drops the hidden placeholder and never puts its text in the draft; the card keeps its record', () => {
+      chat.messages = [
+        question,
+        { ...pending, parts: [pending.parts[0], { ...pending.parts[1], state: 'approval-responded', approval: { id: 'ap_1', approved: true } }] },
+        { id: 'approval-m2', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] },
+      ];
+      render(<Harness open={openChat()} />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      act(() => { opts.onError(new APICallError({ message: 'Failed to fetch the chat response.', url: '/api/ask/chat', requestBodyValues: {}, statusCode: 404 })); });
+      const updater = chat.setMessages.mock.calls[0][0] as (msgs: unknown[]) => unknown[];
+      let result: unknown[] = [];
+      act(() => { result = updater(chat.messages); });
+      expect(result).toEqual(chat.messages.slice(0, -1));
+      expect(screen.getByLabelText('Your question')).toHaveValue('');
+      expect(screen.getByText('Approved')).toBeInTheDocument();
+    });
+    it('a member\'s own message that starts with the outcome prefix is refused by the route (400) and goes back into the draft like any refusal', () => {
+      chat.messages = [question, { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'Hello.' }] }, { id: 'u9AbC', role: 'user', parts: [{ type: 'text', text: '[approval-result] hi' }] }];
+      render(<Harness open={openChat()} />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      act(() => { opts.onError(new APICallError({ message: JSON.stringify({ error: 'Bad request.', code: 'bad_request' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 400 })); });
+      const updater = chat.setMessages.mock.calls[0][0] as (msgs: unknown[]) => unknown[];
+      let result: unknown[] = [];
+      act(() => { result = updater(chat.messages); });
+      expect(result).toEqual(chat.messages.slice(0, -1));
+      expect(screen.getByLabelText('Your question')).toHaveValue('[approval-result] hi');
+    });
+
+    describe('onAlwaysApproved (Task 9: the "always allow" switch reflects an answer given here)', () => {
+      it('"Always approve changes" calls it with "changes" once the resend\'s answer arrived', () => {
+        const onAlwaysApproved = vi.fn();
+        chat.messages = [question, pending];
+        render(<Harness open={openChat()} onAlwaysApproved={onAlwaysApproved} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Always approve changes' }));
+        expect(chat.sendMessage.mock.calls[0][1]).toEqual({ body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'always' }] } });
+        expect(screen.getByText('Always approved')).toBeInTheDocument();
+        expect(onAlwaysApproved).not.toHaveBeenCalled();
+        finishAnswered();
+        expect(onAlwaysApproved).toHaveBeenCalledTimes(1);
+        expect(onAlwaysApproved).toHaveBeenCalledWith('changes');
+      });
+      it('"Always approve deletes" calls it with "deletes"', () => {
+        const onAlwaysApproved = vi.fn();
+        chat.messages = [question, { id: 'm2', role: 'assistant', parts: [{ type: 'tool-delete_custom_category', toolCallId: 'c1', state: 'approval-requested', input: { id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, approval: { id: 'ap_1' } }] }];
+        render(<Harness open={openChat()} onAlwaysApproved={onAlwaysApproved} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Always approve deletes' }));
+        finishAnswered();
+        expect(onAlwaysApproved).toHaveBeenCalledTimes(1);
+        expect(onAlwaysApproved).toHaveBeenCalledWith('deletes');
+      });
+      it('a refused resend does not call it, and neither does the next turn that finishes', () => {
+        const onAlwaysApproved = vi.fn();
+        chat.messages = [question, pending];
+        render(<Harness open={openChat()} onAlwaysApproved={onAlwaysApproved} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Always approve changes' }));
+        finishRefused();
+        expect(onAlwaysApproved).not.toHaveBeenCalled();
+        finishAnswered();
+        expect(onAlwaysApproved).not.toHaveBeenCalled();
+      });
+      it('"Approve for this chat" and a denial never call it', () => {
+        const onAlwaysApproved = vi.fn();
+        const second = { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
+        chat.messages = [question, { ...pending, parts: [...pending.parts, second] }];
+        render(<Harness open={openChat()} onAlwaysApproved={onAlwaysApproved} />);
+        fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[1]);
+        fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+        finishAnswered();
+        expect(onAlwaysApproved).not.toHaveBeenCalled();
+      });
     });
   });
 });

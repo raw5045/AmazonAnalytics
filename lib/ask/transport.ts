@@ -21,10 +21,18 @@ function lastUserText(messages: AskUIMessage[]): string {
  * ...resolvedBody, ...options.body, id, messages, trigger, messageId }`), so returning exactly the
  * three allowed keys here is what keeps the wire body strict-schema-clean — see transport.test.ts,
  * which asserts the parsed request body deep-equals the route's accepted shape.
+ *
+ * An approval resend (spec 2026-10-01 §6) carries the chat id and the member's answers only —
+ * `{ conversationId, approvals: [{ approvalId, approved, remember }] }`, the route's second strict
+ * shape: no message text (its last user message is the thread's hidden placeholder), no tool
+ * arguments; the server answers from the call it stored.
  */
 export function createAskTransport(): DefaultChatTransport<AskUIMessage> {
   return new DefaultChatTransport<AskUIMessage>({
     api: '/api/ask/chat',
-    prepareSendMessagesRequest: ({ messages, body }) => ({ body: { ...(body ?? {}), message: { text: lastUserText(messages) } } }),
+    prepareSendMessagesRequest: ({ messages, body }) =>
+      body && 'approvals' in body
+        ? { body: { conversationId: body.conversationId, approvals: body.approvals } }
+        : { body: { ...(body ?? {}), message: { text: lastUserText(messages) } } },
   });
 }

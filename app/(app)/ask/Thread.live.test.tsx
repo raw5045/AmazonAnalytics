@@ -130,6 +130,80 @@ describe('Thread with the real useChat (mocked SSE fetch)', () => {
   });
 });
 
+describe('approval cards with the real useChat (arc 4, spec 2026-10-01 §5, §6)', () => {
+  beforeEach(() => { vi.restoreAllMocks(); router.replace.mockClear(); router.refresh.mockClear(); });
+  afterEach(() => cleanup());
+
+  const cardPart = (approvalId: string, tool = 'create_saved_view', input: unknown = { name: 'Lamps', search: {} }) => ({ type: `tool-${tool}`, toolCallId: `call-${approvalId}`, state: 'approval-requested', input, approval: { id: approvalId } });
+  /** A stored chat whose last answer paused on the given cards, as page.tsx hands it over. */
+  const pausedChat = (...cards: unknown[]) => ({
+    ...openConversation,
+    messageCount: 2,
+    messages: [
+      { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }], metadata: { status: 'complete' } },
+      { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'Saving.' }, ...cards], metadata: { status: 'complete' } },
+    ] as never,
+  });
+  const RESUMED = [{ type: 'start', messageId: 'a2' }, { type: 'start-step' }, { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'Saved the view.' }, { type: 'text-end', id: 't' }, { type: 'finish', finishReason: 'stop' }];
+  /** The chat route answers the resend (a stream, or a refusal); the two list routes answer the card's name lookup. */
+  function mockRoutes(chat: { chunks: unknown[] } | { status: number }) {
+    return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
+      if (url === '/api/explorer/saved-views') return Response.json({ views: [] });
+      if (url === '/api/category-builder/custom') return Response.json({ categories: [] });
+      if ('status' in chat) return new Response(null, { status: chat.status });
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const ch of chat.chunks) c.enqueue(sse(ch));
+          c.enqueue(enc.encode('data: [DONE]\n\n'));
+          c.close();
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+  }
+  const chatBodies = (spy: ReturnType<typeof mockRoutes>) => spy.mock.calls.filter(([url]) => url === '/api/ask/chat').map(([, init]) => JSON.parse((init as RequestInit).body as string));
+  const props = { defaultModel: 'claude-sonnet-5' as const, cantSendReason: null, atCap: false, appOrigin };
+
+  it('an answer sends only the chat id and the answers, and the resumed answer arrives as a NEW message after the card — the shape a reload shows', async () => {
+    const spy = mockRoutes({ chunks: RESUMED });
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    await screen.findByText('Saved the view.');
+    expect(chatBodies(spy)).toEqual([{ conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }] }]);
+    const answers = screen.getAllByLabelText('Ask AI');
+    expect(answers).toHaveLength(2);
+    expect(answers[0]).toHaveTextContent('Approved for this chat');
+    expect(answers[0]).not.toHaveTextContent('Saved the view.');
+    expect(answers[1]).toHaveTextContent('Saved the view.');
+    expect(screen.getAllByLabelText('You')).toHaveLength(1); // the hidden placeholder is never shown
+    await waitFor(() => expect(router.refresh).toHaveBeenCalled());
+    expect(screen.queryByText('No answer was saved for this question. Try asking again.')).toBeNull();
+  });
+
+  it('two cards: answering one sends nothing; answering the other sends both answers in part order — after the SDK has already marked the first one answered', async () => {
+    const spy = mockRoutes({ chunks: RESUMED });
+    render(<Harness open={pausedChat(cardPart('ap_1'), cardPart('ap_2', 'add_to_watchlist', { keywords: ['desk lamp'], searchTermIds: [] }))} {...props} />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[1]);
+    expect(screen.getAllByRole('button', { name: 'Deny' })).toHaveLength(1);
+    // Past useChat's 50 ms render throttle, so the rendered part is the SDK's own approval-responded one.
+    await new Promise((r) => setTimeout(r, 120));
+    expect(chatBodies(spy)).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    await screen.findByText('Saved the view.');
+    expect(chatBodies(spy)).toEqual([{ conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] }]);
+  });
+
+  it('a refused resend (the card is no longer open: bodyless 404) shows the chat-gone line, keeps the record, and leaves the draft empty', async () => {
+    mockRoutes({ status: 404 });
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('This chat is no longer available. Reload the page.');
+    expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
+    expect(screen.getByLabelText('Your question')).toHaveValue('');
+    expect(screen.queryByText(/approval-result/)).toBeNull();
+  });
+});
+
 describe('AskAi + Thread: a refresh during the member\'s own streaming turn must not abort it (B1, Task 9 round-2 re-review)', () => {
   afterEach(() => cleanup());
 
