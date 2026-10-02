@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 const chat = vi.hoisted(() => ({
@@ -16,6 +16,7 @@ vi.mock('./Thread', async (importOriginal) => {
 });
 import { AskAi } from './AskAi';
 import { Thread } from './Thread';
+import type { WriteToggles } from './WriteSwitches';
 
 const meter = { percentUsed: 0, questionsLeft: 10, hasCredit: false, exhausted: false, admin: false };
 const appOrigin = 'https://keywordquarry.com';
@@ -109,30 +110,49 @@ describe('AskAi', () => {
   });
 
   describe('the two "always allow" switches (spec 2026-10-01 §8)', () => {
+    const OFF: WriteToggles = { autoApproveChanges: false, autoApproveDeletes: false };
+    /** The page's render of AskAi with the given server values; a rerender with it is a router.refresh(). */
+    const ui = (writes: WriteToggles | null) => <AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={writes} />;
     const changesBox = () => screen.queryByRole('checkbox', { name: 'Changes: always allow' });
     const deletesBox = () => screen.queryByRole('checkbox', { name: 'Deletes: always allow' });
+    const clickChanges = () => fireEvent.click(screen.getByRole('checkbox', { name: 'Changes: always allow' }));
     /** The props AskAi last gave the (spied) Thread. */
     const threadProps = () => {
       const call = vi.mocked(Thread).mock.lastCall;
       if (!call) throw new Error('Thread was not rendered');
       return call[0];
     };
+    const fetchMock = vi.fn();
+    beforeEach(() => {
+      fetchMock.mockReset();
+      vi.stubGlobal('fetch', fetchMock);
+    });
+    afterEach(() => vi.unstubAllGlobals());
 
     it('render with the page\'s values when writes are on, and not at all when writes is null', () => {
-      const { unmount } = render(<AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={{ autoApproveChanges: false, autoApproveDeletes: true }} />);
+      const { unmount } = render(ui({ autoApproveChanges: false, autoApproveDeletes: true }));
       expect(screen.getByRole('group', { name: 'Approvals' })).toBeInTheDocument();
       expect(changesBox()).not.toBeChecked();
       expect(deletesBox()).toBeChecked();
       unmount();
-      render(<AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />);
+      render(ui(null));
       expect(screen.queryByRole('group', { name: 'Approvals' })).toBeNull();
       expect(changesBox()).toBeNull();
       expect(deletesBox()).toBeNull();
     });
 
+    it('a click on a switch goes through AskAi\'s state: it shows at once, then the answer (the row) lands', async () => {
+      fetchMock.mockResolvedValueOnce(Response.json({ autoApproveChanges: true, autoApproveDeletes: true }));
+      render(ui(OFF));
+      clickChanges();
+      expect(changesBox()).toBeChecked();
+      expect(fetchMock).toHaveBeenCalledWith('/api/ask/account', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ autoApproveChanges: true }) }));
+      await waitFor(() => expect(deletesBox()).toBeChecked());
+      expect(changesBox()).toBeChecked();
+    });
+
     it('an "Always approve" answered in the thread turns the matching switch on, with no request of its own', () => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch');
-      render(<AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={{ autoApproveChanges: false, autoApproveDeletes: false }} />);
+      render(ui(OFF));
       act(() => threadProps().onAlwaysApproved?.('changes'));
       expect(changesBox()).toBeChecked();
       expect(deletesBox()).not.toBeChecked();
@@ -140,14 +160,57 @@ describe('AskAi', () => {
       expect(changesBox()).toBeChecked();
       expect(deletesBox()).toBeChecked();
       // The resend that carried the answer already saved it: the switch only shows it.
-      expect(fetchSpy).not.toHaveBeenCalled();
-      fetchSpy.mockRestore();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('an "Always approve" that lands while a switch\'s save is out survives that save failing', async () => {
+      let fail: (reason: unknown) => void = () => {};
+      fetchMock.mockReturnValueOnce(new Promise<Response>((_resolve, reject) => { fail = reject; }));
+      render(ui(OFF));
+      clickChanges();
+      act(() => threadProps().onAlwaysApproved?.('deletes'));
+      expect(deletesBox()).toBeChecked();
+      fail(new TypeError('Failed to fetch'));
+      await waitFor(() => expect(changesBox()).not.toBeChecked());
+      expect(deletesBox()).toBeChecked();
     });
 
     it('with writes null, an "Always approve" from the thread shows no switches', () => {
-      render(<AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />);
+      render(ui(null));
       act(() => threadProps().onAlwaysApproved?.('changes'));
       expect(changesBox()).toBeNull();
+    });
+
+    it('a server render with the same values again (a new object) changes nothing: a refresh that read the row before an in-flight save cannot undo it', async () => {
+      let finish: (res: Response) => void = () => {};
+      fetchMock.mockReturnValueOnce(new Promise<Response>((resolve) => { finish = resolve; }));
+      const { rerender } = render(ui(OFF));
+      clickChanges();
+      rerender(ui({ ...OFF }));
+      expect(changesBox()).toBeChecked();
+      finish(Response.json({ autoApproveChanges: true, autoApproveDeletes: false }));
+      await waitFor(() => expect(changesBox()).toBeEnabled());
+      expect(changesBox()).toBeChecked();
+    });
+
+    it('a server render with different values is taken, over a local flip too (a refused resume that had saved "always" first, another tab)', () => {
+      const { rerender } = render(ui(OFF));
+      act(() => threadProps().onAlwaysApproved?.('changes'));
+      rerender(ui({ ...OFF }));
+      expect(changesBox()).toBeChecked();
+      rerender(ui({ autoApproveChanges: false, autoApproveDeletes: true }));
+      expect(changesBox()).not.toBeChecked();
+      expect(deletesBox()).toBeChecked();
+    });
+
+    it('the switches appear once a server render brings a row (null to values) and go when writes are switched off (values to null)', () => {
+      const { rerender } = render(ui(null));
+      expect(changesBox()).toBeNull();
+      rerender(ui({ autoApproveChanges: true, autoApproveDeletes: false }));
+      expect(changesBox()).toBeChecked();
+      expect(deletesBox()).not.toBeChecked();
+      rerender(ui(null));
+      expect(screen.queryByRole('group', { name: 'Approvals' })).toBeNull();
     });
   });
 });

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useId, useRef, useState } from 'react';
+import { useId, useState } from 'react';
 
 /** The account's two "always allow" toggles (spec 2026-10-01 §3, §8), as PATCH /api/ask/account answers them. */
 export interface WriteToggles { autoApproveChanges: boolean; autoApproveDeletes: boolean }
@@ -18,45 +18,47 @@ function savedToggles(body: unknown): WriteToggles | null {
   return typeof autoApproveChanges === 'boolean' && typeof autoApproveDeletes === 'boolean' ? { autoApproveChanges, autoApproveDeletes } : null;
 }
 
+/** One toggle's save: both values from the answer, or null when it failed (refused, offline, or any other body). */
+async function saveToggle(field: Toggle, next: boolean): Promise<WriteToggles | null> {
+  try {
+    // 'PATCH' in capitals: fetch upper-cases only DELETE/GET/HEAD/OPTIONS/POST/PUT, so a
+    // lower-case 'patch' would reach Next as written and be answered 405.
+    const res = await fetch('/api/ask/account', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ [field]: next }),
+    });
+    return res.ok ? savedToggles(await res.json()) : null;
+  } catch {
+    return null; // offline, or a body that is not JSON: the same as a refusal
+  }
+}
+
 /**
  * Spec 2026-10-01 §8: the two "always allow" switches. Controlled: AskAi holds the values, because
- * an "Always approve" answered on a card turns a switch on as well. A toggle shows at once, saves
- * with only its own field, then takes both values from the answer; a failed save puts the switch
- * back and says so. Both switches stay disabled while a save is out, so there is one request at a
- * time: two could answer out of order (each answer carries both values), and a revert could
- * restore a value that is already stale.
+ * an "Always approve" answered on a card turns a switch on as well — possibly in the same tick as a
+ * change here, so every change is an updater on the current pair, never a copy of a rendered one.
+ * A toggle shows at once, saves with only its own field, then takes both values from the answer; a
+ * failed save puts that switch back and says so (a new attempt clears the line first, so a second
+ * failure in a row is announced again). Both switches stay disabled while a save is out, so there
+ * is one request at a time: two could answer out of order (each answer carries both values), and a
+ * revert could restore a value that is already stale.
  */
-export function WriteSwitches({ value, onChange }: { value: WriteToggles; onChange: (next: WriteToggles) => void }) {
+export function WriteSwitches({ value, onChange }: { value: WriteToggles; onChange: (update: (prev: WriteToggles) => WriteToggles) => void }) {
   const id = useId();
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
-  // The values as last rendered, for the revert after the await: an "Always approve" answered in
-  // the thread while the save was out (AskAi's onAlwaysApproved) must survive a failed save.
-  const latest = useRef(value);
-  useEffect(() => {
-    latest.current = value;
-  });
   const toggle = async (field: Toggle, next: boolean) => {
     if (saving) return;
     setSaving(true);
-    onChange({ ...value, [field]: next });
-    let saved: WriteToggles | null = null;
-    try {
-      // 'PATCH' in capitals: fetch upper-cases only DELETE/GET/HEAD/OPTIONS/POST/PUT, so a
-      // lower-case 'patch' would reach Next as written and be answered 405.
-      const res = await fetch('/api/ask/account', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ [field]: next }),
-      });
-      if (res.ok) saved = savedToggles(await res.json());
-    } catch {
-      // Offline, or a body that is not JSON: the same as a refusal.
-    }
+    setFailed(false);
+    onChange((t) => ({ ...t, [field]: next }));
+    const saved = await saveToggle(field, next);
     setSaving(false);
     setFailed(saved === null);
-    onChange(saved ?? { ...latest.current, [field]: !next });
+    if (saved) onChange(() => saved);
+    else onChange((t) => ({ ...t, [field]: !next }));
   };
   return (
     <fieldset className="text-sm">

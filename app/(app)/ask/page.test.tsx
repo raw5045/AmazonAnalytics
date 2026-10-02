@@ -161,4 +161,39 @@ describe('Ask AI page', () => {
     expect(parts[6].toolCallId).toBe('t7');
     expect(parts[7]).toEqual(pendingCard);
   });
+
+  it('a reload keeps { category: { id, name } } from a successful custom-category write, and nothing from a malformed write output (no throw)', async () => {
+    const CAT = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const CAT_2 = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc2';
+    const summary = (id: string, name: string) => ({
+      id, name, leafCount: 2, previewPaths: ['Tools & Home Improvement > Lighting > Lamps'], previewComplete: true,
+      explorerUrl: 'https://keywordquarry.com/explorer?cc=1', createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z',
+    });
+    const result = (tool: string, toolCallId: string, output: unknown) => ({ type: `tool-${tool}`, toolCallId, state: 'output-available', input: {}, output });
+    conv.loadConversation.mockResolvedValueOnce({
+      conversation: { id: 'c1', userId: 'u1', title: 'Chat', model: 'claude-sonnet-5', messageCount: 2, inFlightSince: null, createdAt: new Date(), updatedAt: new Date() },
+      messages: [{
+        id: 'm1', role: 'assistant', metadata: { status: 'complete' },
+        parts: [
+          result('create_custom_category', 't1', { category: summary(CAT, 'Lighting'), notes: ['Created.'] }),
+          result('update_custom_category', 't2', { category: summary(CAT_2, 'Desk lighting'), notes: [] }),
+          result('create_saved_view', 't3', 'x'),
+          result('update_saved_view', 't4', null),
+          result('delete_custom_category', 't5', []),
+          result('update_saved_view', 't6', { view: { id: 1, name: 'n' } }),
+        ],
+      }],
+    });
+    const element = await AskPage({ searchParams: Promise.resolve({ c: '11111111-1111-4111-8111-111111111111' }) });
+    const parts = (element as unknown as { props: { open: { messages: Array<{ parts: Array<Record<string, unknown>> }> } } }).props.open.messages[0].parts;
+    expect(parts.map((p) => p.output)).toEqual([
+      { category: { id: CAT, name: 'Lighting' } },
+      { category: { id: CAT_2, name: 'Desk lighting' } },
+      undefined, // 'x'
+      undefined, // null
+      undefined, // []
+      undefined, // a view whose id is not a string
+    ]);
+    expect(parts.map((p) => p.toolCallId)).toEqual(['t1', 't2', 't3', 't4', 't5', 't6']);
+  });
 });

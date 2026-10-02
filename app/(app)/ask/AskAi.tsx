@@ -20,6 +20,11 @@ export interface AskAiProps {
   writes: WriteToggles | null;
 }
 
+/** The same two toggles, or both null: a server render that brings these again changes nothing (spec 2026-10-01 §8). */
+function sameWrites(a: WriteToggles | null, b: WriteToggles | null): boolean {
+  return a === b || (!!a && !!b && a.autoApproveChanges === b.autoApproveChanges && a.autoApproveDeletes === b.autoApproveDeletes);
+}
+
 export function AskAi({ conversations, open, meter, preview, appOrigin, writes }: AskAiProps) {
   const atCap = conversations.length >= ASK_LIMITS.maxChats;
   const full = open !== null && open.messageCount >= ASK_LIMITS.maxMessagesPerChat;
@@ -36,11 +41,26 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
   // — an in-page expanding panel below `md`, not an overlay; Rail is a fixed column at md+. Plain
   // state, no effects. Closed automatically once a chat is picked (fix round 2, item 5 minor).
   const [railOpen, setRailOpen] = useState(false);
-  // Spec 2026-10-01 §8: the switches' values, seeded from the page once — a refresh after a turn
-  // does not reset them. A switch saves through PATCH /api/ask/account and reports the answer here;
-  // an "Always approve" answered on a card turns its switch on, with no request: the resend that
-  // carried it reached the thread, so the route had already saved it.
+  /**
+   * Spec 2026-10-01 §8: the switches' values. They change here (a switch's save, an "Always
+   * approve" on a card) and on the server, and every turn ends in a server render (router.refresh(),
+   * or for a first send the router.replace to the new chat) that re-renders this component without
+   * remounting it — so a server value that differs from the last one seen is taken, with the same
+   * "adjust state during render" pattern as `epoch` below. That covers an "Always approve" whose
+   * resume was then refused (the route saves the toggle before the writes; a refusal streams
+   * nothing, so onAlwaysApproved never fires), a save whose answer was lost, another tab, the
+   * writes flag switched off (null hides the switches) and an admin's first account row (created
+   * by that first turn). A server value equal to the last one is ignored, so a refresh that read
+   * the row before an in-flight save committed cannot undo the optimistic value.
+   */
   const [toggles, setToggles] = useState(writes);
+  const [serverWrites, setServerWrites] = useState(writes);
+  if (!sameWrites(writes, serverWrites)) {
+    setServerWrites(writes);
+    setToggles(writes);
+  }
+  // An "Always approve" answered on a card turns its switch on, with no request of its own: the
+  // resend that carried it reached the thread, so the route had already saved it.
   const onAlwaysApproved = (kind: 'changes' | 'deletes') =>
     setToggles((t) => t && { ...t, [kind === 'changes' ? 'autoApproveChanges' : 'autoApproveDeletes']: true });
   /**
@@ -96,7 +116,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
         </div>
         <div className="flex flex-col gap-3">
           <Meter meter={meter} />
-          {toggles && <WriteSwitches value={toggles} onChange={setToggles} />}
+          {toggles && <WriteSwitches value={toggles} onChange={(update) => setToggles((t) => t && update(t))} />}
         </div>
       </header>
       <button

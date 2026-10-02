@@ -49,8 +49,10 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 /**
  * What a workspace write's stored output keeps on a reload (lib/workspace/contracts.ts): the
  * `{ id, name }` of a create/update result's `view` / `category` or a delete result's `deleted` —
- * the keys useWorkspaceNames reads — or the `{ error }` of a failed write. Nothing for anything
- * else (a watchlist result, a card still waiting: no output).
+ * the keys useWorkspaceNames reads — or the `{ error }` of a failed write, kept so a reloaded record
+ * has the outcome the route recorded on the stored message (spec §6); it is the member's own data,
+ * and nothing on the client reads it today. Nothing for anything else (a watchlist result, a card
+ * still waiting with no output, an output not of the expected shape).
  */
 function reducedWriteOutput(output: unknown): unknown {
   if (!isRecord(output)) return undefined;
@@ -108,7 +110,8 @@ export default async function AskPage({ searchParams }: { searchParams: Promise<
       preview={isAdmin && memberAccounts === 0}
       appOrigin={new URL(env.APP_PUBLIC_URL).origin}
       // Spec 2026-10-01 §8. No row yet (an admin before their first turn: the gates create it then)
-      // means no switches until the next page load.
+      // passes null; the server render that ends that turn (a refresh, or the move to the new chat)
+      // brings the row's values, and AskAi takes them.
       writes={askAiWritesEnabled() && account ? { autoApproveChanges: account.autoApproveChanges, autoApproveDeletes: account.autoApproveDeletes } : null}
     />
   );
