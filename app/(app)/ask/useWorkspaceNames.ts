@@ -1,10 +1,13 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { getToolName, isToolUIPart } from 'ai';
 import type { ApprovalNames } from '@/lib/ask/approvalSummaries';
 import type { AskUIMessage } from '@/lib/ask/conversations';
 
 type NameMap = Record<string, string>;
+type ListKind = keyof ApprovalNames;
+/** The existing GET list routes, one per kind. */
+const LIST_URLS: Readonly<Record<ListKind, string>> = { views: '/api/explorer/saved-views', categories: '/api/category-builder/custom' };
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 /** Keys lowercased: the summaries look an input id up as given and lowercased, and Postgres returns lowercase ids. */
@@ -18,8 +21,9 @@ function addAll(map: NameMap, items: unknown): void {
 /**
  * Names the chat itself produced, from its tool results (lib/workspace/contracts.ts): the list
  * tools' items, a create/update result's `view` / `category`, and a delete result's `deleted`.
- * Later results win (a rename). Error results and every other tool are ignored. Only live results
- * carry an output: page.tsx strips tool outputs from a reloaded chat.
+ * Later results win (a rename). Error results and every other tool are ignored. Across a reload,
+ * page.tsx keeps a reduced output on the workspace writes (`{ view | category | deleted: { id,
+ * name } }`), so a write's record keeps its name; list (and research) outputs exist only live.
  */
 function namesFromResults(messages: AskUIMessage[]): ApprovalNames {
   const views: NameMap = {};
@@ -41,19 +45,34 @@ function namesFromResults(messages: AskUIMessage[]): ApprovalNames {
   return { views, categories };
 }
 
+/** The list a card's `id` is named from: *_saved_view → saved views, *_custom_category → categories. Creates and the watchlist carry no id to name. */
+function listOf(toolName: string): ListKind | null {
+  if (toolName.endsWith('_saved_view')) return 'views';
+  if (toolName.endsWith('_custom_category')) return 'categories';
+  return null;
+}
+
 /**
- * Every approval id in the chat, sorted: '' while no part carries an approval. A new card adds an
- * id, so the lookup runs again (picking up what an earlier approved write just created); an answer
- * only changes a part's state, so it does not (that fetch would race the very write it waits for).
+ * The ids that open cards (asked, or answered here and not sent yet) carry for one list and that
+ * no known name resolves — sorted and joined, '' when there are none. Only these are fetched: a new
+ * card with an unknown id (say, a view an earlier approved write just created) asks again; an
+ * answer, a known id or a record (its name travels in its own result) does not.
  */
-function approvalKey(messages: AskUIMessage[]): string {
+function unresolvedIds(messages: AskUIMessage[], kind: ListKind, known: ApprovalNames): string {
   const ids = new Set<string>();
-  for (const m of messages) for (const p of m.parts) if (isToolUIPart(p) && p.approval) ids.add(p.approval.id);
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (!isToolUIPart(p) || (p.state !== 'approval-requested' && p.state !== 'approval-responded')) continue;
+      if (listOf(getToolName(p)) !== kind || !isRecord(p.input) || typeof p.input.id !== 'string') continue;
+      const id = p.input.id.toLowerCase();
+      if (!Object.hasOwn(known[kind], id)) ids.add(id);
+    }
+  }
   return [...ids].sort().join(' ');
 }
 
 /** id → name from one of the existing GET list routes; empty when the request fails or the body is not the expected list. */
-async function fetchNames(url: string, key: 'views' | 'categories', signal: AbortSignal): Promise<NameMap> {
+async function fetchNames(url: string, key: ListKind, signal: AbortSignal): Promise<NameMap> {
   const map: NameMap = {};
   try {
     const res = await fetch(url, { credentials: 'same-origin', signal });
@@ -67,28 +86,34 @@ async function fetchNames(url: string, key: 'views' | 'categories', signal: Abor
 }
 
 /**
+ * Fetches one list while `unresolved` (its ids no name resolves) is non-empty. A changed set aborts
+ * the request in flight and asks again; names accumulate; a failed fetch adds nothing (the card
+ * then shows the id's last 8 characters, and the same set is not retried).
+ */
+function useListNames(kind: ListKind, unresolved: string, setFetched: Dispatch<SetStateAction<ApprovalNames>>): void {
+  useEffect(() => {
+    if (unresolved === '') return;
+    const controller = new AbortController();
+    void fetchNames(LIST_URLS[kind], kind, controller.signal).then((found) => {
+      if (!controller.signal.aborted) setFetched((prev) => ({ ...prev, [kind]: { ...prev[kind], ...found } }));
+    });
+    return () => controller.abort();
+  }, [kind, unresolved, setFetched]);
+}
+
+/**
  * Spec 2026-10-01 §5: what the approval cards resolve view and category ids to. Two sources, the
  * chat's own results winning: (1) names the chat produced (above), derived on every render; (2) the
- * member's own lists — GET /api/explorer/saved-views and GET /api/category-builder/custom — fetched
- * once the first part with an approval appears and again for each new card. Fetched names
- * accumulate for the life of the thread, so a view deleted on an earlier card keeps its name on that
- * record when a later card fetches again; a failed fetch adds nothing.
+ * member's own lists — GET /api/explorer/saved-views and GET /api/category-builder/custom — each
+ * fetched only when an open card carries an id of its kind that nothing resolves yet (a create or a
+ * watchlist card never fetches). Fetched names accumulate for the life of the thread, so a view
+ * deleted on an earlier card keeps its name on that record when a later card fetches again.
  */
 export function useWorkspaceNames(messages: AskUIMessage[]): ApprovalNames {
   const own = useMemo(() => namesFromResults(messages), [messages]);
-  const key = useMemo(() => approvalKey(messages), [messages]);
   const [fetched, setFetched] = useState<ApprovalNames>({ views: {}, categories: {} });
-  useEffect(() => {
-    if (key === '') return;
-    const controller = new AbortController();
-    void Promise.all([
-      fetchNames('/api/explorer/saved-views', 'views', controller.signal),
-      fetchNames('/api/category-builder/custom', 'categories', controller.signal),
-    ]).then(([views, categories]) => {
-      if (controller.signal.aborted) return;
-      setFetched((prev) => ({ views: { ...prev.views, ...views }, categories: { ...prev.categories, ...categories } }));
-    });
-    return () => controller.abort();
-  }, [key]);
-  return useMemo(() => ({ views: { ...fetched.views, ...own.views }, categories: { ...fetched.categories, ...own.categories } }), [fetched, own]);
+  const names = useMemo(() => ({ views: { ...fetched.views, ...own.views }, categories: { ...fetched.categories, ...own.categories } }), [fetched, own]);
+  useListNames('views', unresolvedIds(messages, 'views', names), setFetched);
+  useListNames('categories', unresolvedIds(messages, 'categories', names), setFetched);
+  return names;
 }

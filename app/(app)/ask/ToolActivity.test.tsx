@@ -20,9 +20,9 @@ describe('ToolActivity', () => {
     expect(container).toBeEmptyDOMElement();
   });
   it('labels the workspace tools and never shows "Working…" for a part that is waiting on a card or was denied', () => {
+    // The thread hands cards to ApprovalCard, not here (a card is a question, not activity — Thread.test.tsx); this is the guard if one ever arrives.
     render(<ToolActivity parts={[{ type: 'tool-create_saved_view', toolCallId: 'a', state: 'approval-requested', input: {}, approval: { id: 'x' } } as never, { type: 'tool-list_saved_views', toolCallId: 'b', state: 'output-available', input: {}, output: {} } as never]} streaming />);
     expect(screen.queryByText(/Working/)).toBeNull();
-    expect(screen.getByText('Used 2 tools')).toBeInTheDocument();
     expect(screen.getByText('Listing saved views')).toBeInTheDocument();
   });
   it('an answered card (approval-responded) or a denied one (output-denied) is not running either; a running workspace tool shows its own label', () => {

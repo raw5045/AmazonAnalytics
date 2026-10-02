@@ -45,6 +45,17 @@ describe('ApprovalCard (spec 2026-10-01 §5)', () => {
     expect(screen.getByText('Denied')).toBeInTheDocument();
     expect(screen.queryByRole('button')).toBeNull();
   });
+  it('a Deny answered here (approval-responded, approved: false) reads "Denied" before the server records it', () => {
+    const deniedHere = { ...(requested as object), state: 'approval-responded', approval: { id: 'ap_1', approved: false } } as never;
+    render(<ApprovalCard part={deniedHere} names={names} interactive busy={false} onAnswer={vi.fn()} record={null} />);
+    expect(screen.getByText('Denied')).toBeInTheDocument();
+    expect(screen.queryByText(/Approved/)).toBeNull();
+  });
+  it('the live card\'s group is labelled by its own summary, so two cards are told apart', () => {
+    render(<><ApprovalCard part={requested} names={names} interactive busy={false} onAnswer={vi.fn()} /><ApprovalCard part={del} names={names} interactive busy={false} onAnswer={vi.fn()} /></>);
+    expect(screen.getByRole('group', { name: 'Save a view named ‘Lamps’' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Delete the view …aaaaaaaa — permanent' })).toBeInTheDocument();
+  });
   it('an "Always approve" answer reads "Always approved" once answered, and every summary line wraps anywhere (a 512-character keyword has no spaces)', () => {
     const answered = { ...(requested as object), state: 'approval-responded', approval: { id: 'ap_1', approved: true } } as never;
     const { container, rerender } = render(<ApprovalCard part={answered} names={names} interactive busy={false} onAnswer={vi.fn()} record="always" />);

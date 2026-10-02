@@ -63,8 +63,24 @@ function isOpenCard(p: { state: string }): boolean {
  * text that starts with the prefix (the route refuses it) goes back into the draft like any refusal.
  */
 const PLACEHOLDER_ID_PREFIX = 'approval-';
+const placeholderIdFor = (messageId: string): string => `${PLACEHOLDER_ID_PREFIX}${messageId}`;
 function isApprovalPlaceholder(m: AskUIMessage): boolean {
   return m.id.startsWith(PLACEHOLDER_ID_PREFIX) && isApprovalResultMessage(m);
+}
+/**
+ * Asked again: the resend that carried these answers failed before the route recorded anything, so
+ * the cards are open on the server and get their buttons back (spec 2026-10-01 §6, §9). The request
+ * shape is restored as the route stored it — `approval: { id }` — so addToolApprovalResponse finds
+ * the part again on the next click.
+ */
+function reopenCards(m: AskUIMessage, ids: ReadonlySet<string>): AskUIMessage {
+  return {
+    ...m,
+    parts: m.parts.map((p): AskUIMessage['parts'][number] => {
+      if (!isToolUIPart(p) || p.state !== 'approval-responded' || !ids.has(p.approval.id)) return p;
+      return { ...p, state: 'approval-requested', approval: { id: p.approval.id } };
+    }),
+  };
 }
 
 /**
@@ -147,8 +163,13 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   // Arc 4: the member's answers to approval cards, by approval id — what a card's record says ("for
   // this chat" / "always", known only to the tab that clicked) and what the resend carries.
   const [answers, setAnswers] = useState<Readonly<Record<string, ApprovalAnswer>>>({});
-  // The kinds an "Always approve" covered in the resend in flight; onFinish drains it (spec 2026-10-01 §8).
-  const alwaysSent = useRef<ReadonlySet<'changes' | 'deletes'>>(new Set());
+  // The resend in flight: the cards' message, the approval ids it answers, and the kinds an "Always
+  // approve" in it covered. onError reopens those cards when it failed before anything streamed;
+  // onFinish drains it (spec 2026-10-01 §6, §8, §9).
+  const resendInFlight = useRef<{ messageId: string; ids: ReadonlySet<string>; always: ReadonlySet<'changes' | 'deletes'> } | null>(null);
+  // Where focus goes once an answered card collapses: the next open card (its approval id), else the composer (null).
+  const [focusAfterAnswer, setFocusAfterAnswer] = useState<{ approvalId: string | null } | null>(null);
+  const sectionRef = useRef<HTMLElement>(null);
   useEffect(() => {
     alive.current = true;
     return () => {
@@ -174,10 +195,10 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       // answer reached the thread — the route saves the preference before any write and before it
       // streams, so a streamed answer means it landed (even one that then stops or errors), while a
       // refused resend (404/400/409/5xx) never streams. Drained on every finish, so it never leaks
-      // into a later turn.
-      const always = alwaysSent.current;
-      alwaysSent.current = new Set();
-      if (reached) for (const kind of always) onAlwaysApproved?.(kind);
+      // into a later turn (onError, which runs first, has already reopened a failed one's cards).
+      const sent = resendInFlight.current;
+      resendInFlight.current = null;
+      if (sent && reached) for (const kind of sent.always) onAlwaysApproved?.(kind);
       if (isError) {
         // M2: onError already navigated for this exact failure — one navigation, not two.
         if (navigatedByErrorRef.current) navigatedByErrorRef.current = false;
@@ -210,6 +231,29 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       else moveOn();
     },
     onError: (err) => {
+      // Arc 4 (spec 2026-10-01 §6, §9): a resend that failed before anything streamed — refused by
+      // the route (409 busy or full, 402, 400, 5xx) or lost on the network — still has the hidden
+      // placeholder last, and the route recorded nothing: the cards reopen for one more click (the
+      // alert says what happened, and they are live in useChat's error state). A 404 means they are
+      // gone (answered elsewhere, the chat deleted, writes switched off): the placeholder goes, the
+      // records and the chat-gone line stay. Checked before the HTTP-only early return below, so a
+      // network failure is covered too. `undone` is set inside the updater, which @ai-sdk/react runs
+      // once, synchronously (M5 below), against the current messages.
+      const sent = resendInFlight.current;
+      if (sent) {
+        const gone = APICallError.isInstance(err) && err.statusCode === 404;
+        let undone = false;
+        setMessages((msgs) => {
+          if (msgs[msgs.length - 1]?.id !== placeholderIdFor(sent.messageId)) return msgs;
+          undone = true;
+          const kept = msgs.slice(0, -1);
+          return gone ? kept : kept.map((m) => (m.id === sent.messageId ? reopenCards(m, sent.ids) : m));
+        });
+        if (undone) {
+          if (!gone) setAnswers((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !sent.ids.has(id))));
+          return;
+        }
+      }
       if (!APICallError.isInstance(err) || typeof err.statusCode !== 'number') return;
       let refusedConversationId: string | null = null;
       try {
@@ -238,8 +282,8 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       // updater and would make this an impure side effect inside it.
       setMessages((msgs) => {
         const trailing = msgs[msgs.length - 1];
-        // Arc 4: a refused approval resend leaves the hidden placeholder last — dropped, and never
-        // put in the draft. The cards keep their records; the alert says what happened.
+        // Arc 4 backstop: the resend branch above handles a failed resend; a hidden placeholder
+        // found last here anyway is dropped and never put in the draft.
         if (trailing && isApprovalPlaceholder(trailing)) return msgs.slice(0, -1);
         if (trailing?.role !== 'user' || draft !== '') return msgs;
         onDraftChange(trailing.parts.map((p) => (p.type === 'text' ? p.text : '')).join(''));
@@ -298,6 +342,11 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
    * on the wire), so the SDK starts a NEW assistant message for the resumed answer — what a reload
    * shows. The SDK's own approval resend, sendMessage(undefined), would continue the cards' message
    * instead, even with a placeholder appended first (Thread.live.test.tsx drives the real hook).
+   * Keep it that way: never call sendMessage() without a message here, and never give useChat a
+   * sendAutomaticallyWhen — those are the only readers of the SDK's pendingApprovalMessageId (which
+   * addToolApprovalResponse sets), so leaving it unused is what lets a refused resend simply reopen
+   * its cards (onError) and a later click start over.
+   * Focus then moves to the next card still open (part order, wrapping), else to the composer.
    */
   const answerApproval = (a: ApprovalAnswer) => {
     if (last?.role !== 'assistant') return;
@@ -305,21 +354,36 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
     setAnswers((prev) => ({ ...prev, [a.approvalId]: a }));
     void addToolApprovalResponse({ id: a.approvalId, approved: a.approved });
     const waiting = cardParts(last).filter(isOpenCard);
-    if (!waiting.every((p) => next[p.approval.id])) return;
-    alwaysSent.current = new Set(
-      waiting.filter((p) => next[p.approval.id].remember === 'always').map((p): 'changes' | 'deletes' => (writeKind(getToolName(p)) === 'delete' ? 'deletes' : 'changes')),
-    );
+    const at = waiting.findIndex((p) => p.approval.id === a.approvalId);
+    const nextOpen = [...waiting.slice(at + 1), ...waiting.slice(0, Math.max(at, 0))].find((p) => !next[p.approval.id]);
+    setFocusAfterAnswer({ approvalId: nextOpen?.approval.id ?? null });
+    if (nextOpen) return;
+    resendInFlight.current = {
+      messageId: last.id,
+      ids: new Set(waiting.map((p) => p.approval.id)),
+      always: new Set(waiting.filter((p) => next[p.approval.id].remember === 'always').map((p): 'changes' | 'deletes' => (writeKind(getToolName(p)) === 'delete' ? 'deletes' : 'changes'))),
+    };
     void sendMessage(
-      { id: `${PLACEHOLDER_ID_PREFIX}${last.id}`, role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} pending` }] },
+      { id: placeholderIdFor(last.id), role: 'user', parts: [{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} pending` }] },
       { body: { conversationId: knownChatId, approvals: waiting.map((p) => next[p.approval.id]) } },
     );
   };
+  // After an answer: focus the next open card's first button, else the composer's textarea. Composer
+  // does not expose its textarea, so it is found inside this thread's own section (its form lives there).
+  useEffect(() => {
+    if (!focusAfterAnswer) return;
+    const section = sectionRef.current;
+    if (!section) return;
+    const card = focusAfterAnswer.approvalId === null ? undefined : [...section.querySelectorAll<HTMLElement>('[data-approval-id]')].find((el) => el.dataset.approvalId === focusAfterAnswer.approvalId);
+    (card?.querySelector('button') ?? section.querySelector('textarea'))?.focus();
+  }, [focusAfterAnswer]);
   /**
    * How a card shows. A card still open when the member sent a new message was denied by that send
    * (spec 2026-10-01 §6: the route records the denial before it stores the message), so it reads
-   * "Denied" without a reload — and if that send is refused, onError takes the message back out and
-   * the card is open again, as it still is on the server. A card answered here shows its record at
-   * once, before useChat's throttled re-render brings the SDK's approval-responded part.
+   * "Denied" without a reload. If that send is refused, onError takes the message back out: the card
+   * is the last answer's again, open as it still is on the server, and live in useChat's error state.
+   * A card answered here shows its record at once, before useChat's throttled re-render brings the
+   * SDK's approval-responded part.
    */
   const shownCard = (p: CardPart, deniedBySend: boolean): ToolUIPart => {
     if (deniedBySend && (p.state === 'approval-requested' || p.state === 'approval-responded')) {
@@ -348,7 +412,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   const empty = messages.length === 0;
 
   return (
-    <section aria-label="Conversation" className="flex min-h-[60vh] flex-col gap-4">
+    <section ref={sectionRef} aria-label="Conversation" className="flex min-h-[60vh] flex-col gap-4">
       <div className="flex items-center gap-2 text-xs text-slate-500">
         <span>Model:</span>
         {open ? <span className="rounded bg-slate-100 px-1.5 py-0.5">{ASK_MODELS.find((m) => m.id === open.model)?.label ?? open.model}</span> : <span>{ASK_MODELS.find((m) => m.id === model)?.label}</span>}
@@ -370,7 +434,8 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
         {messages.map((m, index) => {
           // The route's hidden outcome messages (and this tab's placeholder for one) are never shown.
           if (isApprovalResultMessage(m)) return null;
-          const toolParts = m.parts.filter(isToolUIPart) as ToolUIPart[];
+          // A card is a question to the member, not activity (spec 2026-10-01 §5): not in the "Used N tools" strip.
+          const toolParts = (m.parts.filter(isToolUIPart) as ToolUIPart[]).filter((p) => p.approval == null);
           const cards = m.role === 'assistant' ? cardParts(m) : [];
           // A member message right after this answer was sent while its cards were open (an answered
           // set is followed by the hidden placeholder or outcome message instead): that send denied them.
@@ -381,19 +446,22 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
           return (
             <li key={m.id} className={m.role === 'user' ? 'self-end' : 'self-start'}>
               <article aria-label={m.role === 'user' ? 'You' : 'Ask AI'} className={`max-w-[48rem] rounded-lg px-4 py-3 text-sm ${m.role === 'user' ? 'bg-[#0B1E3A] text-white' : 'border border-slate-200 bg-white'}`}>
+                {m.role === 'assistant' && <ToolActivity parts={toolParts} streaming={isLive} />}
+                {m.parts.map((p, i) => (p.type === 'text' ? (m.role === 'user' ? <p key={i} className="whitespace-pre-wrap">{p.text}</p> : <AnswerMarkdown key={i} appOrigin={appOrigin}>{p.text}</AnswerMarkdown>) : null))}
+                {/* The cards read after the answer's lead-in, nearest the composer. Live on the last
+                    answer whenever nothing is streaming — in useChat's error state too, so a card a
+                    refused send or resend left open keeps its buttons. */}
                 {cards.map((p) => (
                   <ApprovalCard
                     key={p.toolCallId}
                     part={shownCard(p, deniedBySend)}
                     names={names}
-                    interactive={m === last && status === 'ready' && !open?.inFlight}
+                    interactive={m === last && !streaming && !open?.inFlight}
                     busy={cardsBusy}
                     onAnswer={answerApproval}
                     record={answers[p.approval.id]?.remember}
                   />
                 ))}
-                {m.role === 'assistant' && <ToolActivity parts={toolParts} streaming={isLive} />}
-                {m.parts.map((p, i) => (p.type === 'text' ? (m.role === 'user' ? <p key={i} className="whitespace-pre-wrap">{p.text}</p> : <AnswerMarkdown key={i} appOrigin={appOrigin}>{p.text}</AnswerMarkdown>) : null))}
                 {line && <p className={`mt-1 text-xs ${m.metadata?.status === 'failed' ? 'text-red-700' : 'text-slate-500'}`}>{line}</p>}
               </article>
             </li>

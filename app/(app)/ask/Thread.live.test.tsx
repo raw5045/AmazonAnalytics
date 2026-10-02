@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 import { Thread } from './Thread';
@@ -145,15 +145,23 @@ describe('approval cards with the real useChat (arc 4, spec 2026-10-01 §5, §6)
     ] as never,
   });
   const RESUMED = [{ type: 'start', messageId: 'a2' }, { type: 'start-step' }, { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'Saved the view.' }, { type: 'text-end', id: 't' }, { type: 'finish', finishReason: 'stop' }];
-  /** The chat route answers the resend (a stream, or a refusal); the two list routes answer the card's name lookup. */
-  function mockRoutes(chat: { chunks: unknown[] } | { status: number }) {
+  type ChatReply = { chunks: unknown[] } | { status: number; body?: unknown } | { network: true };
+  /**
+   * The chat route answers each request with the next reply (the last one repeats): a stream, a
+   * refusal (bodyless, or the route's JSON), or a network failure. The two list routes answer the
+   * card's name lookup.
+   */
+  function mockRoutes(...replies: ChatReply[]) {
+    let call = 0;
     return vi.spyOn(globalThis, 'fetch').mockImplementation(async (url) => {
       if (url === '/api/explorer/saved-views') return Response.json({ views: [] });
       if (url === '/api/category-builder/custom') return Response.json({ categories: [] });
-      if ('status' in chat) return new Response(null, { status: chat.status });
+      const reply = replies[Math.min(call++, replies.length - 1)];
+      if ('network' in reply) throw new TypeError('Failed to fetch');
+      if ('status' in reply) return reply.body === undefined ? new Response(null, { status: reply.status }) : Response.json(reply.body, { status: reply.status });
       const body = new ReadableStream<Uint8Array>({
         start(c) {
-          for (const ch of chat.chunks) c.enqueue(sse(ch));
+          for (const ch of reply.chunks) c.enqueue(sse(ch));
           c.enqueue(enc.encode('data: [DONE]\n\n'));
           c.close();
         },
@@ -161,6 +169,11 @@ describe('approval cards with the real useChat (arc 4, spec 2026-10-01 §5, §6)
       return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     });
   }
+  const SETUP_FAILED = { status: 503, body: { error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed' } };
+  const BUSY = { status: 409, body: { error: 'Wait for the current answer to finish.', code: 'busy' } };
+  const watchlistCard = () => cardPart('ap_2', 'add_to_watchlist', { keywords: ['desk lamp'], searchTermIds: [] });
+  /** useChat re-renders its messages on a 50 ms throttle: past it, the rendered parts are the SDK's own. */
+  const pastThrottle = () => act(async () => { await new Promise((r) => setTimeout(r, 120)); });
   const chatBodies = (spy: ReturnType<typeof mockRoutes>) => spy.mock.calls.filter(([url]) => url === '/api/ask/chat').map(([, init]) => JSON.parse((init as RequestInit).body as string));
   const props = { defaultModel: 'claude-sonnet-5' as const, cantSendReason: null, atCap: false, appOrigin };
 
@@ -193,14 +206,94 @@ describe('approval cards with the real useChat (arc 4, spec 2026-10-01 §5, §6)
     expect(chatBodies(spy)).toEqual([{ conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] }]);
   });
 
-  it('a refused resend (the card is no longer open: bodyless 404) shows the chat-gone line, keeps the record, and leaves the draft empty', async () => {
+  it('a refused resend (the card is no longer open: bodyless 404) shows the chat-gone line, keeps the record with no buttons, and leaves the draft empty', async () => {
     mockRoutes({ status: 404 });
     render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} />);
     fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('This chat is no longer available. Reload the page.');
+    await pastThrottle();
     expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
     expect(screen.getByLabelText('Your question')).toHaveValue('');
     expect(screen.queryByText(/approval-result/)).toBeNull();
+  });
+
+  it('a resend refused before anything streamed (503) reopens the card with no stale record; one more click sends the same body, and the resumed answer is a new message', async () => {
+    const spy = mockRoutes(SETUP_FAILED, { chunks: RESUMED });
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong on our side. Try again in a minute.');
+    await pastThrottle();
+    expect(screen.queryByText('Approved for this chat')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    await screen.findByText('Saved the view.');
+    const body = { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }] };
+    expect(chatBodies(spy)).toEqual([body, body]);
+    const answers = screen.getAllByLabelText('Ask AI');
+    expect(answers).toHaveLength(2);
+    expect(answers[0]).toHaveTextContent('Approved for this chat');
+    expect(answers[1]).toHaveTextContent('Saved the view.');
+    expect(screen.getAllByLabelText('You')).toHaveLength(1);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('two cards and a 409: both reopen, and answering them again sends both answers in part order', async () => {
+    const spy = mockRoutes(BUSY, { chunks: RESUMED });
+    render(<Harness open={pausedChat(cardPart('ap_1'), watchlistCard())} {...props} />);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[1]);
+    await pastThrottle();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Wait for the current answer to finish.');
+    await pastThrottle();
+    expect(screen.getAllByRole('button', { name: 'Deny' })).toHaveLength(2);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[1]);
+    await pastThrottle();
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    await screen.findByText('Saved the view.');
+    const both = { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] };
+    expect(chatBodies(spy)).toEqual([both, both]);
+  });
+
+  it('"Always approve" refused (503) and then accepted turns the switch on exactly once', async () => {
+    mockRoutes(SETUP_FAILED, { chunks: RESUMED });
+    const onAlwaysApproved = vi.fn();
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} onAlwaysApproved={onAlwaysApproved} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Always approve changes' }));
+    await screen.findByRole('alert');
+    await pastThrottle();
+    expect(onAlwaysApproved).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Always approve changes' }));
+    await screen.findByText('Saved the view.');
+    await waitFor(() => expect(onAlwaysApproved).toHaveBeenCalledTimes(1));
+    expect(onAlwaysApproved).toHaveBeenCalledWith('changes');
+  });
+
+  it('a refused NEW send (409 busy) while a card is open: the message goes back into the draft and the card keeps its buttons (useChat stays in its error state)', async () => {
+    mockRoutes(BUSY);
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} />);
+    fireEvent.change(screen.getByLabelText('Your question'), { target: { value: 'never mind' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Wait for the current answer to finish.');
+    await pastThrottle();
+    expect(screen.getByLabelText('Your question')).toHaveValue('never mind');
+    expect(screen.queryByText('Denied')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+  });
+
+  it('a resend lost on the network reopens the card; a new message after it then denies it ("Denied")', async () => {
+    const ANSWER = [{ type: 'start', messageId: 'a3' }, { type: 'start-step' }, { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'Here are some lamps.' }, { type: 'text-end', id: 't' }, { type: 'finish', finishReason: 'stop' }];
+    const spy = mockRoutes({ network: true }, { chunks: ANSWER });
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong on our side. Try again in a minute.');
+    await pastThrottle();
+    expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Your question'), { target: { value: 'never mind, show me lamps' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('Here are some lamps.');
+    expect(screen.getByText('Denied')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve for this chat' })).toBeNull();
+    expect(chatBodies(spy)[1]).toEqual({ conversationId: 'c1', message: { text: 'never mind, show me lamps' } });
   });
 });
 

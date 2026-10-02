@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act } from '@testing-library/react';
+import { render, screen, fireEvent, act, within } from '@testing-library/react';
 import { APICallError } from 'ai';
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
@@ -438,8 +438,10 @@ describe('Thread', () => {
       // thread then matches what a reload renders from the store. (Appending it with setMessages and
       // resending with sendMessage(undefined) does not do that: the SDK's approval resend continues the
       // card's message — Thread.live.test.tsx drives the real hook.)
+      expect(chat.sendMessage).toHaveBeenCalledTimes(1);
       const [sent, options] = chat.sendMessage.mock.calls[0];
       expect(isApprovalResultMessage(sent)).toBe(true);
+      expect(sent).toMatchObject({ id: 'approval-m2', role: 'user' });
       expect(options).toEqual({ body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }] } });
       expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
@@ -453,6 +455,46 @@ describe('Thread', () => {
       expect(chat.sendMessage).not.toHaveBeenCalled();
       fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));                                              // the first card (the view)
       expect(chat.sendMessage).toHaveBeenCalledWith(expect.anything(), { body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] } });
+    });
+    it('two cards, as the real hook moves them: card 2 answered (its part now approval-responded), then card 1 → ONE send with both answers in part order', () => {
+      const second = { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
+      chat.messages = [question, { ...pending, parts: [...pending.parts, second] }];
+      const { rerender } = render(<Harness open={openChat()} />);
+      fireEvent.click(screen.getAllByRole('button', { name: 'Deny' })[1]);
+      chat.messages = [question, { ...pending, parts: [...pending.parts, { ...second, state: 'approval-responded', approval: { id: 'ap_2', approved: false } }] }];
+      rerender(<Harness open={openChat()} />);
+      expect(chat.sendMessage).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+      expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+      expect(chat.sendMessage.mock.calls[0][1]).toEqual({ body: { conversationId: 'c1', approvals: [{ approvalId: 'ap_1', approved: true, remember: 'chat' }, { approvalId: 'ap_2', approved: false, remember: null }] } });
+    });
+    it('cards are questions, not activity (spec 2026-10-01 §5): a message with only a card shows no "Used" disclosure, and a card beside a research call counts only the call', () => {
+      const card = pending.parts[1];
+      chat.messages = [question, { id: 'm2', role: 'assistant', parts: [card] }];
+      const { unmount } = render(<Harness open={openChat()} />);
+      expect(screen.queryByText(/^Used /)).toBeNull();
+      unmount();
+      chat.messages = [question, { id: 'm2', role: 'assistant', parts: [{ type: 'tool-search_keywords', toolCallId: 't', state: 'output-available', input: {} }, card] }];
+      render(<Harness open={openChat()} />);
+      expect(screen.getByText('Used 1 tool')).toBeInTheDocument();
+      expect(screen.queryByText('Saving a view')).toBeNull();
+    });
+    it('a card reads after the answer\'s lead-in text', () => {
+      chat.messages = [question, pending];
+      render(<Harness open={openChat()} />);
+      const card = screen.getByRole('group', { name: 'Save a view named ‘Lamps’' });
+      expect(screen.getByText('Saving.').compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+    it('each card is labelled by its own summary, and an answer moves focus to the next open card, then to the composer', () => {
+      const second = { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
+      chat.messages = [question, { ...pending, parts: [...pending.parts, second] }];
+      render(<Harness open={openChat()} />);
+      const watchlist = screen.getByRole('group', { name: 'Add 1 keyword to the watchlist: desk lamp' });
+      expect(screen.getByRole('group', { name: 'Save a view named ‘Lamps’' })).toBeInTheDocument();
+      fireEvent.click(screen.getAllByRole('button', { name: 'Approve for this chat' })[0]);   // the view card, first in part order
+      expect(within(watchlist).getByRole('button', { name: 'Deny' })).toHaveFocus();
+      fireEvent.click(within(watchlist).getByRole('button', { name: 'Deny' }));
+      expect(screen.getByLabelText('Your question')).toHaveFocus();
     });
     it('a card on an earlier message is a record, not interactive', () => {
       chat.messages = [pending, { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'later' }] }, { id: 'm4', role: 'assistant', parts: [{ type: 'text', text: 'ok' }] }];
@@ -549,21 +591,62 @@ describe('Thread', () => {
       expect(screen.getByText('Approved')).toBeInTheDocument();
       expect(screen.queryByText('Denied')).toBeNull();
     });
-    it('a refused resend (an HTTP error) drops the hidden placeholder and never puts its text in the draft; the card keeps its record', () => {
-      chat.messages = [
-        question,
-        { ...pending, parts: [pending.parts[0], { ...pending.parts[1], state: 'approval-responded', approval: { id: 'ap_1', approved: true } }] },
-        { id: 'approval-m2', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] },
-      ];
-      render(<Harness open={openChat()} />);
-      const opts = chat.lastOptions as { onError: (e: unknown) => void };
-      act(() => { opts.onError(new APICallError({ message: 'Failed to fetch the chat response.', url: '/api/ask/chat', requestBodyValues: {}, statusCode: 404 })); });
-      const updater = chat.setMessages.mock.calls[0][0] as (msgs: unknown[]) => unknown[];
-      let result: unknown[] = [];
-      act(() => { result = updater(chat.messages); });
-      expect(result).toEqual(chat.messages.slice(0, -1));
-      expect(screen.getByLabelText('Your question')).toHaveValue('');
-      expect(screen.getByText('Approved')).toBeInTheDocument();
+    describe('a refused or lost resend (spec 2026-10-01 §6, §9: the cards stay answerable)', () => {
+      // vi.clearAllMocks keeps implementations: an unconsumed mockImplementationOnce would leak into the next test.
+      afterEach(() => { chat.setMessages.mockReset(); });
+      const answeredHere = { ...pending, parts: [pending.parts[0], { ...pending.parts[1], state: 'approval-responded', approval: { id: 'ap_1', approved: true } }] };
+      const placeholder = { id: 'approval-m2', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] };
+      const refusal = (statusCode: number) => new APICallError({ message: JSON.stringify({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode });
+      /** Clicks the card, then stands in for the real hook: the SDK's state after the resend failed, and its setMessages running the updater at once. */
+      const answerThenFail = (err: unknown) => {
+        chat.messages = [question, pending];
+        const view = render(<Harness open={openChat()} />);
+        fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
+        chat.messages = [question, answeredHere, placeholder];
+        chat.status = 'error';
+        chat.setMessages.mockImplementationOnce((u: unknown) => { chat.messages = typeof u === 'function' ? (u as (ms: unknown[]) => unknown[])(chat.messages) : (u as unknown[]); });
+        act(() => { (chat.lastOptions as { onError: (e: unknown) => void }).onError(err); });
+        view.rerender(<Harness open={openChat()} />);
+      };
+
+      it('refused before anything streamed (503): the placeholder goes and the card is asked again — its part back to approval-requested with { id } only, its answer forgotten, its buttons back in the error state', () => {
+        answerThenFail(refusal(503));
+        expect(chat.messages).toEqual([question, pending]);
+        expect((chat.messages[1] as typeof pending).parts[1]).toEqual(pending.parts[1]);
+        expect(screen.queryByText('Approved for this chat')).toBeNull();
+        expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+        expect(screen.getByLabelText('Your question')).toHaveValue('');
+      });
+      it('lost on the network (not an HTTP error at all): the card is asked again too', () => {
+        answerThenFail(new TypeError('Failed to fetch'));
+        expect(chat.messages).toEqual([question, pending]);
+        expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+      });
+      it('a 404 (the cards are gone: answered elsewhere, the chat deleted, writes switched off): the placeholder goes, the records stay, no buttons', () => {
+        answerThenFail(refusal(404));
+        expect(chat.messages).toEqual([question, answeredHere]);
+        expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+      });
+      it('backstop: a placeholder left last with no resend in flight is dropped, never restored into the draft', () => {
+        chat.messages = [question, answeredHere, placeholder];
+        render(<Harness open={openChat()} />);
+        const opts = chat.lastOptions as { onError: (e: unknown) => void };
+        act(() => { opts.onError(new APICallError({ message: 'Failed to fetch the chat response.', url: '/api/ask/chat', requestBodyValues: {}, statusCode: 404 })); });
+        const updater = chat.setMessages.mock.calls[0][0] as (msgs: unknown[]) => unknown[];
+        let result: unknown[] = [];
+        act(() => { result = updater(chat.messages); });
+        expect(result).toEqual(chat.messages.slice(0, -1));
+        expect(screen.getByLabelText('Your question')).toHaveValue('');
+      });
+      it('a refused NEW send leaves useChat in its error state; the card on the last answer keeps its buttons', () => {
+        chat.status = 'error';
+        chat.error = new Error(JSON.stringify({ error: 'Wait for the current answer to finish.', code: 'busy' }));
+        chat.messages = [question, pending];
+        render(<Harness open={openChat()} />);
+        expect(screen.getByRole('alert')).toHaveTextContent('Wait for the current answer to finish.');
+        expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+      });
     });
     it('a member\'s own message that starts with the outcome prefix is refused by the route (400) and goes back into the draft like any refusal', () => {
       chat.messages = [question, { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'Hello.' }] }, { id: 'u9AbC', role: 'user', parts: [{ type: 'text', text: '[approval-result] hi' }] }];

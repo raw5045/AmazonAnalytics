@@ -15,10 +15,11 @@ const question: AskUIMessage = { id: 'u1', role: 'user', parts: [{ type: 'text',
 const answer = (id: string, ...parts: unknown[]) => ({ id, role: 'assistant', parts }) as AskUIMessage;
 /** A finished tool call and its result, as the chat route streams it. */
 const result = (tool: string, output: unknown) => ({ type: `tool-${tool}`, toolCallId: `${tool}-call`, state: 'output-available', input: {}, output });
-/** A write that paused for a card. */
-const card = (tool: string, approvalId: string, state = 'approval-requested') => ({
-  type: `tool-${tool}`, toolCallId: `${approvalId}-call`, state, input: { id: VIEW }, approval: state === 'approval-requested' ? { id: approvalId } : { id: approvalId, approved: state !== 'output-denied' },
+/** A write that paused for a card; `input` is what the model asked with (an update or a delete carries the `id` to name). */
+const card = (tool: string, approvalId: string, state = 'approval-requested', input: unknown = { id: VIEW }) => ({
+  type: `tool-${tool}`, toolCallId: `${approvalId}-call`, state, input, approval: state === 'approval-requested' ? { id: approvalId } : { id: approvalId, approved: state !== 'output-denied' },
 });
+const urls = (spy: { mock: { calls: unknown[][] } }) => spy.mock.calls.map(([url]) => url);
 
 /** The two GET list routes (their real shapes: extra fields beside id and name). */
 function mockLists(lists: { views?: Array<{ id: string; name: string }>; categories?: Array<{ id: string; name: string }> } = {}) {
@@ -34,7 +35,7 @@ const settle = () => act(async () => { await new Promise((r) => setTimeout(r, 0)
 describe('useWorkspaceNames (spec 2026-10-01 §5: the card names a view or category, not its id)', () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it('learns names from the chat\'s own tool results — lists, a create/update result, a delete result — and fetches nothing while no part carries an approval', async () => {
+  it('learns names from the chat\'s own tool results — lists, a create/update result, a delete result — and fetches nothing while no card needs a name', async () => {
     const fetchSpy = mockLists();
     const messages = [question, answer('a1',
       result('list_saved_views', { views: [{ id: VIEW, name: 'Lamps' }], count: 1, limit: 5 }),
@@ -56,39 +57,70 @@ describe('useWorkspaceNames (spec 2026-10-01 §5: the card names a view or categ
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('fetches both lists once the first part with an approval appears, and the chat\'s own results win over them', async () => {
+  it('a create card or a watchlist card fetches nothing — neither carries an id to name', async () => {
+    const fetchSpy = mockLists({ views: [{ id: VIEW, name: 'Lamps' }] });
+    renderHook(() => useWorkspaceNames([question, answer('a1',
+      card('create_saved_view', 'ap_1', 'approval-requested', { name: 'Lamps', search: {} }),
+      card('create_custom_category', 'ap_2', 'approval-requested', { name: 'Lighting', categories: { selections: [], leafPaths: ['Home > Lamps'] } }),
+      card('add_to_watchlist', 'ap_3', 'approval-requested', { keywords: ['desk lamp'], searchTermIds: [] }),
+    )]));
+    await settle();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('a delete-view card whose id the chat already named fetches nothing', async () => {
+    const fetchSpy = mockLists({ views: [{ id: VIEW, name: 'Lamps (as listed)' }] });
+    const { result: hook } = renderHook(() => useWorkspaceNames([
+      question,
+      answer('a1', result('create_saved_view', { view: { id: VIEW, name: 'Lamps' }, notes: [] })),
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'delete it' }] },
+      answer('a2', card('delete_saved_view', 'ap_1')),
+    ]));
+    await settle();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(hook.current.views[VIEW]).toBe('Lamps');
+  });
+
+  it('an unknown category id fetches the categories list only, and an unknown view id the saved views only; the chat\'s own results win over a list', async () => {
     const fetchSpy = mockLists({ views: [{ id: VIEW, name: 'Lamps (as listed)' }, { id: VIEW_2, name: 'Desks' }], categories: [{ id: CAT, name: 'Lighting' }] });
     const before = [question, answer('a1', result('create_saved_view', { view: { id: VIEW, name: 'Lamps (as created here)' }, notes: [] }))];
     const { result: hook, rerender } = renderHook(({ messages }) => useWorkspaceNames(messages), { initialProps: { messages: before } });
-    await settle();
-    expect(fetchSpy).not.toHaveBeenCalled();
-    rerender({ messages: [...before, { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'delete it' }] }, answer('a2', card('delete_saved_view', 'ap_1'))] });
+    rerender({ messages: [...before, answer('a2', card('delete_custom_category', 'ap_1', 'approval-requested', { id: CAT }))] });
+    await waitFor(() => expect(hook.current.categories[CAT]).toBe('Lighting'));
+    expect(urls(fetchSpy)).toEqual([CATEGORIES_URL]);
+    rerender({ messages: [...before, answer('a2', card('delete_custom_category', 'ap_1', 'approval-requested', { id: CAT }), card('update_saved_view', 'ap_2', 'approval-requested', { id: VIEW_2, name: 'Desks 2' }))] });
     await waitFor(() => expect(hook.current.views[VIEW_2]).toBe('Desks'));
+    expect(urls(fetchSpy)).toEqual([CATEGORIES_URL, VIEWS_URL]);
     expect(hook.current).toEqual({ views: { [VIEW]: 'Lamps (as created here)', [VIEW_2]: 'Desks' }, categories: { [CAT]: 'Lighting' } });
-    expect(fetchSpy.mock.calls.map(([url]) => url).sort()).toEqual([CATEGORIES_URL, VIEWS_URL]);
     for (const [, init] of fetchSpy.mock.calls) expect(init).toMatchObject({ credentials: 'same-origin' });
   });
 
-  it('a reloaded chat whose cards are all answered still fetches once (its records need names too)', async () => {
+  it('a reloaded chat\'s records fetch nothing: an approved write keeps its name in its reduced output (page.tsx), and a record is not a question', async () => {
     const fetchSpy = mockLists({ views: [{ id: VIEW, name: 'Lamps' }] });
-    const { result: hook } = renderHook(() => useWorkspaceNames([question, answer('a1', card('update_saved_view', 'ap_1', 'output-denied'))]));
-    await waitFor(() => expect(hook.current.views[VIEW]).toBe('Lamps'));
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    const approved = { ...card('delete_saved_view', 'ap_1', 'output-available'), output: { deleted: { id: VIEW_2, name: 'Old lamps' } }, input: { id: VIEW_2 } };
+    const { result: hook } = renderHook(() => useWorkspaceNames([question, answer('a1', approved, card('update_saved_view', 'ap_2', 'output-denied'))]));
+    await settle();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(hook.current.views).toEqual({ [VIEW_2]: 'Old lamps' });
   });
 
-  it('re-fetches when a NEW approval id appears — not on an unrelated re-render, and not when a card is only answered', async () => {
-    const fetchSpy = mockLists({ views: [{ id: VIEW, name: 'Lamps' }] });
+  it('fetches again only for a NEW unresolved id — not on an unrelated re-render, not when a card is only answered, not for an id a fetch already named', async () => {
+    const fetchSpy = mockLists({ views: [{ id: VIEW, name: 'Lamps' }, { id: VIEW_2, name: 'Desks' }] });
     const first = [question, answer('a1', card('delete_saved_view', 'ap_1'))];
-    const { rerender } = renderHook(({ messages }) => useWorkspaceNames(messages), { initialProps: { messages: first } });
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    const { result: hook, rerender } = renderHook(({ messages }) => useWorkspaceNames(messages), { initialProps: { messages: first } });
+    await waitFor(() => expect(hook.current.views[VIEW]).toBe('Lamps'));
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
     rerender({ messages: [...first] });                                                       // a streaming update: new array, same cards
     await settle();
     const answered = [question, answer('a1', card('delete_saved_view', 'ap_1', 'approval-responded'))];
     rerender({ messages: answered });                                                          // the member answered the card
     await settle();
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
-    rerender({ messages: [...answered, { id: 'o1', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] }, answer('a2', card('update_saved_view', 'ap_2'))] });
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(4));
+    const placeholder = { id: 'o1', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] } as AskUIMessage;
+    rerender({ messages: [...answered, placeholder, answer('a2', card('update_saved_view', 'ap_2', 'approval-requested', { id: VIEW_2, name: 'Desks 2' }))] });
+    await settle();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);                                                // VIEW_2 came with the first list
+    rerender({ messages: [...answered, placeholder, answer('a2', card('update_saved_view', 'ap_3', 'approval-requested', { id: VIEW_3, name: 'New' }))] });
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
   });
 
   it('keeps a name it already fetched when a later fetch no longer lists it (a deleted view\'s record keeps its name), and takes a rename', async () => {
@@ -97,9 +129,10 @@ describe('useWorkspaceNames (spec 2026-10-01 §5: the card names a view or categ
     const { result: hook, rerender } = renderHook(({ messages }) => useWorkspaceNames(messages), { initialProps: { messages: first } });
     await waitFor(() => expect(hook.current.views[VIEW]).toBe('Lamps'));
     fetchSpy.mockRestore();
-    mockLists({ views: [{ id: VIEW_2, name: 'Desks, renamed' }] });
-    rerender({ messages: [...first, answer('a2', card('update_saved_view', 'ap_2'))] });
-    await waitFor(() => expect(hook.current.views[VIEW_2]).toBe('Desks, renamed'));
+    mockLists({ views: [{ id: VIEW_2, name: 'Desks, renamed' }, { id: VIEW_3, name: 'New' }] });
+    rerender({ messages: [...first, answer('a2', card('update_saved_view', 'ap_2', 'approval-requested', { id: VIEW_3, name: 'Newer' }))] });
+    await waitFor(() => expect(hook.current.views[VIEW_3]).toBe('New'));
+    expect(hook.current.views[VIEW_2]).toBe('Desks, renamed');
     expect(hook.current.views[VIEW]).toBe('Lamps');
   });
 
@@ -108,7 +141,7 @@ describe('useWorkspaceNames (spec 2026-10-01 §5: the card names a view or categ
       if (url === VIEWS_URL) return new Response('{"error":"nope"}', { status: 500 });
       throw new TypeError('Failed to fetch');
     });
-    const { result: hook } = renderHook(() => useWorkspaceNames([question, answer('a1', card('delete_saved_view', 'ap_1'))]));
+    const { result: hook } = renderHook(() => useWorkspaceNames([question, answer('a1', card('delete_saved_view', 'ap_1'), card('delete_custom_category', 'ap_2', 'approval-requested', { id: CAT }))]));
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
     await settle();
     expect(hook.current).toEqual({ views: {}, categories: {} });
@@ -119,7 +152,7 @@ describe('useWorkspaceNames (spec 2026-10-01 §5: the card names a view or categ
       if (url === VIEWS_URL) return Response.json({ views: 'not a list' });
       return Response.json({ categories: [{ id: CAT, name: 'Lighting' }, { id: 42, name: 'no id' }, { id: CAT_2 }] });
     });
-    const { result: hook } = renderHook(() => useWorkspaceNames([question, answer('a1', card('delete_custom_category', 'ap_1'))]));
+    const { result: hook } = renderHook(() => useWorkspaceNames([question, answer('a1', card('delete_saved_view', 'ap_1'), card('delete_custom_category', 'ap_2', 'approval-requested', { id: CAT }))]));
     await waitFor(() => expect(hook.current.categories[CAT]).toBe('Lighting'));
     expect(hook.current).toEqual({ views: {}, categories: { [CAT]: 'Lighting' } });
   });
@@ -127,10 +160,23 @@ describe('useWorkspaceNames (spec 2026-10-01 §5: the card names a view or categ
   it('aborts its request on unmount', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
     const { unmount } = renderHook(() => useWorkspaceNames([question, answer('a1', card('delete_saved_view', 'ap_1'))]));
-    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
-    const signals = fetchSpy.mock.calls.map(([, init]) => (init as RequestInit).signal as AbortSignal);
-    expect(signals.every((s) => !s.aborted)).toBe(true);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    const signal = (fetchSpy.mock.calls[0][1] as RequestInit).signal as AbortSignal;
+    expect(signal.aborted).toBe(false);
     unmount();
-    expect(signals.every((s) => s.aborted)).toBe(true);
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('a new unresolved id while a request is in flight aborts it and asks again', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
+    const first = [question, answer('a1', card('delete_saved_view', 'ap_1'))];
+    const { rerender } = renderHook(({ messages }) => useWorkspaceNames(messages), { initialProps: { messages: first } });
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    rerender({ messages: [question, answer('a1', card('delete_saved_view', 'ap_1'), card('update_saved_view', 'ap_2', 'approval-requested', { id: VIEW_2, name: 'Desks 2' }))] });
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    const [firstSignal, secondSignal] = fetchSpy.mock.calls.map(([, init]) => (init as RequestInit).signal as AbortSignal);
+    expect(firstSignal.aborted).toBe(true);
+    expect(secondSignal.aborted).toBe(false);
+    expect(urls(fetchSpy)).toEqual([VIEWS_URL, VIEWS_URL]);
   });
 });
