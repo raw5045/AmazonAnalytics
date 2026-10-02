@@ -430,7 +430,9 @@ const NOT_REMEMBERED = 'remember: nothing to save it on';
  * ONE hidden message, one line per card, goes in ahead of the member's (spec 2026-10-01 §6) — then
  * appends the member's message. The hidden lines report each card as superseded, not denied: the
  * prompt's no-retry rule covers only a denial given in a card, so a member who types "yes, save it"
- * instead of clicking can still be served. Regardless of the writes switch: a card left open when it
+ * instead of clicking can still be served. Like a resume's, the message also reports the calls that
+ * ran without a card after the paused message's last text (unreplayedResults): the history replay
+ * drops that part of the message here too. Regardless of the writes switch: a card left open when it
  * went off is still resolved (§9), and the resolution touches no workspace data. Returns the history
  * for the turn (without the member's message, which runTurn adds), or an early response with the
  * lock released.
@@ -449,7 +451,7 @@ async function prepareFollowUp(a: { userId: string; loaded: LoadedChat; message:
   if (last && pending.length > 0) {
     let parts = last.parts;
     for (const p of pending) parts = respondedParts(parts, p.approvalId, false);
-    const denial = approvalOutcomeMessage(pending.map((p) => ({ toolName: p.toolName, approved: false, superseded: true })));
+    const denial = approvalOutcomeMessage(pending.map((p) => ({ toolName: p.toolName, approved: false, superseded: true })), unreplayedResults(last));
     try {
       // The resolved parts and the hidden message, in one statement (recordAnswersAndAppend).
       const recorded = await recordAnswersAndAppend({ conversationId: cid, userId: a.userId, messageId: last.id, parts, message: denial, now: a.now });
@@ -516,6 +518,9 @@ async function prepareResume(a: {
   });
   if (refused) return { response: await released(cid, badRequest()) };
   if (conversation.messageCount + 1 > ASK_LIMITS.maxMessagesPerChat) return { response: await released(cid, chatFull()) };
+  // Read with the rest of the verification, before anything is saved or run: stored parts that cannot
+  // be read throw here (POST's catch releases the lock), never inside the double-run window below.
+  const alsoRan = unreplayedResults(last);
 
   const remember = { chat: false, changes: false, deletes: false };
   for (const p of pending) {
@@ -561,7 +566,7 @@ async function prepareResume(a: {
       parts = respondedParts(parts, p.approvalId, approved, output);
       outcomes.push({ toolName: p.toolName, approved, output });
     }
-    outcome = approvalOutcomeMessage(outcomes, unreplayedResults(last));
+    outcome = approvalOutcomeMessage(outcomes, alsoRan);
     recorded = await recordAnswersAndAppend({ conversationId: cid, userId: a.userId, messageId: last.id, parts, message: outcome, now: a.now });
     if (recorded === 'missing') throw new Error(NOT_RECORDED);
   } catch (e) {

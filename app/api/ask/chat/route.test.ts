@@ -814,17 +814,42 @@ describe('POST /api/ask/chat', () => {
       await post({ conversationId: existingId, message: { text: 'and now?' } });
       expect(recordedCall().parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
     });
-    it('a resume reports the calls that ran without a card in the paused step — the replay drops everything after the last text — one line each after the card lines; the send path\'s superseded message has none', async () => {
+    it('both hidden messages report the calls that ran without a card in the paused step — the replay drops everything after the last text — one line each after the card lines: on a resume, and when a new message supersedes the card; none when there were none', async () => {
       const listed = { type: 'tool-list_saved_views', toolCallId: 'call_l', state: 'output-available', input: {}, output: { views: [], count: 0, limit: 5 } };
+      const alsoRan = 'Also ran in the same step: list_saved_views. Result: {"views":[],"count":0,"limit":5}';
       conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [...pendingAssistant.parts, listed] }));
       await approve({ approvalId: 'ap_1', approved: true, remember: null });
       expect(recordedCall().message.parts[0].text.split('\n')).toEqual([
         '[approval-result] The person approved create_saved_view and it ran. Result: {"view":{"id":"v1","name":"Lamps"}}',
-        'Also ran in the same step: list_saved_views. Result: {"views":[],"count":0,"limit":5}',
+        alsoRan,
       ]);
       conv.recordAnswersAndAppend.mockClear();
       await post({ conversationId: existingId, message: { text: 'never mind' } });
+      expect(recordedCall().message.parts[0].text.split('\n')).toEqual([
+        '[approval-result] The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; if it asks for this again, call the tool again (a new card will ask).',
+        alsoRan,
+      ]);
+      conv.loadConversation.mockResolvedValue(loaded());
+      conv.recordAnswersAndAppend.mockClear();
+      await post({ conversationId: existingId, message: { text: 'never mind' } });
       expect(recordedCall().message.parts[0].text).not.toContain('Also ran');
+      conv.recordAnswersAndAppend.mockClear();
+      await approve({ approvalId: 'ap_1', approved: true, remember: null });
+      expect(recordedCall().message.parts[0].text).not.toContain('Also ran');
+    });
+    it('the same-step results are read before anything is saved or run: a stored part that cannot be read stops a resume with no write run, never inside the double-run window', async () => {
+      // A text part without its text (corrupted data) makes the last-text scan throw; pendingApprovals never reads text parts.
+      conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [{ type: 'text' }, pendingAssistant.parts[1]] }));
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const res = await approve({ approvalId: 'ap_1', approved: true, remember: 'always' });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
+      expect(ledger.setAutoApprove).not.toHaveBeenCalled();
+      expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
+      expect(conv.recordAnswersAndAppend).not.toHaveBeenCalled();
+      expect(outcomesLogged(error)).toEqual(['setup_failed']);
+      expect(conv.releaseTurnLock).toHaveBeenCalledTimes(1);
+      error.mockRestore();
     });
     it('a send one message short of the cap with a card pending is 409 chat_full with nothing written (the denial and the message would be two appends); without a card the same chat takes its last message', async () => {
       conv.loadConversation.mockResolvedValue(loaded(pendingAssistant, { id: existingId, model: 'claude-sonnet-5', messageCount: 199, changesApprovedAt: null }));
