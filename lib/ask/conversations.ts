@@ -56,7 +56,7 @@ export function storedToUiMessage(m: StoredMessage): AskUIMessage {
  * re-derived from a first message here, so this file cleans at the DB boundary rather than
  * trusting a caller (Task 8 re-review): `cleanPartsJson` for a parts array
  * (createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage and
- * replaceMessageParts all use it), `cleanString` for the plain text a title is cut from.
+ * recordAnswersAndAppend all use it), `cleanString` for the plain text a title is cut from.
  */
 function cleanString(s: string): string {
   return s.replaceAll('\u0000', '').toWellFormed();
@@ -186,17 +186,49 @@ export async function stampChangesApproved(userId: string, conversationId: strin
   return r.rows.length > 0;
 }
 
+/** recordAnswersAndAppend's result. 'ok': both written. 'full' and 'missing': nothing written. */
+export type RecordAndAppendResult = 'ok' | 'full' | 'missing';
+
 /**
- * Rewrites one stored assistant message's parts — used only to record an approval's answer and
- * outcome on the assistant message that asked (spec 2026-10-01 §6). `role = 'assistant'` keeps it
- * off every user-role row: a member's own message and the server-written approval outcome message.
- * No user_id predicate. Precondition: `conversationId` was verified as the member's
- * (`acquireTurnLock` + `loadConversation` under their id) and `messageId` comes from that loaded
- * history, never from a request body.
+ * Spec 2026-10-01 §6: records the answers to a chat's approval cards on the stored assistant message
+ * that asked (its parts rewritten: output-available / output-denied) AND appends the hidden outcome
+ * message the model continues from, in ONE statement — so the cards never read as answered without
+ * that message after them (two statements could fail in between: a retry then found nothing open
+ * and the model never learned the outcome). Each write runs only when the other can:
+ * - the parts rewrite: that message id, in that chat, `role = 'assistant'` (never a member's message
+ *   or an outcome message), and only together with the append's bump;
+ * - the append mirrors appendUserMessage exactly (owner-scoped, under ASK_LIMITS.maxMessagesPerChat,
+ *   message_count and updated_at bumped, seq = the new count), and only when the message that asked
+ *   is in this member's chat.
+ * 'full': the chat is at the cap. 'missing': no such assistant message in this member's chat.
+ * Precondition, as for every write here: the route holds the chat's lock (acquired and loaded under
+ * the member's id), and `messageId` comes from that loaded history, never from a request body.
  */
-export async function replaceMessageParts(conversationId: string, messageId: string, parts: unknown[]): Promise<boolean> {
-  const r = await db.execute(sql`UPDATE ask_messages SET parts = ${cleanPartsJson(parts)}::jsonb WHERE id = ${messageId}::uuid AND conversation_id = ${conversationId}::uuid AND role = 'assistant' RETURNING id`);
-  return r.rows.length > 0;
+export async function recordAnswersAndAppend(a: {
+  conversationId: string; userId: string; messageId: string; parts: unknown[]; message: Pick<AskUIMessage, 'id' | 'parts'>; now: Date;
+}): Promise<RecordAndAppendResult> {
+  const r = await db.execute<{ appended: boolean; found: boolean }>(sql`
+    WITH target AS (
+      SELECT m.id FROM ask_messages m JOIN ask_conversations c ON c.id = m.conversation_id
+      WHERE m.id = ${a.messageId}::uuid AND m.conversation_id = ${a.conversationId}::uuid AND m.role = 'assistant' AND c.user_id = ${a.userId}::uuid
+    ), conv AS (
+      UPDATE ask_conversations SET message_count = message_count + 1, updated_at = now()
+      WHERE id = ${a.conversationId}::uuid AND user_id = ${a.userId}::uuid AND message_count < ${sql.raw(String(ASK_LIMITS.maxMessagesPerChat))}
+        AND EXISTS (SELECT 1 FROM target)
+      RETURNING id, message_count
+    ), rec AS (
+      UPDATE ask_messages SET parts = ${cleanPartsJson(a.parts)}::jsonb
+      WHERE id = ${a.messageId}::uuid AND conversation_id = ${a.conversationId}::uuid AND role = 'assistant' AND EXISTS (SELECT 1 FROM conv)
+      RETURNING id
+    ), msg AS (
+      INSERT INTO ask_messages (id, conversation_id, seq, role, parts, status, created_at)
+      SELECT ${a.message.id}::uuid, conv.id, conv.message_count, 'user', ${cleanPartsJson(a.message.parts)}::jsonb, 'complete', ${a.now.toISOString()}::timestamptz FROM conv, rec
+      RETURNING seq
+    )
+    SELECT EXISTS (SELECT 1 FROM msg) AS appended, EXISTS (SELECT 1 FROM target) AS found`);
+  const row = r.rows[0];
+  if (row?.appended === true) return 'ok';
+  return row?.found === true ? 'full' : 'missing';
 }
 
 /**

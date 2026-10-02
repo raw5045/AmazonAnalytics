@@ -9,28 +9,31 @@
  *   one answer per card still open on the chat's last assistant message, all at once (prepareResume).
  * Order: kill switch → same-origin → session → body (an approval body also needs the writes switch:
  * off → bodyless 404 before the gates) → gates (a resume skips only the daily question guard) → API
- * key → conversation (create on first send, already locked | lock + load, then a send resolves any
- * open card as denied and appends the member's message (prepareFollowUp), and a resume runs the
- * approved writes, records the outcomes and appends the hidden outcome message (prepareResume)) →
- * turn setup AND the turn itself (both inside one try — a throw from `runTurn` before it starts
- * streaming, e.g. convertToModelMessages or its resume guard, releases the lock and answers 503
- * exactly like a setup failure; see the Task 6 re-review amendment under ### Task 8 in the plan) →
- * stream. Settlement runs in the turn's onEnd BEFORE the answer is saved (money first); a resume
- * settles as a billed turn that is not a question (settleTurn's countQuestion: false).
+ * key → the request lifetime (below) → conversation: create on a first send (already locked), or
+ * lock + load, then a send resolves any open card as denied and appends the member's message
+ * (prepareFollowUp), and a resume saves `remember` (fail-closed, before any write), runs the
+ * approved writes, and records the answers together with the hidden outcome message in one statement
+ * (prepareResume) → turn setup AND the turn itself (a throw from `runTurn` before it starts
+ * streaming, e.g. convertToModelMessages or its resume guard, answers 503 like any setup failure;
+ * see the Task 6 re-review amendment under ### Task 8 in the plan) → stream. Settlement runs in the
+ * turn's onEnd BEFORE the answer is saved (money first); a resume settles as a billed turn that is
+ * not a question (settleTurn's countQuestion: false).
  *
- * The turn lock: held from a successful acquire (lockAndLoad; a first send's chat is created
- * locked) until the turn's onEnd releases it. Every exit before the turn starts releases it first
- * (`released`, or the setup catch below); a refusal before the acquire (gates, key, busy, missing)
- * has none to release.
+ * Lifetime (Task 8 review, I3; registered before any lock since the arc-4 Task 6 review):
+ * `vercel.json` sets `supportsCancellation` for this route, so a client disconnect (Stop, leaving for
+ * the Explorer right after Approve, a closed tab) ends the invocation except for `after()` /
+ * `waitUntil` work. `after(() => turnFinished)` is therefore the first statement of the try that
+ * opens right after the API-key check, before a chat is created or locked: everything that runs with
+ * the lock held — a resume's writes and records included — and the turn's own onEnd (settle, save,
+ * unlock) live inside the registered lifetime. `turnFinished` resolves on every exit: onEnd's own
+ * `finally` once a stream started, and this function's `finally` for every exit that never streams
+ * (a refusal, an early response, the catch), so a refusal never pins the function for `maxDuration`.
  *
- * Lifetime past the point the lock is held (Task 8 review, I3): the invocation must survive a
- * client disconnect long enough for onEnd to settle, save and unlock, so `after(() => turnFinished)`
- * is registered once both setup paths converge and the lock is confirmed held — never earlier, or
- * every 4xx refusal above this point would pin the function for up to `maxDuration` — and
- * `turnFinished` resolves on every exit from here on: onEnd's own `finally`, and this function's
- * `finally` for any exit that never reaches streaming (the setup catch, in particular). On Vercel
- * this only matters once `vercel.json`'s `functions["app/api/ask/chat/route.ts"].supportsCancellation`
- * is on — see that file and the spec §6 amendment.
+ * The turn lock: held from a create or a successful acquire (`held`) until the turn's onEnd releases
+ * it. An early response after that releases it first (`released`); a throw reaches the catch, which
+ * releases `held`; a refusal before the acquire (gates, key, busy, missing) has none to release. The
+ * turn deadline is shortened by the time the request already spent, so a deadline abort still leaves
+ * onEnd SETTLE_MARGIN_MS before `maxDuration`.
  */
 import { randomUUID } from 'node:crypto';
 import { NextResponse, after } from 'next/server';
@@ -61,12 +64,14 @@ import {
   BAD_REQUEST_MESSAGE, BUSY_MESSAGE, CHAT_CAP_MESSAGE, CHAT_FULL_MESSAGE, CROSS_SITE_MESSAGE, FAILED_MESSAGE, NOT_CONFIGURED_MESSAGE, TOO_LARGE_MESSAGE, TOO_LONG_MESSAGE,
 } from '@/lib/ask/messages';
 import {
-  acquireTurnLock, appendAssistantMessage, appendUserMessage, createConversationWithFirstMessage, loadConversation, releaseTurnLock, replaceMessageParts, stampChangesApproved,
-  type AskConversation, type AskUIMessage,
+  acquireTurnLock, appendAssistantMessage, appendUserMessage, createConversationWithFirstMessage, loadConversation, recordAnswersAndAppend, releaseTurnLock, stampChangesApproved,
+  type AskConversation, type AskUIMessage, type RecordAndAppendResult,
 } from '@/lib/ask/conversations';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
+/** What onEnd needs after a deadline abort to settle, save and unlock before maxDuration ends the invocation. */
+const SETTLE_MARGIN_MS = 20_000;
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MODEL_IDS = ASK_MODELS.map((m) => m.id) as [AskModelId, ...AskModelId[]];
@@ -88,11 +93,11 @@ const bodySchema = z.strictObject({
 
 /**
  * The most answers one approval body may carry: twice the per-answer tool-call budget the prompt
- * sets (ASK_LIMITS.maxToolCallsPerTurn). Open cards only ever belong to one step's calls; a step
- * with more than this (a model ignoring the budget) cannot be answered at once, and the member's
- * next message resolves those cards as denied.
+ * sets. Open cards only ever belong to one step's calls; a step with more than this (a model
+ * ignoring the budget) cannot be answered at once, and the member's next message resolves those
+ * cards as denied.
  */
-const MAX_APPROVALS_PER_TURN = 16;
+const MAX_APPROVALS_PER_TURN = 2 * ASK_LIMITS.maxToolCallsPerTurn;
 /** `remember` only with an approval: 'chat' allows changes for the rest of this chat, 'always' sets the account toggle for the card's kind. */
 const approvalAnswerSchema = z
   .strictObject({ approvalId: z.string().min(1).max(128), approved: z.boolean(), remember: z.enum(['chat', 'always']).nullable() })
@@ -107,14 +112,14 @@ const NO_STORE = { 'cache-control': 'no-store' };
 function json(body: unknown, status: number, extra: Record<string, string> = {}): NextResponse {
   return NextResponse.json(body, { status, headers: { ...NO_STORE, ...extra } });
 }
-/** Bodyless: never a hint whether the feature, the chat or the card is what is missing. */
-const notFound = (): NextResponse => new NextResponse(null, { status: 404, headers: NO_STORE });
+/** Bodyless: never a hint whether the feature, the chat or the card is what is missing. (A response, unlike next/navigation's throwing notFound().) */
+const notFoundResponse = (): NextResponse => new NextResponse(null, { status: 404, headers: NO_STORE });
 const badRequest = (): NextResponse => json({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' }, 400);
 const chatFull = (): NextResponse => json({ error: CHAT_FULL_MESSAGE, code: 'chat_full' }, 409);
-const setupFailed = (): NextResponse => json({ error: FAILED_MESSAGE, code: 'setup_failed' }, 503);
+const setupFailed = (extra: Record<string, string> = {}): NextResponse => json({ error: FAILED_MESSAGE, code: 'setup_failed', ...extra }, 503);
 let warnedNoKey = false;
 
-/** Every exit between a successful lock acquire and the turn's start answers through here: the lock is released first (best effort — a failed release never replaces the answer). */
+/** Every early response between a successful lock acquire and the turn's start goes through here, the lock released first (best effort — a failed release never replaces the answer). A throw is released by POST's catch instead. */
 async function released(conversationId: string, response: NextResponse): Promise<NextResponse> {
   await releaseTurnLock(conversationId).catch(() => {});
   return response;
@@ -132,7 +137,9 @@ function writesFor(account: Pick<AskAccount, 'autoApproveChanges' | 'autoApprove
 }
 
 export async function POST(req: Request) {
-  if (!askAiEnabled()) return new NextResponse(null, { status: 404, headers: NO_STORE });
+  // When the request began: the turn deadline is budgeted against maxDuration from here.
+  const requestStartedAt = Date.now();
+  if (!askAiEnabled()) return notFoundResponse();
   if (!isSameOrigin(req)) return json({ error: CROSS_SITE_MESSAGE }, 403);
   let user;
   try {
@@ -153,13 +160,13 @@ export async function POST(req: Request) {
   try {
     parsedJson = JSON.parse(raw);
   } catch {
-    return json({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' }, 400);
+    return badRequest();
   }
   let body: { kind: 'send'; data: z.infer<typeof bodySchema> } | { kind: 'approval'; data: z.infer<typeof approvalBodySchema> };
   if (typeof parsedJson === 'object' && parsedJson !== null && 'approvals' in parsedJson) {
     // The writes kill switch (spec 2026-10-01 §2): off, there is no card to answer — the same
     // bodyless 404 as the Ask AI switch, before the gates run or anything is locked.
-    if (!askAiWritesEnabled()) return notFound();
+    if (!askAiWritesEnabled()) return notFoundResponse();
     const approval = approvalBodySchema.safeParse(parsedJson);
     if (!approval.success) return badRequest();
     body = { kind: 'approval', data: approval.data };
@@ -183,7 +190,7 @@ export async function POST(req: Request) {
   const gate = await runGates({ user, now }, { countQuestion: !isResume });
   if (!gate.ok) {
     const { status, code, message, retryAfterSeconds } = gate.refusal;
-    if (status === 404) return new NextResponse(null, { status: 404, headers: NO_STORE });
+    if (status === 404) return notFoundResponse();
     return json({ error: message, code }, status, retryAfterSeconds ? { 'retry-after': String(retryAfterSeconds) } : {});
   }
   const apiKey = anthropicApiKey();
@@ -192,81 +199,90 @@ export async function POST(req: Request) {
     return json({ error: NOT_CONFIGURED_MESSAGE, code: 'not_configured' }, 503);
   }
 
-  const actor: ResearchActor = { localUserId: user.id, clerkUserId: user.clerkUserId, clientId: 'ask-ai', channel: 'chat' };
-  let conversationId: string;
-  let model: AskModelId;
-  let history: AskUIMessage[] = [];
-  // The member's message on a send. A resume has none: it continues from the hidden outcome
-  // message, which prepareResume puts last in `history` (runTurn refuses anything else).
-  let newMessage: AskUIMessage | undefined;
-  let writes: WriteSettings | null;
-  let created = false;
-  if (body.kind === 'approval') {
-    const locked = await lockAndLoad(user.id, body.data.conversationId);
-    if ('response' in locked) return locked.response;
-    const resumed = await prepareResume({ userId: user.id, account: gate.account, actor, loaded: locked.loaded, answers: body.data.approvals, now });
-    if ('response' in resumed) return resumed.response;
-    conversationId = locked.loaded.conversation.id;
-    model = locked.loaded.conversation.model;
-    history = resumed.history;
-    writes = resumed.writes;
-  } else {
-    const userMessage: AskUIMessage = { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: body.data.message.text }] };
-    newMessage = userMessage;
-    if (body.data.conversationId === null) {
-      model = body.data.model ?? DEFAULT_MODEL;
-      // Created already locked (in_flight_since = now()), so no acquireTurnLock round trip here.
-      let r: Awaited<ReturnType<typeof createConversationWithFirstMessage>>;
-      try {
-        r = await createConversationWithFirstMessage({ userId: user.id, model, message: userMessage, now });
-      } catch (e) {
-        // No lock exists yet on this path (the insert itself failed) — nothing to release.
-        console.error('[ask chat]', JSON.stringify({ outcome: 'create_failed', userId: user.id, ...errFields(e) }));
-        return json({ error: FAILED_MESSAGE, code: 'setup_failed' }, 503);
-      }
-      if (r === 'cap') return json({ error: CHAT_CAP_MESSAGE, code: 'chat_cap' }, 409);
-      conversationId = r.conversationId;
-      created = true;
-      writes = writesFor(gate.account, null);
-    } else {
-      const locked = await lockAndLoad(user.id, body.data.conversationId);
-      if ('response' in locked) return locked.response;
-      const followed = await prepareFollowUp({ userId: user.id, loaded: locked.loaded, message: userMessage, now });
-      if ('response' in followed) return followed.response;
-      conversationId = locked.loaded.conversation.id;
-      model = locked.loaded.conversation.model;
-      history = followed.history;
-      writes = writesFor(gate.account, locked.loaded.conversation);
-    }
-  }
-  const cid = conversationId;
-  const chosen = model;
-  // A resume is a billed turn but not a new question (spec 2026-10-01 §6).
-  if (!isResume) void bumpUserActivity(user.id, 'ask_question');
-
-  // Everything from here until the stream starts runs with the lock held: release it on any
-  // failure, including a throw from runTurn itself before it begins streaming. See the file header
-  // for why after() is registered exactly here.
+  // From here on every exit goes through the try below, whose first statement registers the request
+  // lifetime — before any chat is created or locked (see the file header).
   let streaming = false;
+  // The chat whose turn lock this request holds, set on a create or a successful acquire. The catch
+  // releases only this: the lock has no holder token, so releasing a chat this request never locked
+  // (a throw in the busy-vs-missing lookup, say) would end another request's turn lock early.
+  let held: string | null = null;
+  let created = false;
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   const { promise: turnFinished, resolve: finishTurn } = Promise.withResolvers<void>();
   try {
-    // Registered as the first statement inside the try (not before it): a throw from after()
-    // itself — e.g. a host without waitUntil support — must still reach the catch below and
-    // release the lock, rather than escaping the function with the lock held (Task 8 re-review).
+    // The first statement inside the try (not before it): a throw from after() itself — e.g. a host
+    // without waitUntil support — still reaches the catch below (Task 8 re-review).
     after(() => turnFinished);
     // The listener only catches an abort from this point forward; a disconnect that already
-    // happened earlier (during gates/setup) is not missed — it is caught by the aborted-already
-    // check on the next line instead (Task 8 review, I3a).
+    // happened earlier (during gates) is not missed — it is caught by the aborted-already check on
+    // the next line instead (Task 8 review, I3a).
     req.signal.addEventListener('abort', () => controller.abort(req.signal.reason), { once: true });
     if (req.signal.aborted) controller.abort(req.signal.reason);
+
+    const actor: ResearchActor = { localUserId: user.id, clerkUserId: user.clerkUserId, clientId: 'ask-ai', channel: 'chat' };
+    let conversationId: string;
+    let model: AskModelId;
+    let history: AskUIMessage[] = [];
+    // The member's message on a send. A resume has none: it continues from the hidden outcome
+    // message, which prepareResume puts last in `history` (runTurn refuses anything else).
+    let newMessage: AskUIMessage | undefined;
+    let writes: WriteSettings | null;
+    if (body.kind === 'approval') {
+      const locked = await lockAndLoad(user.id, body.data.conversationId);
+      if ('response' in locked) return locked.response;
+      conversationId = locked.loaded.conversation.id;
+      held = conversationId;
+      const resumed = await prepareResume({ userId: user.id, account: gate.account, actor, loaded: locked.loaded, answers: body.data.approvals, now });
+      if ('response' in resumed) return resumed.response;
+      model = locked.loaded.conversation.model;
+      history = resumed.history;
+      writes = resumed.writes;
+    } else {
+      const userMessage: AskUIMessage = { id: randomUUID(), role: 'user', parts: [{ type: 'text', text: body.data.message.text }] };
+      newMessage = userMessage;
+      if (body.data.conversationId === null) {
+        model = body.data.model ?? DEFAULT_MODEL;
+        // Created already locked (in_flight_since = now()), so no acquireTurnLock round trip here.
+        let r: Awaited<ReturnType<typeof createConversationWithFirstMessage>>;
+        try {
+          r = await createConversationWithFirstMessage({ userId: user.id, model, message: userMessage, now });
+        } catch (e) {
+          // No lock exists yet on this path (the insert itself failed) — nothing to release.
+          console.error('[ask chat]', JSON.stringify({ outcome: 'create_failed', userId: user.id, ...errFields(e) }));
+          return setupFailed();
+        }
+        if (r === 'cap') return json({ error: CHAT_CAP_MESSAGE, code: 'chat_cap' }, 409);
+        conversationId = r.conversationId;
+        held = conversationId;
+        created = true;
+        writes = writesFor(gate.account, null);
+      } else {
+        const locked = await lockAndLoad(user.id, body.data.conversationId);
+        if ('response' in locked) return locked.response;
+        conversationId = locked.loaded.conversation.id;
+        held = conversationId;
+        const followed = await prepareFollowUp({ userId: user.id, loaded: locked.loaded, message: userMessage, now });
+        if ('response' in followed) return followed.response;
+        model = locked.loaded.conversation.model;
+        history = followed.history;
+        writes = writesFor(gate.account, locked.loaded.conversation);
+      }
+    }
+    const cid = conversationId;
+    const chosen = model;
+    // A resume is a billed turn but not a new question (spec 2026-10-01 §6).
+    if (!isResume) void bumpUserActivity(user.id, 'ask_question');
+
     const meta = await loadSnapshotMetaHttp();
     const limits = researchLimits();
     // The guide's workspace rules reach the prompt only while writes are on (spec 2026-10-01 §4).
     const guide = buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: mcpAudience(), limits, workspace: writes !== null });
     const anthropic = createAnthropic({ apiKey });
-    timer = setTimeout(() => controller.abort(new Error(TURN_DEADLINE)), ASK_LIMITS.turnDeadlineMs);
+    // The turn deadline, shortened by what this request already spent (a resume's writes, a slow
+    // lock or load), so a deadline abort still leaves onEnd SETTLE_MARGIN_MS before maxDuration.
+    const deadlineMs = Math.max(0, Math.min(ASK_LIMITS.turnDeadlineMs, maxDuration * 1000 - SETTLE_MARGIN_MS - (Date.now() - requestStartedAt)));
+    timer = setTimeout(() => controller.abort(new Error(TURN_DEADLINE)), deadlineMs);
     // Measured from just before runTurn (Task 8 review, M1); declared ahead of turnInput purely so
     // the onEnd closure below reads as a normal forward reference, not a temporal-dead-zone one.
     const turnStartedAt = Date.now();
@@ -341,13 +357,13 @@ export async function POST(req: Request) {
   } catch (e) {
     clearTimeout(timer);
     controller.abort();
-    console.error('[ask chat]', JSON.stringify({ outcome: 'setup_failed', userId: user.id, conversationId: cid, ...errFields(e) }));
-    await releaseTurnLock(cid).catch(() => {});
+    console.error('[ask chat]', JSON.stringify({ outcome: 'setup_failed', userId: user.id, conversationId: held ?? body.data.conversationId, resume: isResume, ...errFields(e) }));
+    if (held) await releaseTurnLock(held).catch(() => {});
     // On a first send (Task 9 fix round 2, item 4) the chat and its question were already stored
     // before this failure — the id goes in the body so the client can stay in that chat instead of
     // resending with conversationId: null and creating an orphaned second one. A follow-up already
     // has the id client-side (it's `open`), so its body is unchanged.
-    return json({ error: FAILED_MESSAGE, code: 'setup_failed', ...(created ? { conversationId: cid } : {}) }, 503);
+    return setupFailed(created && held ? { conversationId: held } : {});
   } finally {
     if (!streaming) finishTurn();
   }
@@ -364,9 +380,11 @@ type LoadedChat = NonNullable<Awaited<ReturnType<typeof loadConversation>>>;
  * own onEnd was still saving it under the very lock this acquire is about to take. Acquiring first
  * means the load always sees whatever the previous turn managed to save before it released the lock.
  *
- * `{ loaded }` comes back with the lock HELD: the caller releases it on every exit until the turn's
- * own onEnd takes over. `{ response }` comes back with no lock held — never acquired (busy, or a chat
- * that is missing or not this member's) or released here (a failed load, a chat deleted in between).
+ * `{ loaded }` comes back with the lock HELD (POST records it as `held`): every early response
+ * releases it until the turn's own onEnd takes over. `{ response }` comes back with no lock held —
+ * never acquired (busy, or a chat that is missing or not this member's) or released here (a failed
+ * load, a chat deleted in between). A throw (the busy-vs-missing lookup is not caught here) holds no
+ * lock either and reaches POST's catch.
  */
 async function lockAndLoad(userId: string, id: string): Promise<{ loaded: LoadedChat } | { response: NextResponse }> {
   if (!(await acquireTurnLock(userId, id))) {
@@ -374,7 +392,7 @@ async function lockAndLoad(userId: string, id: string): Promise<{ loaded: Loaded
     // isn't owned by this user — a cheap single-row lookup (not the full history window) tells
     // them apart without paying for the common busy case's full load.
     const exists = await loadConversation(userId, id, { lastN: 1 });
-    return { response: exists ? json({ error: BUSY_MESSAGE, code: 'busy' }, 409) : notFound() };
+    return { response: exists ? json({ error: BUSY_MESSAGE, code: 'busy' }, 409) : notFoundResponse() };
   }
   let loaded: Awaited<ReturnType<typeof loadConversation>>;
   try {
@@ -387,12 +405,15 @@ async function lockAndLoad(userId: string, id: string): Promise<{ loaded: Loaded
     return { response: await released(id, setupFailed()) };
   }
   // Deleted in the gap between the acquire above and this load — nothing left to answer into.
-  if (!loaded) return { response: await released(id, notFound()) };
+  if (!loaded) return { response: await released(id, notFoundResponse()) };
   return { loaded };
 }
 
-/** replaceMessageParts found no stored assistant message to rewrite. A fixed string, so errFields can log it. */
-const NOT_RECORDED = 'replaceMessageParts: the stored assistant message is gone';
+// Fixed strings (errFields logs an Error's message): what failed, never what was in it.
+/** recordAnswersAndAppend found no assistant message by that id in this member's chat. */
+const NOT_RECORDED = 'recordAnswersAndAppend: the stored assistant message is gone';
+/** stampChangesApproved found no chat, or setAutoApprove no account row, to save the answer on. */
+const NOT_REMEMBERED = 'remember: nothing to save it on';
 
 /**
  * A follow-up send, with the chat locked and loaded: first resolves every card still open on the
@@ -406,26 +427,27 @@ async function prepareFollowUp(a: { userId: string; loaded: LoadedChat; message:
   const { conversation, messages } = a.loaded;
   const cid = conversation.id;
   const last = messages.at(-1);
+  // The stored parts are data: one that cannot be read throws here, and POST's catch releases the lock.
+  const pending = last ? pendingApprovals(last) : [];
+  // Room for every append this send makes (the denial when cards are open, then the message),
+  // checked before any is made: a send refused as full changes nothing, and an open card stays
+  // answerable on its own. The writes' own 'full' results below still answer the same 409.
+  if (conversation.messageCount + (pending.length > 0 ? 2 : 1) > ASK_LIMITS.maxMessagesPerChat) return { response: await released(cid, chatFull()) };
   let history = messages;
-  try {
-    // Reading the stored parts is inside the try too: they are data, and a part that cannot be read
-    // must not escape with the lock held.
-    const pending = last ? pendingApprovals(last) : [];
-    // Room for every append this send makes (the denial when cards are open, then the message),
-    // checked before any is made: a send refused as full changes nothing, and an open card stays
-    // answerable on its own. Each append's own 'full' below still answers the same 409.
-    if (conversation.messageCount + (pending.length > 0 ? 2 : 1) > ASK_LIMITS.maxMessagesPerChat) return { response: await released(cid, chatFull()) };
-    if (last && pending.length > 0) {
-      let parts = last.parts;
-      for (const p of pending) parts = respondedParts(parts, p.approvalId, false);
-      if (!(await replaceMessageParts(cid, last.id, parts))) throw new Error(NOT_RECORDED);
-      const denial = approvalOutcomeMessage(pending.map((p) => ({ toolName: p.toolName, approved: false })));
-      if ((await appendUserMessage({ conversationId: cid, userId: a.userId, message: denial, now: a.now })) === 'full') return { response: await released(cid, chatFull()) };
-      history = [...messages.slice(0, -1), { ...last, parts }, denial];
+  if (last && pending.length > 0) {
+    let parts = last.parts;
+    for (const p of pending) parts = respondedParts(parts, p.approvalId, false);
+    const denial = approvalOutcomeMessage(pending.map((p) => ({ toolName: p.toolName, approved: false })));
+    try {
+      // The denials and the hidden denial message, in one statement (recordAnswersAndAppend).
+      const recorded = await recordAnswersAndAppend({ conversationId: cid, userId: a.userId, messageId: last.id, parts, message: denial, now: a.now });
+      if (recorded === 'full') return { response: await released(cid, chatFull()) };
+      if (recorded === 'missing') throw new Error(NOT_RECORDED);
+    } catch (e) {
+      console.error('[ask chat]', JSON.stringify({ outcome: 'pending_denied_failed', userId: a.userId, conversationId: cid, ...errFields(e) }));
+      return { response: await released(cid, setupFailed()) };
     }
-  } catch (e) {
-    console.error('[ask chat]', JSON.stringify({ outcome: 'pending_denied_failed', userId: a.userId, conversationId: cid, ...errFields(e) }));
-    return { response: await released(cid, setupFailed()) };
+    history = [...messages.slice(0, -1), { ...last, parts }, denial];
   }
   // Inside a try like every write here (Task 8 review, I1 — appendUserMessage used to run outside
   // one and could leave the chat locked for the full 5-minute expiry on something as simple as a bad
@@ -441,18 +463,24 @@ async function prepareFollowUp(a: { userId: string; loaded: LoadedChat; message:
 
 /**
  * The approval resume (spec 2026-10-01 §6, as amended in its plan), with the chat locked and loaded
- * — ownership comes from the lock and the owner-scoped load, never from the body. The answers must
- * be exactly the cards still open on the chat's last assistant message: an id with nothing open by
- * it (unknown, already answered, or not on the last message) → bodyless 404, never a hint which; an
- * incomplete set → 400 (the thread always sends the whole set); an open card on a tool that is not
- * a write cannot exist → 400 (fail closed); no room left for the outcome message → 409 chat_full —
- * all before anything runs. Then, in part order, each approved write runs here from the input the
- * server stored when the model asked (runWorkspaceTool re-validates it and never throws; the paused
- * call itself is never replayed to the model); the outcomes are recorded on that stored message in
- * one write; `remember` is applied (merged: any 'chat' stamps the chat once, 'always' sets the
- * toggle of each kind approved); and ONE hidden outcome message, one line per card, is appended for
- * the model to continue from. Returns the turn's history (ending with that message) and its writes
- * decision, or an early response with the lock released.
+ * — ownership comes from the lock and the owner-scoped load, never from the body. In order:
+ * 1. Verify, before anything is saved or run. The answers must be exactly the cards still open on
+ *    the chat's last assistant message: an id with nothing open by it (unknown, already answered,
+ *    not on the last message) → bodyless 404, never a hint which. Fail closed with 400: an
+ *    incomplete set (the thread always sends the whole set), an open card on a tool that is not a
+ *    write (cannot exist), 'chat' on a card that is not a change (a stamp allows changes, so only a
+ *    change card offers it). No room left for the outcome message → 409 chat_full.
+ * 2. `remember`, saved fail-closed: if it cannot be saved, nothing has run, the cards stay open, and
+ *    the member's next click retries cleanly (both saves are idempotent). Merged: any 'chat' stamps
+ *    the chat once (skipped when it is stamped already: the first stamp is kept anyway); 'always'
+ *    sets the toggle of each kind it answered, in one call.
+ * 3. The writes, in part order, from the input the server stored when the model asked
+ *    (runWorkspaceTool re-validates it and never throws; the paused call itself is never replayed to
+ *    the model), then the answers and ONE hidden outcome message, one line per card, written
+ *    together (recordAnswersAndAppend).
+ * So a resume that answers 200 has its writes, their record and the preferences all landed. Returns
+ * the turn's history (ending with the outcome message) and its writes decision, or an early
+ * response with the lock released.
  */
 async function prepareResume(a: {
   userId: string; account: Pick<AskAccount, 'autoApproveChanges' | 'autoApproveDeletes'>; actor: ResearchActor; loaded: LoadedChat; answers: ApprovalAnswer[]; now: Date;
@@ -460,59 +488,74 @@ async function prepareResume(a: {
   const { conversation, messages } = a.loaded;
   const cid = conversation.id;
   const last = messages.at(-1);
-  if (!last) return { response: await released(cid, notFound()) };
-  let parts = last.parts;
-  const outcomes: ApprovalOutcome[] = [];
+  // The stored parts are data: one that cannot be read throws here, and POST's catch releases the lock.
+  const pending = last ? pendingApprovals(last) : [];
+  const open = new Set(pending.map((p) => p.approvalId));
+  const answers = new Map(a.answers.map((x) => [x.approvalId, x]));
+  if (!last || a.answers.some((x) => !open.has(x.approvalId))) return { response: await released(cid, notFoundResponse()) };
+  const refused = pending.some((p) => {
+    const answer = answers.get(p.approvalId);
+    const kind = writeKind(p.toolName);
+    return !answer || kind === null || (answer.remember === 'chat' && kind !== 'change');
+  });
+  if (refused) return { response: await released(cid, badRequest()) };
+  if (conversation.messageCount + 1 > ASK_LIMITS.maxMessagesPerChat) return { response: await released(cid, chatFull()) };
+
   const remember = { chat: false, changes: false, deletes: false };
-  try {
-    // Reading the stored parts is inside the try too: they are data, and a part that cannot be read
-    // must not escape with the lock held.
-    const pending = pendingApprovals(last);
-    const open = new Set(pending.map((p) => p.approvalId));
-    const answers = new Map(a.answers.map((x) => [x.approvalId, x]));
-    if (a.answers.some((x) => !open.has(x.approvalId))) return { response: await released(cid, notFound()) };
-    if (pending.some((p) => !answers.has(p.approvalId) || writeKind(p.toolName) === null)) return { response: await released(cid, badRequest()) };
-    if (conversation.messageCount + 1 > ASK_LIMITS.maxMessagesPerChat) return { response: await released(cid, chatFull()) };
-
-    const workspace = defaultWorkspaceService();
-    for (const p of pending) {
-      const answer = answers.get(p.approvalId)!;
-      const output = answer.approved ? await runWorkspaceTool(workspace, a.actor, p.toolName, p.input) : undefined;
-      parts = respondedParts(parts, p.approvalId, answer.approved, output);
-      outcomes.push({ toolName: p.toolName, approved: answer.approved, output });
-      if (answer.approved && answer.remember === 'chat') remember.chat = true;
-      if (answer.approved && answer.remember === 'always') remember[writeKind(p.toolName) === 'delete' ? 'deletes' : 'changes'] = true;
-    }
-    // Once, after every write ran. A failure here leaves the writes done but unrecorded: the cards
-    // still read as open, and answering them again runs the writes again — which the workspace's
-    // own checks (a duplicate name, an id already gone) mostly turn into an error result.
-    if (!(await replaceMessageParts(cid, last.id, parts))) throw new Error(NOT_RECORDED);
-  } catch (e) {
-    console.error('[ask chat]', JSON.stringify({ outcome: 'approval_record_failed', userId: a.userId, conversationId: cid, ...errFields(e) }));
-    return { response: await released(cid, setupFailed()) };
+  for (const p of pending) {
+    const answer = answers.get(p.approvalId)!;
+    if (answer.approved && answer.remember === 'chat') remember.chat = true;
+    if (answer.approved && answer.remember === 'always') remember[writeKind(p.toolName) === 'delete' ? 'deletes' : 'changes'] = true;
   }
-
-  // Best effort: a failure is logged and only means a later card shows again. This turn's
-  // allowances are read back from what was saved (the stamp's result, the account setAutoApprove
-  // returns), so an answer that could not be saved never skips a card.
   let account = a.account;
   let changesApprovedAt = conversation.changesApprovedAt;
   try {
-    if (remember.chat && (await stampChangesApproved(a.userId, cid, a.now))) changesApprovedAt ??= a.now;
+    if (remember.chat && changesApprovedAt === null) {
+      if (!(await stampChangesApproved(a.userId, cid, a.now))) throw new Error(NOT_REMEMBERED);
+      changesApprovedAt = a.now;
+    }
     if (remember.changes || remember.deletes) {
-      account = (await setAutoApprove(a.userId, { ...(remember.changes ? { changes: true } : {}), ...(remember.deletes ? { deletes: true } : {}) })) ?? account;
+      const saved = await setAutoApprove(a.userId, { ...(remember.changes ? { changes: true } : {}), ...(remember.deletes ? { deletes: true } : {}) });
+      if (!saved) throw new Error(NOT_REMEMBERED);
+      account = saved;
     }
   } catch (e) {
     console.error('[ask chat]', JSON.stringify({ outcome: 'approval_remember_failed', userId: a.userId, conversationId: cid, ...errFields(e) }));
+    return { response: await released(cid, setupFailed()) };
   }
 
+  // The writes run before the one statement that records them. If that statement fails (or the
+  // invocation dies in between), the writes are done but the cards still read as open, and
+  // answering them again runs the writes again. Mostly harmless (the workspace's own checks refuse a
+  // duplicate name or an id already gone), but two effects are worse: a retried Approve reports
+  // DUPLICATE_NAME or NOT_FOUND for a write that in fact succeeded, and a retried Deny stores
+  // "denied" for a delete that already ran. A two-phase record (mark the answers before running) is
+  // a recorded follow-up.
+  let parts = last.parts;
+  const outcomes: ApprovalOutcome[] = [];
+  let ran = 0;
   let outcome: AskUIMessage;
+  let recorded: RecordAndAppendResult;
   try {
+    const workspace = defaultWorkspaceService();
+    for (const p of pending) {
+      const { approved } = answers.get(p.approvalId)!;
+      const output = approved ? await runWorkspaceTool(workspace, a.actor, p.toolName, p.input) : undefined;
+      if (approved) ran += 1;
+      parts = respondedParts(parts, p.approvalId, approved, output);
+      outcomes.push({ toolName: p.toolName, approved, output });
+    }
     outcome = approvalOutcomeMessage(outcomes);
-    if ((await appendUserMessage({ conversationId: cid, userId: a.userId, message: outcome, now: a.now })) === 'full') return { response: await released(cid, chatFull()) };
+    recorded = await recordAnswersAndAppend({ conversationId: cid, userId: a.userId, messageId: last.id, parts, message: outcome, now: a.now });
+    if (recorded === 'missing') throw new Error(NOT_RECORDED);
   } catch (e) {
-    console.error('[ask chat]', JSON.stringify({ outcome: 'approval_append_failed', userId: a.userId, conversationId: cid, ...errFields(e) }));
+    console.error('[ask chat]', JSON.stringify({ outcome: 'approval_record_failed', userId: a.userId, conversationId: cid, ran, ...errFields(e) }));
     return { response: await released(cid, setupFailed()) };
+  }
+  if (recorded === 'full') {
+    // The count check above normally answers this first; logged, because the writes already ran.
+    console.error('[ask chat]', JSON.stringify({ outcome: 'approval_record_failed', userId: a.userId, conversationId: cid, ran, reason: 'chat_full' }));
+    return { response: await released(cid, chatFull()) };
   }
   return { history: [...messages.slice(0, -1), { ...last, parts }, outcome], writes: writesFor(account, { changesApprovedAt }) };
 }

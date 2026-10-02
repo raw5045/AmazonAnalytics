@@ -171,7 +171,7 @@ export async function settleTurn(a: SettleArgs, opts: { countQuestion?: boolean 
     ), glob AS (
       INSERT INTO ask_global_usage (month, cost_micro, questions)
       SELECT ${month}::date, ${a.costMicro}::bigint, ${questions}::int FROM upd
-      ON CONFLICT (month) DO UPDATE SET cost_micro = ask_global_usage.cost_micro + EXCLUDED.cost_micro, questions = ask_global_usage.questions + ${questions}::int
+      ON CONFLICT (month) DO UPDATE SET cost_micro = ask_global_usage.cost_micro + EXCLUDED.cost_micro, questions = ask_global_usage.questions + EXCLUDED.questions
       RETURNING cost_micro, questions
     )
     SELECT upd.from_allowance, upd.from_credit, glob.cost_micro AS global_cost_micro, glob.questions AS global_questions FROM upd, glob`);

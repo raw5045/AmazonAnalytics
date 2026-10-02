@@ -19,7 +19,7 @@ const gates = vi.hoisted(() => ({ runGates: vi.fn() }));
 vi.mock('@/lib/ask/gates', () => gates);
 const conv = vi.hoisted(() => ({
   createConversationWithFirstMessage: vi.fn(), loadConversation: vi.fn(), appendUserMessage: vi.fn(), appendAssistantMessage: vi.fn(),
-  acquireTurnLock: vi.fn(), releaseTurnLock: vi.fn(), replaceMessageParts: vi.fn(), stampChangesApproved: vi.fn(),
+  acquireTurnLock: vi.fn(), releaseTurnLock: vi.fn(), recordAnswersAndAppend: vi.fn(), stampChangesApproved: vi.fn(),
 }));
 vi.mock('@/lib/ask/conversations', () => conv);
 const turn = vi.hoisted(() => ({ runTurn: vi.fn(), windowHistory: (h: unknown[]) => h, TURN_DEADLINE: 'ask turn deadline' }));
@@ -46,6 +46,7 @@ const alerts = vi.hoisted(() => ({ maybeAlertCeiling: vi.fn(async () => {}) }));
 vi.mock('@/lib/ask/alerts', () => alerts);
 import { DrizzleQueryError } from 'drizzle-orm';
 import { BAD_REQUEST_MESSAGE, BUSY_MESSAGE, CHAT_CAP_MESSAGE, CHAT_FULL_MESSAGE, FAILED_MESSAGE, NOT_CONFIGURED_MESSAGE, TOO_LONG_MESSAGE } from '@/lib/ask/messages';
+import { ASK_LIMITS } from '@/lib/ask/models';
 import { POST } from './route';
 
 const member = { id: 'u1', role: 'standard_user' as const, clerkUserId: 'user_1', email: 'm@example.com' };
@@ -234,9 +235,22 @@ describe('POST /api/ask/chat', () => {
     expect(await res.json()).toEqual({ error: CHAT_FULL_MESSAGE, code: 'chat_full' });
     expect(conv.releaseTurnLock).toHaveBeenCalledWith('c1');
     expect(turn.runTurn).not.toHaveBeenCalled();
-    // This return happens before the turn's lifetime tracking begins (nothing to stream yet), so
-    // after() is never registered for it — unlike the setup-failure catch further down.
-    expect(nextServerMock.after).not.toHaveBeenCalled();
+    // The lifetime is registered before any lock is taken (arc 4 Task 6 review), so this refusal
+    // went through it too — and the finally resolved it, so the refusal does not pin the function.
+    expect(nextServerMock.after).toHaveBeenCalledTimes(1);
+    const registered = nextServerMock.after.mock.calls[0][0] as () => Promise<void>;
+    await expect(Promise.race([registered(), new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 1000))])).resolves.toBeUndefined();
+  });
+  it('a failure in the cheap busy-vs-missing lookup is a 503 setup_failed with nothing to release, not an unhandled throw', async () => {
+    conv.acquireTurnLock.mockResolvedValueOnce(false);
+    conv.loadConversation.mockRejectedValueOnce(new Error('neon reset'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const res = await post({ ...newChat, conversationId: existingId });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
+    expect(outcomesLogged(error)).toContain('setup_failed');
+    expect(conv.releaseTurnLock).not.toHaveBeenCalled();
+    error.mockRestore();
   });
   it('an append failure on a follow-up releases the lock, logs append_failed (never the message text), and answers 503', async () => {
     conv.loadConversation.mockResolvedValueOnce({ conversation: { id: 'c1', model: 'claude-sonnet-5', messageCount: 2 }, messages: [] });
@@ -458,20 +472,27 @@ describe('POST /api/ask/chat', () => {
     const approve = (...approvals: Record<string, unknown>[]) => post({ conversationId: existingId, approvals });
     const usage = { noCacheTokens: 1, cacheWriteTokens: 0, cacheReadTokens: 0, outputTokens: 1 };
     const deletePending = { ...pendingAssistant, parts: [{ ...pendingAssistant.parts[1], type: 'tool-delete_saved_view', input: { id: 'abcdef12-abcd-4abc-8abc-abcdef123456' } }] };
+    const deleteCard = { ...pendingAssistant.parts[1], type: 'tool-delete_saved_view', toolCallId: 'call_2', input: { id: 'abcdef12-abcd-4abc-8abc-abcdef123456' }, approval: { id: 'ap_2' } };
+    /** What toolApprovalFor returns here: the turn must carry this very object (toBe), not just any object. */
+    const approvalMap = { create_saved_view: 'user-approval' };
+    const actorOfMember = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat' };
     beforeEach(() => {
       envMock.env.ASK_AI_WRITES_ENABLED = '1';
       conv.loadConversation.mockResolvedValue(loaded());
-      conv.replaceMessageParts.mockResolvedValue(true);
+      conv.recordAnswersAndAppend.mockResolvedValue('ok');
       conv.stampChangesApproved.mockResolvedValue(true);
       ledger.setAutoApprove.mockResolvedValue({ ...account, autoApproveChanges: true });
       toolsMock.runWorkspaceTool.mockResolvedValue({ view: { id: 'v1', name: 'Lamps' } });
+      toolsMock.toolApprovalFor.mockReturnValue(approvalMap);
     });
+    /** The one recordAnswersAndAppend call's argument (the record and the hidden message, written together). */
+    const recordedCall = (i = 0) => conv.recordAnswersAndAppend.mock.calls[i][0] as { conversationId: string; userId: string; messageId: string; parts: { state?: string; output?: unknown; approval?: unknown }[]; message: { parts: { text: string }[] } };
 
     it('a send builds the tools WITH the workspace service and a toolApproval map from the toggles and the chat stamp; a resume is 404 when the writes flag is off', async () => {
       await post({ conversationId: existingId, message: { text: 'hi' } });
       expect(toolsMock.buildAskTools).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ channel: 'chat' }), expect.anything(), { kind: 'workspace' });
       expect(toolsMock.toolApprovalFor).toHaveBeenCalledWith({ allowChanges: false, allowDeletes: false });
-      expect(turn.runTurn.mock.calls[0][0]).toMatchObject({ toolApproval: {} });
+      expect(turn.runTurn.mock.calls[0][0].toolApproval).toBe(approvalMap);
       // The guide carries the workspace rules only while writes are on (spec §4).
       expect(catalog.buildGuide).toHaveBeenLastCalledWith(expect.objectContaining({ workspace: true }));
       envMock.env.ASK_AI_WRITES_ENABLED = undefined;
@@ -500,36 +521,82 @@ describe('POST /api/ask/chat', () => {
       await post(newChat);
       expect(toolsMock.toolApprovalFor).toHaveBeenLastCalledWith({ allowChanges: true, allowDeletes: false });
     });
-    it('an approved resume: no daily question counted, the tool runs with the stored input, the stored message is patched with the output, a hidden outcome message is appended, and the turn runs with no new message', async () => {
+    it('an approved resume: no daily question counted, the tool runs with the stored input as the member, the answers and the hidden outcome message are written together, and the turn runs with no new message, the lock still held', async () => {
       const res = await approve({ approvalId: 'ap_1', approved: true, remember: null });
       expect(res.status).toBe(200);
       expect(gates.runGates).toHaveBeenCalledWith(expect.anything(), { countQuestion: false });
       expect(activity.bumpUserActivity).not.toHaveBeenCalledWith('u1', 'ask_question');
-      expect(toolsMock.runWorkspaceTool).toHaveBeenCalledWith({ kind: 'workspace' }, expect.objectContaining({ localUserId: 'u1', channel: 'chat' }), 'create_saved_view', { name: 'Lamps', search: {} });
-      expect(conv.replaceMessageParts).toHaveBeenCalledWith(existingId, 'm2', expect.arrayContaining([expect.objectContaining({ state: 'output-available', output: { view: { id: 'v1', name: 'Lamps' } }, approval: { id: 'ap_1', approved: true } })]));
-      const appended = conv.appendUserMessage.mock.calls[0][0];
-      expect(appended.message.parts[0].text).toContain('[approval-result] The person approved create_saved_view and it ran.');
+      expect(toolsMock.runWorkspaceTool).toHaveBeenCalledWith({ kind: 'workspace' }, actorOfMember, 'create_saved_view', { name: 'Lamps', search: {} });
+      expect(conv.recordAnswersAndAppend).toHaveBeenCalledTimes(1);
+      const recorded = recordedCall();
+      expect(recorded).toMatchObject({ conversationId: existingId, userId: 'u1', messageId: 'm2' });
+      expect(recorded.parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-available', output: { view: { id: 'v1', name: 'Lamps' } }, approval: { id: 'ap_1', approved: true } })]));
+      expect(recorded.message.parts[0].text).toContain('[approval-result] The person approved create_saved_view and it ran.');
+      expect(conv.appendUserMessage).not.toHaveBeenCalled();
       const turnInput = turn.runTurn.mock.calls[0][0];
       expect(turnInput.newMessage).toBeUndefined();
       expect(turnInput.startMetadata).toBeUndefined();
-      expect(turnInput.history[turnInput.history.length - 1]).toBe(appended.message);
+      expect(turnInput.history[turnInput.history.length - 1]).toBe(recorded.message);
       expect(turnInput.history[turnInput.history.length - 2].parts[1]).toMatchObject({ state: 'output-available' });
+      expect(turnInput.toolApproval).toBe(approvalMap);
       expect(conv.stampChangesApproved).not.toHaveBeenCalled();
       expect(ledger.setAutoApprove).not.toHaveBeenCalled();
+      // The turn's own onEnd releases the lock; nothing before the turn may.
+      expect(conv.releaseTurnLock).not.toHaveBeenCalled();
+      // The request lifetime is registered before the lock is taken and before any write runs: a
+      // disconnect (supportsCancellation) must not end the invocation mid-write with the lock held.
+      expect(nextServerMock.after).toHaveBeenCalledTimes(1);
+      expect(nextServerMock.after.mock.invocationCallOrder[0]).toBeLessThan(conv.acquireTurnLock.mock.invocationCallOrder[0]);
+      expect(nextServerMock.after.mock.invocationCallOrder[0]).toBeLessThan(toolsMock.runWorkspaceTool.mock.invocationCallOrder[0]);
     });
-    it('remember: "chat" stamps the chat; "always" sets the toggle for the write\'s kind; a denial runs nothing and records output-denied', async () => {
+    it('remember: "chat" stamps the chat and "always" sets the toggle for the write\'s kind, both saved BEFORE any write runs; a denial runs nothing and records output-denied', async () => {
       await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
       expect(conv.stampChangesApproved).toHaveBeenCalledWith('u1', existingId, expect.any(Date));
+      expect(conv.stampChangesApproved.mock.invocationCallOrder[0]).toBeLessThan(toolsMock.runWorkspaceTool.mock.invocationCallOrder[0]);
+      toolsMock.runWorkspaceTool.mockClear();
       await approve({ approvalId: 'ap_1', approved: true, remember: 'always' });
       expect(ledger.setAutoApprove).toHaveBeenCalledWith('u1', { changes: true });
+      expect(ledger.setAutoApprove.mock.invocationCallOrder[0]).toBeLessThan(toolsMock.runWorkspaceTool.mock.invocationCallOrder[0]);
       conv.loadConversation.mockResolvedValue(loaded(deletePending));
       await approve({ approvalId: 'ap_1', approved: true, remember: 'always' });
       expect(ledger.setAutoApprove).toHaveBeenLastCalledWith('u1', { deletes: true });
       toolsMock.runWorkspaceTool.mockClear();
       await approve({ approvalId: 'ap_1', approved: false, remember: null });
       expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
-      expect(conv.replaceMessageParts).toHaveBeenLastCalledWith(existingId, 'm2', expect.arrayContaining([expect.objectContaining({ state: 'output-denied', approval: { id: 'ap_1', approved: false } })]));
-      expect(conv.appendUserMessage.mock.calls.at(-1)![0].message.parts[0].text).toContain('The person denied delete_saved_view.');
+      const denied = recordedCall(conv.recordAnswersAndAppend.mock.calls.length - 1);
+      expect(denied.parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-denied', approval: { id: 'ap_1', approved: false } })]));
+      expect(denied.message.parts[0].text).toContain('The person denied delete_saved_view.');
+    });
+    it('"chat" on a chat that is already stamped saves nothing (the stamp is kept, first one wins)', async () => {
+      conv.loadConversation.mockResolvedValue(loaded(pendingAssistant, { id: existingId, model: 'claude-sonnet-5', messageCount: 2, changesApprovedAt: new Date('2026-10-01T00:00:00Z') }));
+      expect((await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' })).status).toBe(200);
+      expect(conv.stampChangesApproved).not.toHaveBeenCalled();
+      expect(toolsMock.toolApprovalFor).toHaveBeenLastCalledWith({ allowChanges: true, allowDeletes: false });
+    });
+    it('one body answering a change and a delete with "always" sets both toggles in ONE setAutoApprove', async () => {
+      conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [...pendingAssistant.parts, deleteCard] }));
+      ledger.setAutoApprove.mockResolvedValueOnce({ ...account, autoApproveChanges: true, autoApproveDeletes: true });
+      const res = await approve({ approvalId: 'ap_1', approved: true, remember: 'always' }, { approvalId: 'ap_2', approved: true, remember: 'always' });
+      expect(res.status).toBe(200);
+      expect(ledger.setAutoApprove).toHaveBeenCalledTimes(1);
+      expect(ledger.setAutoApprove).toHaveBeenCalledWith('u1', { changes: true, deletes: true });
+      expect(toolsMock.toolApprovalFor).toHaveBeenLastCalledWith({ allowChanges: true, allowDeletes: true });
+    });
+    it('one body mixing an approval and a denial: the approved write runs, the denied one runs nothing and is recorded output-denied, one outcome line each', async () => {
+      conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [...pendingAssistant.parts, deleteCard] }));
+      const res = await approve({ approvalId: 'ap_1', approved: true, remember: null }, { approvalId: 'ap_2', approved: false, remember: null });
+      expect(res.status).toBe(200);
+      expect(toolsMock.runWorkspaceTool).toHaveBeenCalledTimes(1);
+      expect(toolsMock.runWorkspaceTool).toHaveBeenCalledWith({ kind: 'workspace' }, actorOfMember, 'create_saved_view', { name: 'Lamps', search: {} });
+      const recorded = recordedCall();
+      expect(recorded.parts).toEqual(expect.arrayContaining([
+        expect.objectContaining({ toolCallId: 'call_1', state: 'output-available', approval: { id: 'ap_1', approved: true } }),
+        expect.objectContaining({ toolCallId: 'call_2', state: 'output-denied', approval: { id: 'ap_2', approved: false } }),
+      ]));
+      const lines = recorded.message.parts[0].text.split('\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toContain('approved create_saved_view and it ran');
+      expect(lines[1]).toContain('The person denied delete_saved_view.');
     });
     it('the answers remembered on a resume apply from the resumed turn itself; a plain approval remembers nothing', async () => {
       await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
@@ -541,14 +608,26 @@ describe('POST /api/ask/chat', () => {
       await approve({ approvalId: 'ap_1', approved: true, remember: null });
       expect(toolsMock.toolApprovalFor).toHaveBeenLastCalledWith({ allowChanges: false, allowDeletes: false });
     });
-    it('a failure saving "remember" is logged as approval_remember_failed and the turn still continues, without the allowance it could not save', async () => {
-      conv.stampChangesApproved.mockRejectedValueOnce(new Error('conn reset'));
+    it('a failure saving "remember" fails closed BEFORE any write: logged as approval_remember_failed, 503, nothing run or recorded, the lock released (the cards stay open, a click retries cleanly)', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const res = await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
-      expect(res.status).toBe(200);
-      expect(outcomesLogged(error)).toContain('approval_remember_failed');
-      expect(conv.appendUserMessage).toHaveBeenCalledTimes(1);
-      expect(toolsMock.toolApprovalFor).toHaveBeenLastCalledWith({ allowChanges: false, allowDeletes: false });
+      const failures = [
+        () => conv.stampChangesApproved.mockRejectedValueOnce(new Error('conn reset')),
+        () => conv.stampChangesApproved.mockResolvedValueOnce(false), // not saved: the chat was not found
+      ];
+      for (const failure of failures) {
+        failure();
+        conv.releaseTurnLock.mockClear();
+        const res = await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
+        expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+      }
+      ledger.setAutoApprove.mockResolvedValueOnce(null); // not saved: no account row
+      expect((await approve({ approvalId: 'ap_1', approved: true, remember: 'always' })).status).toBe(503);
+      expect(outcomesLogged(error).filter((o) => o === 'approval_remember_failed')).toHaveLength(3);
+      expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
+      expect(conv.recordAnswersAndAppend).not.toHaveBeenCalled();
+      expect(turn.runTurn).not.toHaveBeenCalled();
       error.mockRestore();
     });
     it('the approval body is strict: remember with a denial, an unknown key, a missing field, an empty list, a duplicate id, too many answers or a message alongside is 400, before the gates', async () => {
@@ -561,7 +640,8 @@ describe('POST /api/ask/chat', () => {
       expect((await approve({ approvalId: '', approved: true, remember: null })).status).toBe(400);
       expect((await approve()).status).toBe(400);
       expect((await approve({ approvalId: 'ap_1', approved: true, remember: null }, { approvalId: 'ap_1', approved: false, remember: null })).status).toBe(400);
-      expect((await approve(...Array.from({ length: 17 }, (_, i) => ({ approvalId: `ap_${i}`, approved: true, remember: null })))).status).toBe(400);
+      // One more answer than MAX_APPROVALS_PER_TURN (twice the per-answer tool-call budget).
+      expect((await approve(...Array.from({ length: 2 * ASK_LIMITS.maxToolCallsPerTurn + 1 }, (_, i) => ({ approvalId: `ap_${i}`, approved: true, remember: null })))).status).toBe(400);
       expect((await post({ conversationId: existingId, approvals: [{ approvalId: 'ap_1', approved: true, remember: null }], message: { text: 'hi' } })).status).toBe(400);
       expect((await post({ conversationId: null, approvals: [{ approvalId: 'ap_1', approved: true, remember: null }] })).status).toBe(400);
       expect(gates.runGates).not.toHaveBeenCalled();
@@ -590,7 +670,7 @@ describe('POST /api/ask/chat', () => {
         expect(await res.text()).toBe('');
         expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
         expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
-        expect(conv.replaceMessageParts).not.toHaveBeenCalled();
+        expect(conv.recordAnswersAndAppend).not.toHaveBeenCalled();
       }
       conv.releaseTurnLock.mockClear();
       conv.acquireTurnLock.mockResolvedValue(false);
@@ -598,13 +678,20 @@ describe('POST /api/ask/chat', () => {
       expect((await approve({ approvalId: 'ap_1', approved: true, remember: null })).status).toBe(404);
       expect(conv.releaseTurnLock).not.toHaveBeenCalled();
     });
-    it('a card on a tool that is not a write is refused (400, fail closed): nothing runs and the lock is released', async () => {
+    it('fails closed with 400 — nothing saved or run, the lock released — for a card on a tool that is not a write, and for "chat" on a card that is not a change (the thread never sends it)', async () => {
       conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [{ ...pendingAssistant.parts[1], type: 'tool-search_keywords', input: {} }] }));
       const res = await approve({ approvalId: 'ap_1', approved: true, remember: null });
       expect(res.status).toBe(400);
-      expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
-      expect(conv.replaceMessageParts).not.toHaveBeenCalled();
       expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+      conv.releaseTurnLock.mockClear();
+      conv.loadConversation.mockResolvedValue(loaded(deletePending));
+      const chatOnDelete = await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
+      expect(chatOnDelete.status).toBe(400);
+      expect(await chatOnDelete.json()).toEqual({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' });
+      expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+      expect(conv.stampChangesApproved).not.toHaveBeenCalled();
+      expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
+      expect(conv.recordAnswersAndAppend).not.toHaveBeenCalled();
     });
     it('two cards on one message: answering only one is 400; answering both runs the approved writes in part order, records both, stamps once, and the hidden message has one line per card', async () => {
       const second = { type: 'tool-add_to_watchlist', toolCallId: 'call_2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
@@ -616,10 +703,10 @@ describe('POST /api/ask/chat', () => {
       const res = await approve({ approvalId: 'ap_2', approved: true, remember: 'chat' }, { approvalId: 'ap_1', approved: true, remember: 'chat' });
       expect(res.status).toBe(200);
       expect(toolsMock.runWorkspaceTool.mock.calls.map((c) => c[2])).toEqual(['create_saved_view', 'add_to_watchlist']);
-      expect(conv.replaceMessageParts).toHaveBeenCalledTimes(1);
-      expect(conv.replaceMessageParts.mock.calls[0][2].filter((p: { state?: string }) => p.state === 'output-available')).toHaveLength(2);
+      expect(conv.recordAnswersAndAppend).toHaveBeenCalledTimes(1);
+      expect(recordedCall().parts.filter((p) => p.state === 'output-available')).toHaveLength(2);
       expect(conv.stampChangesApproved).toHaveBeenCalledTimes(1);
-      const text = conv.appendUserMessage.mock.calls.at(-1)![0].message.parts[0].text as string;
+      const text = recordedCall().message.parts[0].text;
       expect(text.split('\n')).toHaveLength(2);
       expect(text).toContain('approved create_saved_view and it ran');
       expect(text).toContain('approved add_to_watchlist and it ran');
@@ -636,11 +723,16 @@ describe('POST /api/ask/chat', () => {
       expect(await busy.json()).toEqual({ error: BUSY_MESSAGE, code: 'busy' });
       expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
       conv.acquireTurnLock.mockResolvedValue(true);
-      conv.appendUserMessage.mockResolvedValue('full');
+      // The record + outcome statement finding the chat full (the count check above it normally
+      // catches this first): logged, since the writes already ran.
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      conv.recordAnswersAndAppend.mockResolvedValue('full');
       const full = await approve({ approvalId: 'ap_1', approved: true, remember: null });
       expect(full.status).toBe(409);
       expect(await full.json()).toEqual({ error: CHAT_FULL_MESSAGE, code: 'chat_full' });
       expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+      expect(outcomesLogged(error)).toContain('approval_record_failed');
+      error.mockRestore();
       conv.acquireTurnLock.mockClear();
       envMock.env.ANTHROPIC_API_KEY = undefined;
       const noKey = await approve({ approvalId: 'ap_1', approved: true, remember: null });
@@ -651,96 +743,93 @@ describe('POST /api/ask/chat', () => {
     it('a resume on a chat with no room left for the outcome message is 409 chat_full before anything runs, and releases the lock', async () => {
       // The answer that asked was appended past the cap (assistant messages always are).
       conv.loadConversation.mockResolvedValue(loaded(pendingAssistant, { id: existingId, model: 'claude-sonnet-5', messageCount: 201, changesApprovedAt: null }));
-      const res = await approve({ approvalId: 'ap_1', approved: true, remember: null });
+      const res = await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: CHAT_FULL_MESSAGE, code: 'chat_full' });
+      expect(conv.stampChangesApproved).not.toHaveBeenCalled();
       expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
-      expect(conv.replaceMessageParts).not.toHaveBeenCalled();
+      expect(conv.recordAnswersAndAppend).not.toHaveBeenCalled();
       expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
     });
-    it('a failure recording the answers on a resume is logged as approval_record_failed (never the tool input or output), releases the lock and answers 503 without continuing', async () => {
+    it('a failure writing the answers and the outcome message on a resume is logged as approval_record_failed with how many writes ran (never the tool input or output), releases the lock and answers 503 without continuing', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      for (const failure of [() => conv.replaceMessageParts.mockRejectedValueOnce(new Error('conn reset')), () => conv.replaceMessageParts.mockResolvedValueOnce(false)]) {
+      for (const failure of [() => conv.recordAnswersAndAppend.mockRejectedValueOnce(new Error('conn reset')), () => conv.recordAnswersAndAppend.mockResolvedValueOnce('missing')]) {
         failure();
         conv.releaseTurnLock.mockClear();
-        const res = await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
+        const res = await approve({ approvalId: 'ap_1', approved: true, remember: null });
         expect(res.status).toBe(503);
         expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
         expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
       }
-      expect(outcomesLogged(error).filter((o) => o === 'approval_record_failed')).toHaveLength(2);
+      const lines = error.mock.calls.map((c) => JSON.parse(String(c[1])) as Record<string, unknown>).filter((l) => l.outcome === 'approval_record_failed');
+      expect(lines).toHaveLength(2);
+      for (const l of lines) expect(l).toMatchObject({ userId: 'u1', conversationId: existingId, ran: 1 });
       expect(error.mock.calls.flat().some((a) => String(a).includes('Lamps'))).toBe(false);
-      expect(conv.stampChangesApproved).not.toHaveBeenCalled();
       expect(conv.appendUserMessage).not.toHaveBeenCalled();
-      expect(turn.runTurn).not.toHaveBeenCalled();
-      error.mockRestore();
-    });
-    it('a failure appending the outcome message on a resume is logged as approval_append_failed, releases the lock and answers 503', async () => {
-      conv.appendUserMessage.mockRejectedValueOnce(new Error('conn reset'));
-      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const res = await approve({ approvalId: 'ap_1', approved: true, remember: null });
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
-      expect(outcomesLogged(error)).toContain('approval_append_failed');
-      expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
       expect(turn.runTurn).not.toHaveBeenCalled();
       error.mockRestore();
     });
     it('a new message while a card is pending resolves it as denied first: the stored part becomes output-denied, a hidden denial precedes the member\'s message, and the turn starts from the member\'s message', async () => {
       await post({ conversationId: existingId, message: { text: 'never mind, show me lamps' } });
-      expect(conv.replaceMessageParts).toHaveBeenCalledWith(existingId, 'm2', expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
-      expect(conv.appendUserMessage.mock.calls[0][0].message.parts[0].text).toContain('The person denied create_saved_view.');
-      expect(conv.appendUserMessage.mock.calls[1][0].message.parts[0].text).toBe('never mind, show me lamps');
+      // The denial is recorded and the hidden denial message appended in ONE statement…
+      expect(conv.recordAnswersAndAppend).toHaveBeenCalledTimes(1);
+      const denied = recordedCall();
+      expect(denied).toMatchObject({ conversationId: existingId, userId: 'u1', messageId: 'm2' });
+      expect(denied.parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
+      expect(denied.message.parts[0].text).toContain('The person denied create_saved_view.');
+      // …then the member's own message, after it.
+      expect(conv.appendUserMessage).toHaveBeenCalledTimes(1);
+      expect(conv.appendUserMessage.mock.calls[0][0].message.parts[0].text).toBe('never mind, show me lamps');
+      expect(conv.recordAnswersAndAppend.mock.invocationCallOrder[0]).toBeLessThan(conv.appendUserMessage.mock.invocationCallOrder[0]);
       const turnInput = turn.runTurn.mock.calls[0][0];
       expect(turnInput.newMessage.parts[0].text).toBe('never mind, show me lamps');
-      expect(turnInput.history[turnInput.history.length - 1]).toBe(conv.appendUserMessage.mock.calls[0][0].message);
+      expect(turnInput.history[turnInput.history.length - 1]).toBe(denied.message);
       expect(turnInput.history[turnInput.history.length - 2].parts[1]).toMatchObject({ state: 'output-denied' });
       expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
       expect(activity.bumpUserActivity).toHaveBeenCalledWith('u1', 'ask_question');
       // Regardless of the writes flag (spec §9): a card left open when the flag went off is still resolved.
       envMock.env.ASK_AI_WRITES_ENABLED = undefined;
-      conv.replaceMessageParts.mockClear();
+      conv.recordAnswersAndAppend.mockClear();
       await post({ conversationId: existingId, message: { text: 'and now?' } });
-      expect(conv.replaceMessageParts).toHaveBeenCalledWith(existingId, 'm2', expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
+      expect(recordedCall().parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
     });
     it('a send one message short of the cap with a card pending is 409 chat_full with nothing written (the denial and the message would be two appends); without a card the same chat takes its last message', async () => {
       conv.loadConversation.mockResolvedValue(loaded(pendingAssistant, { id: existingId, model: 'claude-sonnet-5', messageCount: 199, changesApprovedAt: null }));
       const res = await post({ conversationId: existingId, message: { text: 'next' } });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: CHAT_FULL_MESSAGE, code: 'chat_full' });
-      expect(conv.replaceMessageParts).not.toHaveBeenCalled();
+      expect(conv.recordAnswersAndAppend).not.toHaveBeenCalled();
       expect(conv.appendUserMessage).not.toHaveBeenCalled();
       expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
       conv.loadConversation.mockResolvedValue(loaded({ id: 'm3', role: 'assistant', parts: [{ type: 'text', text: 'Done.' }] }, { id: existingId, model: 'claude-sonnet-5', messageCount: 199, changesApprovedAt: null }));
       expect((await post({ conversationId: existingId, message: { text: 'next' } })).status).toBe(200);
       expect(conv.appendUserMessage).toHaveBeenCalledTimes(1);
     });
-    it('the denial append answering full is 409 chat_full: the lock is released and the member\'s message is not appended', async () => {
-      conv.appendUserMessage.mockResolvedValueOnce('full');
+    it('the denial statement answering full is 409 chat_full: nothing was written, the lock is released and the member\'s message is not appended', async () => {
+      conv.recordAnswersAndAppend.mockResolvedValueOnce('full');
       const res = await post({ conversationId: existingId, message: { text: 'next' } });
       expect(res.status).toBe(409);
       expect(await res.json()).toEqual({ error: CHAT_FULL_MESSAGE, code: 'chat_full' });
-      expect(conv.appendUserMessage).toHaveBeenCalledTimes(1);
+      expect(conv.appendUserMessage).not.toHaveBeenCalled();
       expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
       expect(turn.runTurn).not.toHaveBeenCalled();
     });
     it('a failure resolving a pending card on a send is logged as pending_denied_failed, releases the lock and answers 503 before the member\'s message is stored', async () => {
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-      conv.replaceMessageParts.mockRejectedValueOnce(new Error('conn reset'));
-      const res = await post({ conversationId: existingId, message: { text: 'never mind' } });
-      expect(res.status).toBe(503);
-      expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
-      expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+      for (const failure of [() => conv.recordAnswersAndAppend.mockRejectedValueOnce(new Error('conn reset')), () => conv.recordAnswersAndAppend.mockResolvedValueOnce('missing')]) {
+        failure();
+        conv.releaseTurnLock.mockClear();
+        const res = await post({ conversationId: existingId, message: { text: 'never mind' } });
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
+        expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
+      }
       expect(conv.appendUserMessage).not.toHaveBeenCalled();
-      // The denial's own append failing is the same failure.
-      conv.appendUserMessage.mockRejectedValueOnce(new Error('conn reset'));
-      expect((await post({ conversationId: existingId, message: { text: 'never mind' } })).status).toBe(503);
-      expect(conv.appendUserMessage).toHaveBeenCalledTimes(1);
       expect(outcomesLogged(error).filter((o) => o === 'pending_denied_failed')).toHaveLength(2);
       expect(turn.runTurn).not.toHaveBeenCalled();
       error.mockRestore();
     });
-    it('a stored part that cannot be read never escapes with the lock held: 503 and the lock released, on a send and on a resume', async () => {
+    it('a throw with the lock held (here a stored part that cannot be read) reaches the catch, which releases the held lock and logs setup_failed with resume, on a send and on a resume', async () => {
       // An approval-requested part without its approval record (corrupted data) makes pendingApprovals throw.
       conv.loadConversation.mockResolvedValue(loaded({ ...pendingAssistant, parts: [{ ...pendingAssistant.parts[1], approval: undefined }] }));
       const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -749,11 +838,30 @@ describe('POST /api/ask/chat', () => {
       conv.releaseTurnLock.mockClear();
       expect((await approve({ approvalId: 'ap_1', approved: true, remember: null })).status).toBe(503);
       expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
-      expect(outcomesLogged(error)).toEqual(expect.arrayContaining(['pending_denied_failed', 'approval_record_failed']));
+      const lines = error.mock.calls.map((c) => JSON.parse(String(c[1])) as Record<string, unknown>);
+      expect(lines).toEqual([
+        expect.objectContaining({ outcome: 'setup_failed', conversationId: existingId, resume: false }),
+        expect.objectContaining({ outcome: 'setup_failed', conversationId: existingId, resume: true }),
+      ]);
       expect(toolsMock.runWorkspaceTool).not.toHaveBeenCalled();
+      expect(conv.recordAnswersAndAppend).not.toHaveBeenCalled();
       expect(conv.appendUserMessage).not.toHaveBeenCalled();
       expect(turn.runTurn).not.toHaveBeenCalled();
       error.mockRestore();
+    });
+    it('the turn deadline leaves onEnd its margin before maxDuration: a resume whose writes took 100s arms a shorter deadline than a send', async () => {
+      let clock = 1_000_000_000;
+      const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+      const timeouts = vi.spyOn(globalThis, 'setTimeout');
+      await post({ conversationId: existingId, message: { text: 'next' } });
+      // Nothing slow: the full turn deadline (ASK_LIMITS.turnDeadlineMs).
+      expect(timeouts).toHaveBeenLastCalledWith(expect.any(Function), ASK_LIMITS.turnDeadlineMs);
+      toolsMock.runWorkspaceTool.mockImplementationOnce(async () => { clock += 100_000; return { view: { id: 'v1' } }; });
+      await approve({ approvalId: 'ap_1', approved: true, remember: null });
+      // maxDuration 300s − the 20s margin − the 100s already spent.
+      expect(timeouts).toHaveBeenLastCalledWith(expect.any(Function), 180_000);
+      timeouts.mockRestore();
+      now.mockRestore();
     });
     it('settles a resume as a billed turn that is not a question, and a send as a question', async () => {
       const log = vi.spyOn(console, 'log').mockImplementation(() => {});

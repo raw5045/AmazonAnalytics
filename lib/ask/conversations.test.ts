@@ -3,7 +3,7 @@ vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
 const { execute } = vi.hoisted(() => ({ execute: vi.fn() }));
 vi.mock('@/db/client', () => ({ db: { execute } }));
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { titleFrom, listConversations, loadConversation, createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage, acquireTurnLock, releaseTurnLock, deleteConversation, storedToUiMessage, stampChangesApproved, replaceMessageParts } from './conversations';
+import { titleFrom, listConversations, loadConversation, createConversationWithFirstMessage, appendUserMessage, appendAssistantMessage, acquireTurnLock, releaseTurnLock, deleteConversation, storedToUiMessage, stampChangesApproved, recordAnswersAndAppend } from './conversations';
 
 // Renders the real SQL text (placeholders as $1, $2…) and the bound parameter values separately,
 // mirroring lib/ask/ledger.test.ts (Task 5 review) — a sql.raw() fragment (e.g. the maxChats/
@@ -177,13 +177,39 @@ describe('write approval state (arc 4)', () => {
     execute.mockResolvedValueOnce({ rows: [convRow] });
     await expect(listConversations('u1')).resolves.toMatchObject([{ changesApprovedAt: null }]);
   });
-  it('replaceMessageParts rewrites one message\'s parts inside its conversation and cleans NULs', async () => {
-    execute.mockResolvedValueOnce({ rows: [{ id: 'm2' }] });
-    await expect(replaceMessageParts('c1', 'm2', [{ type: 'text', text: 'a\u0000b' }])).resolves.toBe(true);
-    expect(sqlOf()).toContain("UPDATE ask_messages SET parts = $1::jsonb WHERE id = $2::uuid AND conversation_id = $3::uuid AND role = 'assistant'");
-    expect(sqlOf()).toContain('RETURNING id');
-    expect(paramsOf()).toEqual([JSON.stringify([{ type: 'text', text: 'ab' }]), 'm2', 'c1']);
+  const outcome = { id: '22222222-2222-4222-8222-222222222222', parts: [{ type: 'text' as const, text: '[approval-result] The person denied delete_saved_view.\u0000' }] };
+  const record = () => recordAnswersAndAppend({ conversationId: 'c1', userId: 'u1', messageId: 'm2', parts: [{ type: 'text', text: 'a\u0000b' }], message: outcome, now: new Date('2026-10-01T12:00:00.000Z') });
+  it('recordAnswersAndAppend records the answers AND appends the outcome message in ONE statement, each write only when the other can run', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ appended: true, found: true }] });
+    await expect(record()).resolves.toBe('ok');
+    expect(execute).toHaveBeenCalledTimes(1);
+    const s = sqlOf();
+    // The message that asked: that id, in this member's chat, assistant only (never a member's
+    // message or an outcome message).
+    expect(s).toContain("WHERE m.id = $1::uuid AND m.conversation_id = $2::uuid AND m.role = 'assistant' AND c.user_id = $3::uuid");
+    // The append's bump mirrors appendUserMessage (owner-scoped, under the cap, count and updated_at),
+    // and runs only when the message that asked is there.
+    expect(s).toContain('UPDATE ask_conversations SET message_count = message_count + 1, updated_at = now()');
+    expect(s).toContain('WHERE id = $4::uuid AND user_id = $5::uuid AND message_count < 200');
+    expect(s).toContain('AND EXISTS (SELECT 1 FROM target)');
+    // The parts rewrite: that message, in that chat, assistant only — and only together with the bump.
+    expect(s).toContain('UPDATE ask_messages SET parts = $6::jsonb');
+    expect(s).toContain("WHERE id = $7::uuid AND conversation_id = $8::uuid AND role = 'assistant' AND EXISTS (SELECT 1 FROM conv)");
+    // The outcome message: a user message at seq = the new count, inserted only when both writes ran.
+    expect(s).toContain("SELECT $9::uuid, conv.id, conv.message_count, 'user', $10::jsonb, 'complete', $11::timestamptz FROM conv, rec");
+    expect(s).toContain('SELECT EXISTS (SELECT 1 FROM msg) AS appended, EXISTS (SELECT 1 FROM target) AS found');
+    // Both parts arrays are cleaned at the DB boundary (NULs stripped).
+    expect(paramsOf()).toEqual([
+      'm2', 'c1', 'u1', 'c1', 'u1', JSON.stringify([{ type: 'text', text: 'ab' }]), 'm2', 'c1',
+      outcome.id, JSON.stringify([{ type: 'text', text: '[approval-result] The person denied delete_saved_view.' }]), '2026-10-01T12:00:00.000Z',
+    ]);
+  });
+  it('recordAnswersAndAppend answers full when the chat is at the cap and missing when the message is not in this member\'s chat — nothing written either way', async () => {
+    execute.mockResolvedValueOnce({ rows: [{ appended: false, found: true }] });
+    await expect(record()).resolves.toBe('full');
+    execute.mockResolvedValueOnce({ rows: [{ appended: false, found: false }] });
+    await expect(record()).resolves.toBe('missing');
     execute.mockResolvedValueOnce({ rows: [] });
-    await expect(replaceMessageParts('c1', 'm9', [])).resolves.toBe(false);
+    await expect(record()).resolves.toBe('missing');
   });
 });
