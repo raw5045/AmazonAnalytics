@@ -69,6 +69,9 @@ describe('PATCH /api/ask/account (spec 2026-10-01 §8)', () => {
     expect(signedOut.status).toBe(401);
     expect(await signedOut.json()).toEqual({ error: 'Not signed in' });
     expect(signedOut.headers.get('cache-control')).toBe('no-store');
+    // The session is checked before the body: bad JSON or an oversized body from a signed-out caller is still 401.
+    expect((await patch('not json')).status).toBe(401);
+    expect((await patch({ autoApproveChanges: true }, { headers: { ...headers, 'content-length': '5000' } })).status).toBe(401);
 
     // Any other AuthError code is a 403 with its fixed message.
     session.requireAuthenticatedUser.mockRejectedValueOnce(new AuthError('UNPROVISIONABLE', 'This account no longer exists.'));
@@ -156,13 +159,21 @@ describe('PATCH /api/ask/account (spec 2026-10-01 §8)', () => {
   });
 
   it('is 413 over 1 KiB: by content-length before reading the body, by the real byte count after', async () => {
-    const announced = await patch({ autoApproveChanges: true }, { headers: { ...headers, 'content-length': '5000' } });
+    const req = new Request('https://keywordquarry.com/api/ask/account', { method: 'PATCH', headers: { ...headers, 'content-length': '5000' }, body: JSON.stringify({ autoApproveChanges: true }) });
+    const announced = await PATCH(req);
     expect(announced.status).toBe(413);
+    expect(req.bodyUsed).toBe(false); // refused on the header alone: the body was never read
     expect(await announced.json()).toEqual({ error: TOO_LARGE_MESSAGE });
     expect(announced.headers.get('cache-control')).toBe('no-store');
     // Valid JSON padded past the cap, with no content-length (a string body gets none here).
     const padded = await patch(`{"autoApproveChanges":true${' '.repeat(1024)}}`);
     expect(padded.status).toBe(413);
+    expect(await padded.json()).toEqual({ error: TOO_LARGE_MESSAGE });
+    expect(padded.headers.get('cache-control')).toBe('no-store');
+    // Bytes, not characters: counting characters (600) would let this through to the JSON parse, a 400.
+    const multibyte = 'é'.repeat(600);
+    expect([multibyte.length, Buffer.byteLength(multibyte, 'utf8')]).toEqual([600, 1200]);
+    expect((await patch(multibyte)).status).toBe(413);
     expect(ledger.getAccount).not.toHaveBeenCalled();
     expect(ledger.setAutoApprove).not.toHaveBeenCalled();
     // Exactly 1 KiB still passes.

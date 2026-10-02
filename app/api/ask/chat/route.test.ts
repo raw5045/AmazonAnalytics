@@ -86,8 +86,9 @@ describe('POST /api/ask/chat', () => {
     expect((await post(newChat)).status).toBe(401);
   });
   it('a content-length over the limit is 413 without reading the body (the actual body is a valid small request)', async () => {
-    const res = await post(newChat, { ...headers, 'content-length': '100000' });
-    expect(res.status).toBe(413);
+    const req = new Request('https://keywordquarry.com/api/ask/chat', { method: 'POST', headers: { ...headers, 'content-length': '100000' }, body: JSON.stringify(newChat) });
+    expect((await POST(req)).status).toBe(413);
+    expect(req.bodyUsed).toBe(false);
     expect(gates.runGates).not.toHaveBeenCalled();
   });
   it('validates the body: too long and empty get the length message; unknown model and bad JSON get the generic bad-request message', async () => {

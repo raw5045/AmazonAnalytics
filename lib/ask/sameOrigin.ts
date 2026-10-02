@@ -2,8 +2,9 @@ import { env } from '@/lib/env';
 
 /**
  * Spec §13: cookie-authenticated mutations accept only same-origin browser requests. Browsers send
- * `Origin` on every POST/DELETE (same-origin included) and `Sec-Fetch-Site` on every request; a
- * missing Origin therefore means "not a browser form/fetch from our page" and is refused.
+ * `Origin` on every request that is not GET or HEAD (POST, PATCH, DELETE; same-origin included) and
+ * `Sec-Fetch-Site` on every request; a missing Origin therefore means "not a browser form/fetch from
+ * our page" and is refused.
  */
 export function isSameOrigin(req: Request): boolean {
   const site = req.headers.get('sec-fetch-site');
