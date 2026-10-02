@@ -140,10 +140,15 @@ export interface SettleResult {
  * NOT idempotent — never retry a settle. An error thrown after this statement has committed (e.g.
  * the connection drops while the driver is still reading back the response) may already have
  * billed; retrying would charge the same turn's cost twice.
+ *
+ * `countQuestion: false` is for an approval resume (spec 2026-10-01 §6): a billed turn — the
+ * `usage` row, the allowance/credit split and the month's cost exactly as for a question — that is
+ * not a new question, so the month's `questions` counter is neither started nor bumped by it.
  */
-export async function settleTurn(a: SettleArgs): Promise<SettleResult> {
+export async function settleTurn(a: SettleArgs, opts: { countQuestion?: boolean } = {}): Promise<SettleResult> {
   if (!Number.isSafeInteger(a.costMicro) || a.costMicro < 0) throw new Error('settleTurn: costMicro must be a non-negative integer');
   const month = monthStartUtc(a.now);
+  const questions = opts.countQuestion === false ? 0 : 1;
   const r = await db.execute<{ from_allowance: string; from_credit: string; global_cost_micro: string; global_questions: number }>(sql`
     WITH acct AS (
       SELECT user_id, GREATEST(0, monthly_allowance_micro - allowance_used_micro) AS remaining, credit_micro
@@ -165,8 +170,8 @@ export async function settleTurn(a: SettleArgs): Promise<SettleResult> {
       FROM upd RETURNING id
     ), glob AS (
       INSERT INTO ask_global_usage (month, cost_micro, questions)
-      SELECT ${month}::date, ${a.costMicro}::bigint, 1 FROM upd
-      ON CONFLICT (month) DO UPDATE SET cost_micro = ask_global_usage.cost_micro + EXCLUDED.cost_micro, questions = ask_global_usage.questions + 1
+      SELECT ${month}::date, ${a.costMicro}::bigint, ${questions}::int FROM upd
+      ON CONFLICT (month) DO UPDATE SET cost_micro = ask_global_usage.cost_micro + EXCLUDED.cost_micro, questions = ask_global_usage.questions + ${questions}::int
       RETURNING cost_micro, questions
     )
     SELECT upd.from_allowance, upd.from_credit, glob.cost_micro AS global_cost_micro, glob.questions AS global_questions FROM upd, glob`);

@@ -4,6 +4,8 @@
  * allowance/credit/revoke and per-member spend this month (C-m7; Task 10 nits, spec note 2 — the
  * ledger sum is always the UTC calendar month, unlike the allowance's own "used this period", which
  * will track period_start once Stripe sets it). No transcripts, no message text anywhere on this page.
+ * The model mix and the member table count turns (settled model calls: questions plus approval
+ * resumes, arc 4); the month line's "questions" is the global counter, which a resume does not bump.
  */
 import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { redirect } from 'next/navigation';
@@ -17,7 +19,7 @@ import { GrantForm } from './GrantForm';
 export const dynamic = 'force-dynamic';
 const usd = (micro: number) => `$${(micro / MICRO).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const modelFullLabel = (id: string) => ASK_MODELS.find((m) => m.id === id)?.label ?? id;
-const questionsWord = (n: number) => (n === 1 ? 'question' : 'questions');
+const turnsWord = (n: number) => (n === 1 ? 'turn' : 'turns');
 const fmtAlertAt = (at: Date | null) => (at ? `${at.toISOString().replace('T', ' ').slice(0, 16)} UTC` : null);
 
 export default async function AskAiAdminPage() {
@@ -65,7 +67,7 @@ export default async function AskAiAdminPage() {
         Remaining allowances of members with access: <strong>{usd(remaining)}</strong>. Spendable credit: <strong>{usd(credit)}</strong>.
       </p>
       <p className="mt-1 text-sm text-gray-600">
-        Model mix: {mix.length === 0 ? 'none yet' : mix.map((m) => `${modelFullLabel(m.model)} ${m.questions.toLocaleString('en-US')} ${questionsWord(m.questions)} (${usd(m.costMicro)})`).join(' · ')}
+        Model mix: {mix.length === 0 ? 'none yet' : mix.map((m) => `${modelFullLabel(m.model)} ${m.turns.toLocaleString('en-US')} ${turnsWord(m.turns)} (${usd(m.costMicro)})`).join(' · ')}
       </p>
       <p className="mt-1 text-sm text-gray-600">Alerts this month: {alertParts.length === 0 ? 'none' : alertParts.join(' · ')}</p>
       {tooLow && <p className="mt-1 text-sm text-amber-800">The ceiling is lower than what members could still use this month. Raise ASK_AI_GLOBAL_MONTHLY_CEILING_USD before granting more.</p>}
@@ -74,7 +76,7 @@ export default async function AskAiAdminPage() {
         <thead className="text-left text-gray-600">
           <tr>
             <th className="py-1 pr-2">Member</th><th className="pr-2">Access</th><th className="pr-2">Allowance</th><th className="pr-2">Used</th>
-            <th className="pr-2">Credit</th><th className="pr-2">Spend (month)</th><th className="pr-2">Questions</th><th className="pr-2">Last activity</th><th>Actions</th>
+            <th className="pr-2">Credit</th><th className="pr-2">Spend (month)</th><th className="pr-2">Turns</th><th className="pr-2">Last activity</th><th>Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -86,7 +88,7 @@ export default async function AskAiAdminPage() {
               <td className="pr-2">{usd(r.allowanceUsedMicro)}</td>
               <td className="pr-2">{usd(r.creditMicro)}</td>
               <td className="pr-2">{usd(r.spendMonthMicro)}</td>
-              <td className="pr-2">{r.questionsMonth}</td>
+              <td className="pr-2">{r.turnsMonth}</td>
               <td className="pr-2">{r.lastAt ? r.lastAt.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'none'}</td>
               <td><AccountActions userId={r.userId} access={r.access} allowanceUsd={r.monthlyAllowanceMicro / MICRO} /></td>
             </tr>

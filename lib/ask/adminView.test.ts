@@ -7,10 +7,11 @@ describe('adminView', () => {
   beforeEach(() => vi.clearAllMocks());
 
   describe('listAccountsForAdmin', () => {
-    it('lists accounts with this month\'s question count, spend and last activity, newest activity first', async () => {
-      execute.mockResolvedValueOnce({ rows: [{ user_id: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthly_allowance_micro: '10000000', allowance_used_micro: '400000', period_start: '2026-09-01', credit_micro: '0', questions_month: '12', spend_month_micro: '480000', last_at: '2026-09-28T10:00:00.000Z' }] });
+    // A turn is one settled model call (one 'usage' ledger row): a question, or an approval resume (arc 4).
+    it('lists accounts with this month\'s turn count, spend and last activity, newest activity first', async () => {
+      execute.mockResolvedValueOnce({ rows: [{ user_id: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthly_allowance_micro: '10000000', allowance_used_micro: '400000', period_start: '2026-09-01', credit_micro: '0', turns_month: '12', spend_month_micro: '480000', last_at: '2026-09-28T10:00:00.000Z' }] });
       const rows = await listAccountsForAdmin(new Date('2026-09-28T12:00:00Z'));
-      expect(rows[0]).toEqual({ userId: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthlyAllowanceMicro: 10_000_000, allowanceUsedMicro: 400_000, periodStart: '2026-09-01', creditMicro: 0, questionsMonth: 12, spendMonthMicro: 480_000, lastAt: new Date('2026-09-28T10:00:00.000Z') });
+      expect(rows[0]).toEqual({ userId: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthlyAllowanceMicro: 10_000_000, allowanceUsedMicro: 400_000, periodStart: '2026-09-01', creditMicro: 0, turnsMonth: 12, spendMonthMicro: 480_000, lastAt: new Date('2026-09-28T10:00:00.000Z') });
       const s = JSON.stringify(execute.mock.calls[0][0]);
       expect(s).toContain("kind = 'usage'");
       expect(s).toContain('ORDER BY');
@@ -26,7 +27,7 @@ describe('adminView', () => {
       // SQL), so the mocked row reflects what the query itself would return for a stale period —
       // 0 used and the CURRENT month's start, not the raw stale columns — and this test additionally
       // proves the query text actually contains both guards, consistently.
-      execute.mockResolvedValueOnce({ rows: [{ user_id: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthly_allowance_micro: '10000000', allowance_used_micro: '0', period_start: '2026-09-01', credit_micro: '0', questions_month: '0', spend_month_micro: '0', last_at: null }] });
+      execute.mockResolvedValueOnce({ rows: [{ user_id: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthly_allowance_micro: '10000000', allowance_used_micro: '0', period_start: '2026-09-01', credit_micro: '0', turns_month: '0', spend_month_micro: '0', last_at: null }] });
       const rows = await listAccountsForAdmin(new Date('2026-09-28T12:00:00Z'));
       expect(rows[0].allowanceUsedMicro).toBe(0);
       expect(rows[0].periodStart).toBe('2026-09-01');
@@ -48,13 +49,13 @@ describe('adminView', () => {
   it('returns the model mix for the month, most-used first, spend as a positive amount', async () => {
     execute.mockResolvedValueOnce({ rows: [{ model: 'claude-sonnet-5', n: '120', cost_micro: '4800000' }, { model: 'claude-opus-5-5', n: '12', cost_micro: '1900000' }] });
     const mix = await modelMixForMonth(new Date('2026-09-28T12:00:00Z'));
-    expect(mix).toEqual([{ model: 'claude-sonnet-5', questions: 120, costMicro: 4_800_000 }, { model: 'claude-opus-5-5', questions: 12, costMicro: 1_900_000 }]);
+    expect(mix).toEqual([{ model: 'claude-sonnet-5', turns: 120, costMicro: 4_800_000 }, { model: 'claude-opus-5-5', turns: 12, costMicro: 1_900_000 }]);
     const s = JSON.stringify(execute.mock.calls[0][0]);
     expect(s).toContain("kind = 'usage'");
     expect(s).toContain('::timestamptz');
     expect(s).toContain('-COALESCE(SUM(amount_micro), 0)');
     // Task 10 nits, N6: a tie-break on `model` makes the ordering deterministic when two models tie
-    // on question count, instead of leaving the tie order up to Postgres.
+    // on turn count, instead of leaving the tie order up to Postgres.
     expect(s).toContain('ORDER BY n DESC, model');
   });
   it('returns an empty model mix when nothing was asked this month', async () => {

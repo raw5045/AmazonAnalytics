@@ -63,7 +63,8 @@ describe('ledger', () => {
     // The global-usage insert is sourced FROM upd (not a bare VALUES): it only runs when the
     // account update actually produced a row, so a missing account can never bump the global
     // counter even though the statement as a whole still correctly returns no row either way.
-    for (const fragment of ['FOR UPDATE', 'LEAST(', "'usage'", 'INSERT INTO ask_global_usage', '1 FROM upd', 'ON CONFLICT (month) DO UPDATE']) expect(s).toContain(fragment);
+    // (The question count is a bound value since arc 4 — see the countQuestion tests below.)
+    for (const fragment of ['FOR UPDATE', 'LEAST(', "'usage'", 'INSERT INTO ask_global_usage', '::int FROM upd', 'ON CONFLICT (month) DO UPDATE']) expect(s).toContain(fragment);
     expect(execute).toHaveBeenCalledTimes(1);
   });
   it('settleTurn computes absorbedMicro as the remainder after allowance and credit are exhausted', async () => {
@@ -153,5 +154,36 @@ describe('write toggles (arc 4)', () => {
     execute.mockResolvedValueOnce({ rows: [] });
     await expect(setAutoApprove('u1', { deletes: true })).resolves.toBeNull();
     expect(paramsOf()).toEqual([null, true, 'u1']);
+  });
+});
+
+describe('settleTurn countQuestion (arc 4: an approval resume is a billed turn, not a question)', () => {
+  beforeEach(() => vi.clearAllMocks());
+  const args = { userId: 'u1', conversationId: 'c1', messageId: 'm1', model: 'claude-sonnet-5' as const, usage: { noCacheTokens: 5000, cacheWriteTokens: 1000, cacheReadTokens: 10000, outputTokens: 1000 }, costMicro: 24_500, now: new Date('2026-09-28T12:00:00Z') };
+  const settled = { rows: [{ from_allowance: '24500', from_credit: '0', global_cost_micro: '124500', global_questions: 7 }] };
+  /** 0-based positions in paramsOf(i) of the two values that count the question: the inserted `questions` and the conflict increment. */
+  const questionParams = (i: number): [number, number] => {
+    const s = sqlOf(i);
+    const inserted = /SELECT \$\d+::date, \$\d+::bigint, \$(\d+)::int FROM upd/.exec(s);
+    const increment = /questions = ask_global_usage\.questions \+ \$(\d+)::int/.exec(s);
+    if (!inserted || !increment) throw new Error('the ask_global_usage upsert changed shape');
+    return [Number(inserted[1]) - 1, Number(increment[1]) - 1];
+  };
+
+  it('counts one question with no options and with countQuestion: true, binding 1 for both the inserted value and the increment', async () => {
+    execute.mockResolvedValueOnce(settled).mockResolvedValueOnce(settled);
+    await settleTurn(args);
+    await settleTurn(args, { countQuestion: true });
+    for (const i of [0, 1]) expect(questionParams(i).map((p) => paramsOf(i)[p])).toEqual([1, 1]);
+  });
+  it('countQuestion: false binds 0 for both, and nothing else in the statement changes (the usage row, the split, the cost)', async () => {
+    execute.mockResolvedValueOnce(settled).mockResolvedValueOnce(settled);
+    await settleTurn(args);
+    await expect(settleTurn(args, { countQuestion: false })).resolves.toEqual({ fromAllowanceMicro: 24_500, fromCreditMicro: 0, absorbedMicro: 0, globalCostMicro: 124_500, globalQuestions: 7 });
+    const positions = questionParams(1);
+    expect(positions.map((p) => paramsOf(1)[p])).toEqual([0, 0]);
+    expect(sqlOf(1)).toBe(sqlOf(0));
+    expect(paramsOf(1)).toEqual(paramsOf(0).map((v, p) => (positions.includes(p) ? 0 : v)));
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 });

@@ -46,10 +46,13 @@ describe('AskAiAdminPage', () => {
 
   it('renders spend vs ceiling, the model mix, and alert timestamps (S2, C-m3)', async () => {
     ledger.globalUsageForMonth.mockResolvedValue({ ...usageDefault, costMicro: 160_500_000, questions: 4012, alerted80At: new Date('2026-09-20T10:00:00Z'), alerted100At: null });
-    view.modelMixForMonth.mockResolvedValue([{ model: 'claude-sonnet-5', questions: 120, costMicro: 4_800_000 }]);
+    view.modelMixForMonth.mockResolvedValue([{ model: 'claude-sonnet-5', turns: 120, costMicro: 4_800_000 }, { model: 'claude-opus-5-5', turns: 1, costMicro: 40_000 }]);
     render(await AskAiAdminPage());
     expect(screen.getByRole('heading', { name: 'Ask AI' })).toBeInTheDocument();
-    expect(screen.getByText(/Standard \(Sonnet 5\) 120 questions \(\$4\.80\)/)).toBeInTheDocument();
+    // The model mix counts turns (ledger 'usage' rows: questions plus approval resumes, arc 4); the
+    // month line keeps "questions" from the global counter, which a resume does not bump.
+    expect(screen.getByText(/Standard \(Sonnet 5\) 120 turns \(\$4\.80\) · Advanced \(Opus 5\.5\) 1 turn \(\$0\.04\)/)).toBeInTheDocument();
+    expect(screen.getByText(/4,012 questions\./)).toBeInTheDocument();
     expect(screen.getByText(/80% reached 2026-09-20 10:00 UTC/)).toBeInTheDocument();
   });
 
@@ -78,9 +81,12 @@ describe('AskAiAdminPage', () => {
     expect(screen.queryByText(/ceiling is lower than what members could still use/)).toBeNull();
   });
 
-  it('shows a Spend (month) column per member', async () => {
-    view.listAccountsForAdmin.mockResolvedValue([{ userId: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthlyAllowanceMicro: 10_000_000, allowanceUsedMicro: 400_000, periodStart: '2026-09-01', creditMicro: 0, questionsMonth: 12, spendMonthMicro: 480_000, lastAt: new Date('2026-09-28T10:00:00Z') }]);
+  it('shows a Spend (month) column per member, and the member\'s turns this month under "Turns"', async () => {
+    view.listAccountsForAdmin.mockResolvedValue([{ userId: 'u1', email: 'm@example.com', role: 'standard_user', access: true, monthlyAllowanceMicro: 10_000_000, allowanceUsedMicro: 400_000, periodStart: '2026-09-01', creditMicro: 0, turnsMonth: 12, spendMonthMicro: 480_000, lastAt: new Date('2026-09-28T10:00:00Z') }]);
     render(await AskAiAdminPage());
     expect(screen.getByText('$0.48')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Turns' })).toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Questions' })).toBeNull();
+    expect(screen.getByText('12')).toBeInTheDocument();
   });
 });

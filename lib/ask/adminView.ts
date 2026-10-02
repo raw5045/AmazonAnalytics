@@ -7,10 +7,15 @@ import { monthStartUtc } from './ledger';
  * (spec §11.5 lists "email" as a table column) — never write one to a console.* line from this file.
  */
 
-/** One row per account, for the admin member table. */
+/**
+ * One row per account, for the admin member table. `turnsMonth` counts this month's 'usage' ledger
+ * rows — one per settled model call, which is a question or an approval resume (arc 4) — so it is
+ * turns, not questions; the month's question count is ask_global_usage.questions, which a resume
+ * does not bump (settleTurn's countQuestion).
+ */
 export type AdminAccountRow = {
   userId: string; email: string; role: 'admin' | 'standard_user'; access: boolean; monthlyAllowanceMicro: number; allowanceUsedMicro: number;
-  periodStart: string; creditMicro: number; questionsMonth: number; spendMonthMicro: number; lastAt: Date | null;
+  periodStart: string; creditMicro: number; turnsMonth: number; spendMonthMicro: number; lastAt: Date | null;
 };
 
 // A `type` alias, not an `interface`: db.execute<TRow>'s TRow extends Record<string, unknown>, and
@@ -21,7 +26,7 @@ export type AdminAccountRow = {
 // date parsing.
 type AdminAccountQueryRow = {
   user_id: string; email: string; role: 'admin' | 'standard_user'; access: boolean; monthly_allowance_micro: string; allowance_used_micro: string;
-  period_start: string; credit_micro: string; questions_month: string; spend_month_micro: string; last_at: string | Date | null;
+  period_start: string; credit_micro: string; turns_month: string; spend_month_micro: string; last_at: string | Date | null;
 };
 
 type UserIdRow = { id: string };
@@ -41,7 +46,7 @@ function monthStartIso(now: Date): string {
 }
 
 /**
- * Spec §11.5, amended (Task 10 review, S3): every account with this month's question count, spend
+ * Spec §11.5, amended (Task 10 review, S3): every account with this month's turn count, spend
  * and last activity, newest activity first. "Used this period" reads 0 once `period_start` is
  * stale — the same rule `sumRemainingAllowances` (lib/ask/ledger.ts) applies for the lazy period
  * reset (§9.3) — rather than showing last month's figure until the member's next question
@@ -56,7 +61,7 @@ export async function listAccountsForAdmin(now: Date): Promise<AdminAccountRow[]
            -- Consistent with the zeroed "used" above: a stale period reads as already reset here too
            -- (Task 10 nits, N6), rather than showing last month's date alongside this month's $0.
            GREATEST(a.period_start, ${month}::date)::text AS period_start, a.credit_micro,
-           COALESCE(q.n, 0)::text AS questions_month, COALESCE(q.spend_micro, 0)::text AS spend_month_micro, q.last_at
+           COALESCE(q.n, 0)::text AS turns_month, COALESCE(q.spend_micro, 0)::text AS spend_month_micro, q.last_at
     FROM ask_accounts a
     JOIN users u ON u.id = a.user_id
     LEFT JOIN (
@@ -68,7 +73,7 @@ export async function listAccountsForAdmin(now: Date): Promise<AdminAccountRow[]
     ORDER BY q.last_at DESC NULLS LAST, u.email`);
   return r.rows.map((x) => ({
     userId: x.user_id, email: x.email, role: x.role, access: x.access, monthlyAllowanceMicro: num(x.monthly_allowance_micro), allowanceUsedMicro: num(x.allowance_used_micro),
-    periodStart: String(x.period_start).slice(0, 10), creditMicro: num(x.credit_micro), questionsMonth: num(x.questions_month), spendMonthMicro: num(x.spend_month_micro),
+    periodStart: String(x.period_start).slice(0, 10), creditMicro: num(x.credit_micro), turnsMonth: num(x.turns_month), spendMonthMicro: num(x.spend_month_micro),
     lastAt: x.last_at === null ? null : new Date(x.last_at),
   }));
 }
@@ -82,16 +87,17 @@ export async function findUserIdByEmail(email: string): Promise<string | null> {
   return r.rows[0]?.id ?? null;
 }
 
-export type ModelMixRow = { model: string; questions: number; costMicro: number };
+/** `turns`: this month's 'usage' ledger rows for the model — questions plus approval resumes (see AdminAccountRow). */
+export type ModelMixRow = { model: string; turns: number; costMicro: number };
 
-/** Spec §11.5: questions and spend by model for the month, for the admin page's model-mix line (Task 10 review, S2). */
+/** Spec §11.5: turns and spend by model for the month, for the admin page's model-mix line (Task 10 review, S2). */
 export async function modelMixForMonth(now: Date): Promise<ModelMixRow[]> {
   const sinceIso = monthStartIso(now);
   const r = await db.execute<ModelMixQueryRow>(sql`
     SELECT model, count(*) AS n, (-COALESCE(SUM(amount_micro), 0))::text AS cost_micro
     FROM ask_ledger WHERE kind = 'usage' AND created_at >= ${sinceIso}::timestamptz AND model IS NOT NULL
     GROUP BY model ORDER BY n DESC, model`);
-  return r.rows.map((x) => ({ model: x.model, questions: num(x.n), costMicro: num(x.cost_micro) }));
+  return r.rows.map((x) => ({ model: x.model, turns: num(x.n), costMicro: num(x.cost_micro) }));
 }
 
 /**
