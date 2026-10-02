@@ -167,6 +167,16 @@ describe('useWorkspaceNames (spec 2026-10-01 §5: the card names a view or categ
     expect(signal.aborted).toBe(true);
   });
 
+  it('answering a card while its lookup is in flight does not abort it: a card answered here (approval-responded) still needs its name for the record', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
+    const { rerender } = renderHook(({ messages }) => useWorkspaceNames(messages), { initialProps: { messages: [question, answer('a1', card('delete_saved_view', 'ap_1'))] } });
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(1));
+    rerender({ messages: [question, answer('a1', card('delete_saved_view', 'ap_1', 'approval-responded'))] });
+    await settle();
+    expect(((fetchSpy.mock.calls[0][1] as RequestInit).signal as AbortSignal).aborted).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('a new unresolved id while a request is in flight aborts it and asks again', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(() => new Promise<Response>(() => {}));
     const first = [question, answer('a1', card('delete_saved_view', 'ap_1'))];

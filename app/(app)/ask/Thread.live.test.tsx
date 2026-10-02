@@ -254,6 +254,20 @@ describe('approval cards with the real useChat (arc 4, spec 2026-10-01 §5, §6)
     expect(chatBodies(spy)).toEqual([both, both]);
   });
 
+  it('a resend that STREAMED and then failed keeps its records and its partial answer: the server stored the answers before it streamed, so nothing reopens', async () => {
+    mockRoutes({ chunks: [{ type: 'start', messageId: 'a2' }, { type: 'start-step' }, { type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'Saving the view' }, { type: 'error', errorText: 'The AI hit a problem. Try again in a minute.' }] });
+    const onAlwaysApproved = vi.fn();
+    render(<Harness open={pausedChat(cardPart('ap_1'))} {...props} onAlwaysApproved={onAlwaysApproved} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Always approve changes' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The AI hit a problem. Try again in a minute.');
+    await pastThrottle();
+    expect(screen.getByText('Always approved')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+    expect(screen.getByText('Saving the view')).toBeInTheDocument();
+    expect(onAlwaysApproved).toHaveBeenCalledTimes(1);
+    expect(onAlwaysApproved).toHaveBeenCalledWith('changes');
+  });
+
   it('"Always approve" refused (503) and then accepted turns the switch on exactly once', async () => {
     mockRoutes(SETUP_FAILED, { chunks: RESUMED });
     const onAlwaysApproved = vi.fn();

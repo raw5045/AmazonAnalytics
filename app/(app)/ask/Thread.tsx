@@ -82,6 +82,14 @@ function reopenCards(m: AskUIMessage, ids: ReadonlySet<string>): AskUIMessage {
     }),
   };
 }
+/** A refused resume whose JSON body says `answered: true`: the route had stored the answers before its setup failed. */
+function saysAnswered(body: string): boolean {
+  try {
+    return (JSON.parse(body) as { answered?: unknown } | null)?.answered === true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * One status line per assistant message (Task 9 fix round, item 1; `isLast` added in fix round 2,
@@ -164,10 +172,10 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   // this chat" / "always", known only to the tab that clicked) and what the resend carries.
   const [answers, setAnswers] = useState<Readonly<Record<string, ApprovalAnswer>>>({});
   // The resend in flight: the cards' message, the approval ids it answers, and the kinds an "Always
-  // approve" in it covered. onError reopens those cards when it failed before anything streamed;
-  // onFinish drains it (spec 2026-10-01 §6, §8, §9).
+  // approve" in it covered. When it failed before anything streamed, onError reopens those cards (or,
+  // after a 404 or `answered: true`, keeps their records); onFinish drains it (spec 2026-10-01 §6, §8, §9).
   const resendInFlight = useRef<{ messageId: string; ids: ReadonlySet<string>; always: ReadonlySet<'changes' | 'deletes'> } | null>(null);
-  // Where focus goes once an answered card collapses: the next open card (its approval id), else the composer (null).
+  // Where focus goes once a card answered from the keyboard collapses: the next open card (its approval id), else the composer (null).
   const [focusAfterAnswer, setFocusAfterAnswer] = useState<{ approvalId: string | null } | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -233,24 +241,28 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
     onError: (err) => {
       // Arc 4 (spec 2026-10-01 §6, §9): a resend that failed before anything streamed — refused by
       // the route (409 busy or full, 402, 400, 5xx) or lost on the network — still has the hidden
-      // placeholder last, and the route recorded nothing: the cards reopen for one more click (the
-      // alert says what happened, and they are live in useChat's error state). A 404 means they are
-      // gone (answered elsewhere, the chat deleted, writes switched off): the placeholder goes, the
-      // records and the chat-gone line stay. Checked before the HTTP-only early return below, so a
-      // network failure is covered too. `undone` is set inside the updater, which @ai-sdk/react runs
-      // once, synchronously (M5 below), against the current messages.
+      // placeholder last. Its cards reopen for one more click (the alert says what happened; they
+      // are live in useChat's error state): nothing was recorded, or (approval_record_failed) the
+      // writes ran but were not recorded — the accepted double-run window. Two answers keep the
+      // records instead (the placeholder goes, nothing reopens): a 404, the cards being gone
+      // (answered elsewhere, the chat deleted, writes switched off), with the chat-gone line; and a
+      // setup failure after the route had stored the answers, which it marks `answered: true`, with
+      // the setup-failed line. Once anything streamed the answers are stored, so the guard on the
+      // placeholder being last leaves the records and the partial answer alone. Checked before the
+      // HTTP-only early return below, so a network failure is covered too. `undone` is set inside
+      // the updater, which @ai-sdk/react runs once, synchronously (M5 below), on the current messages.
       const sent = resendInFlight.current;
       if (sent) {
-        const gone = APICallError.isInstance(err) && err.statusCode === 404;
+        const answered = APICallError.isInstance(err) && (err.statusCode === 404 || saysAnswered(err.message));
         let undone = false;
         setMessages((msgs) => {
           if (msgs[msgs.length - 1]?.id !== placeholderIdFor(sent.messageId)) return msgs;
           undone = true;
           const kept = msgs.slice(0, -1);
-          return gone ? kept : kept.map((m) => (m.id === sent.messageId ? reopenCards(m, sent.ids) : m));
+          return answered ? kept : kept.map((m) => (m.id === sent.messageId ? reopenCards(m, sent.ids) : m));
         });
         if (undone) {
-          if (!gone) setAnswers((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !sent.ids.has(id))));
+          if (!answered) setAnswers((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !sent.ids.has(id))));
           return;
         }
       }
@@ -346,9 +358,11 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
    * sendAutomaticallyWhen — those are the only readers of the SDK's pendingApprovalMessageId (which
    * addToolApprovalResponse sets), so leaving it unused is what lets a refused resend simply reopen
    * its cards (onError) and a later click start over.
-   * Focus then moves to the next card still open (part order, wrapping), else to the composer.
+   * An answer given from the keyboard then moves focus to the next card still open (part order,
+   * wrapping), else to the composer. A mouse click or a touch tap moves none: on a phone, focusing
+   * the composer would open the keyboard over the answer that is about to stream.
    */
-  const answerApproval = (a: ApprovalAnswer) => {
+  const answerApproval = (a: ApprovalAnswer, viaKeyboard: boolean) => {
     if (last?.role !== 'assistant') return;
     const next = { ...answers, [a.approvalId]: a };
     setAnswers((prev) => ({ ...prev, [a.approvalId]: a }));
@@ -356,7 +370,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
     const waiting = cardParts(last).filter(isOpenCard);
     const at = waiting.findIndex((p) => p.approval.id === a.approvalId);
     const nextOpen = [...waiting.slice(at + 1), ...waiting.slice(0, Math.max(at, 0))].find((p) => !next[p.approval.id]);
-    setFocusAfterAnswer({ approvalId: nextOpen?.approval.id ?? null });
+    if (viaKeyboard) setFocusAfterAnswer({ approvalId: nextOpen?.approval.id ?? null });
     if (nextOpen) return;
     resendInFlight.current = {
       messageId: last.id,
@@ -368,8 +382,9 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       { body: { conversationId: knownChatId, approvals: waiting.map((p) => next[p.approval.id]) } },
     );
   };
-  // After an answer: focus the next open card's first button, else the composer's textarea. Composer
-  // does not expose its textarea, so it is found inside this thread's own section (its form lives there).
+  // After an answer from the keyboard: focus the next open card's first button, else the composer's
+  // textarea. Composer does not expose its textarea, so it is found inside this thread's own section
+  // (its form lives there).
   useEffect(() => {
     if (!focusAfterAnswer) return;
     const section = sectionRef.current;
@@ -392,7 +407,10 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
     const answer = answers[p.approval.id];
     return answer && p.state === 'approval-requested' ? { ...p, state: 'approval-responded', approval: { ...p.approval, approved: answer.approved } } : p;
   };
-  const cardsBusy = streaming || cooldown || leaving;
+  // The card buttons wait while a turn streams, through the Stop cooldown and while the page moves to
+  // a new chat — and whenever nothing can be sent (no balance, the chat full): a resume is a billed
+  // turn that needs room for one more message, so a click could only be refused.
+  const cardsBusy = streaming || cooldown || leaving || !canSend;
   const onStop = () => {
     stop();
     setCooldown(true);

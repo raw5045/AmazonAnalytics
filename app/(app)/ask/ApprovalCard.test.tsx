@@ -12,21 +12,31 @@ describe('ApprovalCard (spec 2026-10-01 §5)', () => {
     render(<ApprovalCard part={requested} names={names} interactive busy={false} onAnswer={onAnswer} />);
     expect(screen.getByText('Save a view named ‘Lamps’')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Approve for this chat' }));
-    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: true, remember: 'chat' });
+    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: true, remember: 'chat' }, true);
     fireEvent.click(screen.getByRole('button', { name: 'Always approve changes' }));
-    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: true, remember: 'always' });
+    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: true, remember: 'always' }, true);
     fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
-    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: false, remember: null });
+    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: false, remember: null }, true);
     expect(screen.getByText('You can turn this off in the chat\'s settings.')).toBeInTheDocument();
+  });
+  it('tells the thread whether the answer came from the keyboard: a click with detail 0 (Enter or Space on a button) is, a mouse click or a tap (detail 1) is not', () => {
+    const onAnswer = vi.fn();
+    render(<ApprovalCard part={requested} names={names} interactive busy={false} onAnswer={onAnswer} />);
+    for (const name of ['Deny', 'Approve for this chat', 'Always approve changes']) {
+      fireEvent.click(screen.getByRole('button', { name }), { detail: 1 });
+      expect(onAnswer.mock.lastCall?.[1]).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name }), { detail: 0 });
+      expect(onAnswer.mock.lastCall?.[1]).toBe(true);
+    }
   });
   it('a delete card: Approve this delete sends no remember; Always approve deletes sends always; the name comes from the lookup', () => {
     const onAnswer = vi.fn();
     render(<ApprovalCard part={del} names={{ views: { 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa': 'Lamps' }, categories: {} }} interactive busy={false} onAnswer={onAnswer} />);
     expect(screen.getByText('Delete the view ‘Lamps’ — permanent')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Approve this delete' }));
-    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_2', approved: true, remember: null });
+    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_2', approved: true, remember: null }, true);
     fireEvent.click(screen.getByRole('button', { name: 'Always approve deletes' }));
-    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_2', approved: true, remember: 'always' });
+    expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_2', approved: true, remember: 'always' }, true);
   });
   it('disabled while busy, and read-only (no buttons) when not interactive', () => {
     const { rerender } = render(<ApprovalCard part={requested} names={names} interactive busy onAnswer={vi.fn()} />);

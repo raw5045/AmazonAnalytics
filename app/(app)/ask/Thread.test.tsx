@@ -485,16 +485,27 @@ describe('Thread', () => {
       const card = screen.getByRole('group', { name: 'Save a view named ‘Lamps’' });
       expect(screen.getByText('Saving.').compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
-    it('each card is labelled by its own summary, and an answer moves focus to the next open card, then to the composer', () => {
+    it('each card is labelled by its own summary, and an answer given from the keyboard (click detail 0) moves focus to the next open card, then to the composer', () => {
       const second = { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
       chat.messages = [question, { ...pending, parts: [...pending.parts, second] }];
       render(<Harness open={openChat()} />);
       const watchlist = screen.getByRole('group', { name: 'Add 1 keyword to the watchlist: desk lamp' });
       expect(screen.getByRole('group', { name: 'Save a view named ‘Lamps’' })).toBeInTheDocument();
-      fireEvent.click(screen.getAllByRole('button', { name: 'Approve for this chat' })[0]);   // the view card, first in part order
+      fireEvent.click(screen.getAllByRole('button', { name: 'Approve for this chat' })[0], { detail: 0 });   // the view card, first in part order
       expect(within(watchlist).getByRole('button', { name: 'Deny' })).toHaveFocus();
-      fireEvent.click(within(watchlist).getByRole('button', { name: 'Deny' }));
+      fireEvent.click(within(watchlist).getByRole('button', { name: 'Deny' }), { detail: 0 });
       expect(screen.getByLabelText('Your question')).toHaveFocus();
+    });
+    it('a mouse or touch answer (click detail 1) moves no focus — the composer would open the phone keyboard over the streaming answer', () => {
+      const second = { type: 'tool-add_to_watchlist', toolCallId: 'c2', state: 'approval-requested', input: { keywords: ['desk lamp'], searchTermIds: [] }, approval: { id: 'ap_2' } };
+      chat.messages = [question, { ...pending, parts: [...pending.parts, second] }];
+      render(<Harness open={openChat()} />);
+      const watchlist = screen.getByRole('group', { name: 'Add 1 keyword to the watchlist: desk lamp' });
+      fireEvent.click(screen.getAllByRole('button', { name: 'Approve for this chat' })[0], { detail: 1 });
+      expect(within(watchlist).getByRole('button', { name: 'Deny' })).not.toHaveFocus();
+      fireEvent.click(within(watchlist).getByRole('button', { name: 'Deny' }), { detail: 1 });
+      expect(chat.sendMessage).toHaveBeenCalledTimes(1);
+      expect(screen.getByLabelText('Your question')).not.toHaveFocus();
     });
     it('a card on an earlier message is a record, not interactive', () => {
       chat.messages = [pending, { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'later' }] }, { id: 'm4', role: 'assistant', parts: [{ type: 'text', text: 'ok' }] }];
@@ -607,6 +618,7 @@ describe('Thread', () => {
         chat.setMessages.mockImplementationOnce((u: unknown) => { chat.messages = typeof u === 'function' ? (u as (ms: unknown[]) => unknown[])(chat.messages) : (u as unknown[]); });
         act(() => { (chat.lastOptions as { onError: (e: unknown) => void }).onError(err); });
         view.rerender(<Harness open={openChat()} />);
+        return view;
       };
 
       it('refused before anything streamed (503): the placeholder goes and the card is asked again — its part back to approval-requested with { id } only, its answer forgotten, its buttons back in the error state', () => {
@@ -627,6 +639,21 @@ describe('Thread', () => {
         expect(chat.messages).toEqual([question, answeredHere]);
         expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+      });
+      it('a setup failure the route marks answered: true (it had already stored the answers) keeps the records like a 404, with the setup-failed line', () => {
+        answerThenFail(new APICallError({ message: JSON.stringify({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed', answered: true }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 503 }));
+        expect(chat.messages).toEqual([question, answeredHere]);
+        expect(screen.getByText('Approved for this chat')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Deny' })).toBeNull();
+      });
+      it('a full chat disables the reopened cards: a resume needs room for one more message, so they could never succeed', () => {
+        const view = answerThenFail(new APICallError({ message: JSON.stringify({ error: 'This chat is full. Start a new one.', code: 'chat_full' }), url: '/api/ask/chat', requestBodyValues: {}, statusCode: 409 }));
+        expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
+        // The isError finish refreshes the page: the chat now counts as full, and AskAi passes that reason down.
+        view.rerender(<Harness open={openChat()} cantSendReason="This chat is full. Start a new one." />);
+        expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Deny' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Always approve changes' })).toBeDisabled();
       });
       it('backstop: a placeholder left last with no resend in flight is dropped, never restored into the draft', () => {
         chat.messages = [question, answeredHere, placeholder];

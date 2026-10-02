@@ -621,6 +621,7 @@ describe('POST /api/ask/chat', () => {
         const res = await approve({ approvalId: 'ap_1', approved: true, remember: 'chat' });
         expect(res.status).toBe(503);
         expect(await res.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
+        expect(conv.releaseTurnLock).toHaveBeenCalledTimes(1);   // once: a double release would end another request's lock
         expect(conv.releaseTurnLock).toHaveBeenCalledWith(existingId);
       }
       ledger.setAutoApprove.mockResolvedValueOnce(null); // not saved: no account row
@@ -770,6 +771,23 @@ describe('POST /api/ask/chat', () => {
       expect(turn.runTurn).not.toHaveBeenCalled();
       error.mockRestore();
     });
+    it('a setup failure AFTER the answers were stored answers 503 with answered: true, so the thread keeps the records instead of reopening answered cards; a failure before the record, or on a send, carries no flag', async () => {
+      const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+      snapshot.loadSnapshotMetaHttp.mockRejectedValueOnce(new Error('neon down'));
+      const afterRecord = await approve({ approvalId: 'ap_1', approved: true, remember: null });
+      expect(afterRecord.status).toBe(503);
+      expect(await afterRecord.json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed', answered: true });
+      expect(conv.recordAnswersAndAppend).toHaveBeenCalledTimes(1);
+      expect(conv.releaseTurnLock).toHaveBeenCalledTimes(1);
+      turn.runTurn.mockRejectedValueOnce(new Error('convert failed'));
+      expect(await (await approve({ approvalId: 'ap_1', approved: true, remember: null })).json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed', answered: true });
+      conv.recordAnswersAndAppend.mockRejectedValueOnce(new Error('conn reset'));
+      expect(await (await approve({ approvalId: 'ap_1', approved: true, remember: null })).json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
+      snapshot.loadSnapshotMetaHttp.mockRejectedValueOnce(new Error('neon down'));
+      expect(await (await post({ conversationId: existingId, message: { text: 'next' } })).json()).toEqual({ error: FAILED_MESSAGE, code: 'setup_failed' });
+      expect(outcomesLogged(error)).toEqual(['setup_failed', 'setup_failed', 'approval_record_failed', 'setup_failed']);
+      error.mockRestore();
+    });
     it('a new message while a card is pending resolves it as denied first: the stored part becomes output-denied, a hidden denial precedes the member\'s message, and the turn starts from the member\'s message', async () => {
       await post({ conversationId: existingId, message: { text: 'never mind, show me lamps' } });
       // The denial is recorded and the hidden denial message appended in ONE statement…
@@ -854,15 +872,19 @@ describe('POST /api/ask/chat', () => {
       let clock = 1_000_000_000;
       const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
       const timeouts = vi.spyOn(globalThis, 'setTimeout');
-      await post({ conversationId: existingId, message: { text: 'next' } });
-      // Nothing slow: the full turn deadline (ASK_LIMITS.turnDeadlineMs).
-      expect(timeouts).toHaveBeenLastCalledWith(expect.any(Function), ASK_LIMITS.turnDeadlineMs);
-      toolsMock.runWorkspaceTool.mockImplementationOnce(async () => { clock += 100_000; return { view: { id: 'v1' } }; });
-      await approve({ approvalId: 'ap_1', approved: true, remember: null });
-      // maxDuration 300s − the 20s margin − the 100s already spent.
-      expect(timeouts).toHaveBeenLastCalledWith(expect.any(Function), 180_000);
-      timeouts.mockRestore();
-      now.mockRestore();
+      try {
+        await post({ conversationId: existingId, message: { text: 'next' } });
+        // Nothing slow: the full turn deadline (ASK_LIMITS.turnDeadlineMs).
+        expect(timeouts).toHaveBeenLastCalledWith(expect.any(Function), ASK_LIMITS.turnDeadlineMs);
+        toolsMock.runWorkspaceTool.mockImplementationOnce(async () => { clock += 100_000; return { view: { id: 'v1' } }; });
+        await approve({ approvalId: 'ap_1', approved: true, remember: null });
+        // maxDuration 300s − the 20s margin − the 100s already spent.
+        expect(timeouts).toHaveBeenLastCalledWith(expect.any(Function), 180_000);
+      } finally {
+        // Restored on a failure too: a stuck Date.now or setTimeout spy would break every later test.
+        timeouts.mockRestore();
+        now.mockRestore();
+      }
     });
     it('settles a resume as a billed turn that is not a question, and a send as a question', async () => {
       const log = vi.spyOn(console, 'log').mockImplementation(() => {});

@@ -15,9 +15,10 @@
  * approved writes, and records the answers together with the hidden outcome message in one statement
  * (prepareResume) → turn setup AND the turn itself (a throw from `runTurn` before it starts
  * streaming, e.g. convertToModelMessages or its resume guard, answers 503 like any setup failure;
- * see the Task 6 re-review amendment under ### Task 8 in the plan) → stream. Settlement runs in the
- * turn's onEnd BEFORE the answer is saved (money first); a resume settles as a billed turn that is
- * not a question (settleTurn's countQuestion: false).
+ * see the Task 6 re-review amendment under ### Task 8 in the plan; on a resume whose answers were
+ * already stored, that 503 says `answered: true`, so the thread keeps the cards' records) → stream.
+ * Settlement runs in the turn's onEnd BEFORE the answer is saved (money first); a resume settles as
+ * a billed turn that is not a question (settleTurn's countQuestion: false).
  *
  * Lifetime (Task 8 review, I3; registered before any lock since the arc-4 Task 6 review):
  * `vercel.json` sets `supportsCancellation` for this route, so a client disconnect (Stop, leaving for
@@ -116,7 +117,7 @@ function json(body: unknown, status: number, extra: Record<string, string> = {})
 const notFoundResponse = (): NextResponse => new NextResponse(null, { status: 404, headers: NO_STORE });
 const badRequest = (): NextResponse => json({ error: BAD_REQUEST_MESSAGE, code: 'bad_request' }, 400);
 const chatFull = (): NextResponse => json({ error: CHAT_FULL_MESSAGE, code: 'chat_full' }, 409);
-const setupFailed = (extra: Record<string, string> = {}): NextResponse => json({ error: FAILED_MESSAGE, code: 'setup_failed', ...extra }, 503);
+const setupFailed = (extra: Record<string, string | boolean> = {}): NextResponse => json({ error: FAILED_MESSAGE, code: 'setup_failed', ...extra }, 503);
 let warnedNoKey = false;
 
 /** Every early response between a successful lock acquire and the turn's start goes through here, the lock released first (best effort — a failed release never replaces the answer). A throw is released by POST's catch instead. */
@@ -207,6 +208,10 @@ export async function POST(req: Request) {
   // (a throw in the busy-vs-missing lookup, say) would end another request's turn lock early.
   let held: string | null = null;
   let created = false;
+  // A resume's answers and hidden outcome message are stored (prepareResume returned, so
+  // recordAnswersAndAppend answered 'ok'): a setup failure after that says `answered: true`, and the
+  // thread keeps the records instead of reopening cards a retry could only get a 404 for.
+  let answersRecorded = false;
   const controller = new AbortController();
   let timer: NodeJS.Timeout | undefined;
   const { promise: turnFinished, resolve: finishTurn } = Promise.withResolvers<void>();
@@ -235,6 +240,7 @@ export async function POST(req: Request) {
       held = conversationId;
       const resumed = await prepareResume({ userId: user.id, account: gate.account, actor, loaded: locked.loaded, answers: body.data.approvals, now });
       if ('response' in resumed) return resumed.response;
+      answersRecorded = true;
       model = locked.loaded.conversation.model;
       history = resumed.history;
       writes = resumed.writes;
@@ -362,8 +368,10 @@ export async function POST(req: Request) {
     // On a first send (Task 9 fix round 2, item 4) the chat and its question were already stored
     // before this failure — the id goes in the body so the client can stay in that chat instead of
     // resending with conversationId: null and creating an orphaned second one. A follow-up already
-    // has the id client-side (it's `open`), so its body is unchanged.
-    return setupFailed(created && held ? { conversationId: held } : {});
+    // has the id client-side (it's `open`), so its body is unchanged. A resume whose answers were
+    // already stored (`answersRecorded`) says `answered: true` (arc 4): the thread keeps those cards'
+    // records instead of reopening them.
+    return setupFailed({ ...(created && held ? { conversationId: held } : {}), ...(answersRecorded ? { answered: true } : {}) });
   } finally {
     if (!streaming) finishTurn();
   }
@@ -473,7 +481,9 @@ async function prepareFollowUp(a: { userId: string; loaded: LoadedChat; message:
  * 2. `remember`, saved fail-closed: if it cannot be saved, nothing has run, the cards stay open, and
  *    the member's next click retries cleanly (both saves are idempotent). Merged: any 'chat' stamps
  *    the chat once (skipped when it is stamped already: the first stamp is kept anyway); 'always'
- *    sets the toggle of each kind it answered, in one call.
+ *    sets the toggle of each kind it answered, in one call. A preference saved here stays saved when
+ *    a later step answers 503 (the writes' record, the turn's setup): benign — the member chose it,
+ *    and the retry saves it again idempotently.
  * 3. The writes, in part order, from the input the server stored when the model asked
  *    (runWorkspaceTool re-validates it and never throws; the paused call itself is never replayed to
  *    the model), then the answers and ONE hidden outcome message, one line per card, written

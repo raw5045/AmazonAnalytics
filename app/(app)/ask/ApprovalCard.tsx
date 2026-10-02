@@ -22,10 +22,16 @@ const SECONDARY = `${BUTTON} border border-slate-300 bg-white text-slate-800 hov
  * Every line that shows the summary wraps anywhere: a keyword sample can reach ~1.5 KB, and a single
  * 512-character keyword has no spaces. A live card's group is named by its own summary (so two
  * cards are told apart) and carries `data-approval-id`, which the thread uses to move focus to the
- * next open card after an answer.
+ * next open card after an answer given from the keyboard.
  */
 export function ApprovalCard({ part, names, interactive, busy, onAnswer, record }: {
-  part: ToolUIPart; names: ApprovalNames; interactive: boolean; busy: boolean; onAnswer: (a: ApprovalAnswer) => void;
+  part: ToolUIPart; names: ApprovalNames; interactive: boolean; busy: boolean;
+  /**
+   * `viaKeyboard`: the button was activated from the keyboard (a click whose `detail` is 0), so the
+   * thread may move focus on; a mouse click or a touch tap moves none. Kept out of the answer itself,
+   * which goes to the route as it is.
+   */
+  onAnswer: (a: ApprovalAnswer, viaKeyboard: boolean) => void;
   /** What the member chose, known only to the tab that clicked (the server stores the outcome, not the remember choice). */
   record?: 'chat' | 'always' | null;
 }) {
@@ -49,11 +55,11 @@ export function ApprovalCard({ part, names, interactive, busy, onAnswer, record 
     <div role="group" aria-labelledby={summaryId} data-approval-id={approvalId} className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-slate-800">
       <p id={summaryId} className="wrap-anywhere">{summary}</p>
       <div className="mt-2 flex flex-wrap gap-2">
-        <button type="button" disabled={busy} onClick={() => onAnswer({ approvalId, approved: false, remember: null })} className={SECONDARY}>Deny</button>
-        <button type="button" disabled={busy} onClick={() => onAnswer({ approvalId, approved: true, remember: isDelete ? null : 'chat' })} className={`${BUTTON} bg-[#0B1E3A] text-white`}>
+        <button type="button" disabled={busy} onClick={(e) => onAnswer({ approvalId, approved: false, remember: null }, e.detail === 0)} className={SECONDARY}>Deny</button>
+        <button type="button" disabled={busy} onClick={(e) => onAnswer({ approvalId, approved: true, remember: isDelete ? null : 'chat' }, e.detail === 0)} className={`${BUTTON} bg-[#0B1E3A] text-white`}>
           {isDelete ? 'Approve this delete' : 'Approve for this chat'}
         </button>
-        <button type="button" disabled={busy} onClick={() => onAnswer({ approvalId, approved: true, remember: 'always' })} className={SECONDARY}>
+        <button type="button" disabled={busy} onClick={(e) => onAnswer({ approvalId, approved: true, remember: 'always' }, e.detail === 0)} className={SECONDARY}>
           {isDelete ? 'Always approve deletes' : 'Always approve changes'}
         </button>
       </div>
