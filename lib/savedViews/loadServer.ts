@@ -4,7 +4,7 @@
  * user context already established by the caller.
  */
 import 'server-only';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { savedViews } from '@/db/schema';
 import { isUuid } from '@/lib/db/uuid';
@@ -33,6 +33,15 @@ export async function listSavedViewsForUser(userId: string): Promise<SavedView[]
     .orderBy(desc(savedViews.createdAt));
 
   return rows.map(rowToSavedView);
+}
+
+/** How many saved views the user has: one COUNT, cheaper than listing. The workspace write results carry it (like watchlistCountForUser). */
+export async function countSavedViewsForUser(userId: string): Promise<number> {
+  const [{ n }] = await db
+    .select({ n: sql<number>`COUNT(*)::int` })
+    .from(savedViews)
+    .where(eq(savedViews.userId, userId));
+  return n;
 }
 
 /**

@@ -2,9 +2,10 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { db } from '@/db/client';
 import { searchTerms } from '@/db/schema';
 import { createCustomCategory, deleteCustomCategory, updateCustomCategory } from '@/lib/customCategories/commands';
-import { loadCustomCategoryForUser } from '@/lib/customCategories/loadServer';
+import { countCustomCategoriesForUser, loadCustomCategoryForUser } from '@/lib/customCategories/loadServer';
 import { defaultCategoryDeps, resolveScope } from '@/lib/research/categories';
 import { createSavedView, deleteSavedView, updateSavedView } from '@/lib/savedViews/commands';
+import { countSavedViewsForUser } from '@/lib/savedViews/loadServer';
 import { addToWatchlist, removeFromWatchlist } from '@/lib/watchlist/commands';
 import { listWatchlistWithKeywords } from '@/lib/watchlist/loadServer';
 import { createTestUser, deleteTestUser } from './helpers';
@@ -24,18 +25,21 @@ describe('workspace commands (integration, real Postgres)', () => {
     await deleteTestUser(otherUserId);
   });
 
-  it('saved views: create, duplicate, rename, delete, delete again', async () => {
+  it('saved views: create, duplicate, rename, delete, delete again; the count the write results carry follows (1, then 0)', async () => {
     const created = await createSavedView(userId!, { name: 'itest view', filters: { q: 'lamp' } });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     expect(created.view.filters.q).toBe('lamp');
+    // A fresh itest user owns exactly this one view; an unscoped COUNT would also see every other account's views.
+    expect(await countSavedViewsForUser(userId!)).toBe(1);
     expect(await createSavedView(userId!, { name: 'itest view', filters: {} })).toMatchObject({ ok: false, code: 'duplicate_name' });
     expect(await updateSavedView(userId!, created.view.id, { name: 'itest view 2' })).toMatchObject({ ok: true, view: { name: 'itest view 2' } });
     expect(await deleteSavedView(userId!, created.view.id)).toEqual({ ok: true, deleted: { id: created.view.id, name: 'itest view 2' } });
+    expect(await countSavedViewsForUser(userId!)).toBe(0);
     expect(await deleteSavedView(userId!, created.view.id)).toMatchObject({ ok: false, code: 'not_found' });
   });
 
-  it('custom categories: create from a real catalog expansion, load, update, delete', async () => {
+  it('custom categories: create from a real catalog expansion, load, update, delete; the count follows (1, then 0)', async () => {
     const catalog = await defaultCategoryDeps.loadCatalog();
     const leaf = catalog.entries.find((e) => e.terminal)!;
     const scope = await resolveScope(userId!, { selections: [{ kind: 'taxonomy', path: leaf.path, includeDescendants: false }], leafPaths: [] }, 12000, defaultCategoryDeps);
@@ -43,11 +47,13 @@ describe('workspace commands (integration, real Postgres)', () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     expect(created.category.leafPaths).toEqual([leaf.path]);
+    expect(await countCustomCategoriesForUser(userId!)).toBe(1); // owner-scoped, as for saved views
     // The only real-database check of the lower(name) unique index → 23505 → duplicate_name chain (case-insensitive).
     expect(await createCustomCategory(userId!, { name: 'ITEST Category', leafPaths: [leaf.path] })).toMatchObject({ ok: false, code: 'duplicate_name' });
     expect(await loadCustomCategoryForUser(userId!, created.category.id)).toMatchObject({ name: 'itest category' });
     expect(await updateCustomCategory(userId!, created.category.id, { leafPaths: [leaf.path, 'Zed › Extra'] })).toMatchObject({ ok: true, category: { leafPaths: [leaf.path, 'Zed › Extra'] } });
     expect(await deleteCustomCategory(userId!, created.category.id)).toEqual({ ok: true, deleted: { id: created.category.id, name: 'itest category', leafCount: 2 } });
+    expect(await countCustomCategoriesForUser(userId!)).toBe(0);
   });
 
   it('watchlist: add by text and id, list with keyword text, another account cannot remove it, remove', async () => {

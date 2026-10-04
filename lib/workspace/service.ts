@@ -9,7 +9,7 @@ import { secondsUntilNextEtDay } from '@/lib/activity/etDay';
 import { errFields } from '@/lib/ask/logSafe';
 import { countUserActivityToday } from '@/lib/activity/readToday';
 import * as categoryCommands from '@/lib/customCategories/commands';
-import { listCustomCategoriesForUser, loadCustomCategoryForUser, type CustomCategoryDTO } from '@/lib/customCategories/loadServer';
+import { countCustomCategoriesForUser, listCustomCategoriesForUser, loadCustomCategoryForUser, type CustomCategoryDTO } from '@/lib/customCategories/loadServer';
 import { MAX_CUSTOM_CATEGORIES, MAX_LEAF_PATHS_PER_CATEGORY } from '@/lib/customCategories/validation';
 import { isPoolConnectTimeout } from '@/lib/db/tcpPool';
 import { env } from '@/lib/env';
@@ -24,7 +24,7 @@ import type { ResearchActor } from '@/lib/research/service';
 import { SAFE_TOOL_FAILURE } from '@/lib/research/toolErrors';
 import { recordResearchActivity, reserveResearchRequest } from '@/lib/research/usage';
 import * as savedViewCommands from '@/lib/savedViews/commands';
-import { listSavedViewsForUser } from '@/lib/savedViews/loadServer';
+import { countSavedViewsForUser, listSavedViewsForUser } from '@/lib/savedViews/loadServer';
 import type { SavedView } from '@/lib/savedViews/types';
 import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
 import * as watchlistCommands from '@/lib/watchlist/commands';
@@ -52,12 +52,14 @@ export interface WorkspaceServiceDeps {
   categories: CategoryDeps;
   savedViews: {
     list: typeof listSavedViewsForUser;
+    count: typeof countSavedViewsForUser;
     create: typeof savedViewCommands.createSavedView;
     update: typeof savedViewCommands.updateSavedView;
     delete: typeof savedViewCommands.deleteSavedView;
   };
   customCategories: {
     list: typeof listCustomCategoriesForUser;
+    count: typeof countCustomCategoriesForUser;
     load: typeof loadCustomCategoryForUser;
     create: typeof categoryCommands.createCustomCategory;
     update: typeof categoryCommands.updateCustomCategory;
@@ -83,9 +85,12 @@ export function defaultWorkspaceDeps(): WorkspaceServiceDeps {
       void bumpUserActivity(userId, 'mcp_write');
     },
     categories: defaultCategoryDeps,
-    savedViews: { list: listSavedViewsForUser, create: savedViewCommands.createSavedView, update: savedViewCommands.updateSavedView, delete: savedViewCommands.deleteSavedView },
+    savedViews: {
+      list: listSavedViewsForUser, count: countSavedViewsForUser,
+      create: savedViewCommands.createSavedView, update: savedViewCommands.updateSavedView, delete: savedViewCommands.deleteSavedView,
+    },
     customCategories: {
-      list: listCustomCategoriesForUser, load: loadCustomCategoryForUser,
+      list: listCustomCategoriesForUser, count: countCustomCategoriesForUser, load: loadCustomCategoryForUser,
       create: categoryCommands.createCustomCategory, update: categoryCommands.updateCustomCategory, delete: categoryCommands.deleteCustomCategory,
     },
     watchlist: { list: listWatchlistWithKeywords, count: watchlistCountForUser, add: watchlistCommands.addToWatchlist, remove: watchlistCommands.removeFromWatchlist },
@@ -282,8 +287,10 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     const { filters, notes } = await convertSearch(actor.localUserId, p.data.search);
     const r = await deps.savedViews.create(actor.localUserId, { name: p.data.name, filters });
     if (!r.ok) throw toResearchError(r, 'view');
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
-    return { view: viewSummary(r.view), notes };
+    const count = await deps.savedViews.count(actor.localUserId);
+    return { view: viewSummary(r.view), notes, count, limit: MAX_VIEWS_PER_USER };
   }
 
   async function updateSavedView(actor: ResearchActor, input: unknown): Promise<SavedViewWriteResponse> {
@@ -295,8 +302,10 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     if (p.data.search) ({ filters, notes } = await convertSearch(actor.localUserId, p.data.search));
     const r = await deps.savedViews.update(actor.localUserId, p.data.id, { name: p.data.name, filters });
     if (!r.ok) throw toResearchError(r, 'view');
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
-    return { view: viewSummary(r.view), notes };
+    const count = await deps.savedViews.count(actor.localUserId);
+    return { view: viewSummary(r.view), notes, count, limit: MAX_VIEWS_PER_USER };
   }
 
   async function deleteSavedView(actor: ResearchActor, input: unknown): Promise<DeleteSavedViewResponse> {
@@ -305,8 +314,10 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     await beforeWrite(actor);
     const r = await deps.savedViews.delete(actor.localUserId, p.data.id);
     if (!r.ok) throw toResearchError(r, 'view');
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
-    return { deleted: r.deleted };
+    const count = await deps.savedViews.count(actor.localUserId);
+    return { deleted: r.deleted, count, limit: MAX_VIEWS_PER_USER };
   }
 
   async function createCustomCategory(actor: ResearchActor, input: unknown): Promise<CustomCategoryWriteResponse> {
@@ -316,8 +327,10 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     const leafPaths = await expandForCategory(actor.localUserId, p.data.categories);
     const r = await deps.customCategories.create(actor.localUserId, { name: p.data.name, leafPaths });
     if (!r.ok) throw toResearchError(r, 'category');
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
-    return { category: categorySummary(r.category), notes: [] };
+    const count = await deps.customCategories.count(actor.localUserId);
+    return { category: categorySummary(r.category), notes: [], count, limit: MAX_CUSTOM_CATEGORIES };
   }
 
   async function updateCustomCategory(actor: ResearchActor, input: unknown): Promise<CustomCategoryWriteResponse> {
@@ -338,8 +351,10 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     }
     const r = await deps.customCategories.update(actor.localUserId, p.data.id, { name: p.data.name, leafPaths });
     if (!r.ok) throw toResearchError(r, 'category');
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
-    return { category: categorySummary(r.category), notes: [] };
+    const count = await deps.customCategories.count(actor.localUserId);
+    return { category: categorySummary(r.category), notes: [], count, limit: MAX_CUSTOM_CATEGORIES };
   }
 
   async function deleteCustomCategory(actor: ResearchActor, input: unknown): Promise<DeleteCustomCategoryResponse> {
@@ -348,8 +363,10 @@ export function createWorkspaceService(deps: WorkspaceServiceDeps): WorkspaceSer
     await beforeWrite(actor);
     const r = await deps.customCategories.delete(actor.localUserId, p.data.id);
     if (!r.ok) throw toResearchError(r, 'category');
+    // Record before the trailing count read: a write that landed counts toward the daily cap even if that read then fails.
     recorded(actor, true);
-    return { deleted: r.deleted };
+    const count = await deps.customCategories.count(actor.localUserId);
+    return { deleted: r.deleted, count, limit: MAX_CUSTOM_CATEGORIES };
   }
 
   async function addToWatchlist(actor: ResearchActor, input: unknown): Promise<AddToWatchlistResponse> {

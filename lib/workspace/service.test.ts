@@ -41,12 +41,14 @@ function makeDeps(over: Partial<WorkspaceServiceDeps> = {}): WorkspaceServiceDep
     categories: { loadCatalog: async () => catalog, loadCustomRows: async () => [{ id: CUSTOM_ID, leafPaths: ['Lighting › Lamps'] }], listCustom: async () => [] },
     savedViews: {
       list: vi.fn(async () => [view]),
+      count: vi.fn(async () => 3),
       create: vi.fn(async () => ({ ok: true as const, view })),
       update: vi.fn(async () => ({ ok: true as const, view })),
       delete: vi.fn(async () => ({ ok: true as const, deleted: { id: VIEW_ID, name: 'Lamps' } })),
     },
     customCategories: {
       list: vi.fn(async () => [category]),
+      count: vi.fn(async () => 4),
       load: vi.fn(async () => category),
       create: vi.fn(async () => ({ ok: true as const, category })),
       update: vi.fn(async () => ({ ok: true as const, category })),
@@ -125,7 +127,7 @@ describe('create_saved_view', () => {
     schemaVersion: 1, comparisonWindow: '1w',
     filters: { text: { value: 'lamp' }, categories: { selections: [{ kind: 'taxonomy', path: 'Lighting', includeDescendants: true }, { kind: 'custom', id: CUSTOM_ID }] } },
   };
-  it('validates → reserves → checks the daily cap → converts through the search\'s own validation → saves → records and bumps', async () => {
+  it('validates → reserves → checks the daily cap → converts through the search\'s own validation → saves → records and bumps → reads the count', async () => {
     const deps = makeDeps();
     const res = await createWorkspaceService(deps).createSavedView(actor, { name: 'Lamps', search });
     expect(deps.reserve).toHaveBeenCalledTimes(1);
@@ -135,7 +137,9 @@ describe('create_saved_view', () => {
     expect(input.name).toBe('Lamps');
     // A mixed scope (a taxonomy selection plus a custom category) is saved as the union of leaves, with no ids (spec §5.2).
     expect(input.filters).toMatchObject({ ...EXPLORER_DEFAULTS, window: '1w', q: 'lamp', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'], customCategoryIds: [], category: null });
-    expect(res).toEqual({ view: expect.objectContaining({ id: VIEW_ID, explorerUrl: `https://keywordquarry.com/explorer?view=${VIEW_ID}` }), notes: [] });
+    // count = the account's saved views after this call, limit = MAX_VIEWS_PER_USER: the model never has to compute free slots itself.
+    expect(res).toEqual({ view: expect.objectContaining({ id: VIEW_ID, explorerUrl: `https://keywordquarry.com/explorer?view=${VIEW_ID}` }), notes: [], count: 3, limit: 5 });
+    expect(deps.savedViews.count).toHaveBeenCalledWith('u1');
     expect(deps.record).toHaveBeenCalledWith('u1', 0, 'mcp');
     expect(deps.bumpWrite).toHaveBeenCalledWith('u1');
     expect(lines()[0]).toMatchObject({ tool: 'create_saved_view', outcome: 'ok', userId: 'u1' });
@@ -220,21 +224,21 @@ describe('create_saved_view', () => {
     expect(deps.record).not.toHaveBeenCalled();
     expect(lines()).toEqual([expect.objectContaining({ tool: 'create_saved_view', outcome: 'refused', code: 'INVALID_FILTERS' })]);
   });
-  it('runs in the documented order: reserve, daily cap, command, record, then the write bump', async () => {
+  it('runs in the documented order: reserve, daily cap, command, record, the write bump, then the trailing count read', async () => {
     const deps = makeDeps();
     await createWorkspaceService(deps).createSavedView(actor, { name: 'L', search: {} });
     const at = (fn: unknown) => (fn as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
-    const order = [deps.reserve, deps.countWritesToday, deps.savedViews.create, deps.record, deps.bumpWrite].map(at);
+    const order = [deps.reserve, deps.countWritesToday, deps.savedViews.create, deps.record, deps.bumpWrite, deps.savedViews.count].map(at);
     expect(order.every((n) => typeof n === 'number')).toBe(true); // every step ran
     expect(order).toEqual([...order].sort((a, b) => a - b)); // and in this order
   });
 });
 
 describe('update and delete saved view', () => {
-  it('a rename passes only the name; a new search replaces the filters wholesale', async () => {
+  it('a rename passes only the name; a new search replaces the filters wholesale; the result carries the count after the write and the cap', async () => {
     const deps = makeDeps();
     const svc = createWorkspaceService(deps);
-    await svc.updateSavedView(actor, { id: VIEW_ID, name: 'New' });
+    await expect(svc.updateSavedView(actor, { id: VIEW_ID, name: 'New' })).resolves.toEqual({ view: expect.objectContaining({ id: VIEW_ID }), notes: [], count: 3, limit: 5 });
     expect(deps.savedViews.update).toHaveBeenLastCalledWith('u1', VIEW_ID, { name: 'New', filters: undefined });
     await svc.updateSavedView(actor, { id: VIEW_ID, search: { filters: { text: { value: 'floor lamp' } } } });
     const [, , input] = (deps.savedViews.update as ReturnType<typeof vi.fn>).mock.lastCall as [string, string, { name?: string; filters: Record<string, unknown> }];
@@ -245,9 +249,10 @@ describe('update and delete saved view', () => {
     const deps = makeDeps({ savedViews: { ...makeDeps().savedViews, delete: vi.fn(async () => ({ ok: false as const, code: 'not_found' as const, message: 'view not found' })) } });
     await expect(createWorkspaceService(deps).deleteSavedView(actor, { id: VIEW_ID })).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'No saved view with that id belongs to this account.' });
   });
-  it('delete returns what it removed', async () => {
+  it('delete returns what it removed, then how many saved views are left and the cap', async () => {
     const deps = makeDeps();
-    await expect(createWorkspaceService(deps).deleteSavedView(actor, { id: VIEW_ID })).resolves.toEqual({ deleted: { id: VIEW_ID, name: 'Lamps' } });
+    await expect(createWorkspaceService(deps).deleteSavedView(actor, { id: VIEW_ID })).resolves.toEqual({ deleted: { id: VIEW_ID, name: 'Lamps' }, count: 3, limit: 5 });
+    expect(deps.savedViews.count).toHaveBeenCalledWith('u1');
     expect(deps.bumpWrite).toHaveBeenCalledWith('u1');
   });
 });
@@ -295,11 +300,12 @@ describe('a saved view too wide for the Explorer to export or refine', () => {
 });
 
 describe('custom categories', () => {
-  it('create expands selections against the catalog and stores the leaves', async () => {
+  it('create expands selections against the catalog and stores the leaves; the result carries the count after the write and the cap', async () => {
     const deps = makeDeps();
     const res = await createWorkspaceService(deps).createCustomCategory(actor, { name: 'Lighting', categories: { selections: [{ kind: 'taxonomy', path: 'Lighting', includeDescendants: true }] } });
     expect(deps.customCategories.create).toHaveBeenCalledWith('u1', { name: 'Lighting', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'] });
-    expect(res).toEqual({ category: expect.objectContaining({ id: CAT_ID, leafCount: 2, previewComplete: true, explorerUrl: `https://keywordquarry.com/explorer?custom=${CAT_ID}` }), notes: [] });
+    expect(res).toEqual({ category: expect.objectContaining({ id: CAT_ID, leafCount: 2, previewComplete: true, explorerUrl: `https://keywordquarry.com/explorer?custom=${CAT_ID}` }), notes: [], count: 4, limit: 25 });
+    expect(deps.customCategories.count).toHaveBeenCalledWith('u1');
   });
   it('update resolves leafMode add / remove / replace against the stored leaves (remove subtracts explicit paths verbatim), and is NOT_FOUND for a missing category', async () => {
     const deps = makeDeps();
@@ -314,7 +320,7 @@ describe('custom categories', () => {
     expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: undefined, leafPaths: ['Lighting › Lamps'] });
     await svc.updateCustomCategory(actor, { id: CAT_ID, name: 'Ceilings', categories: ceiling });
     expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: 'Ceilings', leafPaths: ['Lighting › Ceiling Lights'] });
-    await svc.updateCustomCategory(actor, { id: CAT_ID, name: 'Renamed' });
+    await expect(svc.updateCustomCategory(actor, { id: CAT_ID, name: 'Renamed' })).resolves.toEqual({ category: expect.objectContaining({ id: CAT_ID }), notes: [], count: 4, limit: 25 });
     expect(deps.customCategories.update).toHaveBeenLastCalledWith('u1', CAT_ID, { name: 'Renamed', leafPaths: undefined });
     expect(deps.customCategories.load).toHaveBeenCalledTimes(4);
     const missing = makeDeps({ customCategories: { ...makeDeps().customCategories, load: vi.fn(async () => null) } });
@@ -345,10 +351,11 @@ describe('custom categories', () => {
     expect(res.category).toMatchObject({ leafCount: 2001, previewComplete: false });
     expect(res.category.previewPaths).toHaveLength(20);
   });
-  it('delete returns what it removed (id, name, leaf count) and bumps the write counter', async () => {
+  it('delete returns what it removed (id, name, leaf count), then how many custom categories are left and the cap, and bumps the write counter', async () => {
     const deps = makeDeps();
-    await expect(createWorkspaceService(deps).deleteCustomCategory(actor, { id: CAT_ID })).resolves.toEqual({ deleted: { id: CAT_ID, name: 'Lighting', leafCount: 2 } });
+    await expect(createWorkspaceService(deps).deleteCustomCategory(actor, { id: CAT_ID })).resolves.toEqual({ deleted: { id: CAT_ID, name: 'Lighting', leafCount: 2 }, count: 4, limit: 25 });
     expect(deps.customCategories.delete).toHaveBeenCalledWith('u1', CAT_ID);
+    expect(deps.customCategories.count).toHaveBeenCalledWith('u1');
     expect(deps.bumpWrite).toHaveBeenCalledWith('u1');
   });
   it('a foreign or missing category id is NOT_FOUND with the account-scoped sentence, and does not bump', async () => {
@@ -424,6 +431,20 @@ describe('unexpected failures', () => {
     await expect(failingCatalog(timeout).createSavedView(actor, { name: 'L', search: {} })).rejects.toBe(timeout);
     await expect(createWorkspaceService(makeDeps()).createSavedView(actor, { name: 'L', search: { filters: { categories: { leafPaths: ['Nope › Nothing'] } } } })).rejects.toMatchObject({ code: 'CATEGORY_NOT_AVAILABLE' });
     expect(lines().map((l) => [l.outcome, l.code])).toEqual([['failed', 'DATA_UNAVAILABLE'], ['failed', 'QUERY_TIMEOUT'], ['refused', 'CATEGORY_NOT_AVAILABLE']]);
+  });
+  it('records a view or category delete before the trailing count read, so a delete that landed still counts when that read fails (like the watchlist writes)', async () => {
+    const deps = makeDeps({
+      savedViews: { ...makeDeps().savedViews, count: vi.fn(async () => { throw new Error('count read failed'); }) },
+      customCategories: { ...makeDeps().customCategories, count: vi.fn(async () => { throw new Error('count read failed'); }) },
+    });
+    const svc = createWorkspaceService(deps);
+    await expect(svc.deleteSavedView(actor, { id: VIEW_ID })).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message });
+    await expect(svc.deleteCustomCategory(actor, { id: CAT_ID })).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message });
+    expect(deps.savedViews.delete).toHaveBeenCalledTimes(1);
+    expect(deps.customCategories.delete).toHaveBeenCalledTimes(1);
+    expect(deps.record).toHaveBeenCalledTimes(2);
+    expect(deps.bumpWrite).toHaveBeenCalledTimes(2);
+    expect(lines().map((l) => [l.tool, l.outcome])).toEqual([['delete_saved_view', 'failed'], ['delete_custom_category', 'failed']]);
   });
 });
 

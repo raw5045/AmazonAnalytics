@@ -5,7 +5,7 @@ vi.mock('@/lib/env', () => ({ env: {} }));
 vi.mock('@/db/client', () => ({ db: mockDb }));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { listSavedViewsForUser, loadSavedViewForUser } from './loadServer';
+import { countSavedViewsForUser, listSavedViewsForUser, loadSavedViewForUser } from './loadServer';
 import { EXPLORER_DEFAULTS } from '@/lib/explorer/parseFilters';
 
 const USER_ID = '00000000-0000-4000-8000-000000000001';
@@ -21,6 +21,12 @@ function selectList(rows: unknown[]) {
 /** Next `db.select().from().where().limit()` resolves to `rows` (the single-view load). */
 function selectOne(rows: unknown[]) {
   const where = vi.fn().mockReturnValueOnce({ limit: vi.fn().mockResolvedValueOnce(rows) });
+  mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where }) } as never);
+  return { where };
+}
+/** Next `db.select().from().where()` resolves to `rows` (the count: no `.orderBy`, no `.limit`). */
+function selectCount(rows: unknown[]) {
+  const where = vi.fn().mockResolvedValueOnce(rows);
   mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where }) } as never);
   return { where };
 }
@@ -52,5 +58,15 @@ describe('loadSavedViewForUser', () => {
   it('returns null when no row matches', async () => {
     selectOne([]);
     await expect(loadSavedViewForUser(USER_ID, row(1).id)).resolves.toBeNull();
+  });
+});
+
+describe('countSavedViewsForUser', () => {
+  it('is one owner-scoped COUNT, not a listing (the workspace write results carry it)', async () => {
+    const { where } = selectCount([{ n: 4 }]);
+    await expect(countSavedViewsForUser(USER_ID)).resolves.toBe(4);
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(mockDb.select.mock.calls[0][0].n)).toMatchObject({ sql: 'COUNT(*)::int' });
+    expect(dialect.sqlToQuery(where.mock.calls[0][0])).toMatchObject({ sql: '"saved_views"."user_id" = $1', params: [USER_ID] });
   });
 });

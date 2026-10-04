@@ -100,8 +100,14 @@ export interface SavedViewSummary {
   updatedAt: string;
 }
 export interface ListSavedViewsResponse { views: SavedViewSummary[]; count: number; limit: number }
-export interface SavedViewWriteResponse { view: SavedViewSummary; notes: string[] }
-export interface DeleteSavedViewResponse { deleted: { id: string; name: string } }
+/**
+ * `count` = how many saved views the account has AFTER this call; `limit` = the cap (MAX_VIEWS_PER_USER, the value
+ * list_saved_views carries). Read after the write, like the watchlist writes' `watching`, so a model never works out the
+ * free slots itself (owner note 2026-10-04: after deleting 2 of 5 views the chat said "room for 3 more").
+ */
+export interface SavedViewWriteResponse { view: SavedViewSummary; notes: string[]; count: number; limit: number }
+/** `count` and `limit` as on SavedViewWriteResponse: the saved views left after the delete, and the cap. */
+export interface DeleteSavedViewResponse { deleted: { id: string; name: string }; count: number; limit: number }
 
 export interface CustomCategorySummary {
   id: string;
@@ -114,8 +120,13 @@ export interface CustomCategorySummary {
   updatedAt: string;
 }
 export interface ListCustomCategoriesResponse { categories: CustomCategorySummary[]; count: number; limit: number }
-export interface CustomCategoryWriteResponse { category: CustomCategorySummary; notes: string[] }
-export interface DeleteCustomCategoryResponse { deleted: { id: string; name: string; leafCount: number } }
+/**
+ * `count` = how many custom categories the account has AFTER this call; `limit` = the cap (MAX_CUSTOM_CATEGORIES, the value
+ * list_custom_categories carries). Read after the write, for the same reason as on SavedViewWriteResponse.
+ */
+export interface CustomCategoryWriteResponse { category: CustomCategorySummary; notes: string[]; count: number; limit: number }
+/** `count` and `limit` as on CustomCategoryWriteResponse: the custom categories left after the delete, and the cap. */
+export interface DeleteCustomCategoryResponse { deleted: { id: string; name: string; leafCount: number }; count: number; limit: number }
 
 export interface WatchlistEntry { searchTermId: string; keyword: string; keywordUrl: string; addedAt: string }
 export interface ListWatchlistResponse { items: WatchlistEntry[]; count: number; limit: number }

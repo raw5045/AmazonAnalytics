@@ -1,5 +1,5 @@
 import 'server-only';
-import { and, eq, desc } from 'drizzle-orm';
+import { and, eq, desc, sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { customCategories } from '@/db/schema';
 import { isValidUuid } from './validation';
@@ -30,6 +30,15 @@ export async function listCustomCategoriesForUser(userId: string): Promise<Custo
     .where(eq(customCategories.userId, userId))
     .orderBy(desc(customCategories.createdAt));
   return rows.map(rowToDTO);
+}
+
+/** How many custom categories the user has: one COUNT, never a listing (that loads every leaf path). The workspace write results carry it. */
+export async function countCustomCategoriesForUser(userId: string): Promise<number> {
+  const [{ n }] = await db
+    .select({ n: sql<number>`COUNT(*)::int` })
+    .from(customCategories)
+    .where(eq(customCategories.userId, userId));
+  return n;
 }
 
 /** One category by id, scoped to the owner; null when missing, foreign or malformed (never leaks existence). */

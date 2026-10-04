@@ -64,7 +64,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'create_saved_view',
     title: 'Create saved view',
-    description: () => `Saves the exact criteria you searched with as a named Explorer view: pass the same presetIds, filters, sort and comparisonWindow (never a cursor; pageSize is accepted and ignored). Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes for anything the Explorer could not carry over; relay the notes to the person. ${ASKS}`,
+    description: () => `Saves the exact criteria you searched with as a named Explorer view: pass the same presetIds, filters, sort and comparisonWindow (never a cursor; pageSize is accepted and ignored). Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes for anything the Explorer could not carry over; relay the notes to the person. Also returns count (how many saved views the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: createSavedViewInputSchema,
     run: (service, actor, args) => service.createSavedView(actor, args),
     annotations: CREATE_ANNOTATIONS,
@@ -73,7 +73,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'update_saved_view',
     title: 'Update saved view',
-    description: () => `Renames a saved view and/or replaces its filters with a new search (no merge), passed as in create_saved_view (never a cursor; pageSize is accepted and ignored). Takes the id from list_saved_views. Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes. ${ASKS}`,
+    description: () => `Renames a saved view and/or replaces its filters with a new search (no merge), passed as in create_saved_view (never a cursor; pageSize is accepted and ignored). Takes the id from list_saved_views. Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes, plus count (how many saved views the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: updateSavedViewInputSchema,
     run: (service, actor, args) => service.updateSavedView(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,
@@ -82,7 +82,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'delete_saved_view',
     title: 'Delete saved view',
-    description: () => `Deletes one saved view by id, permanently. Confirm the view's name with the person first; list_saved_views has the ids. Returns the deleted view's id and name. ${ASKS}`,
+    description: () => `Deletes one saved view by id, permanently. Confirm the view's name with the person first; list_saved_views has the ids. Returns the deleted view's id and name, plus count (how many saved views the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: deleteSavedViewInputSchema,
     run: (service, actor, args) => service.deleteSavedView(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,
@@ -91,7 +91,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'create_custom_category',
     title: 'Create custom category',
-    description: () => `Creates a custom category from category selections (from resolve_categories) and/or exact leaf paths; the server expands selections to their leaves, up to ${MAX_LEAF_PATHS_PER_CATEGORY.toLocaleString('en-US')}. Returns id, leaf count, preview paths and an Explorer link. ${ASKS}`,
+    description: () => `Creates a custom category from category selections (from resolve_categories) and/or exact leaf paths; the server expands selections to their leaves, up to ${MAX_LEAF_PATHS_PER_CATEGORY.toLocaleString('en-US')}. Returns id, leaf count, preview paths and an Explorer link, plus count (how many custom categories the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: createCustomCategoryInputSchema,
     run: (service, actor, args) => service.createCustomCategory(actor, args),
     annotations: CREATE_ANNOTATIONS,
@@ -100,7 +100,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'update_custom_category',
     title: 'Update custom category',
-    description: () => `Renames a custom category and/or changes its leaves, using the same categories object create_custom_category takes. leafMode replace (the default) makes the category exactly these leaves and drops the rest; add and remove change only the leaves given. Takes the id from list_custom_categories. Returns the category with its leaf count, preview paths and link. ${ASKS}`,
+    description: () => `Renames a custom category and/or changes its leaves, using the same categories object create_custom_category takes. leafMode replace (the default) makes the category exactly these leaves and drops the rest; add and remove change only the leaves given. Takes the id from list_custom_categories. Returns the category with its leaf count, preview paths and link, plus count (how many custom categories the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: updateCustomCategoryInputSchema,
     run: (service, actor, args) => service.updateCustomCategory(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,
@@ -109,7 +109,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'delete_custom_category',
     title: 'Delete custom category',
-    description: () => `Deletes one custom category by id, permanently. A saved view that filters on it loses that category filter; if it was the view's only category filter, the view then shows every category. Confirm the category's name with the person first; list_custom_categories has the ids. Returns the deleted category's id, name and leaf count. ${ASKS}`,
+    description: () => `Deletes one custom category by id, permanently. A saved view that filters on it loses that category filter; if it was the view's only category filter, the view then shows every category. Confirm the category's name with the person first; list_custom_categories has the ids. Returns the deleted category's id, name and leaf count, plus count (how many custom categories the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: deleteCustomCategoryInputSchema,
     run: (service, actor, args) => service.deleteCustomCategory(actor, args),
     annotations: DESTRUCTIVE_ANNOTATIONS,

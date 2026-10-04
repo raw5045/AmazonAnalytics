@@ -56,14 +56,16 @@ All names are snake_case like the research tools. "Read-only" tools carry `READ_
 | `list_saved_views` | read-only | `{}` | `{ views: [{ id, name, explorerUrl, filters, leafCount, previewComplete, createdAt, updatedAt }], count, limit: 5 }` — `filters` is the stored Explorer filter set, compacted (§5.5); its `leafPaths`, when present, is a preview of the first 20 of `leafCount` (added 2026-09-30 after the Task 8 code review: a department-wide view would otherwise echo up to 2,000 paths per view) |
 | `list_custom_categories` | read-only | `{}` | `{ categories: [{ id, name, leafCount, previewPaths, previewComplete, explorerUrl, createdAt, updatedAt }], count, limit: 25 }` — `previewPaths` = first 20 stored paths, `previewComplete` = leafCount ≤ 20 |
 | `list_watchlist` | read-only | `{}` | `{ items: [{ searchTermId, keyword, keywordUrl, addedAt }], count, limit: 100 }`, newest first |
-| `create_saved_view` | `destructiveHint: false, idempotentHint: false` | `{ name, search }` | `{ view: { id, name, explorerUrl, filters, leafCount, previewComplete }, notes }` — `notes` are the converter's notes plus `NOTE_VIEW_TOO_WIDE` when the stored filters would exceed the link cap (§5.6) |
+| `create_saved_view` | `destructiveHint: false, idempotentHint: false` | `{ name, search }` | `{ view: { id, name, explorerUrl, filters, leafCount, previewComplete }, notes, count, limit: 5 }` — `notes` are the converter's notes plus `NOTE_VIEW_TOO_WIDE` when the stored filters would exceed the link cap (§5.6) |
 | `update_saved_view` | `destructiveHint: true, idempotentHint: true` (it replaces the stored filters wholesale; MCP defines `destructiveHint: false` as additive-only — changed 2026-09-30 after the Task 7 code review) | `{ id, name?, search? }` (at least one of `name`, `search`) | same as create |
-| `delete_saved_view` | `destructiveHint: true, idempotentHint: true` | `{ id }` | `{ deleted: { id, name } }` |
-| `create_custom_category` | `destructiveHint: false, idempotentHint: false` | `{ name, categories }` | `{ category: { id, name, leafCount, previewPaths, previewComplete, explorerUrl }, notes }` |
+| `delete_saved_view` | `destructiveHint: true, idempotentHint: true` | `{ id }` | `{ deleted: { id, name }, count, limit: 5 }` |
+| `create_custom_category` | `destructiveHint: false, idempotentHint: false` | `{ name, categories }` | `{ category: { id, name, leafCount, previewPaths, previewComplete, explorerUrl }, notes, count, limit: 25 }` |
 | `update_custom_category` | `destructiveHint: true, idempotentHint: true` (replace and remove drop leaves; same reasoning) | `{ id, name?, categories?, leafMode: 'replace' \| 'add' \| 'remove' (default 'replace') }` (at least one of `name`, `categories`) | same as create |
-| `delete_custom_category` | `destructiveHint: true, idempotentHint: true` | `{ id }` | `{ deleted: { id, name, leafCount } }` |
+| `delete_custom_category` | `destructiveHint: true, idempotentHint: true` | `{ id }` | `{ deleted: { id, name, leafCount }, count, limit: 25 }` |
 | `add_to_watchlist` | `destructiveHint: false, idempotentHint: true` | `{ keywords?: string[], searchTermIds?: string[] }` (1–100 items combined) | `{ added, alreadyWatching, unmatched: string[], skippedAtCap, watching, limit: 100 }` |
 | `remove_from_watchlist` | `destructiveHint: true, idempotentHint: true` | `{ keywords?: string[], searchTermIds?: string[] }` (1–100 items combined) | `{ removed, notWatching, unmatched: string[], watching, limit: 100 }` |
+
+2026-10-04: the six saved-view and custom-category write results gained `count` (how many the account has after the call, read after the write is recorded, like the watchlist's `watching`) and `limit` (the cap the list results carry), because the in-app chat model mis-computed the free slots without them ("room for 3 more" after deleting 2 of 5 views).
 
 Field rules:
 

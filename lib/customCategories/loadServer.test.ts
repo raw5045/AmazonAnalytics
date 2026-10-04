@@ -5,7 +5,7 @@ vi.mock('@/lib/env', () => ({ env: {} }));
 vi.mock('@/db/client', () => ({ db: mockDb }));
 
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { loadCustomCategoryForUser } from './loadServer';
+import { countCustomCategoriesForUser, loadCustomCategoryForUser } from './loadServer';
 
 const USER_ID = '00000000-0000-4000-8000-000000000001';
 const CAT_ID = '22222222-2222-4222-8222-222222222222';
@@ -15,6 +15,12 @@ const dto = { id: CAT_ID, name: 'Lighting', leafPaths: ['Lighting › Lamps'], c
 /** Next `db.select().from().where().limit()` resolves to `rows`; returns the `where` mock so the predicate can be inspected. */
 function selectLimit(rows: unknown[]) {
   const where = vi.fn().mockReturnValueOnce({ limit: vi.fn().mockResolvedValueOnce(rows) });
+  mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where }) } as never);
+  return { where };
+}
+/** Next `db.select().from().where()` resolves to `rows` (the count: no `.limit`). */
+function selectCount(rows: unknown[]) {
+  const where = vi.fn().mockResolvedValueOnce(rows);
   mockDb.select.mockReturnValueOnce({ from: vi.fn().mockReturnValueOnce({ where }) } as never);
   return { where };
 }
@@ -34,5 +40,15 @@ describe('loadCustomCategoryForUser', () => {
   it('returns null when no row matches (missing or another account\'s)', async () => {
     selectLimit([]);
     await expect(loadCustomCategoryForUser(USER_ID, CAT_ID)).resolves.toBeNull();
+  });
+});
+
+describe('countCustomCategoriesForUser', () => {
+  it('is one owner-scoped COUNT, never a listing (that would load every leaf path)', async () => {
+    const { where } = selectCount([{ n: 7 }]);
+    await expect(countCustomCategoriesForUser(USER_ID)).resolves.toBe(7);
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(mockDb.select.mock.calls[0][0].n)).toMatchObject({ sql: 'COUNT(*)::int' });
+    expect(dialect.sqlToQuery(where.mock.calls[0][0])).toMatchObject({ sql: '"custom_categories"."user_id" = $1', params: [USER_ID] });
   });
 });

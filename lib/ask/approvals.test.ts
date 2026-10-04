@@ -104,10 +104,10 @@ describe('the hidden outcome message', () => {
     expect((m.parts[0] as { text: string }).text).toBe(`${APPROVAL_RESULT_PREFIX} The person approved create_saved_view but it failed: ${JSON.stringify({ code: 'DUPLICATE_NAME', message: 'You already have a view named "Lamps".', retryable: false })}`);
   });
   it('lists several outcomes, one line each, in the order given (the model can pause several calls in one step)', () => {
-    const deleted = { deleted: { id: 'v1', name: 'Lamps' } } satisfies DeleteSavedViewResponse;
+    const deleted = { deleted: { id: 'v1', name: 'Lamps' }, count: 4, limit: 5 } satisfies DeleteSavedViewResponse;
     const m = approvalOutcomeMessage([{ toolName: 'delete_saved_view', approved: true, output: deleted }, { toolName: 'delete_custom_category', approved: false }]);
     expect((m.parts[0] as { text: string }).text.split('\n')).toEqual([
-      `${APPROVAL_RESULT_PREFIX} The person approved delete_saved_view and it ran. Result: {"deleted":{"id":"v1","name":"Lamps"}}`,
+      `${APPROVAL_RESULT_PREFIX} The person approved delete_saved_view and it ran. Result: {"deleted":{"id":"v1","name":"Lamps"},"count":4,"limit":5}`,
       'The person denied delete_custom_category. Continue without it and do not retry it or try another way to get the same result.',
     ]);
     expect(isApprovalResultMessage(m)).toBe(true);

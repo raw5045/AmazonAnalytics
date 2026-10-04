@@ -55,6 +55,14 @@ describe('WORKSPACE_TOOLS', () => {
       expect(workspaceToolByName(n).description(DEFAULT_LIMITS), n).toContain('its compact filters (leaf categories previewed, with leafCount)');
     }
   });
+  it('the saved-view and custom-category write descriptions name the count and limit their results carry (2026-10-04: the chat model mis-computed free slots)', () => {
+    for (const n of ['create_saved_view', 'update_saved_view', 'delete_saved_view'] as const) {
+      expect(workspaceToolByName(n).description(DEFAULT_LIMITS), n).toContain('count (how many saved views the account has after this call) and limit (the cap)');
+    }
+    for (const n of ['create_custom_category', 'update_custom_category', 'delete_custom_category'] as const) {
+      expect(workspaceToolByName(n).description(DEFAULT_LIMITS), n).toContain('count (how many custom categories the account has after this call) and limit (the cap)');
+    }
+  });
   it('previews as many leaf paths as a search scope does', () => {
     // Intentional: research's resolvedCategoryScope.previewPaths and the workspace category/view summaries preview the same number of paths.
     expect(PREVIEW_LEAF_PATHS).toBe(PREVIEW_PATHS);
