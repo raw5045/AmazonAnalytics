@@ -81,8 +81,8 @@ describe('AskAi', () => {
 
   describe('Thread lands at the chat\'s end when a chat is opened, except on a first send\'s own move to the chat it created (spec 2026-10-04 §4)', () => {
     const lastThreadProps = () => vi.mocked(Thread).mock.lastCall?.[0];
-    const page = (id: string | null) => (
-      <AskAi conversations={[]} open={id === null ? null : { id, model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />
+    const page = (id: string | null, inFlight = false) => (
+      <AskAi conversations={[]} open={id === null ? null : { id, model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight }} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />
     );
     it('starts true; the move Thread reports keeps the place on that id only, and the next open lands again', () => {
       const { rerender } = render(page(null));
@@ -96,6 +96,30 @@ describe('AskAi', () => {
     });
     it('picking an existing chat from the new-chat screen (no move reported) lands at its end', () => {
       const { rerender } = render(page(null));
+      rerender(page('c2'));
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+    });
+    it('a reported move keeps the place only on its own id, and only once', () => {
+      const { rerender } = render(page(null));
+      act(() => lastThreadProps()?.onFirstSendMove?.('c1'));
+      rerender(page('c2')); // another chat opened before the move landed
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+      rerender(page('c1')); // the report was used up by that change
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+    });
+    it('a rail click during the move clears the pending report: the member chose somewhere else', () => {
+      const { rerender } = render(page(null));
+      act(() => lastThreadProps()?.onFirstSendMove?.('c1'));
+      fireEvent.click(screen.getByRole('link', { name: 'New chat' }));
+      rerender(page('c1'));
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+    });
+    it('a busy-to-idle remount of the same chat keeps the place (the B1 cases: no landing seconds into the member\'s own turn); a real open still lands', () => {
+      const { rerender } = render(page('c1'));
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+      rerender(page('c1', true));
+      rerender(page('c1', false)); // busy -> idle: the epoch remount
+      expect(lastThreadProps()?.landAtEnd).toBe(false);
       rerender(page('c2'));
       expect(lastThreadProps()?.landAtEnd).toBe(true);
     });

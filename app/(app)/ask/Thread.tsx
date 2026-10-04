@@ -47,6 +47,15 @@ function hasVisibleText(m: AskUIMessage): boolean {
   return m.parts.some((p) => p.type === 'text' && p.text.trim().length > 0);
 }
 
+/**
+ * The answer a remount that keeps the reader's place keeps grown (spec 2026-10-04 §4): the last
+ * shown message (the hidden approval messages skipped) when it is an answer, else null.
+ */
+function lastAssistantIdOf(messages: readonly AskUIMessage[]): string | null {
+  const shown = [...messages].reverse().find((m) => !isApprovalResultMessage(m));
+  return shown?.role === 'assistant' ? shown.id : null;
+}
+
 /** A tool part that paused for an approval card (spec 2026-10-01 §5): asked, answered here, or resolved by the server. */
 type CardPart = ToolUIPart & { approval: NonNullable<ToolUIPart['approval']> };
 function cardParts(m: AskUIMessage): CardPart[] {
@@ -150,7 +159,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   writesEnabled: boolean;
   /** An "Always approve" answer landed (the resend's answer reached the thread): the matching "always allow" switch is now on (spec 2026-10-01 §8). */
   onAlwaysApproved?: (kind: 'changes' | 'deletes') => void;
-  /** False when the page just moved from the new chat to its freshly created id after a first send (AskAi): the member is reading that first answer, so the remounted Thread keeps their place. Default true: opening a chat lands at its end (spec 2026-10-04 §4). */
+  /** False when the page just moved from the new chat to its freshly created id after a first send, or when the same chat remounts on a busy→idle change (AskAi): the member is reading, so the remounted Thread keeps their place (and the last answer's room). Default true: opening a chat lands at its end (spec 2026-10-04 §4). */
   landAtEnd?: boolean;
   /** Called just before the page is moved to a first send's freshly created chat, so the shell can keep the reader's place on the remount that follows. */
   onFirstSendMove?: (id: string) => void;
@@ -457,15 +466,19 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   const bottomLine = !showBottomLine ? null : stoppedBeforeAnswer ? STOPPED_LINE : open?.inFlight ? BUSY_MESSAGE : NO_ANSWER_MESSAGE;
   const empty = messages.length === 0;
   /**
-   * Spec 2026-10-04 §4. Opening a chat lands at the page end, once per mount (Thread remounts per
-   * chat through AskAi's key, so `open?.id` runs this exactly once here), before the first paint —
-   * except after a first send's move to its new id (`landAtEnd` false), where the member keeps
-   * their place in the answer they are reading. It scrolls the window, the page's scroll
-   * container, rather than the last message into view: the composer band sticks to the viewport
-   * bottom and would cover the end of that message, and only at the page end does the band's own
-   * place in the flow keep it clear. The navigations to a chat pass `scroll: false` (the rail's
-   * links, the first send's move, the recovery link), so Next's own scroll to the page top never
-   * undoes this. Skipped where the page has no layout (jsdom: scrollHeight 0).
+   * Spec 2026-10-04 §4. Opening a chat lands at the page end, once per mount: before paint on a
+   * client-side mount; a full page load paints at the top first (the server HTML), then lands once
+   * hydrated. AskAi passes `landAtEnd` false for the two remounts that keep the member's place: a
+   * first send's own move to the chat it created (they are reading that first answer) and an epoch
+   * remount of the same chat (busy→idle, often seconds into their own turn). It scrolls the
+   * window, the page's scroll container, rather than the last message into view: the composer
+   * band sticks to the viewport bottom and would cover the end of that message, and only at the
+   * page end does the band's own place in the flow keep it clear. The navigations to a chat pass
+   * `scroll: false` (the rail's links, the first send's move, the recovery link), so Next's own
+   * scroll to the page top never undoes this. Skipped where the page has no layout (jsdom:
+   * scrollHeight 0). `landed` is a safety net: neither dep can change within one mount, since the
+   * open id is part of AskAi's Thread key and `landAtEnd` only changes along with that key (an
+   * open-id change or an epoch bump).
    */
   const openId = open?.id ?? null;
   const landed = useRef(false);
@@ -506,17 +519,19 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
    * Room below the question, as on claude.ai: a question can only reach the top of the view when
    * the page runs on below it for most of a viewport, so the answer that is streaming gets GROWN's
    * minimum height and grows into that space. Its id is kept once set, so the page does not shrink
-   * and jump when the stream ends; a reopened chat starts with none and lands compactly. A question
-   * still waiting for its first chunk gets a spacer of the same height right after it, so nothing
-   * moves when the answer's message takes the spacer's place — and the kept answer gives its room
-   * up at that moment, at send time, so the turn-start scroll measures the final layout. Released
-   * any later, it would shrink above a question already at the top of the view, where scroll
-   * anchoring does not compensate (the shrinking item is itself the anchor, or the browser has no
-   * anchoring), and the question would jump. The id is adjusted during render (React's pattern for
-   * state that follows a change), not in an effect: the lint rule forbids setState in effects.
+   * and jump when the stream ends. A reopened chat starts with none and lands compactly; a remount
+   * that keeps the reader's place (`landAtEnd` false) starts with the last answer kept, as the
+   * instance before it had it, so the page does not shrink under them. A question still waiting
+   * for its first chunk gets a spacer of the same height right after it, so nothing moves when the
+   * answer's message takes the spacer's place — and the kept answer gives its room up at that
+   * moment, at send time, so the turn-start scroll measures the final layout. Released any later,
+   * it would shrink above a question already at the top of the view, where scroll anchoring does
+   * not compensate (the shrinking item is itself the anchor, or the browser has no anchoring), and
+   * the question would jump. The id is adjusted during render (React's pattern for state that
+   * follows a change), not in an effect: the lint rule forbids setState in effects.
    */
   const lastShown = [...messages].reverse().find((m) => !isApprovalResultMessage(m));
-  const [grownId, setGrownId] = useState<string | null>(null);
+  const [grownId, setGrownId] = useState<string | null>(() => (landAtEnd ? null : lastAssistantIdOf(open?.messages ?? [])));
   if (streaming && lastShown?.role === 'assistant' && grownId !== lastShown.id) setGrownId(lastShown.id);
   const awaitingFirstChunk = streaming && lastShown?.role === 'user';
   if (awaitingFirstChunk && grownId !== null) setGrownId(null);

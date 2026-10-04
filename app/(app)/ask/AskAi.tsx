@@ -88,6 +88,13 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
   const onAlwaysApproved = (kind: 'changes' | 'deletes') =>
     setToggles((t) => t && { ...t, [kind === 'changes' ? 'autoApproveChanges' : 'autoApproveDeletes']: true });
   /**
+   * Whether Thread lands at the chat's end when it mounts (spec 2026-10-04 §4). Two remounts keep
+   * the member's place instead: the epoch remount below (the same chat, busy→idle, often seconds
+   * into the member's own turn: B1's cases) and a first send's own move to the chat it created (the
+   * open-id block after it, which runs later and so wins when both happen in one render).
+   */
+  const [landAtEnd, setLandAtEnd] = useState(true);
+  /**
    * B1 (Task 9 round-2 re-review): Thread must remount only on a busy→idle transition, never
    * idle→busy. Keying it directly by `open.inFlight` (the previous shape) remounted on ANY
    * transition, including idle→busy — and a `router.refresh()` whose server render happens to see
@@ -107,20 +114,23 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
   const [epoch, setEpoch] = useState(0);
   if (busy !== wasBusy) {
     setWasBusy(busy);
-    if (wasBusy) setEpoch((e) => e + 1); // bump only on busy -> idle
+    // Bump only on busy -> idle. That remount is the same chat, so the member keeps their place.
+    if (wasBusy) {
+      setEpoch((e) => e + 1);
+      setLandAtEnd(false);
+    }
   }
   /**
    * Thread lands at the chat's end when a chat is opened, except on a first send's own move to the
    * chat it just created: Thread reports that id (onFirstSendMove) just before it moves the page,
    * and only the open-id change onto that same id keeps the member's place in the first answer
    * they are reading (spec 2026-10-04 §4). Picking an existing chat from the new-chat screen lands
-   * at its end like any other open. The report is used up by the next open-id change. Adjusted
-   * during render, like `epoch`.
+   * at its end like any other open. The report is used up by the next open-id change, and a rail
+   * click clears it (the member chose somewhere else). Adjusted during render, like `epoch`.
    */
   const openIdNow = open?.id ?? null;
   const [keepPlaceFor, setKeepPlaceFor] = useState<string | null>(null);
   const [prevOpenId, setPrevOpenId] = useState(openIdNow);
-  const [landAtEnd, setLandAtEnd] = useState(true);
   if (openIdNow !== prevOpenId) {
     setLandAtEnd(openIdNow === null || openIdNow !== keepPlaceFor);
     setPrevOpenId(openIdNow);
@@ -139,6 +149,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
   const onRailNavigate = () => {
     setRailOpen(false);
     setNewNonce((n) => n + 1);
+    setKeepPlaceFor(null); // a rail click during a first send's move: the member went elsewhere
   };
   const footer = (
     <div className="flex flex-col gap-3">

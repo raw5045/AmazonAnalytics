@@ -169,6 +169,29 @@ describe('Thread', () => {
       rerender(<Harness open={openChat([])} />);
       expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' });
     });
+    it('a remount that keeps the reader\'s place (landAtEnd false) keeps the last answer grown, so the page does not shrink under them; a landing mount starts with none', () => {
+      const q = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
+      const a = { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] };
+      chat.messages = [q, a];
+      const kept = render(<Harness open={openChat([q, a])} landAtEnd={false} />);
+      expect(grownLis().map((li) => li.dataset.messageId)).toEqual(['m2']);
+      kept.unmount();
+      render(<Harness open={openChat([q, a])} />);
+      expect(grownLis()).toHaveLength(0);
+    });
+    it('that kept answer is the last shown message when it is an answer: the hidden approval messages are skipped, and a question still last keeps none', () => {
+      const q = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] };
+      const a = { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'Saved.' }] };
+      const hidden = { id: 'h1', role: 'user', parts: [{ type: 'text', text: '[approval-result] The person approved create_saved_view and it ran.' }] };
+      chat.messages = [q, a, hidden];
+      const first = render(<Harness open={openChat([q, a, hidden])} landAtEnd={false} />);
+      expect(grownLis().map((li) => li.dataset.messageId)).toEqual(['m2']);
+      first.unmount();
+      const q2 = { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'and then?' }] };
+      chat.messages = [q, a, q2];
+      render(<Harness open={openChat([q, a, q2])} landAtEnd={false} />);
+      expect(grownLis()).toHaveLength(0);
+    });
     it('without scrollIntoView or a laid-out page (jsdom as shipped) nothing throws', () => {
       delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
       height.mockRestore();
