@@ -123,6 +123,19 @@ describe('AskAi', () => {
       rerender(page('c2'));
       expect(lastThreadProps()?.landAtEnd).toBe(true);
     });
+    it('both adjust blocks in one render: leaving a busy chat for an idle one is a real open, so it lands', () => {
+      const { rerender } = render(page('c1', true));
+      rerender(page('c2', false)); // busy -> idle and an open-id change at once
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+    });
+    it('the real first-send sequence: the reported move arrives busy (the save still holds the lock), then the busy-to-idle remount; the place is kept throughout', () => {
+      const { rerender } = render(page(null));
+      act(() => lastThreadProps()?.onFirstSendMove?.('c1'));
+      rerender(page('c1', true));
+      expect(lastThreadProps()?.landAtEnd).toBe(false);
+      rerender(page('c1', false)); // busy -> idle: the epoch remount
+      expect(lastThreadProps()?.landAtEnd).toBe(false);
+    });
   });
 
   it('closes the drawer once a chat is picked (fix round 2, item 5 minor)', () => {

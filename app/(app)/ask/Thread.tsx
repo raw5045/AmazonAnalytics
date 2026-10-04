@@ -572,7 +572,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
                   className={m.role === 'user' ? 'max-w-[36rem] rounded-2xl rounded-br-md bg-[#0B1E3A] px-4 py-2.5 text-[15px] leading-relaxed text-white' : 'text-[15px] leading-relaxed text-slate-800'}
                 >
                   {m.role === 'assistant' && <ToolActivity parts={toolParts} streaming={isLive} />}
-                  {m.parts.map((p, i) => (p.type === 'text' ? (m.role === 'user' ? <p key={i} className="whitespace-pre-wrap">{p.text}</p> : <AnswerMarkdown key={i} appOrigin={appOrigin}>{p.text}</AnswerMarkdown>) : null))}
+                  {m.parts.map((p, i) => (p.type === 'text' ? (m.role === 'user' ? <p key={i} className="whitespace-pre-wrap wrap-anywhere">{p.text}</p> : <AnswerMarkdown key={i} appOrigin={appOrigin}>{p.text}</AnswerMarkdown>) : null))}
                   {/* The cards read after the answer's lead-in, nearest the composer. Live on the last
                       answer whenever nothing is streaming — in useChat's error state too, so a card a
                       refused send or resend left open keeps its buttons. */}

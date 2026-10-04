@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useLayoutEffect, useRef, type ReactNode } from 'react';
 import { ASK_LIMITS } from '@/lib/ask/models';
 import { ACCURACY_NOTICE } from '@/lib/ask/messages';
 
@@ -21,9 +21,12 @@ export function Composer({ value, onChange, onSend, onStop, streaming, disabled,
   modelControl?: ReactNode;
 }) {
   const boxRef = useRef<HTMLTextAreaElement>(null);
-  // Auto-grow: reset, then fit the content. Where layout is not measured (jsdom: scrollHeight 0)
-  // only the reset happens. Touches the DOM only — not the setState-in-effect the lint rule forbids.
-  useEffect(() => {
+  // Auto-grow: reset, then fit the content. A layout effect: a child's layout effects run before
+  // its parent's, so Thread's landing (a layout effect too) measures the band at its final height
+  // when a long draft carries into another chat. Where layout is not measured (jsdom:
+  // scrollHeight 0) only the reset happens. Touches the DOM only — not the setState-in-effect the
+  // lint rule forbids.
+  useLayoutEffect(() => {
     const el = boxRef.current;
     if (!el) return;
     el.style.height = 'auto';

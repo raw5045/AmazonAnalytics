@@ -37,7 +37,7 @@ export function ModelLabel({ model }: { model: AskModelId }) {
   return (
     <span className={CHIP}>
       <span>{ASK_MODELS.find((m) => m.id === model)?.label ?? model}</span>
-      <span className="text-slate-400">· fixed for this chat</span>
+      <span className="text-slate-500">· fixed for this chat</span>
     </span>
   );
 }

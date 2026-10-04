@@ -106,4 +106,20 @@ describe('Rail', () => {
     expect(html.match(/aria-label="Chats"/g)).toHaveLength(1);
     expect(html).not.toContain('<h2');
   });
+  it('a DELETE answered 404 counts as success (the chat is already gone): back to /ask when it was the open chat, and no error line', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(null, { status: 404 }));
+    render(<Rail conversations={convs} openId="c1" atCap={false} onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Chat 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Chat 1' }));
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask'));
+    expect(router.refresh).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Delete this chat? It cannot be undone.')).toBeNull();
+  });
+  it('an unparseable date shows its first ten characters, never "NaN-NaN-NaN"', () => {
+    render(<Rail conversations={[{ id: 'b1', title: 'Bad date', model: 'claude-sonnet-5', updatedAt: 'not-a-date' }]} openId={null} atCap={false} onNavigate={onNavigate} />);
+    const row = screen.getByRole('link', { name: 'Bad date' }).closest('li');
+    expect(row).not.toHaveTextContent('NaN');
+    expect(row).toHaveTextContent('not-a-date');
+  });
 });

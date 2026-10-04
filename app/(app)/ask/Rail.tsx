@@ -12,6 +12,12 @@ function modelLabel(id: AskModelId): string {
   return ASK_MODELS.find((m) => m.id === id)?.label.split(' (')[0] ?? id;
 }
 
+/** A row's date: the member's local day once it is known (railGroups), else the stored UTC date; an unparseable value shows as stored, never "NaN-NaN-NaN". */
+function rowDate(updatedAt: string, todayKey: string | null): string {
+  const d = new Date(updatedAt);
+  return todayKey && !Number.isNaN(d.getTime()) ? localDayKey(d) : updatedAt.slice(0, 10);
+}
+
 /**
  * Spec 2026-10-04 §3: the page's h1 and the admin chip, New chat (disabled at five with the cap
  * line), the chats grouped by local day (one unlabelled group until the member's day is known —
@@ -98,8 +104,8 @@ export function Rail({ conversations, openId, atCap, onNavigate, preview = false
                     </div>
                   ) : (
                     <div key="meta" className="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                      <span><span className="rounded bg-slate-100 px-1 py-px">{modelLabel(c.model)}</span> · {todayKey ? localDayKey(new Date(c.updatedAt)) : c.updatedAt.slice(0, 10)}</span>
-                      <button type="button" aria-label={`Delete ${c.title}`} className={`${small} text-slate-400 hover:text-slate-800 focus-visible:text-slate-800`} onClick={() => setConfirmId(c.id)}>Delete</button>
+                      <span><span className="rounded bg-slate-100 px-1 py-px">{modelLabel(c.model)}</span> · {rowDate(c.updatedAt, todayKey)}</span>
+                      <button type="button" aria-label={`Delete ${c.title}`} className={`${small} text-slate-500 hover:text-slate-800 focus-visible:text-slate-800`} onClick={() => setConfirmId(c.id)}>Delete</button>
                     </div>
                   )}
                 </li>
