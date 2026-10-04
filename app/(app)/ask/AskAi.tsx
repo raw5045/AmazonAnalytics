@@ -105,13 +105,6 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
         {/* self-start: with the switches under the meter, that column is the taller one, and the
             title stays at the top instead of dropping to its foot (no change without them). */}
         <div className="self-start">
-          {/* The chip is a sibling, not a child, of the h1: nested text would join the heading's
-              accessible name ("Ask AIAdmin preview"), which breaks an exact "Ask AI" name lookup
-              and is poor accessibility besides — a badge should not be read as part of the title. */}
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-bold">Ask AI</h1>
-            {preview && <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">Admin preview</span>}
-          </div>
           <p className="mt-1 text-sm text-slate-600">Ask questions about keywords, categories and trends. Same data as the Explorer, answered in plain language.</p>
         </div>
         <div className="flex flex-col gap-3">
@@ -130,7 +123,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
       </button>
       <div className="mt-4 grid gap-6 md:mt-6 md:grid-cols-[16rem_1fr]">
         <div id="ask-ai-rail" className={`${railOpen ? 'block' : 'hidden'} md:block`}>
-          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={onRailNavigate} />
+          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={onRailNavigate} preview={preview} />
         </div>
         <Thread
           key={open ? `${open.id}:${epoch}` : `new:${newNonce}`}

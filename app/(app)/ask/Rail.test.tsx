@@ -59,4 +59,37 @@ describe('Rail', () => {
     fireEvent.click(screen.getAllByRole('link', { name: 'New chat' })[1]);
     expect(onNavigate).not.toHaveBeenCalled();
   });
+  it('shows the h1, the admin chip when preview is on, and whatever the footer slot holds (spec §3)', () => {
+    render(<Rail conversations={[]} openId={null} atCap={false} onNavigate={onNavigate} preview footer={<p>footer here</p>} />);
+    expect(screen.getByRole('heading', { level: 1, name: 'Ask AI' })).toBeInTheDocument();
+    expect(screen.getByText('Admin preview')).toBeInTheDocument();
+    expect(screen.getByText('footer here')).toBeInTheDocument();
+  });
+  it('without preview there is no chip, and without a footer no footer border block', () => {
+    render(<Rail conversations={[]} openId={null} atCap={false} onNavigate={onNavigate} />);
+    expect(screen.queryByText('Admin preview')).toBeNull();
+    expect(screen.getByRole('complementary', { name: 'Your chats' }).querySelector('[data-rail-footer]')).toBeNull();
+  });
+  it('groups chats by local day once hydrated, in display order, each group a labelled region', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-04T12:00:00Z') });
+    try {
+      const day = (n: number) => new Date(Date.UTC(2026, 9, 4, 12) - n * 86_400_000).toISOString();
+      const list = [
+        { id: 't1', title: 'Today one', model: 'claude-sonnet-5' as const, updatedAt: day(0) },
+        { id: 'y1', title: 'Yesterday one', model: 'claude-sonnet-5' as const, updatedAt: day(1) },
+        { id: 'w1', title: 'Week one', model: 'claude-opus-5-5' as const, updatedAt: day(5) },
+        { id: 'o1', title: 'Old one', model: 'claude-haiku-4-5' as const, updatedAt: day(40) },
+      ];
+      render(<Rail conversations={list} openId="w1" atCap={false} onNavigate={onNavigate} />);
+      expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual(['Today', 'Yesterday', 'Previous 7 days', 'Older']);
+      expect(screen.getByRole('region', { name: 'Today' })).toHaveTextContent('Today one');
+      expect(screen.getByRole('region', { name: 'Previous 7 days' })).toHaveTextContent('Week one');
+      expect(screen.getByRole('region', { name: 'Older' })).toHaveTextContent('Old one');
+      // The model tag and the date stay on the second line.
+      expect(screen.getByRole('region', { name: 'Previous 7 days' })).toHaveTextContent('Advanced');
+      expect(screen.getByRole('region', { name: 'Older' })).toHaveTextContent(day(40).slice(0, 10));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

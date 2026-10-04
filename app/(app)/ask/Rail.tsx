@@ -1,9 +1,10 @@
 'use client';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ASK_MODELS, type AskModelId } from '@/lib/ask/models';
 import { CHAT_CAP_MESSAGE, DELETE_FAILED_MESSAGE } from '@/lib/ask/messages';
+import { groupConversations, useLocalDayKey } from './railGroups';
 
 export interface RailConversation { id: string; title: string; model: AskModelId; updatedAt: string }
 
@@ -11,19 +12,28 @@ function modelLabel(id: AskModelId): string {
   return ASK_MODELS.find((m) => m.id === id)?.label.split(' (')[0] ?? id;
 }
 
-/** Spec §11.2: newest first, New chat disabled at five, one-step delete confirm. A fixed column on md+ screens; below that it toggles into an expanding panel (the "Chats" button, aria-expanded wrapper and visibility classes live in AskAi, which owns the open/closed state and closes it via `onNavigate` once a chat is picked — fix round 2, item 5). */
-export function Rail({ conversations, openId, atCap, onNavigate }: { conversations: RailConversation[]; openId: string | null; atCap: boolean; onNavigate: () => void }) {
+/**
+ * Spec 2026-10-04 §3: the page's h1 and the admin chip, New chat (disabled at five with the cap
+ * line), the chats grouped by local day (one unlabelled group until the member's day is known —
+ * railGroups), each row with its one-step delete confirm, and a footer slot for the switches and
+ * the meter. Fills whatever height its parent gives it (AskAi: a sticky column on md+, a drawer
+ * below) and scrolls its list in the middle. The 409/404/error handling of a delete is unchanged
+ * (Task 9 D8): a 409's body is the real reason, 404 counts as success, anything else the generic line.
+ */
+export function Rail({ conversations, openId, atCap, onNavigate, preview = false, footer }: {
+  conversations: RailConversation[]; openId: string | null; atCap: boolean; onNavigate: () => void;
+  /** Admin preview chip next to the title (page.tsx: an admin while no member has access). */
+  preview?: boolean;
+  /** The rail's bottom block (AskAi passes the Approvals switches and the usage meter). */
+  footer?: ReactNode;
+}) {
   const router = useRouter();
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const todayKey = useLocalDayKey();
+  const groups = groupConversations(conversations, todayKey);
 
-  /**
-   * Task 9 D8. A 409 means a turn is still settling/saving under the lock, most often right after
-   * Stop (Task 8 review's "Notes for later tasks") — its JSON body's `error` is BUSY_MESSAGE, shown
-   * verbatim so the member sees the real reason instead of the generic line. 404 counts as success:
-   * the chat is already gone. Anything else (network failure, 500) gets the generic line.
-   */
   async function remove(id: string) {
     setBusy(true);
     setError(null);
@@ -32,9 +42,8 @@ export function Rail({ conversations, openId, atCap, onNavigate }: { conversatio
       if (res.ok || res.status === 404) {
         setConfirmId(null);
         // M3 (round-3): replace OR refresh, never both — deleting the OPEN chat already triggers a
-        // fresh render via the URL change (a force-dynamic route), and calling refresh too used to
-        // needlessly re-fetch a second time right as that navigation was landing. Deleting some
-        // OTHER chat still needs its own refresh (the URL is not changing) to update the rail list.
+        // fresh render via the URL change (a force-dynamic route); deleting another chat needs its
+        // own refresh to update the list.
         if (id === openId) router.replace('/ask');
         else router.refresh();
         return;
@@ -52,42 +61,53 @@ export function Rail({ conversations, openId, atCap, onNavigate }: { conversatio
     }
   }
 
-  const button = 'rounded border border-slate-300 bg-white px-2 py-0.5 text-xs hover:bg-slate-50 disabled:opacity-60';
+  const small = 'rounded px-1.5 py-0.5 text-[11px] hover:bg-white disabled:opacity-60';
   return (
-    <aside aria-label="Your chats" className="flex flex-col gap-3">
-      <Link
-        href="/ask"
-        aria-disabled={atCap}
-        onClick={(e) => { if (atCap) e.preventDefault(); else onNavigate(); }}
-        className={`rounded-md px-3 py-2 text-center text-sm font-semibold ${atCap ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-[#0B1E3A] text-white hover:bg-[#13294f]'}`}
-      >
-        New chat
-      </Link>
-      {atCap && <p className="text-xs text-amber-800">{CHAT_CAP_MESSAGE}</p>}
-      <ul className="flex flex-col gap-1">
-        {conversations.map((c) => (
-          <li key={c.id} className={`rounded-md border p-2 text-sm ${c.id === openId ? 'border-sky-300 bg-white' : 'border-transparent hover:bg-white'}`}>
-            <Link href={`/ask?c=${encodeURIComponent(c.id)}`} onClick={onNavigate} className="block truncate font-medium text-slate-800">{c.title}</Link>
-            <div className="mt-1 flex items-center justify-between gap-2 text-xs text-slate-500">
-              <span><span className="rounded bg-slate-100 px-1.5 py-0.5">{modelLabel(c.model)}</span> · {c.updatedAt.slice(0, 10)}</span>
-              {confirmId === c.id ? (
-                <span className="flex items-center gap-1">
-                  <span className="text-slate-700">Delete this chat? It cannot be undone.</span>
-                  {/* Autofocus + a specific name (item 10 M8): the confirm step replaces the
-                      "Delete" button in place, so the keyboard focus that was on it would
-                      otherwise land nowhere; "Confirm delete <title>" also disambiguates this
-                      button from the (now gone) plain "Delete <title>" one for assistive tech. */}
-                  <button type="button" autoFocus aria-label={`Confirm delete ${c.title}`} className={button} disabled={busy} onClick={() => remove(c.id)}>Delete</button>
-                  <button type="button" className={button} disabled={busy} onClick={() => setConfirmId(null)}>Cancel</button>
-                </span>
-              ) : (
-                <button type="button" aria-label={`Delete ${c.title}`} className={button} onClick={() => setConfirmId(c.id)}>Delete</button>
-              )}
-            </div>
-          </li>
+    <aside aria-label="Your chats" className="flex h-full min-h-0 flex-col">
+      <div className="flex items-center gap-2 px-4 pt-4">
+        <h1 className="text-[15px] font-bold">Ask AI</h1>
+        {preview && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">Admin preview</span>}
+      </div>
+      <div className="px-4 pt-3">
+        <Link
+          href="/ask"
+          aria-disabled={atCap}
+          onClick={(e) => { if (atCap) e.preventDefault(); else onNavigate(); }}
+          className={`block rounded-md px-3 py-2 text-center text-sm font-semibold ${atCap ? 'cursor-not-allowed bg-slate-200 text-slate-500' : 'bg-[#0B1E3A] text-white hover:bg-[#13294f]'}`}
+        >
+          New chat
+        </Link>
+        {atCap && <p className="mt-2 text-xs text-amber-800">{CHAT_CAP_MESSAGE}</p>}
+      </div>
+      <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        {groups.map((group, index) => (
+          <section key={group.label ?? 'all'} aria-label={group.label ?? 'Chats'} className={index > 0 ? 'mt-4' : undefined}>
+            {group.label && <h2 className="px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{group.label}</h2>}
+            <ul className="mt-1 flex flex-col gap-1">
+              {group.items.map((c) => (
+                <li key={c.id} className={`rounded-md border px-2 py-1.5 text-sm ${c.id === openId ? 'border-sky-300 bg-white' : 'border-transparent hover:bg-white'}`}>
+                  <Link href={`/ask?c=${encodeURIComponent(c.id)}`} onClick={onNavigate} className="block truncate font-medium text-slate-800">{c.title}</Link>
+                  {confirmId === c.id ? (
+                    <div key="confirm" className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-700">
+                      <span>Delete this chat? It cannot be undone.</span>
+                      {/* Autofocus + a specific name (item 10 M8): the confirm step replaces the Delete control in place. The two rows' keys make this a fresh mount: autoFocus only acts on mount, and without them React would reuse the Delete button's node. */}
+                      <button type="button" autoFocus aria-label={`Confirm delete ${c.title}`} className={`${small} border border-slate-300 bg-white text-slate-800`} disabled={busy} onClick={() => remove(c.id)}>Delete</button>
+                      <button type="button" className={`${small} border border-slate-300 bg-white text-slate-800`} disabled={busy} onClick={() => setConfirmId(null)}>Cancel</button>
+                    </div>
+                  ) : (
+                    <div key="meta" className="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <span><span className="rounded bg-slate-100 px-1 py-px">{modelLabel(c.model)}</span> · {c.updatedAt.slice(0, 10)}</span>
+                      <button type="button" aria-label={`Delete ${c.title}`} className={`${small} text-slate-400 hover:text-slate-800 focus-visible:text-slate-800`} onClick={() => setConfirmId(c.id)}>Delete</button>
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
         ))}
-      </ul>
-      {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+        {error && <p role="alert" className="mt-2 px-2 text-sm text-red-700">{error}</p>}
+      </div>
+      {footer && <div data-rail-footer className="border-t border-slate-200 px-4 py-3">{footer}</div>}
     </aside>
   );
 }
