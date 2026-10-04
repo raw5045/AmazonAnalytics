@@ -33,6 +33,7 @@ describe('AskAi', () => {
     expect(rail?.className).toContain('hidden');
     expect(screen.queryByRole('button', { name: 'Close chats' })).toBeNull();
     fireEvent.click(toggle);
+    expect(screen.getByRole('link', { name: 'New chat' })).toHaveFocus();
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(rail?.className).not.toContain('hidden');
     fireEvent.click(screen.getByRole('button', { name: 'Close chats' }));
@@ -40,6 +41,7 @@ describe('AskAi', () => {
     expect(rail?.className).toContain('hidden');
     expect(toggle).toHaveFocus();
     fireEvent.click(toggle);
+    expect(screen.getByRole('link', { name: 'New chat' })).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(toggle).toHaveFocus();

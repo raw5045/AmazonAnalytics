@@ -46,14 +46,17 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
   // whatever this says. Closed by the backdrop, Escape, or picking a chat (onRailNavigate).
   const [railOpen, setRailOpen] = useState(false);
   const chatsButtonRef = useRef<HTMLButtonElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
   const closeRail = () => {
     setRailOpen(false);
     chatsButtonRef.current?.focus();
   };
-  // Escape closes the drawer. The effect only adds and removes the listener; the handler sets state
-  // (inline rather than through closeRail, so the effect's only dependency is railOpen).
+  // Opening moves focus into the drawer; Escape closes it. The effect sets no state itself; the
+  // handler does (inline rather than through closeRail, so the effect's only dependency is railOpen).
   useEffect(() => {
     if (!railOpen) return;
+    // Focus starts on the drawer's first link (New chat): the Chats button sits under the drawer.
+    railRef.current?.querySelector<HTMLElement>('a[href]')?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       setRailOpen(false);
@@ -148,7 +151,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
       {/* The rail: hidden below md unless open (then a drawer over the backdrop); a static column on md+. */}
       <div id="ask-ai-rail" className={`${railOpen ? 'fixed inset-0 z-40 flex' : 'hidden'} md:static md:z-auto md:flex md:w-[260px] md:flex-none`}>
         {railOpen && <button type="button" aria-label="Close chats" onClick={closeRail} className="absolute inset-0 bg-slate-900/40 md:hidden" />}
-        <div className="relative flex h-dvh w-[260px] flex-none flex-col border-r border-slate-200 bg-[#F4F6FA] md:sticky md:top-[52px] md:h-[calc(100dvh-52px)]">
+        <div ref={railRef} className="relative flex h-dvh w-[260px] flex-none flex-col border-r border-slate-200 bg-[#F4F6FA] md:sticky md:top-[52px] md:h-[calc(100dvh-52px)]">
           <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={onRailNavigate} preview={preview} footer={footer} />
         </div>
       </div>
