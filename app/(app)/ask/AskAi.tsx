@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ASK_LIMITS, DEFAULT_MODEL } from '@/lib/ask/models';
 import type { MeterData } from '@/lib/ask/meter';
 import type { AskUIMessage } from '@/lib/ask/conversations';
@@ -25,6 +25,11 @@ function sameWrites(a: WriteToggles | null, b: WriteToggles | null): boolean {
   return a === b || (!!a && !!b && a.autoApproveChanges === b.autoApproveChanges && a.autoApproveDeletes === b.autoApproveDeletes);
 }
 
+/**
+ * Spec 2026-10-04 §2: the shell. A 260px rail, sticky under the 52px app bar at full height on md+
+ * and a drawer over a backdrop below that; a white main column of at least the viewport's height
+ * holding the Thread (which pins its own composer band). The window stays the scroll container.
+ */
 export function AskAi({ conversations, open, meter, preview, appOrigin, writes }: AskAiProps) {
   const atCap = conversations.length >= ASK_LIMITS.maxChats;
   const full = open !== null && open.messageCount >= ASK_LIMITS.maxMessagesPerChat;
@@ -37,10 +42,26 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
   // happens. Owning the draft one level up means whatever the member had queued survives that,
   // and it also means the draft intentionally follows the member from one chat to another.
   const [draft, setDraft] = useState('');
-  // Narrow-screen drawer (spec §11.2, fix round item 11): a partial implementation of that section
-  // — an in-page expanding panel below `md`, not an overlay; Rail is a fixed column at md+. Plain
-  // state, no effects. Closed automatically once a chat is picked (fix round 2, item 5 minor).
+  // Below md the rail is a drawer (spec 2026-10-04 §6); on md+ the classes make it a static column
+  // whatever this says. Closed by the backdrop, Escape, or picking a chat (onRailNavigate).
   const [railOpen, setRailOpen] = useState(false);
+  const chatsButtonRef = useRef<HTMLButtonElement>(null);
+  const closeRail = () => {
+    setRailOpen(false);
+    chatsButtonRef.current?.focus();
+  };
+  // Escape closes the drawer. The effect only adds and removes the listener; the handler sets state
+  // (inline rather than through closeRail, so the effect's only dependency is railOpen).
+  useEffect(() => {
+    if (!railOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      setRailOpen(false);
+      chatsButtonRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [railOpen]);
   /**
    * Spec 2026-10-01 §8: the switches' values. They change here (a switch's save, an "Always
    * approve" on a card) and on the server, and every turn ends in a server render (router.refresh(),
@@ -99,31 +120,34 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
     setRailOpen(false);
     setNewNonce((n) => n + 1);
   };
+  const footer = (
+    <div className="flex flex-col gap-3">
+      {toggles && <WriteSwitches value={toggles} onChange={(update) => setToggles((t) => t && update(t))} />}
+      <Meter meter={meter} />
+    </div>
+  );
   return (
-    <div className="mx-auto max-w-6xl px-6 py-6 text-slate-800">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        {/* self-start: with the switches under the meter, that column is the taller one, and the
-            title stays at the top instead of dropping to its foot (no change without them). */}
-        <div className="self-start">
-          <p className="mt-1 text-sm text-slate-600">Ask questions about keywords, categories and trends. Same data as the Explorer, answered in plain language.</p>
+    <div className="flex min-h-[calc(100dvh-52px)] text-slate-800">
+      {/* The rail: hidden below md unless open (then a drawer over the backdrop); a static column on md+. */}
+      <div id="ask-ai-rail" className={`${railOpen ? 'fixed inset-0 z-40 flex' : 'hidden'} md:static md:z-auto md:flex md:w-[260px] md:flex-none`}>
+        {railOpen && <button type="button" aria-label="Close chats" onClick={closeRail} className="absolute inset-0 bg-slate-900/40 md:hidden" />}
+        <div className="relative flex h-dvh w-[260px] flex-none flex-col border-r border-slate-200 bg-[#F4F6FA] md:sticky md:top-[52px] md:h-[calc(100dvh-52px)]">
+          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={onRailNavigate} preview={preview} footer={footer} />
         </div>
-        <div className="flex flex-col gap-3">
-          <Meter meter={meter} />
-          {toggles && <WriteSwitches value={toggles} onChange={(update) => setToggles((t) => t && update(t))} />}
-        </div>
-      </header>
-      <button
-        type="button"
-        onClick={() => setRailOpen((v) => !v)}
-        aria-expanded={railOpen}
-        aria-controls="ask-ai-rail"
-        className="mt-4 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 md:hidden"
-      >
-        Chats
-      </button>
-      <div className="mt-4 grid gap-6 md:mt-6 md:grid-cols-[16rem_1fr]">
-        <div id="ask-ai-rail" className={`${railOpen ? 'block' : 'hidden'} md:block`}>
-          <Rail conversations={conversations} openId={open?.id ?? null} atCap={atCap} onNavigate={onRailNavigate} preview={preview} />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col bg-white">
+        <div className="flex items-center gap-3 border-b border-slate-200 px-4 py-2 md:hidden">
+          <button
+            ref={chatsButtonRef}
+            type="button"
+            onClick={() => setRailOpen((v) => !v)}
+            aria-expanded={railOpen}
+            aria-controls="ask-ai-rail"
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700"
+          >
+            Chats
+          </button>
+          <span className="text-sm font-semibold">Ask AI</span>
         </div>
         <Thread
           key={open ? `${open.id}:${epoch}` : `new:${newNonce}`}

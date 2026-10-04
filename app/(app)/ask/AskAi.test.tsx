@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react';
 const router = vi.hoisted(() => ({ replace: vi.fn(), refresh: vi.fn(), push: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 const chat = vi.hoisted(() => ({
@@ -24,21 +24,38 @@ const appOrigin = 'https://keywordquarry.com';
 describe('AskAi', () => {
   beforeEach(() => { vi.clearAllMocks(); chat.messages = []; chat.status = 'ready'; chat.error = undefined; });
 
-  it('the narrow-screen Chats toggle expands and collapses the rail drawer (spec §11.2, item 11)', () => {
+  it('the narrow-screen Chats button opens the rail as a drawer; backdrop and Escape close it and return focus (spec 2026-10-04 §6)', () => {
     render(<AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />);
     const toggle = screen.getByRole('button', { name: 'Chats' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(toggle).toHaveAttribute('aria-controls', 'ask-ai-rail');
     const rail = document.getElementById('ask-ai-rail');
     expect(rail?.className).toContain('hidden');
-    expect(rail?.className).not.toContain('block ');
+    expect(screen.queryByRole('button', { name: 'Close chats' })).toBeNull();
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
     expect(rail?.className).not.toContain('hidden');
-    expect(rail?.className).toContain('block');
-    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: 'Close chats' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(rail?.className).toContain('hidden');
+    expect(toggle).toHaveFocus();
+    fireEvent.click(toggle);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveFocus();
+  });
+
+  it('the rail footer holds the approval switches (when writes are on) and the usage meter (spec 2026-10-04 §3)', () => {
+    const { unmount } = render(<AskAi conversations={[]} open={null} meter={meter} preview appOrigin={appOrigin} writes={{ autoApproveChanges: false, autoApproveDeletes: false }} />);
+    const rail = screen.getByRole('complementary', { name: 'Your chats' });
+    expect(within(rail).getByRole('group', { name: 'Approvals' })).toBeInTheDocument();
+    expect(within(rail).getByRole('progressbar', { name: 'Usage this month' })).toBeInTheDocument();
+    expect(within(rail).getByText('Admin preview')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Ask AI' })).toBeInTheDocument();
+    unmount();
+    render(<AskAi conversations={[]} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />);
+    expect(screen.queryByRole('group', { name: 'Approvals' })).toBeNull();
+    expect(screen.getByRole('progressbar', { name: 'Usage this month' })).toBeInTheDocument();
   });
 
   it('a draft typed before a first send survives the Thread remount once the URL gains ?c=<id> (item 8 / M1)', () => {
