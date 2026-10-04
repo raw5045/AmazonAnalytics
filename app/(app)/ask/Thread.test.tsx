@@ -346,6 +346,28 @@ describe('Thread', () => {
       expect(router.replace).not.toHaveBeenCalled();
     });
 
+    it('a first send reports its move (onFirstSendMove) with the new id just before the replace, so the shell can keep the reader\'s place', () => {
+      const onFirstSendMove = vi.fn();
+      render(<Harness onFirstSendMove={onFirstSendMove} />);
+      const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
+      act(() => { opts.onFinish({ message: { metadata: { conversationId: 'c-new' } }, messages: [], isAbort: false, isError: false }); });
+      expect(onFirstSendMove).toHaveBeenCalledTimes(1);
+      expect(onFirstSendMove).toHaveBeenCalledWith('c-new');
+      expect(router.replace).toHaveBeenCalledWith('/ask?c=c-new', { scroll: false });
+      expect(onFirstSendMove.mock.invocationCallOrder[0]).toBeLessThan(router.replace.mock.invocationCallOrder[0]);
+    });
+
+    it('reports no move for a follow-up, or for a first send that errored (neither moves to a new chat)', () => {
+      const onFirstSendMove = vi.fn();
+      type Finish = (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void;
+      const { unmount } = render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: [], inFlight: false }} onFirstSendMove={onFirstSendMove} />);
+      act(() => { (chat.lastOptions as { onFinish: Finish }).onFinish({ message: { metadata: {} }, messages: [], isAbort: false, isError: false }); });
+      unmount();
+      render(<Harness onFirstSendMove={onFirstSendMove} />);
+      act(() => { (chat.lastOptions as { onFinish: Finish }).onFinish({ message: { metadata: { conversationId: 'c-new' } }, messages: [], isAbort: false, isError: true }); });
+      expect(onFirstSendMove).not.toHaveBeenCalled();
+    });
+
     it('a first-send error refreshes but never navigates away (item 3) — the live error line stays visible', () => {
       render(<Harness />);
       const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
@@ -443,6 +465,20 @@ describe('Thread', () => {
       expect(router.replace).toHaveBeenCalledWith('/ask?c=c9', { scroll: false });
       expect(chat.setMessages).not.toHaveBeenCalled();
       expect(screen.getByLabelText('Your question')).toHaveValue('');
+    });
+
+    it('that move is reported too (onFirstSendMove with the new id), just before its replace', () => {
+      const onFirstSendMove = vi.fn();
+      render(<Harness onFirstSendMove={onFirstSendMove} />);
+      const opts = chat.lastOptions as { onError: (e: unknown) => void };
+      const err = new APICallError({
+        message: JSON.stringify({ error: 'Something went wrong on our side. Try again in a minute.', code: 'setup_failed', conversationId: 'c-new' }),
+        url: '/api/ask/chat', requestBodyValues: {}, statusCode: 503,
+      });
+      act(() => { opts.onError(err); });
+      expect(onFirstSendMove).toHaveBeenCalledWith('c-new');
+      expect(router.replace).toHaveBeenCalledWith('/ask?c=c-new', { scroll: false });
+      expect(onFirstSendMove.mock.invocationCallOrder[0]).toBeLessThan(router.replace.mock.invocationCallOrder[0]);
     });
 
     it('M2: also holds Send (leaving), and the onFinish({isError}) the SDK fires for the same failure does not also refresh — exactly one navigation', () => {

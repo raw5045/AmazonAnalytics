@@ -140,7 +140,7 @@ function statusLineFor(m: AskUIMessage, isLive: boolean, isLast: boolean, chatSt
  * set), sent with a hidden placeholder user message so the resumed answer arrives as a new message
  * after the cards — what a reload shows. The route's own hidden outcome messages are never rendered.
  */
-export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, draft, onDraftChange, onAlwaysApproved, writesEnabled, landAtEnd = true }: {
+export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, draft, onDraftChange, onAlwaysApproved, writesEnabled, landAtEnd = true, onFirstSendMove }: {
   open: OpenConversation | null; defaultModel: AskModelId;
   /** The server-computed reason (no balance / chat full), or null — the cap case is decided below, since only this component knows about a chat id already learned from the stream (item 6). */
   cantSendReason: string | null;
@@ -152,6 +152,8 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   onAlwaysApproved?: (kind: 'changes' | 'deletes') => void;
   /** False when the page just moved from the new chat to its freshly created id after a first send (AskAi): the member is reading that first answer, so the remounted Thread keeps their place. Default true: opening a chat lands at its end (spec 2026-10-04 §4). */
   landAtEnd?: boolean;
+  /** Called just before the page is moved to a first send's freshly created chat, so the shell can keep the reader's place on the remount that follows. */
+  onFirstSendMove?: (id: string) => void;
 }) {
   const router = useRouter();
   const [model, setModel] = useState<AskModelId>(open?.model ?? defaultModel);
@@ -242,11 +244,14 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       const moveOn = () => {
         if (!alive.current) return;
         // item 10 M4: replace OR refresh, never both — a force-dynamic route already fetches
-        // fresh data for the new URL a replace navigates to. `scroll: false` (spec 2026-10-04 §4):
-        // Next's own navigation scroll would put the page back at its top once the remount lands;
-        // the member is reading this first answer, and AskAi's landAtEnd keeps their place.
-        if (!open && cid) router.replace(`/ask?c=${encodeURIComponent(cid)}`, { scroll: false });
-        else router.refresh();
+        // fresh data for the new URL a replace navigates to. Spec 2026-10-04 §4: the member is
+        // reading this first answer, so the move is reported first (AskAi then keeps their place on
+        // the remount, with no landing) and goes with `scroll: false`, since Next's own navigation
+        // scroll would put the page back at its top once the remount lands.
+        if (!open && cid) {
+          onFirstSendMove?.(cid);
+          router.replace(`/ask?c=${encodeURIComponent(cid)}`, { scroll: false });
+        } else router.refresh();
       };
       if (isAbort) navTimer.current = setTimeout(moveOn, ABORT_NAV_DELAY_MS);
       else moveOn();
@@ -298,7 +303,9 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       if (!open && refusedConversationId) {
         setLeaving(true); // M2: hold Send here too — the same page change is about to happen
         navigatedByErrorRef.current = true; // M2: tell onFinish's isError branch to skip its refresh
-        router.replace(`/ask?c=${encodeURIComponent(refusedConversationId)}`, { scroll: false }); // as in onFinish's move
+        // As in onFinish's move: reported first, then moved without Next's scroll to the top.
+        onFirstSendMove?.(refusedConversationId);
+        router.replace(`/ask?c=${encodeURIComponent(refusedConversationId)}`, { scroll: false });
         return;
       }
       // item 10 M6, refined by item 5 minors: an HTTP refusal (busy/full/no-balance/...) after the

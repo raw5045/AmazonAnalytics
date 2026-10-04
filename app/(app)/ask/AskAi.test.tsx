@@ -77,17 +77,26 @@ describe('AskAi', () => {
     expect(screen.getByLabelText('Your question')).toHaveValue('still typing');
   });
 
-  it('Thread lands at the chat\'s end when a chat is opened, except on the move from the new chat to its freshly created id after a first send (spec 2026-10-04 §4)', () => {
-    const landAtEnd = () => vi.mocked(Thread).mock.lastCall?.[0].landAtEnd;
+  describe('Thread lands at the chat\'s end when a chat is opened, except on a first send\'s own move to the chat it created (spec 2026-10-04 §4)', () => {
+    const lastThreadProps = () => vi.mocked(Thread).mock.lastCall?.[0];
     const page = (id: string | null) => (
       <AskAi conversations={[]} open={id === null ? null : { id, model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />
     );
-    const { rerender } = render(page(null));
-    expect(landAtEnd()).toBe(true);
-    rerender(page('c1')); // a first send's move to its new chat
-    expect(landAtEnd()).toBe(false);
-    rerender(page('c2')); // a chat picked in the rail
-    expect(landAtEnd()).toBe(true);
+    it('starts true; the move Thread reports keeps the place on that id only, and the next open lands again', () => {
+      const { rerender } = render(page(null));
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+      expect(lastThreadProps()?.onFirstSendMove).toBeTypeOf('function');
+      act(() => lastThreadProps()?.onFirstSendMove?.('c1'));
+      rerender(page('c1')); // the first send's move to the chat it created
+      expect(lastThreadProps()?.landAtEnd).toBe(false);
+      rerender(page('c2')); // a chat picked in the rail
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+    });
+    it('picking an existing chat from the new-chat screen (no move reported) lands at its end', () => {
+      const { rerender } = render(page(null));
+      rerender(page('c2'));
+      expect(lastThreadProps()?.landAtEnd).toBe(true);
+    });
   });
 
   it('closes the drawer once a chat is picked (fix round 2, item 5 minor)', () => {

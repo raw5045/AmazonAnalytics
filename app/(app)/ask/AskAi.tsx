@@ -107,17 +107,21 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
     if (wasBusy) setEpoch((e) => e + 1); // bump only on busy -> idle
   }
   /**
-   * Thread lands at the chat's end when a chat is opened — except on the move from the new chat
-   * to its freshly created id after a first send (open: null → id): the member is reading that
-   * first answer, so the remounted Thread keeps their place (spec 2026-10-04 §4). Adjusted during
-   * render, like `epoch`.
+   * Thread lands at the chat's end when a chat is opened, except on a first send's own move to the
+   * chat it just created: Thread reports that id (onFirstSendMove) just before it moves the page,
+   * and only the open-id change onto that same id keeps the member's place in the first answer
+   * they are reading (spec 2026-10-04 §4). Picking an existing chat from the new-chat screen lands
+   * at its end like any other open. The report is used up by the next open-id change. Adjusted
+   * during render, like `epoch`.
    */
   const openIdNow = open?.id ?? null;
+  const [keepPlaceFor, setKeepPlaceFor] = useState<string | null>(null);
   const [prevOpenId, setPrevOpenId] = useState(openIdNow);
   const [landAtEnd, setLandAtEnd] = useState(true);
   if (openIdNow !== prevOpenId) {
-    setLandAtEnd(prevOpenId !== null);
+    setLandAtEnd(openIdNow === null || openIdNow !== keepPlaceFor);
     setPrevOpenId(openIdNow);
+    if (keepPlaceFor !== null) setKeepPlaceFor(null);
   }
   /**
    * Nits round: "New chat" while already on /ask (`open` is already null) does not change the
@@ -173,6 +177,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
           onDraftChange={setDraft}
           onAlwaysApproved={onAlwaysApproved}
           landAtEnd={landAtEnd}
+          onFirstSendMove={setKeepPlaceFor}
           // The server's current value, not the local toggles: writes switched off make a waiting card read-only.
           writesEnabled={writes !== null}
         />
