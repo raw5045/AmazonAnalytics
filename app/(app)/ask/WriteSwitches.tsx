@@ -36,7 +36,7 @@ async function saveToggle(field: Toggle, next: boolean): Promise<WriteToggles | 
 }
 
 /**
- * Spec 2026-10-01 §8: the two "always allow" switches. Controlled: AskAi holds the values, because
+ * Spec 2026-10-01 §8, drawn as switches since spec 2026-10-04 §3: the two "always allow" toggles. Controlled: AskAi holds the values, because
  * an "Always approve" answered on a card turns a switch on as well — possibly in the same tick as a
  * change here, so every change is an updater on the current pair, never a copy of a rendered one.
  * A toggle shows at once, saves with only its own field, then takes both values from the answer; a
@@ -62,24 +62,32 @@ export function WriteSwitches({ value, onChange }: { value: WriteToggles; onChan
   };
   return (
     <fieldset className="text-sm">
-      <legend className="font-semibold">Approvals</legend>
-      <div className="mt-1 flex flex-col gap-1">
+      <legend className="text-xs font-semibold text-slate-700">Approvals</legend>
+      <div className="mt-1.5 flex flex-col gap-1.5">
         {SWITCHES.map(({ field, label, note }) => (
           <div key={field}>
-            <label className="flex items-center gap-2 text-slate-700">
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-700">
+              {/* The native checkbox stays for assistive tech and tests (sr-only); the span is the drawn switch. */}
               <input
                 type="checkbox"
+                className="peer sr-only"
                 checked={value[field]}
                 disabled={saving}
                 aria-describedby={`${id}-${field}`}
                 onChange={(e) => void toggle(field, e.target.checked)}
               />
+              <span
+                aria-hidden="true"
+                className="relative inline-block h-4 w-7 flex-none rounded-full bg-slate-300 transition after:absolute after:left-0.5 after:top-0.5 after:h-3 after:w-3 after:rounded-full after:bg-white after:transition peer-checked:bg-sky-500 peer-checked:after:translate-x-3 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-400 peer-focus-visible:ring-offset-1 peer-disabled:opacity-50"
+              />
               {label}
             </label>
-            <p id={`${id}-${field}`} className="ml-5 text-xs text-slate-500">{note}</p>
+            {/* Outside the label: inside it, the note would join the checkbox's name as well as describe it. */}
+            <span id={`${id}-${field}`} className="sr-only">{note}</span>
           </div>
         ))}
       </div>
+      <p className="mt-1.5 text-[11px] text-slate-500">Off, Ask AI asks in a card first. Deletes are permanent.</p>
       <p aria-live="polite" className="text-xs text-red-700">{failed ? SAVE_FAILED : null}</p>
     </fieldset>
   );

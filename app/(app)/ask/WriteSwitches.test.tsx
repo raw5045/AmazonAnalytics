@@ -41,6 +41,9 @@ describe('WriteSwitches (spec 2026-10-01 §8)', () => {
     expect(deletesBox()).toBeChecked();
     expect(changesBox()).toHaveAccessibleDescription('Ask AI will not ask before saving or changing things.');
     expect(deletesBox()).toHaveAccessibleDescription('Ask AI will not ask before deleting things — deletes are permanent.');
+    // The notes are descriptions only (sr-only); one visible line covers both switches.
+    expect(screen.getByText('Off, Ask AI asks in a card first. Deletes are permanent.')).toBeInTheDocument();
+    expect(screen.getByText('Ask AI will not ask before saving or changing things.')).toHaveClass('sr-only');
     expect(changesBox()).toBeEnabled();
     expect(deletesBox()).toBeEnabled();
     // The live line is in the page from the start (empty), so a later error is announced.
