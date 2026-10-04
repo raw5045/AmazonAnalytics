@@ -29,9 +29,9 @@ function Harness({ initialDraft = '', ...rest }: Partial<React.ComponentProps<ty
 describe('Thread', () => {
   beforeEach(() => { vi.clearAllMocks(); chat.messages = []; chat.status = 'ready'; chat.error = undefined; workspaceNames.value = { views: {}, categories: {} }; });
 
-  it('a new chat shows the model picker and the example prompts, and sends with the chosen model', () => {
+  it('a new chat shows the model select and the example prompts, and sends with the chosen model', () => {
     render(<Harness />);
-    fireEvent.click(screen.getByLabelText(/Advanced \(Opus 5\.5\)/));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Model' }), { target: { value: 'claude-opus-5-5' } });
     fireEvent.click(screen.getByRole('button', { name: /highest volume keywords in the lighting niche/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(chat.sendMessage).toHaveBeenCalledWith({ text: 'Show me the highest volume keywords in the lighting niche with less than 500 average reviews.' }, { body: { conversationId: null, model: 'claude-opus-5-5' } });
@@ -47,7 +47,7 @@ describe('Thread', () => {
     expect(screen.getByText('Done')).toBeInTheDocument();
     expect(screen.getByText('Used 1 tool')).toBeInTheDocument();
     expect(screen.getByText('Stopped.')).toBeInTheDocument();
-    expect(screen.queryByRole('radio')).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Model' })).toBeNull();
   });
 
   describe('status lines (item 1 — real shapes)', () => {

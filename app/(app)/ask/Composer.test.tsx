@@ -21,7 +21,7 @@ describe('Composer', () => {
     expect(screen.getByText('400 left')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
   });
-  it('shows Stop while streaming and the disabled reason under the box', () => {
+  it('shows Stop while streaming and the disabled reason above the box', () => {
     const { onStop } = setup({ streaming: true });
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(onStop).toHaveBeenCalled();
@@ -46,5 +46,22 @@ describe('Composer', () => {
     setup({ sendDisabled: true });
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
     expect(screen.getByLabelText('Your question')).toBeEnabled();
+  });
+  it('renders the model control in the bottom row (spec 2026-10-04 §4)', () => {
+    render(<Composer value="" onChange={vi.fn()} onSend={vi.fn()} onStop={vi.fn()} streaming={false} disabled={false} sendDisabled={false} disabledReason={null} modelControl={<span>model here</span>} />);
+    expect(screen.getByText('model here')).toBeInTheDocument();
+  });
+  it('grows with its content up to 240px where the box can be measured, and only resets where it cannot (jsdom)', () => {
+    const props = { onChange: vi.fn(), onSend: vi.fn(), onStop: vi.fn(), streaming: false, disabled: false, sendDisabled: false, disabledReason: null };
+    const { rerender } = render(<Composer value="one line" {...props} />);
+    const box = screen.getByLabelText('Your question');
+    expect(box.style.height).toBe('auto');
+    const measured = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(90);
+    rerender(<Composer value={'two\nlines'} {...props} />);
+    expect(box.style.height).toBe('90px');
+    measured.mockReturnValue(900);
+    rerender(<Composer value={'many\nmore\nlines'} {...props} />);
+    expect(box.style.height).toBe('240px');
+    measured.mockRestore();
   });
 });
