@@ -107,6 +107,19 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
     if (wasBusy) setEpoch((e) => e + 1); // bump only on busy -> idle
   }
   /**
+   * Thread lands at the chat's end when a chat is opened — except on the move from the new chat
+   * to its freshly created id after a first send (open: null → id): the member is reading that
+   * first answer, so the remounted Thread keeps their place (spec 2026-10-04 §4). Adjusted during
+   * render, like `epoch`.
+   */
+  const openIdNow = open?.id ?? null;
+  const [prevOpenId, setPrevOpenId] = useState(openIdNow);
+  const [landAtEnd, setLandAtEnd] = useState(true);
+  if (openIdNow !== prevOpenId) {
+    setLandAtEnd(prevOpenId !== null);
+    setPrevOpenId(openIdNow);
+  }
+  /**
    * Nits round: "New chat" while already on /ask (`open` is already null) does not change the
    * URL — its href is `/ask`, the same page — so without this, the 'new' key never changes and an
    * unsaved chat that already picked up messages (an error, a partial answer from Stop) would
@@ -159,6 +172,7 @@ export function AskAi({ conversations, open, meter, preview, appOrigin, writes }
           draft={draft}
           onDraftChange={setDraft}
           onAlwaysApproved={onAlwaysApproved}
+          landAtEnd={landAtEnd}
           // The server's current value, not the local toggles: writes switched off make a waiting card read-only.
           writesEnabled={writes !== null}
         />

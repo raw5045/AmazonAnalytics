@@ -70,7 +70,7 @@ describe('Thread', () => {
     const scrollTo = vi.fn();
     let height: { mockRestore: () => void };
     const openChat = (messages: unknown[]) => ({ id: 'c1', model: 'claude-sonnet-5' as const, messageCount: messages.length, messages: messages as never, inFlight: false });
-    const grownLis = () => [...document.querySelectorAll('li')].filter((li) => li.className.includes('min-h-[calc(100dvh-20rem)]'));
+    const grownLis = () => [...document.querySelectorAll('li')].filter((li) => li.className.includes('min-h-[calc(100svh-20rem)]'));
     beforeEach(() => {
       Element.prototype.scrollIntoView = scrollIntoView;
       scrollIntoView.mockClear();
@@ -137,6 +137,37 @@ describe('Thread', () => {
       first.unmount();
       render(<Harness open={openChat([q, a])} />); // reopened: nothing streams
       expect(grownLis()).toHaveLength(0);
+    });
+    it('the kept answer gives its room up as soon as the next question waits for its answer: the page shrinks at send time, not under a question already at the top', () => {
+      const q = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
+      const a = { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] };
+      const q2 = { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'and then?' }] };
+      chat.status = 'streaming';
+      chat.messages = [q, a];
+      const { rerender } = render(<Harness open={openChat([q])} />);
+      expect(grownLis().map((li) => li.dataset.messageId)).toEqual(['m2']);
+      chat.status = 'submitted';
+      chat.messages = [q, a, q2];
+      rerender(<Harness open={openChat([q])} />);
+      expect(grownLis()).toHaveLength(1);
+      expect(grownLis()[0]).toHaveAttribute('aria-hidden', 'true');
+      expect(document.querySelector('[data-message-id="m2"]')?.className).not.toContain('min-h');
+    });
+    it('landAtEnd={false} (the move to a first send\'s new id) keeps the reader\'s place: no landing scroll; by default the chat lands', () => {
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }, { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] }];
+      const { unmount } = render(<Harness open={openChat(chat.messages)} landAtEnd={false} />);
+      expect(scrollTo).not.toHaveBeenCalled();
+      unmount();
+      render(<Harness open={openChat(chat.messages)} />);
+      expect(scrollTo).toHaveBeenCalledTimes(1);
+    });
+    it('under prefers-reduced-motion the scroll to a new question is instant', () => {
+      vi.stubGlobal('matchMedia', vi.fn((query: string) => ({ matches: query === '(prefers-reduced-motion: reduce)' })));
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
+      const { rerender } = render(<Harness open={openChat(chat.messages)} />);
+      chat.messages = [...chat.messages, { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] }, { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'and then?' }] }];
+      rerender(<Harness open={openChat([])} />);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'auto' });
     });
     it('without scrollIntoView or a laid-out page (jsdom as shipped) nothing throws', () => {
       delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
@@ -303,7 +334,7 @@ describe('Thread', () => {
       render(<Harness />);
       const opts = chat.lastOptions as { onFinish: (e: { message: { metadata?: { conversationId?: string } }; messages: unknown[]; isAbort: boolean; isError: boolean }) => void };
       act(() => { opts.onFinish({ message: { metadata: { conversationId: 'c9' } }, messages: [], isAbort: false, isError: false }); });
-      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
+      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9', { scroll: false });
       expect(router.refresh).not.toHaveBeenCalled();
     });
 
@@ -343,7 +374,7 @@ describe('Thread', () => {
         act(() => { vi.advanceTimersByTime(1499); });
         expect(router.replace).not.toHaveBeenCalled();
         act(() => { vi.advanceTimersByTime(1); });
-        expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
+        expect(router.replace).toHaveBeenCalledWith('/ask?c=c9', { scroll: false });
       });
 
       it('is cancelled if the member navigates away before it fires (item 2)', () => {
@@ -409,7 +440,7 @@ describe('Thread', () => {
         url: '/api/ask/chat', requestBodyValues: {}, statusCode: 503,
       });
       act(() => { opts.onError(err); });
-      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
+      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9', { scroll: false });
       expect(chat.setMessages).not.toHaveBeenCalled();
       expect(screen.getByLabelText('Your question')).toHaveValue('');
     });
@@ -678,7 +709,7 @@ describe('Thread', () => {
       render(<Harness />);
       expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeEnabled();
       finish({ message: { id: 'm2', role: 'assistant', metadata: { conversationId: 'c9' } }, messages: chat.messages, isAbort: false, isError: false });
-      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9');
+      expect(router.replace).toHaveBeenCalledWith('/ask?c=c9', { scroll: false });
       expect(screen.getByRole('button', { name: 'Approve for this chat' })).toBeDisabled();
     });
     it('a new message sent while a card is open denies it, as the route does on that send: the record reads "Denied" at once — and a refused send, taken back out, leaves it open again', () => {

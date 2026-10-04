@@ -40,8 +40,8 @@ const STOP_COOLDOWN_MS = 2000;
 const ABORT_NAV_DELAY_MS = 1500;
 /** While `open.inFlight`, how often to ask the server for fresh data (item 1 / N1) — bounded by the lock's own server-side expiry, so this can never poll forever. */
 const BUSY_REFRESH_MS = 4000;
-/** Spec 2026-10-04 §4: the streaming answer's minimum height (the viewport less the app bar, its question and the composer band), so its question can sit at the top of the view. */
-const GROWN = 'min-h-[calc(100dvh-20rem)]';
+/** Spec 2026-10-04 §4: the streaming answer's minimum height (the viewport less the app bar, its question and the composer band), so its question can sit at the top of the view. Small viewport units: stable while a phone's toolbars show and hide. */
+const GROWN = 'min-h-[calc(100svh-20rem)]';
 
 function hasVisibleText(m: AskUIMessage): boolean {
   return m.parts.some((p) => p.type === 'text' && p.text.trim().length > 0);
@@ -140,7 +140,7 @@ function statusLineFor(m: AskUIMessage, isLive: boolean, isLast: boolean, chatSt
  * set), sent with a hidden placeholder user message so the resumed answer arrives as a new message
  * after the cards — what a reload shows. The route's own hidden outcome messages are never rendered.
  */
-export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, draft, onDraftChange, onAlwaysApproved, writesEnabled }: {
+export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, draft, onDraftChange, onAlwaysApproved, writesEnabled, landAtEnd = true }: {
   open: OpenConversation | null; defaultModel: AskModelId;
   /** The server-computed reason (no balance / chat full), or null — the cap case is decided below, since only this component knows about a chat id already learned from the stream (item 6). */
   cantSendReason: string | null;
@@ -150,6 +150,8 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   writesEnabled: boolean;
   /** An "Always approve" answer landed (the resend's answer reached the thread): the matching "always allow" switch is now on (spec 2026-10-01 §8). */
   onAlwaysApproved?: (kind: 'changes' | 'deletes') => void;
+  /** False when the page just moved from the new chat to its freshly created id after a first send (AskAi): the member is reading that first answer, so the remounted Thread keeps their place. Default true: opening a chat lands at its end (spec 2026-10-04 §4). */
+  landAtEnd?: boolean;
 }) {
   const router = useRouter();
   const [model, setModel] = useState<AskModelId>(open?.model ?? defaultModel);
@@ -240,8 +242,10 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       const moveOn = () => {
         if (!alive.current) return;
         // item 10 M4: replace OR refresh, never both — a force-dynamic route already fetches
-        // fresh data for the new URL a replace navigates to.
-        if (!open && cid) router.replace(`/ask?c=${encodeURIComponent(cid)}`);
+        // fresh data for the new URL a replace navigates to. `scroll: false` (spec 2026-10-04 §4):
+        // Next's own navigation scroll would put the page back at its top once the remount lands;
+        // the member is reading this first answer, and AskAi's landAtEnd keeps their place.
+        if (!open && cid) router.replace(`/ask?c=${encodeURIComponent(cid)}`, { scroll: false });
         else router.refresh();
       };
       if (isAbort) navTimer.current = setTimeout(moveOn, ABORT_NAV_DELAY_MS);
@@ -294,7 +298,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
       if (!open && refusedConversationId) {
         setLeaving(true); // M2: hold Send here too — the same page change is about to happen
         navigatedByErrorRef.current = true; // M2: tell onFinish's isError branch to skip its refresh
-        router.replace(`/ask?c=${encodeURIComponent(refusedConversationId)}`);
+        router.replace(`/ask?c=${encodeURIComponent(refusedConversationId)}`, { scroll: false }); // as in onFinish's move
         return;
       }
       // item 10 M6, refined by item 5 minors: an HTTP refusal (busy/full/no-balance/...) after the
@@ -447,20 +451,23 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   const empty = messages.length === 0;
   /**
    * Spec 2026-10-04 §4. Opening a chat lands at the page end, once per mount (Thread remounts per
-   * chat through AskAi's key, so `open?.id` runs this exactly once here), before the first paint.
-   * It scrolls the window, the page's scroll container, rather than the last message into view:
-   * the composer band sticks to the viewport bottom and would cover the end of that message, and
-   * only at the page end does the band's own place in the flow keep it clear. Skipped where the
-   * page has no layout (jsdom: scrollHeight 0).
+   * chat through AskAi's key, so `open?.id` runs this exactly once here), before the first paint —
+   * except after a first send's move to its new id (`landAtEnd` false), where the member keeps
+   * their place in the answer they are reading. It scrolls the window, the page's scroll
+   * container, rather than the last message into view: the composer band sticks to the viewport
+   * bottom and would cover the end of that message, and only at the page end does the band's own
+   * place in the flow keep it clear. The navigations to a chat pass `scroll: false` (the rail's
+   * links, the first send's move, the recovery link), so Next's own scroll to the page top never
+   * undoes this. Skipped where the page has no layout (jsdom: scrollHeight 0).
    */
   const openId = open?.id ?? null;
   const landed = useRef(false);
   useLayoutEffect(() => {
-    if (!openId || landed.current) return;
+    if (!openId || !landAtEnd || landed.current) return;
     landed.current = true;
     const page = document.documentElement;
     if (page.scrollHeight > 0 && typeof window.scrollTo === 'function') window.scrollTo({ top: page.scrollHeight });
-  }, [openId]);
+  }, [openId, landAtEnd]);
   /**
    * Every message that starts a turn scrolls to the top of the view when it first appears, so the
    * answer streams in below it (`scroll-mt` on each message keeps it clear of the app bar): a
@@ -468,8 +475,9 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
    * hidden approval message (this tab's placeholder while live, the route's stored outcome after a
    * reload). The hidden messages themselves are never scrolled to. The turn starts shown at mount
    * are the landing's, and each id is scrolled to once only, so a refused send that takes its
-   * question back (onError) leaves an earlier, already seen question last and nothing moves. Reads
-   * the DOM only; skipped where scrollIntoView does not exist (jsdom).
+   * question back (onError) leaves an earlier, already seen question last and nothing moves. The
+   * scroll is smooth, or instant under prefers-reduced-motion. Reads the DOM only; skipped where
+   * scrollIntoView does not exist (jsdom).
    */
   const turnStartIds = messages.flatMap((m, i) => {
     if (isApprovalResultMessage(m)) return [];
@@ -484,22 +492,27 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
     if (lastTurnStartId === null || seenTurnStarts.current.has(lastTurnStartId)) return;
     seenTurnStarts.current.add(lastTurnStartId);
     const el = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])].find((li) => li.dataset.messageId === lastTurnStartId);
-    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    const reduce = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start', behavior: reduce ? 'auto' : 'smooth' });
   }, [lastTurnStartId, turnStartsKey]);
   /**
    * Room below the question, as on claude.ai: a question can only reach the top of the view when
    * the page runs on below it for most of a viewport, so the answer that is streaming gets GROWN's
    * minimum height and grows into that space. Its id is kept once set, so the page does not shrink
-   * and jump when the stream ends (the next streaming answer takes it over); a reopened chat starts
-   * with none and lands compactly. A question still waiting for its first chunk gets a spacer of
-   * the same height right after it, so nothing moves when the answer's message takes the spacer's
-   * place. The id is adjusted during render (React's pattern for state that follows a change), not
-   * in an effect: the lint rule forbids setState in effects.
+   * and jump when the stream ends; a reopened chat starts with none and lands compactly. A question
+   * still waiting for its first chunk gets a spacer of the same height right after it, so nothing
+   * moves when the answer's message takes the spacer's place — and the kept answer gives its room
+   * up at that moment, at send time, so the turn-start scroll measures the final layout. Released
+   * any later, it would shrink above a question already at the top of the view, where scroll
+   * anchoring does not compensate (the shrinking item is itself the anchor, or the browser has no
+   * anchoring), and the question would jump. The id is adjusted during render (React's pattern for
+   * state that follows a change), not in an effect: the lint rule forbids setState in effects.
    */
   const lastShown = [...messages].reverse().find((m) => !isApprovalResultMessage(m));
   const [grownId, setGrownId] = useState<string | null>(null);
   if (streaming && lastShown?.role === 'assistant' && grownId !== lastShown.id) setGrownId(lastShown.id);
   const awaitingFirstChunk = streaming && lastShown?.role === 'user';
+  if (awaitingFirstChunk && grownId !== null) setGrownId(null);
 
   return (
     <section ref={sectionRef} aria-label="Conversation" className="flex flex-1 flex-col">
@@ -565,7 +578,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
               {cardsOutOfSync ? CHAT_GONE_MESSAGE : describeChatError(error)}
               {/* item 6: a first send that then errored still created the chat — a manual way back
                   to it, since a first-send error deliberately never auto-navigates (item 3). */}
-              {!open && streamedCid && <> <Link href={`/ask?c=${encodeURIComponent(streamedCid)}`} className="underline">Open this chat</Link></>}
+              {!open && streamedCid && <> <Link href={`/ask?c=${encodeURIComponent(streamedCid)}`} scroll={false} className="underline">Open this chat</Link></>}
             </li>
           )}
         </ol>

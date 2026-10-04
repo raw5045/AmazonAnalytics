@@ -86,7 +86,7 @@ describe('Thread with the real useChat (mocked SSE fetch)', () => {
     render(<Harness open={null} defaultModel="claude-sonnet-5" cantSendReason={null} atCap={false} appOrigin={appOrigin} />);
     await typeAndSend('hi');
     await screen.findByText('the answer');
-    await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask?c=11111111-1111-4111-8111-111111111111'));
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask?c=11111111-1111-4111-8111-111111111111', { scroll: false }));
     expect(router.refresh).not.toHaveBeenCalled();
   });
 
@@ -125,7 +125,7 @@ describe('Thread with the real useChat (mocked SSE fetch)', () => {
     // this resend's own message carries no conversationId (the server treats it as an ordinary
     // follow-up, since the request already named the chat) — the fallback to the id learned from
     // the earlier, errored attempt is what M1 adds.
-    await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask?c=11111111-1111-4111-8111-111111111111'));
+    await waitFor(() => expect(router.replace).toHaveBeenCalledWith('/ask?c=11111111-1111-4111-8111-111111111111', { scroll: false }));
     expect(router.refresh.mock.calls.length).toBe(refreshesBeforeResend);
   });
 });

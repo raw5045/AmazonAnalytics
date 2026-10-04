@@ -77,6 +77,19 @@ describe('AskAi', () => {
     expect(screen.getByLabelText('Your question')).toHaveValue('still typing');
   });
 
+  it('Thread lands at the chat\'s end when a chat is opened, except on the move from the new chat to its freshly created id after a first send (spec 2026-10-04 §4)', () => {
+    const landAtEnd = () => vi.mocked(Thread).mock.lastCall?.[0].landAtEnd;
+    const page = (id: string | null) => (
+      <AskAi conversations={[]} open={id === null ? null : { id, model: 'claude-sonnet-5', messageCount: 1, messages: [], inFlight: false }} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />
+    );
+    const { rerender } = render(page(null));
+    expect(landAtEnd()).toBe(true);
+    rerender(page('c1')); // a first send's move to its new chat
+    expect(landAtEnd()).toBe(false);
+    rerender(page('c2')); // a chat picked in the rail
+    expect(landAtEnd()).toBe(true);
+  });
+
   it('closes the drawer once a chat is picked (fix round 2, item 5 minor)', () => {
     const conversations = [{ id: 'c1', title: 'Chat', model: 'claude-sonnet-5' as const, updatedAt: '2026-09-28T10:00:00.000Z' }];
     render(<AskAi conversations={conversations} open={null} meter={meter} preview={false} appOrigin={appOrigin} writes={null} />);
