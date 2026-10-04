@@ -13,6 +13,7 @@ vi.mock('@ai-sdk/react', () => ({ useChat: (opts: unknown) => { chat.lastOptions
 const workspaceNames = vi.hoisted(() => ({ value: { views: {} as Record<string, string>, categories: {} as Record<string, string> } }));
 vi.mock('./useWorkspaceNames', () => ({ useWorkspaceNames: () => workspaceNames.value }));
 import { isApprovalResultMessage } from '@/lib/ask/approvalResult';
+import { EXAMPLE_QUESTIONS } from '@/lib/ask/examples';
 import { Thread } from './Thread';
 
 const appOrigin = 'https://keywordquarry.com';
@@ -48,6 +49,55 @@ describe('Thread', () => {
     expect(screen.getByText('Used 1 tool')).toBeInTheDocument();
     expect(screen.getByText('Stopped.')).toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Model' })).toBeNull();
+    expect(screen.getByText('· fixed for this chat')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'What do you want to find?' })).toBeNull();
+  });
+
+  it('the empty state (spec 2026-10-04 §4): a heading, the line under it and the eight examples; the select is disabled once the chat has a message', () => {
+    const { rerender } = render(<Harness />);
+    expect(screen.getByRole('heading', { name: 'What do you want to find?' })).toBeInTheDocument();
+    expect(screen.getByText('Same data as the Explorer, answered in plain language.')).toBeInTheDocument();
+    for (const q of EXAMPLE_QUESTIONS) expect(screen.getByRole('button', { name: q })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled();
+    chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
+    rerender(<Harness />);
+    expect(screen.queryByRole('heading', { name: 'What do you want to find?' })).toBeNull();
+    expect(screen.getByRole('combobox', { name: 'Model' })).toBeDisabled();
+  });
+
+  describe('scrolling (spec 2026-10-04 §4) — guarded on scrollIntoView, which jsdom lacks', () => {
+    const scrollIntoView = vi.fn();
+    beforeEach(() => { Element.prototype.scrollIntoView = scrollIntoView; scrollIntoView.mockClear(); });
+    afterEach(() => { delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView; });
+
+    it('opening a chat lands on its last message, once', () => {
+      chat.messages = [
+        { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+        { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] },
+      ];
+      const { rerender } = render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
+      rerender(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    });
+    it('a new question scrolls to the top of the view; the hidden approval messages never do', () => {
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
+      const { rerender } = render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: chat.messages as never, inFlight: false }} />);
+      scrollIntoView.mockClear(); // the landing scroll
+      chat.messages = [...chat.messages, { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] }, { id: 'approval-m2', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] }];
+      rerender(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [] as never, inFlight: false }} />);
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      chat.messages = [...chat.messages, { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'and then?' }] }];
+      rerender(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [] as never, inFlight: false }} />);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+    });
+    it('without scrollIntoView (jsdom as shipped) nothing throws', () => {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
+      expect(() => render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: chat.messages as never, inFlight: false }} />)).not.toThrow();
+    });
   });
 
   describe('status lines (item 1 — real shapes)', () => {

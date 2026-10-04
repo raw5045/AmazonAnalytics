@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useChat } from '@ai-sdk/react';
 import { APICallError, getToolName, isToolUIPart, type ToolUIPart } from 'ai';
-import { ASK_MODELS, type AskModelId } from '@/lib/ask/models';
+import type { AskModelId } from '@/lib/ask/models';
 import type { AskUIMessage } from '@/lib/ask/conversations';
 import { EXAMPLE_QUESTIONS } from '@/lib/ask/examples';
 import {
@@ -18,7 +18,7 @@ import { writeKind } from '@/lib/ask/writeKinds';
 import { AnswerMarkdown } from './AnswerMarkdown';
 import { ApprovalCard, type ApprovalAnswer } from './ApprovalCard';
 import { Composer } from './Composer';
-import { ModelPicker } from './ModelPicker';
+import { ModelLabel, ModelPicker } from './ModelPicker';
 import { ToolActivity } from './ToolActivity';
 import { useWorkspaceNames } from './useWorkspaceNames';
 
@@ -121,7 +121,7 @@ function statusLineFor(m: AskUIMessage, isLive: boolean, isLast: boolean, chatSt
 }
 
 /**
- * Spec §11.3. One hook instance per chat (AskAi keys this component by the open chat's id, plus an
+ * Spec §11.3, laid out per spec 2026-10-04 §4. One hook instance per chat (AskAi keys this component by the open chat's id, plus an
  * epoch that advances only on a busy→idle transition — fix round 2 item 1 / round-3 B1). The
  * transport (lib/ask/transport.ts) sends only the new message text plus the chat id (and the model
  * on a first send) — the server loads history itself (spec §13). A first send learns the new
@@ -180,6 +180,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   // Where focus goes once a card answered from the keyboard collapses: the next open card (its approval id), else the composer (null).
   const [focusAfterAnswer, setFocusAfterAnswer] = useState<{ approvalId: string | null } | null>(null);
   const sectionRef = useRef<HTMLElement>(null);
+  const listRef = useRef<HTMLOListElement>(null);
   // A resend refused with 400 (the route's open cards differ from this tab's): the alert shows the
   // chat-gone line, since only a reload resyncs. Cleared by the next request (send / answerApproval).
   const [cardsOutOfSync, setCardsOutOfSync] = useState(false);
@@ -441,84 +442,115 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   const showBottomLine = status === 'ready' && last?.role === 'user';
   const bottomLine = !showBottomLine ? null : stoppedBeforeAnswer ? STOPPED_LINE : open?.inFlight ? BUSY_MESSAGE : NO_ANSWER_MESSAGE;
   const empty = messages.length === 0;
+  /**
+   * Spec 2026-10-04 §4. Opening a chat lands on its last message, once per mount (Thread remounts per
+   * chat through AskAi's key, so `open?.id` runs this exactly once here); a new question scrolls to
+   * the top of the view so the answer streams in under it (`scroll-mt` on each message keeps it clear
+   * of the app bar). The hidden approval messages (the route's outcomes, this tab's placeholder) are
+   * never scrolled to. Both read the DOM only and skip where scrollIntoView does not exist (jsdom).
+   */
+  const openId = open?.id ?? null;
+  const landed = useRef(false);
+  useEffect(() => {
+    if (!openId || landed.current) return;
+    landed.current = true;
+    const last = listRef.current?.lastElementChild;
+    if (last instanceof HTMLElement && typeof last.scrollIntoView === 'function') last.scrollIntoView({ block: 'end' });
+  }, [openId]);
+  const lastQuestionId = [...messages].reverse().find((m) => m.role === 'user' && !isApprovalResultMessage(m))?.id ?? null;
+  const seenQuestionId = useRef<string | null | undefined>(undefined); // undefined: nothing seen yet
+  useEffect(() => {
+    if (seenQuestionId.current === undefined) { seenQuestionId.current = lastQuestionId; return; } // first render: the landing effect's job
+    if (lastQuestionId === seenQuestionId.current) return;
+    seenQuestionId.current = lastQuestionId;
+    if (!lastQuestionId) return;
+    const el = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])].find((li) => li.dataset.messageId === lastQuestionId);
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [lastQuestionId]);
 
   return (
-    <section ref={sectionRef} aria-label="Conversation" className="flex min-h-[60vh] flex-col gap-4">
-      <div className="flex items-center gap-2 text-xs text-slate-500">
-        <span>Model:</span>
-        {open ? <span className="rounded bg-slate-100 px-1.5 py-0.5">{ASK_MODELS.find((m) => m.id === open.model)?.label ?? open.model}</span> : <span>{ASK_MODELS.find((m) => m.id === model)?.label}</span>}
-      </div>
-      {empty && !open && (
-        <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <ModelPicker value={model} onChange={setModel} disabled={streaming} />
-          <h2 className="mt-4 font-semibold">Try asking</h2>
-          <ul className="mt-2 space-y-1.5 text-sm">
-            {EXAMPLE_QUESTIONS.map((q) => (
-              <li key={q}>
-                <button type="button" onClick={() => onDraftChange(q)} className="w-full rounded bg-slate-100 px-2 py-1.5 text-left hover:bg-slate-200">&ldquo;{q}&rdquo;</button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <ol className="flex flex-1 flex-col gap-3">
-        {messages.map((m, index) => {
-          // The route's hidden outcome messages (and this tab's placeholder for one) are never shown.
-          if (isApprovalResultMessage(m)) return null;
-          // A card is a question to the member, not activity (spec 2026-10-01 §5): not in the "Used N tools" strip.
-          const toolParts = (m.parts.filter(isToolUIPart) as ToolUIPart[]).filter((p) => p.approval == null);
-          const cards = m.role === 'assistant' ? cardParts(m) : [];
-          // A member message right after this answer was sent while its cards were open (an answered
-          // set is followed by the hidden placeholder or outcome message instead): that send denied them.
-          const after = messages[index + 1];
-          const deniedBySend = after !== undefined && after.role === 'user' && !isApprovalResultMessage(after);
-          const isLive = streaming && m === last;
-          const line = m.role === 'assistant' ? statusLineFor(m, isLive, m === last, status, stoppedIds) : null;
-          return (
-            <li key={m.id} className={m.role === 'user' ? 'self-end' : 'self-start'}>
-              <article aria-label={m.role === 'user' ? 'You' : 'Ask AI'} className={`max-w-[48rem] rounded-lg px-4 py-3 text-sm ${m.role === 'user' ? 'bg-[#0B1E3A] text-white' : 'border border-slate-200 bg-white'}`}>
-                {m.role === 'assistant' && <ToolActivity parts={toolParts} streaming={isLive} />}
-                {m.parts.map((p, i) => (p.type === 'text' ? (m.role === 'user' ? <p key={i} className="whitespace-pre-wrap">{p.text}</p> : <AnswerMarkdown key={i} appOrigin={appOrigin}>{p.text}</AnswerMarkdown>) : null))}
-                {/* The cards read after the answer's lead-in, nearest the composer. Live on the last
-                    answer whenever nothing is streaming — in useChat's error state too, so a card a
-                    refused send or resend left open keeps its buttons. */}
-                {cards.map((p) => (
-                  <ApprovalCard
-                    key={p.toolCallId}
-                    part={shownCard(p, deniedBySend)}
-                    names={names}
-                    interactive={m === last && !streaming && !open?.inFlight}
-                    busy={cardsBusy}
-                    onAnswer={answerApproval}
-                    record={answers[p.approval.id]?.remember}
-                    writesOff={!writesEnabled}
-                  />
-                ))}
-                {line && <p className={`mt-1 text-xs ${m.metadata?.status === 'failed' ? 'text-red-700' : 'text-slate-500'}`}>{line}</p>}
-              </article>
-            </li>
-          );
-        })}
-        {bottomLine && <li className="text-sm text-slate-600">{bottomLine}</li>}
-        {error && (
-          <li role="alert" className="text-sm text-red-700">
-            {cardsOutOfSync ? CHAT_GONE_MESSAGE : describeChatError(error)}
-            {/* item 6: a first send that then errored still created the chat — a manual way back
-                to it, since a first-send error deliberately never auto-navigates (item 3). */}
-            {!open && streamedCid && <> <Link href={`/ask?c=${encodeURIComponent(streamedCid)}`} className="underline">Open this chat</Link></>}
-          </li>
+    <section ref={sectionRef} aria-label="Conversation" className="flex flex-1 flex-col">
+      <div className="mx-auto flex w-full max-w-[48rem] flex-1 flex-col px-4 pt-6 md:px-6">
+        {empty && !open && (
+          <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
+            <h2 className="text-2xl font-semibold text-slate-800">What do you want to find?</h2>
+            <p className="mt-2 text-slate-500">Same data as the Explorer, answered in plain language.</p>
+            <ul className="mt-6 grid w-full gap-2 md:grid-cols-2">
+              {EXAMPLE_QUESTIONS.map((q) => (
+                <li key={q}>
+                  <button type="button" onClick={() => onDraftChange(q)} className="h-full w-full rounded-xl border border-slate-200 bg-[#F4F6FA] px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100">{q}</button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
-      </ol>
-      <Composer
-        value={draft}
-        onChange={onDraftChange}
-        onSend={send}
-        onStop={onStop}
-        streaming={streaming}
-        disabled={!canSend}
-        sendDisabled={cooldown || leaving}
-        disabledReason={cantSendReasonEffective}
-      />
+        <ol ref={listRef} className="flex flex-col gap-5 pb-6">
+          {messages.map((m, index) => {
+            // The route's hidden outcome messages (and this tab's placeholder for one) are never shown.
+            if (isApprovalResultMessage(m)) return null;
+            // A card is a question to the member, not activity (spec 2026-10-01 §5): not in the "Used N tools" strip.
+            const toolParts = (m.parts.filter(isToolUIPart) as ToolUIPart[]).filter((p) => p.approval == null);
+            const cards = m.role === 'assistant' ? cardParts(m) : [];
+            // A member message right after this answer was sent while its cards were open (an answered
+            // set is followed by the hidden placeholder or outcome message instead): that send denied them.
+            const after = messages[index + 1];
+            const deniedBySend = after !== undefined && after.role === 'user' && !isApprovalResultMessage(after);
+            const isLive = streaming && m === last;
+            const line = m.role === 'assistant' ? statusLineFor(m, isLive, m === last, status, stoppedIds) : null;
+            return (
+              <li key={m.id} data-message-id={m.id} className={`scroll-mt-16 ${m.role === 'user' ? 'self-end' : 'w-full self-start'}`}>
+                <article
+                  aria-label={m.role === 'user' ? 'You' : 'Ask AI'}
+                  className={m.role === 'user' ? 'max-w-[36rem] rounded-2xl rounded-br-md bg-[#0B1E3A] px-4 py-2.5 text-[15px] leading-relaxed text-white' : 'text-[15px] leading-relaxed text-slate-800'}
+                >
+                  {m.role === 'assistant' && <ToolActivity parts={toolParts} streaming={isLive} />}
+                  {m.parts.map((p, i) => (p.type === 'text' ? (m.role === 'user' ? <p key={i} className="whitespace-pre-wrap">{p.text}</p> : <AnswerMarkdown key={i} appOrigin={appOrigin}>{p.text}</AnswerMarkdown>) : null))}
+                  {/* The cards read after the answer's lead-in, nearest the composer. Live on the last
+                      answer whenever nothing is streaming — in useChat's error state too. */}
+                  {cards.map((p) => (
+                    <ApprovalCard
+                      key={p.toolCallId}
+                      part={shownCard(p, deniedBySend)}
+                      names={names}
+                      interactive={m === last && !streaming && !open?.inFlight}
+                      busy={cardsBusy}
+                      onAnswer={answerApproval}
+                      record={answers[p.approval.id]?.remember}
+                      writesOff={!writesEnabled}
+                    />
+                  ))}
+                  {line && <p className={`mt-1 text-xs ${m.metadata?.status === 'failed' ? 'text-red-700' : 'text-slate-500'}`}>{line}</p>}
+                </article>
+              </li>
+            );
+          })}
+          {bottomLine && <li className="text-sm text-slate-600">{bottomLine}</li>}
+          {error && (
+            <li role="alert" className="text-sm text-red-700">
+              {cardsOutOfSync ? CHAT_GONE_MESSAGE : describeChatError(error)}
+              {/* item 6: a first send that then errored still created the chat — a manual way back to it. */}
+              {!open && streamedCid && <> <Link href={`/ask?c=${encodeURIComponent(streamedCid)}`} className="underline">Open this chat</Link></>}
+            </li>
+          )}
+        </ol>
+      </div>
+      {/* Spec 2026-10-04 §4: the composer band sticks to the viewport bottom; the window stays the scroll container. */}
+      <div className="sticky bottom-0 border-t border-slate-100 bg-white px-4 pb-3 pt-2 md:px-6">
+        <div className="mx-auto max-w-[48rem]">
+          <Composer
+            value={draft}
+            onChange={onDraftChange}
+            onSend={send}
+            onStop={onStop}
+            streaming={streaming}
+            disabled={!canSend}
+            sendDisabled={cooldown || leaving}
+            disabledReason={cantSendReasonEffective}
+            // An open chat's model is fixed; a new chat picks one until its first message exists.
+            modelControl={open ? <ModelLabel model={open.model} /> : <ModelPicker value={model} onChange={setModel} disabled={streaming || !empty} />}
+          />
+        </div>
+      </div>
     </section>
   );
 }

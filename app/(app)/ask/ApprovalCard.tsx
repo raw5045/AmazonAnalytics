@@ -76,7 +76,7 @@ export function ApprovalCard({ part, names, interactive, busy, onAnswer, record,
           {isDelete ? 'Always approve deletes' : 'Always approve changes'}
         </button>
       </div>
-      <p className="mt-1 text-xs text-slate-500">You can turn this off in the chat&apos;s settings.</p>
+      <p className="mt-1 text-xs text-slate-500">You can turn this off under Approvals in the side panel.</p>
     </div>
   );
 }

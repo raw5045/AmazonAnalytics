@@ -17,7 +17,7 @@ describe('ApprovalCard (spec 2026-10-01 §5)', () => {
     expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: true, remember: 'always' }, true);
     fireEvent.click(screen.getByRole('button', { name: 'Deny' }));
     expect(onAnswer).toHaveBeenLastCalledWith({ approvalId: 'ap_1', approved: false, remember: null }, true);
-    expect(screen.getByText('You can turn this off in the chat\'s settings.')).toBeInTheDocument();
+    expect(screen.getByText('You can turn this off under Approvals in the side panel.')).toBeInTheDocument();
   });
   it('tells the thread whether the answer came from the keyboard: a click with detail 0 (Enter or Space on a button) is, a mouse click or a tap (detail 1) is not', () => {
     const onAnswer = vi.fn();
