@@ -102,8 +102,8 @@ export interface SavedViewSummary {
 export interface ListSavedViewsResponse { views: SavedViewSummary[]; count: number; limit: number }
 /**
  * `count` = how many saved views the account has AFTER this call; `limit` = the cap (MAX_VIEWS_PER_USER, the value
- * list_saved_views carries). Read after the write, like the watchlist writes' `watching`, so a model never works out the
- * free slots itself (owner note 2026-10-04: after deleting 2 of 5 views the chat said "room for 3 more").
+ * list_saved_views carries). Read after the write, like the watchlist writes' `watching`, so a model never has to track the
+ * count itself (owner note 2026-10-04: after deleting 2 of 5 views the chat said "room for 3 more").
  */
 export interface SavedViewWriteResponse { view: SavedViewSummary; notes: string[]; count: number; limit: number }
 /** `count` and `limit` as on SavedViewWriteResponse: the saved views left after the delete, and the cap. */

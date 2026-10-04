@@ -137,7 +137,7 @@ describe('create_saved_view', () => {
     expect(input.name).toBe('Lamps');
     // A mixed scope (a taxonomy selection plus a custom category) is saved as the union of leaves, with no ids (spec §5.2).
     expect(input.filters).toMatchObject({ ...EXPLORER_DEFAULTS, window: '1w', q: 'lamp', leafPaths: ['Lighting › Ceiling Lights', 'Lighting › Lamps'], customCategoryIds: [], category: null });
-    // count = the account's saved views after this call, limit = MAX_VIEWS_PER_USER: the model never has to compute free slots itself.
+    // count = the account's saved views after this call, limit = MAX_VIEWS_PER_USER, so a model never has to track the count itself.
     expect(res).toEqual({ view: expect.objectContaining({ id: VIEW_ID, explorerUrl: `https://keywordquarry.com/explorer?view=${VIEW_ID}` }), notes: [], count: 3, limit: 5 });
     expect(deps.savedViews.count).toHaveBeenCalledWith('u1');
     expect(deps.record).toHaveBeenCalledWith('u1', 0, 'mcp');
@@ -432,19 +432,30 @@ describe('unexpected failures', () => {
     await expect(createWorkspaceService(makeDeps()).createSavedView(actor, { name: 'L', search: { filters: { categories: { leafPaths: ['Nope › Nothing'] } } } })).rejects.toMatchObject({ code: 'CATEGORY_NOT_AVAILABLE' });
     expect(lines().map((l) => [l.outcome, l.code])).toEqual([['failed', 'DATA_UNAVAILABLE'], ['failed', 'QUERY_TIMEOUT'], ['refused', 'CATEGORY_NOT_AVAILABLE']]);
   });
-  it('records a view or category delete before the trailing count read, so a delete that landed still counts when that read fails (like the watchlist writes)', async () => {
+  it('records every view and category write before the trailing count read, so a write that landed still counts when that read fails (like the watchlist writes)', async () => {
     const deps = makeDeps({
       savedViews: { ...makeDeps().savedViews, count: vi.fn(async () => { throw new Error('count read failed'); }) },
       customCategories: { ...makeDeps().customCategories, count: vi.fn(async () => { throw new Error('count read failed'); }) },
     });
     const svc = createWorkspaceService(deps);
-    await expect(svc.deleteSavedView(actor, { id: VIEW_ID })).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message });
-    await expect(svc.deleteCustomCategory(actor, { id: CAT_ID })).rejects.toMatchObject({ code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message });
-    expect(deps.savedViews.delete).toHaveBeenCalledTimes(1);
-    expect(deps.customCategories.delete).toHaveBeenCalledTimes(1);
-    expect(deps.record).toHaveBeenCalledTimes(2);
-    expect(deps.bumpWrite).toHaveBeenCalledTimes(2);
-    expect(lines().map((l) => [l.tool, l.outcome])).toEqual([['delete_saved_view', 'failed'], ['delete_custom_category', 'failed']]);
+    const failed = { code: 'DATA_UNAVAILABLE', message: SAFE_TOOL_FAILURE.message };
+    await expect(svc.createSavedView(actor, { name: 'L', search: {} })).rejects.toMatchObject(failed);
+    await expect(svc.updateSavedView(actor, { id: VIEW_ID, name: 'New' })).rejects.toMatchObject(failed);
+    await expect(svc.deleteSavedView(actor, { id: VIEW_ID })).rejects.toMatchObject(failed);
+    await expect(svc.createCustomCategory(actor, { name: 'Lighting', categories: { selections: [{ kind: 'taxonomy', path: 'Lighting', includeDescendants: true }] } })).rejects.toMatchObject(failed);
+    await expect(svc.updateCustomCategory(actor, { id: CAT_ID, name: 'Renamed' })).rejects.toMatchObject(failed);
+    await expect(svc.deleteCustomCategory(actor, { id: CAT_ID })).rejects.toMatchObject(failed);
+    // Each command ran once (the write landed) before its count read failed, and every one of the six writes was still recorded and bumped.
+    const calls = (fn: unknown) => (fn as ReturnType<typeof vi.fn>).mock.calls.length;
+    const { savedViews: v, customCategories: c } = deps;
+    expect([v.create, v.update, v.delete, c.create, c.update, c.delete].map(calls)).toEqual([1, 1, 1, 1, 1, 1]);
+    expect([v.count, c.count].map(calls)).toEqual([3, 3]);
+    expect(deps.record).toHaveBeenCalledTimes(6);
+    expect(deps.bumpWrite).toHaveBeenCalledTimes(6);
+    expect(lines().map((l) => [l.tool, l.outcome])).toEqual([
+      ['create_saved_view', 'failed'], ['update_saved_view', 'failed'], ['delete_saved_view', 'failed'],
+      ['create_custom_category', 'failed'], ['update_custom_category', 'failed'], ['delete_custom_category', 'failed'],
+    ]);
   });
 });
 
