@@ -65,38 +65,85 @@ describe('Thread', () => {
     expect(screen.getByRole('combobox', { name: 'Model' })).toBeDisabled();
   });
 
-  describe('scrolling (spec 2026-10-04 §4) — guarded on scrollIntoView, which jsdom lacks', () => {
+  describe('scrolling (spec 2026-10-04 §4) — guarded on scrollIntoView and a laid-out page, which jsdom lacks', () => {
     const scrollIntoView = vi.fn();
-    beforeEach(() => { Element.prototype.scrollIntoView = scrollIntoView; scrollIntoView.mockClear(); });
-    afterEach(() => { delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView; });
-
-    it('opening a chat lands on its last message, once', () => {
-      chat.messages = [
-        { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
-        { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] },
-      ];
-      const { rerender } = render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
-      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'end' });
-      rerender(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 2, messages: chat.messages as never, inFlight: false }} />);
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    const scrollTo = vi.fn();
+    let height: { mockRestore: () => void };
+    const openChat = (messages: unknown[]) => ({ id: 'c1', model: 'claude-sonnet-5' as const, messageCount: messages.length, messages: messages as never, inFlight: false });
+    const grownLis = () => [...document.querySelectorAll('li')].filter((li) => li.className.includes('min-h-[calc(100dvh-20rem)]'));
+    beforeEach(() => {
+      Element.prototype.scrollIntoView = scrollIntoView;
+      scrollIntoView.mockClear();
+      scrollTo.mockClear();
+      vi.stubGlobal('scrollTo', scrollTo);
+      height = vi.spyOn(document.documentElement, 'scrollHeight', 'get').mockReturnValue(2000);
     });
-    it('a new question scrolls to the top of the view; the hidden approval messages never do', () => {
-      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
-      const { rerender } = render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: chat.messages as never, inFlight: false }} />);
-      scrollIntoView.mockClear(); // the landing scroll
-      chat.messages = [...chat.messages, { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] }, { id: 'approval-m2', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] }];
-      rerender(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [] as never, inFlight: false }} />);
+    afterEach(() => {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      vi.unstubAllGlobals();
+      height.mockRestore();
+    });
+    it('opening a chat lands at the page end, once, before anything is scrolled to the top', () => {
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }, { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] }];
+      const { rerender } = render(<Harness open={openChat(chat.messages)} />);
+      expect(scrollTo).toHaveBeenCalledTimes(1);
+      expect(scrollTo).toHaveBeenCalledWith({ top: 2000 });
+      expect(scrollIntoView).not.toHaveBeenCalled();
+      rerender(<Harness open={openChat(chat.messages)} />);
+      expect(scrollTo).toHaveBeenCalledTimes(1);
+    });
+    it('a new question scrolls to the top; the hidden approval messages never do; a question taken back by a refused send does not scroll to the earlier one', () => {
+      chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }, { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hello' }] }];
+      const { rerender } = render(<Harness open={openChat(chat.messages)} />);
+      chat.messages = [...chat.messages, { id: 'approval-m2', role: 'user', parts: [{ type: 'text', text: '[approval-result] pending' }] }];
+      rerender(<Harness open={openChat([])} />);
       expect(scrollIntoView).not.toHaveBeenCalled();
       chat.messages = [...chat.messages, { id: 'm3', role: 'user', parts: [{ type: 'text', text: 'and then?' }] }];
-      rerender(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: [] as never, inFlight: false }} />);
+      rerender(<Harness open={openChat([])} />);
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
       expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' });
+      expect((scrollIntoView.mock.contexts[0] as HTMLElement).dataset.messageId).toBe('m3');
+      chat.messages = chat.messages.slice(0, -1); // onError took the refused question back
+      rerender(<Harness open={openChat([])} />);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
     });
-    it('without scrollIntoView (jsdom as shipped) nothing throws', () => {
+    it('the answer that resumes a turn after approval cards scrolls to the top like a question', () => {
+      chat.messages = [
+        { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'save it' }] },
+        { id: 'm2', role: 'assistant', parts: [{ type: 'tool-create_saved_view', toolCallId: 't1', state: 'output-available', input: { name: 'Lamps' }, output: { view: { id: 'v1', name: 'Lamps' } }, approval: { id: 'ap1', approved: true } }] },
+      ];
+      const { rerender } = render(<Harness open={openChat(chat.messages)} />);
+      chat.messages = [...chat.messages, { id: 'h1', role: 'user', parts: [{ type: 'text', text: '[approval-result] The person approved create_saved_view and it ran.' }] }, { id: 'm3', role: 'assistant', parts: [{ type: 'text', text: 'Saved.' }] }];
+      rerender(<Harness open={openChat([])} />);
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect((scrollIntoView.mock.contexts[0] as HTMLElement).dataset.messageId).toBe('m3');
+    });
+    it('the streaming answer fills the viewport below its question and keeps that once the stream ends; a question waiting for its first chunk gets a spacer; a reopened chat has neither', () => {
+      const q = { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] };
+      const a = { id: 'm2', role: 'assistant', parts: [{ type: 'text', text: 'hel' }] };
+      chat.status = 'submitted';
+      chat.messages = [q];
+      const first = render(<Harness open={openChat([q])} />);
+      expect(grownLis()).toHaveLength(1);
+      expect(grownLis()[0]).toHaveAttribute('aria-hidden', 'true');
+      chat.status = 'streaming';
+      chat.messages = [q, a];
+      first.rerender(<Harness open={openChat([q])} />);
+      expect(grownLis()).toHaveLength(1);
+      expect(grownLis()[0].dataset.messageId).toBe('m2');
+      chat.status = 'ready';
+      first.rerender(<Harness open={openChat([q])} />);
+      expect(grownLis()[0].dataset.messageId).toBe('m2'); // kept: the page must not shrink and jump
+      first.unmount();
+      render(<Harness open={openChat([q, a])} />); // reopened: nothing streams
+      expect(grownLis()).toHaveLength(0);
+    });
+    it('without scrollIntoView or a laid-out page (jsdom as shipped) nothing throws', () => {
       delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      height.mockRestore();
       chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];
-      expect(() => render(<Harness open={{ id: 'c1', model: 'claude-sonnet-5', messageCount: 1, messages: chat.messages as never, inFlight: false }} />)).not.toThrow();
+      expect(() => render(<Harness open={openChat(chat.messages)} />)).not.toThrow();
+      expect(scrollTo).not.toHaveBeenCalled();
     });
   });
 

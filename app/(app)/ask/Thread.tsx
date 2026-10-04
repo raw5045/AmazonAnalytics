@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useChat } from '@ai-sdk/react';
@@ -40,6 +40,8 @@ const STOP_COOLDOWN_MS = 2000;
 const ABORT_NAV_DELAY_MS = 1500;
 /** While `open.inFlight`, how often to ask the server for fresh data (item 1 / N1) — bounded by the lock's own server-side expiry, so this can never poll forever. */
 const BUSY_REFRESH_MS = 4000;
+/** Spec 2026-10-04 §4: the streaming answer's minimum height (the viewport less the app bar, its question and the composer band), so its question can sit at the top of the view. */
+const GROWN = 'min-h-[calc(100dvh-20rem)]';
 
 function hasVisibleText(m: AskUIMessage): boolean {
   return m.parts.some((p) => p.type === 'text' && p.text.trim().length > 0);
@@ -121,11 +123,12 @@ function statusLineFor(m: AskUIMessage, isLive: boolean, isLast: boolean, chatSt
 }
 
 /**
- * Spec §11.3, laid out per spec 2026-10-04 §4. One hook instance per chat (AskAi keys this component by the open chat's id, plus an
- * epoch that advances only on a busy→idle transition — fix round 2 item 1 / round-3 B1). The
- * transport (lib/ask/transport.ts) sends only the new message text plus the chat id (and the model
- * on a first send) — the server loads history itself (spec §13). A first send learns the new
- * chat's id from the assistant message metadata and moves the URL there.
+ * Spec §11.3, laid out per spec 2026-10-04 §4. One hook instance per chat (AskAi keys this
+ * component by the open chat's id, plus an epoch that advances only on a busy→idle transition —
+ * fix round 2 item 1 / round-3 B1). The transport (lib/ask/transport.ts) sends only the new
+ * message text plus the chat id (and the model on a first send) — the server loads history itself
+ * (spec §13). A first send learns the new chat's id from the assistant message metadata and moves
+ * the URL there.
  *
  * `draft` is owned by AskAi, not this component (Task 9 fix round, item 8 / M1): a first send
  * changes the URL to `?c=<id>`, and since Thread is keyed by the open chat's id, that remounts it
@@ -443,30 +446,60 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
   const bottomLine = !showBottomLine ? null : stoppedBeforeAnswer ? STOPPED_LINE : open?.inFlight ? BUSY_MESSAGE : NO_ANSWER_MESSAGE;
   const empty = messages.length === 0;
   /**
-   * Spec 2026-10-04 §4. Opening a chat lands on its last message, once per mount (Thread remounts per
-   * chat through AskAi's key, so `open?.id` runs this exactly once here); a new question scrolls to
-   * the top of the view so the answer streams in under it (`scroll-mt` on each message keeps it clear
-   * of the app bar). The hidden approval messages (the route's outcomes, this tab's placeholder) are
-   * never scrolled to. Both read the DOM only and skip where scrollIntoView does not exist (jsdom).
+   * Spec 2026-10-04 §4. Opening a chat lands at the page end, once per mount (Thread remounts per
+   * chat through AskAi's key, so `open?.id` runs this exactly once here), before the first paint.
+   * It scrolls the window, the page's scroll container, rather than the last message into view:
+   * the composer band sticks to the viewport bottom and would cover the end of that message, and
+   * only at the page end does the band's own place in the flow keep it clear. Skipped where the
+   * page has no layout (jsdom: scrollHeight 0).
    */
   const openId = open?.id ?? null;
   const landed = useRef(false);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!openId || landed.current) return;
     landed.current = true;
-    const last = listRef.current?.lastElementChild;
-    if (last instanceof HTMLElement && typeof last.scrollIntoView === 'function') last.scrollIntoView({ block: 'end' });
+    const page = document.documentElement;
+    if (page.scrollHeight > 0 && typeof window.scrollTo === 'function') window.scrollTo({ top: page.scrollHeight });
   }, [openId]);
-  const lastQuestionId = [...messages].reverse().find((m) => m.role === 'user' && !isApprovalResultMessage(m))?.id ?? null;
-  const seenQuestionId = useRef<string | null | undefined>(undefined); // undefined: nothing seen yet
+  /**
+   * Every message that starts a turn scrolls to the top of the view when it first appears, so the
+   * answer streams in below it (`scroll-mt` on each message keeps it clear of the app bar): a
+   * member question, or the answer that resumes a turn after approval cards — the message after a
+   * hidden approval message (this tab's placeholder while live, the route's stored outcome after a
+   * reload). The hidden messages themselves are never scrolled to. The turn starts shown at mount
+   * are the landing's, and each id is scrolled to once only, so a refused send that takes its
+   * question back (onError) leaves an earlier, already seen question last and nothing moves. Reads
+   * the DOM only; skipped where scrollIntoView does not exist (jsdom).
+   */
+  const turnStartIds = messages.flatMap((m, i) => {
+    if (isApprovalResultMessage(m)) return [];
+    const prev = messages[i - 1];
+    return m.role === 'user' || (prev !== undefined && isApprovalResultMessage(prev)) ? [m.id] : [];
+  });
+  const turnStartsKey = turnStartIds.join(' ');
+  const lastTurnStartId = turnStartIds[turnStartIds.length - 1] ?? null;
+  const seenTurnStarts = useRef<Set<string> | null>(null);
   useEffect(() => {
-    if (seenQuestionId.current === undefined) { seenQuestionId.current = lastQuestionId; return; } // first render: the landing effect's job
-    if (lastQuestionId === seenQuestionId.current) return;
-    seenQuestionId.current = lastQuestionId;
-    if (!lastQuestionId) return;
-    const el = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])].find((li) => li.dataset.messageId === lastQuestionId);
+    if (seenTurnStarts.current === null) { seenTurnStarts.current = new Set(turnStartsKey === '' ? [] : turnStartsKey.split(' ')); return; }
+    if (lastTurnStartId === null || seenTurnStarts.current.has(lastTurnStartId)) return;
+    seenTurnStarts.current.add(lastTurnStartId);
+    const el = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-message-id]') ?? [])].find((li) => li.dataset.messageId === lastTurnStartId);
     if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  }, [lastQuestionId]);
+  }, [lastTurnStartId, turnStartsKey]);
+  /**
+   * Room below the question, as on claude.ai: a question can only reach the top of the view when
+   * the page runs on below it for most of a viewport, so the answer that is streaming gets GROWN's
+   * minimum height and grows into that space. Its id is kept once set, so the page does not shrink
+   * and jump when the stream ends (the next streaming answer takes it over); a reopened chat starts
+   * with none and lands compactly. A question still waiting for its first chunk gets a spacer of
+   * the same height right after it, so nothing moves when the answer's message takes the spacer's
+   * place. The id is adjusted during render (React's pattern for state that follows a change), not
+   * in an effect: the lint rule forbids setState in effects.
+   */
+  const lastShown = [...messages].reverse().find((m) => !isApprovalResultMessage(m));
+  const [grownId, setGrownId] = useState<string | null>(null);
+  if (streaming && lastShown?.role === 'assistant' && grownId !== lastShown.id) setGrownId(lastShown.id);
+  const awaitingFirstChunk = streaming && lastShown?.role === 'user';
 
   return (
     <section ref={sectionRef} aria-label="Conversation" className="flex flex-1 flex-col">
@@ -498,7 +531,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
             const isLive = streaming && m === last;
             const line = m.role === 'assistant' ? statusLineFor(m, isLive, m === last, status, stoppedIds) : null;
             return (
-              <li key={m.id} data-message-id={m.id} className={`scroll-mt-16 ${m.role === 'user' ? 'self-end' : 'w-full self-start'}`}>
+              <li key={m.id} data-message-id={m.id} className={`scroll-mt-16 ${m.role === 'user' ? 'self-end' : 'w-full self-start'}${m.id === grownId ? ` ${GROWN}` : ''}`}>
                 <article
                   aria-label={m.role === 'user' ? 'You' : 'Ask AI'}
                   className={m.role === 'user' ? 'max-w-[36rem] rounded-2xl rounded-br-md bg-[#0B1E3A] px-4 py-2.5 text-[15px] leading-relaxed text-white' : 'text-[15px] leading-relaxed text-slate-800'}
@@ -506,7 +539,8 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
                   {m.role === 'assistant' && <ToolActivity parts={toolParts} streaming={isLive} />}
                   {m.parts.map((p, i) => (p.type === 'text' ? (m.role === 'user' ? <p key={i} className="whitespace-pre-wrap">{p.text}</p> : <AnswerMarkdown key={i} appOrigin={appOrigin}>{p.text}</AnswerMarkdown>) : null))}
                   {/* The cards read after the answer's lead-in, nearest the composer. Live on the last
-                      answer whenever nothing is streaming — in useChat's error state too. */}
+                      answer whenever nothing is streaming — in useChat's error state too, so a card a
+                      refused send or resend left open keeps its buttons. */}
                   {cards.map((p) => (
                     <ApprovalCard
                       key={p.toolCallId}
@@ -524,11 +558,13 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
               </li>
             );
           })}
+          {awaitingFirstChunk && <li aria-hidden="true" className={GROWN} />}
           {bottomLine && <li className="text-sm text-slate-600">{bottomLine}</li>}
           {error && (
             <li role="alert" className="text-sm text-red-700">
               {cardsOutOfSync ? CHAT_GONE_MESSAGE : describeChatError(error)}
-              {/* item 6: a first send that then errored still created the chat — a manual way back to it. */}
+              {/* item 6: a first send that then errored still created the chat — a manual way back
+                  to it, since a first-send error deliberately never auto-navigates (item 3). */}
               {!open && streamedCid && <> <Link href={`/ask?c=${encodeURIComponent(streamedCid)}`} className="underline">Open this chat</Link></>}
             </li>
           )}
