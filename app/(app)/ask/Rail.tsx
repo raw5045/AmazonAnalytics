@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ASK_MODELS, type AskModelId } from '@/lib/ask/models';
 import { CHAT_CAP_MESSAGE, DELETE_FAILED_MESSAGE } from '@/lib/ask/messages';
-import { groupConversations, useLocalDayKey } from './railGroups';
+import { groupConversations, localDayKey, useLocalDayKey } from './railGroups';
 
 export interface RailConversation { id: string; title: string; model: AskModelId; updatedAt: string }
 
@@ -63,8 +63,9 @@ export function Rail({ conversations, openId, atCap, onNavigate, preview = false
 
   const small = 'rounded px-1.5 py-0.5 text-[11px] hover:bg-white disabled:opacity-60';
   return (
-    <aside aria-label="Your chats" className="flex h-full min-h-0 flex-col">
+    <aside aria-label="Your chats" className="flex h-full min-h-0 flex-col overflow-y-auto">
       <div className="flex items-center gap-2 px-4 pt-4">
+        {/* The chip is a sibling of the h1, not a child: nested text would join the heading's accessible name ("Ask AIAdmin preview"). */}
         <h1 className="text-[15px] font-bold">Ask AI</h1>
         {preview && <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">Admin preview</span>}
       </div>
@@ -79,14 +80,15 @@ export function Rail({ conversations, openId, atCap, onNavigate, preview = false
         </Link>
         {atCap && <p className="mt-2 text-xs text-amber-800">{CHAT_CAP_MESSAGE}</p>}
       </div>
-      <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+      <div className="mt-3 min-h-24 flex-1 overflow-y-auto px-2 pb-3">
         {groups.map((group, index) => (
           <section key={group.label ?? 'all'} aria-label={group.label ?? 'Chats'} className={index > 0 ? 'mt-4' : undefined}>
-            {group.label && <h2 className="px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{group.label}</h2>}
+            {group.label && <h2 className="px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{group.label}</h2>}
             <ul className="mt-1 flex flex-col gap-1">
               {group.items.map((c) => (
                 <li key={c.id} className={`rounded-md border px-2 py-1.5 text-sm ${c.id === openId ? 'border-sky-300 bg-white' : 'border-transparent hover:bg-white'}`}>
-                  <Link href={`/ask?c=${encodeURIComponent(c.id)}`} onClick={onNavigate} className="block truncate font-medium text-slate-800">{c.title}</Link>
+                  {/* scroll={false}: by default Next's Link scrolls to the page's top on navigation (when it is out of view), which runs after Thread's landing effect and would undo "open a chat → land at its end" on every rail click. */}
+                  <Link href={`/ask?c=${encodeURIComponent(c.id)}`} scroll={false} onClick={onNavigate} className="block truncate font-medium text-slate-800">{c.title}</Link>
                   {confirmId === c.id ? (
                     <div key="confirm" className="mt-1 flex flex-wrap items-center gap-1 text-[11px] text-slate-700">
                       <span>Delete this chat? It cannot be undone.</span>
@@ -96,7 +98,7 @@ export function Rail({ conversations, openId, atCap, onNavigate, preview = false
                     </div>
                   ) : (
                     <div key="meta" className="mt-0.5 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                      <span><span className="rounded bg-slate-100 px-1 py-px">{modelLabel(c.model)}</span> · {c.updatedAt.slice(0, 10)}</span>
+                      <span><span className="rounded bg-slate-100 px-1 py-px">{modelLabel(c.model)}</span> · {todayKey ? localDayKey(new Date(c.updatedAt)) : c.updatedAt.slice(0, 10)}</span>
                       <button type="button" aria-label={`Delete ${c.title}`} className={`${small} text-slate-400 hover:text-slate-800 focus-visible:text-slate-800`} onClick={() => setConfirmId(c.id)}>Delete</button>
                     </div>
                   )}

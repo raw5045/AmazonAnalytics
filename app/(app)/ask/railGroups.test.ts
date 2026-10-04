@@ -9,13 +9,14 @@ const at = (daysAgo: number) => new Date(NOON - daysAgo * 86_400_000).toISOStrin
 const today = localDayKey(new Date(NOON));
 
 describe('railGroups (spec 2026-10-04 §3)', () => {
-  it('labels by whole local days: today, yesterday, up to seven days back, then older; a future time counts as today', () => {
+  it('labels by whole local days: today, yesterday, up to seven days back, then older; a future time counts as today, an unparseable one as older', () => {
     expect(groupLabelFor(at(0), today)).toBe('Today');
     expect(groupLabelFor(at(1), today)).toBe('Yesterday');
     expect(groupLabelFor(at(2), today)).toBe('Previous 7 days');
     expect(groupLabelFor(at(7), today)).toBe('Previous 7 days');
     expect(groupLabelFor(at(8), today)).toBe('Older');
     expect(groupLabelFor(at(-1), today)).toBe('Today');
+    expect(groupLabelFor('not a date', today)).toBe('Older');
   });
   it('groups in display order, drops empty groups and keeps each group\'s input order', () => {
     const items = [{ id: 'a', updatedAt: at(0) }, { id: 'b', updatedAt: at(30) }, { id: 'c', updatedAt: at(0) }, { id: 'd', updatedAt: at(3) }];
