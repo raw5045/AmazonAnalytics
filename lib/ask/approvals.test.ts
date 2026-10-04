@@ -71,7 +71,7 @@ describe('the hidden outcome message', () => {
   });
   it('reports a card the person left for a new message as superseded, not denied: the new message decides, and asking again is allowed', () => {
     const m = approvalOutcomeMessage([{ toolName: 'create_saved_view', approved: false, superseded: true }]);
-    expect(m.parts).toEqual([{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; if it asks for this again, call the tool again (a new card will ask).` }]);
+    expect(m.parts).toEqual([{ type: 'text', text: `${APPROVAL_RESULT_PREFIX} The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; call the tool again only if that message asks for this (a new card will ask).` }]);
     expect((m.parts[0] as { text: string }).text).not.toContain('denied');
   });
   it('adds a line per call that ran without a card in the paused step, after the card lines: its result, or its failure (an output-error\'s text, or an { error } result)', () => {

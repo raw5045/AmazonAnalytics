@@ -101,7 +101,7 @@ function errorOf(output: unknown): { error: unknown } | null {
 }
 
 function outcomeLine(a: ApprovalOutcome): string {
-  if (a.superseded) return `The person sent a new message instead of answering the card for ${a.toolName}, so it did not run. Follow their new message; if it asks for this again, call the tool again (a new card will ask).`;
+  if (a.superseded) return `The person sent a new message instead of answering the card for ${a.toolName}, so it did not run. Follow their new message; call the tool again only if that message asks for this (a new card will ask).`;
   if (!a.approved) return `The person denied ${a.toolName}. Continue without it and do not retry it or try another way to get the same result.`;
   const failed = errorOf(a.output);
   const result = fit(JSON.stringify((failed ? failed.error : a.output) ?? null));

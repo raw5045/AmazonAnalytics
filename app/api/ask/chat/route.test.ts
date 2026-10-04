@@ -797,7 +797,7 @@ describe('POST /api/ask/chat', () => {
       expect(denied.parts).toEqual(expect.arrayContaining([expect.objectContaining({ state: 'output-denied' })]));
       // Superseded, not denied: the prompt's no-retry rule covers only a denial given in a card, so a
       // member who types "yes, save it" instead of clicking can still be served.
-      expect(denied.message.parts[0].text).toBe('[approval-result] The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; if it asks for this again, call the tool again (a new card will ask).');
+      expect(denied.message.parts[0].text).toBe('[approval-result] The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; call the tool again only if that message asks for this (a new card will ask).');
       // …then the member's own message, after it.
       expect(conv.appendUserMessage).toHaveBeenCalledTimes(1);
       expect(conv.appendUserMessage.mock.calls[0][0].message.parts[0].text).toBe('never mind, show me lamps');
@@ -826,7 +826,7 @@ describe('POST /api/ask/chat', () => {
       conv.recordAnswersAndAppend.mockClear();
       await post({ conversationId: existingId, message: { text: 'never mind' } });
       expect(recordedCall().message.parts[0].text.split('\n')).toEqual([
-        '[approval-result] The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; if it asks for this again, call the tool again (a new card will ask).',
+        '[approval-result] The person sent a new message instead of answering the card for create_saved_view, so it did not run. Follow their new message; call the tool again only if that message asks for this (a new card will ask).',
         alsoRan,
       ]);
       conv.loadConversation.mockResolvedValue(loaded());
