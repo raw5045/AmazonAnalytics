@@ -36,14 +36,15 @@ async function saveToggle(field: Toggle, next: boolean): Promise<WriteToggles | 
 }
 
 /**
- * Spec 2026-10-01 §8, drawn as switches since spec 2026-10-04 §3: the two "always allow" toggles. Controlled: AskAi holds the values, because
- * an "Always approve" answered on a card turns a switch on as well — possibly in the same tick as a
- * change here, so every change is an updater on the current pair, never a copy of a rendered one.
- * A toggle shows at once, saves with only its own field, then takes both values from the answer; a
- * failed save puts that switch back and says so (a new attempt clears the line first, so a second
- * failure in a row is announced again). Both switches stay disabled while a save is out, so there
- * is one request at a time: two could answer out of order (each answer carries both values), and a
- * revert could restore a value that is already stale.
+ * Spec 2026-10-01 §8, drawn as switches since spec 2026-10-04 §3: the two "always allow" toggles.
+ * Controlled: AskAi holds the values, because an "Always approve" answered on a card turns a switch
+ * on as well — possibly in the same tick as a change here, so every change is an updater on the
+ * current pair, never a copy of a rendered one. A toggle shows at once, saves with only its own
+ * field, then takes both values from the answer; a failed save puts that switch back and says so (a
+ * new attempt clears the line first, so a second failure in a row is announced again). Both
+ * switches stay disabled while a save is out, so there is one request at a time: two could answer
+ * out of order (each answer carries both values), and a revert could restore a value that is
+ * already stale.
  */
 export function WriteSwitches({ value, onChange }: { value: WriteToggles; onChange: (update: (prev: WriteToggles) => WriteToggles) => void }) {
   const id = useId();
@@ -78,7 +79,7 @@ export function WriteSwitches({ value, onChange }: { value: WriteToggles; onChan
               />
               <span
                 aria-hidden="true"
-                className="relative inline-block h-4 w-7 flex-none rounded-full bg-slate-300 transition after:absolute after:left-0.5 after:top-0.5 after:h-3 after:w-3 after:rounded-full after:bg-white after:transition peer-checked:bg-sky-500 peer-checked:after:translate-x-3 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-400 peer-focus-visible:ring-offset-1 peer-disabled:opacity-50"
+                className="relative inline-block h-4 w-7 flex-none rounded-full bg-slate-400 transition after:absolute after:left-0.5 after:top-0.5 after:h-3 after:w-3 after:rounded-full after:bg-white after:transition peer-checked:bg-sky-500 peer-checked:after:translate-x-3 peer-focus-visible:ring-2 peer-focus-visible:ring-sky-400 peer-focus-visible:ring-offset-1 peer-disabled:opacity-50"
               />
               {label}
             </label>

@@ -34,7 +34,7 @@ describe('WriteSwitches (spec 2026-10-01 §8)', () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('shows the two switches with the given values and their one-line notes, under "Approvals"', () => {
+  it('shows the two switches with the given values and their notes as descriptions (not printed), under "Approvals"', () => {
     render(<WriteSwitches value={{ autoApproveChanges: false, autoApproveDeletes: true }} onChange={vi.fn()} />);
     const group = screen.getByRole('group', { name: 'Approvals' });
     expect(changesBox()).not.toBeChecked();
@@ -44,6 +44,7 @@ describe('WriteSwitches (spec 2026-10-01 §8)', () => {
     // The notes are descriptions only (sr-only); one visible line covers both switches.
     expect(screen.getByText('Off, Ask AI asks in a card first. Deletes are permanent.')).toBeInTheDocument();
     expect(screen.getByText('Ask AI will not ask before saving or changing things.')).toHaveClass('sr-only');
+    expect(screen.getByText('Ask AI will not ask before deleting things — deletes are permanent.')).toHaveClass('sr-only');
     expect(changesBox()).toBeEnabled();
     expect(deletesBox()).toBeEnabled();
     // The live line is in the page from the start (empty), so a later error is announced.

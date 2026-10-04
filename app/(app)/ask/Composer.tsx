@@ -56,9 +56,9 @@ export function Composer({ value, onChange, onSend, onStop, streaming, disabled,
           placeholder="Ask about keywords, categories or trends"
           className="block w-full resize-none rounded-2xl bg-transparent px-4 pt-3 pb-1 text-[15px] leading-relaxed focus:outline-none disabled:text-slate-500"
         />
-        <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-2.5">
-          <div>{modelControl}</div>
-          <div className="flex items-center gap-2">
+        <div className="flex items-center justify-between gap-2 px-3 pb-2.5">
+          <div className="min-w-0">{modelControl}</div>
+          <div className="flex flex-none items-center gap-2">
             {value.length >= 3500 && <span className="text-xs text-slate-500">{remaining} left</span>}
             {streaming ? (
               <button type="button" onClick={onStop} className={`${button} border border-slate-300 bg-white text-slate-800 hover:bg-slate-50`}>Stop</button>

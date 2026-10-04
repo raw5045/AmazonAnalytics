@@ -57,11 +57,14 @@ describe('Composer', () => {
     const box = screen.getByLabelText('Your question');
     expect(box.style.height).toBe('auto');
     const measured = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(90);
-    rerender(<Composer value={'two\nlines'} {...props} />);
-    expect(box.style.height).toBe('90px');
-    measured.mockReturnValue(900);
-    rerender(<Composer value={'many\nmore\nlines'} {...props} />);
-    expect(box.style.height).toBe('240px');
-    measured.mockRestore();
+    try {
+      rerender(<Composer value={'two\nlines'} {...props} />);
+      expect(box.style.height).toBe('90px');
+      measured.mockReturnValue(900);
+      rerender(<Composer value={'many\nmore\nlines'} {...props} />);
+      expect(box.style.height).toBe('240px');
+    } finally {
+      measured.mockRestore();
+    }
   });
 });
