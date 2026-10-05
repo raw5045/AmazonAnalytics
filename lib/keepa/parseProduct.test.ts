@@ -112,6 +112,14 @@ describe('parseKeepaBatch', () => {
   it('tolerates a non-array products field', () => {
     expect(parseKeepaBatch(['B000000001'], undefined).get('B000000001')?.status).toBe('delisted');
   });
+  it('a product whose parse throws is an error for that ASIN only', () => {
+    const bad = { asin: 'B000000001', get listedSince() { throw new Error('boom'); } };
+    const good = { asin: 'B000000002', title: 'T', stats: { current: [1299] } };
+    const out = parseKeepaBatch(['B000000001', 'B000000002'], [bad, good]);
+    expect(out.get('B000000001')).toEqual(emptyFacts('B000000001', 'error', 'bad_object'));
+    expect(out.get('B000000002')?.status).toBe('active');
+    expect(out.get('B000000002')?.currentPriceCents).toBe(1299);
+  });
 });
 
 describe('helpers', () => {
@@ -120,6 +128,11 @@ describe('helpers', () => {
     expect(keepaMinutesToDate(0)).toBeNull();
     expect(keepaMinutesToDate(-1)).toBeNull();
     expect(keepaMinutesToDate('x')).toBeNull();
+  });
+  it('keepaMinutesToDate: garbage outside a sane year range is null, never a throw or a 5-digit year', () => {
+    expect(keepaMinutesToDate(4.2e9)).toBeNull();
+    expect(keepaMinutesToDate(1.5e11)).toBeNull();
+    expect(keepaMinutesToDate(Number.POSITIVE_INFINITY)).toBeNull();
   });
   it('primaryImageUrl: medium image of the first entry', () => {
     expect(primaryImageUrl([{ m: 'abc.jpg' }])).toBe('https://m.media-amazon.com/images/I/abc.jpg');

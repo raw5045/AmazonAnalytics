@@ -27,10 +27,16 @@ const AMAZON_IMAGE_CDN = 'https://m.media-amazon.com/images/I/';
 /** Keepa epoch 2011-01-01T00:00Z expressed in unix minutes. */
 const KEEPA_EPOCH_UNIX_MINUTES = 21_564_000;
 
-/** Keepa Time minutes → ISO date; Keepa's 0 / −1 ("unknown") → null. */
+/**
+ * Keepa Time minutes → ISO date; Keepa's 0 / −1 ("unknown") → null. Garbage outside the years
+ * 2000–2100 is null too, so no caller sees a RangeError or a year Postgres rejects.
+ */
 export function keepaMinutesToDate(km: unknown): string | null {
   if (typeof km !== 'number' || !Number.isFinite(km) || km <= 0) return null;
-  return new Date((km + KEEPA_EPOCH_UNIX_MINUTES) * 60_000).toISOString().slice(0, 10);
+  const d = new Date((km + KEEPA_EPOCH_UNIX_MINUTES) * 60_000);
+  if (Number.isNaN(d.getTime())) return null;
+  const year = d.getUTCFullYear();
+  return year >= 2000 && year <= 2100 ? d.toISOString().slice(0, 10) : null;
 }
 
 /** Medium-resolution primary image (~500 px), as the old parser did. */
@@ -128,7 +134,11 @@ export function parseProductFacts(raw: unknown, expectedAsin: string): ProductFa
   };
 }
 
-/** One entry per requested ASIN; a requested ASIN with no product in the reply is delisted. */
+/**
+ * One entry per requested ASIN; a requested ASIN with no product in the reply is delisted, and a
+ * product object whose parse throws is an error for that ASIN only (one bad product never fails
+ * its batch).
+ */
 export function parseKeepaBatch(requested: readonly string[], products: unknown): Map<string, ProductFacts> {
   const byAsin = new Map<string, unknown>();
   if (Array.isArray(products)) {
@@ -140,7 +150,15 @@ export function parseKeepaBatch(requested: readonly string[], products: unknown)
   const out = new Map<string, ProductFacts>();
   for (const asin of requested) {
     const raw = byAsin.get(asin);
-    out.set(asin, raw === undefined ? emptyFacts(asin, 'delisted') : parseProductFacts(raw, asin));
+    if (raw === undefined) {
+      out.set(asin, emptyFacts(asin, 'delisted'));
+      continue;
+    }
+    try {
+      out.set(asin, parseProductFacts(raw, asin));
+    } catch {
+      out.set(asin, emptyFacts(asin, 'error', 'bad_object'));
+    }
   }
   return out;
 }
