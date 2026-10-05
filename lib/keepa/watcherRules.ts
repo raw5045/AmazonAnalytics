@@ -6,7 +6,11 @@
  */
 import type { KeepaReadSource } from './readSource';
 
-/** The service legitimately writes no heartbeat for up to ~10 minutes while it waits out a rejected Keepa request. */
+/**
+ * The service's independent heartbeat ticker (startHeartbeat in services/keepa/loop.ts) beats every
+ * minute, through enqueue-lock and Keepa waits, so a stale heartbeat means the process or its
+ * database connection is gone. Fifteen minutes is extra caution on top of that ticker.
+ */
 export const DOWN_AFTER_MS = 15 * 60_000;
 export const STALL_AFTER_MS = 2 * 60 * 60_000;
 export const RECENT_BATCH_MS = 24 * 60 * 60_000;
@@ -25,7 +29,10 @@ export interface WatcherInput {
   now: Date;
   /** False until the service has ever written its boot id (launch day): nothing has run yet. */
   serviceBooted: boolean;
-  /** The weekly enqueue upsert holds the exclusive advisory lock; the service waits on it without heartbeats. */
+  /**
+   * The weekly enqueue upsert holds the exclusive advisory lock. The service's heartbeat ticker keeps
+   * beating while its batch writes wait on it, so suppressing alarms meanwhile is extra caution.
+   */
   enqueueRunning: boolean;
   heartbeatAt: Date | null;
   lastBatchAt: Date | null;
@@ -74,8 +81,8 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
 
   const emails: AlarmVariant[] = [];
   const stamps: WatcherAction[] = [];
-  // While the weekly enqueue holds its lock the service waits on it without heartbeats: no alarm,
-  // no recovery, no stamp changes until it lets go.
+  // While the weekly enqueue holds its lock: no alarm, no recovery, no stamp changes until it lets
+  // go. Extra caution on top of the service's independent heartbeat ticker, which keeps beating.
   if (!i.enqueueRunning) {
     const down = age(i.heartbeatAt) > DOWN_AFTER_MS;
     const stalled = !down && i.dueWorkExists && age(i.lastBatchAt) > STALL_AFTER_MS;

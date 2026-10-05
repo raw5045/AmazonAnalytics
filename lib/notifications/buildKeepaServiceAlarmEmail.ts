@@ -41,7 +41,7 @@ export function buildKeepaServiceAlarmEmail(i: KeepaAlarmEmailInput): BuiltKeepa
     },
     recovered: {
       subject: 'Keepa service recovered',
-      lead: 'The Keepa service is writing batches again.',
+      lead: 'The Keepa service is reporting again.',
       hint: 'Nothing to do.',
     },
   }[i.variant];

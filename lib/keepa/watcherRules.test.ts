@@ -33,7 +33,7 @@ describe('decideWatcherActions', () => {
   it('alarms once when the heartbeat is older than fifteen minutes, then recovers once', () => {
     const down = decideWatcherActions({ ...base, heartbeatAt: min(16) });
     expect(down).toEqual([{ kind: 'email', variant: 'down' }, { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW }]);
-    // ~10 minutes of silence while the service waits out a rejected Keepa request is not down.
+    // Still inside the fifteen-minute threshold: not down yet.
     expect(decideWatcherActions({ ...base, heartbeatAt: min(14) })).toEqual([]);
     expect(decideWatcherActions({ ...base, heartbeatAt: min(30), downAlarmSentAt: min(19) })).toEqual([]);
     expect(decideWatcherActions({ ...base, downAlarmSentAt: min(19) })).toEqual([
@@ -149,5 +149,7 @@ describe('easternClock', () => {
   it('converts UTC to America/New_York fields', () => {
     expect(easternClock(new Date('2026-10-06T07:31:00Z'))).toEqual({ hour: 3, minute: 31, dateKey: '2026-10-06' });
     expect(easternClock(new Date('2026-10-06T03:10:00Z'))).toEqual({ hour: 23, minute: 10, dateKey: '2026-10-05' });
+    // January is EST (UTC−5), not EDT.
+    expect(easternClock(new Date('2026-01-15T08:31:00Z'))).toEqual({ hour: 3, minute: 31, dateKey: '2026-01-15' });
   });
 });

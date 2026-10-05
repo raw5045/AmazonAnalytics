@@ -49,4 +49,21 @@ describe('sendKeepaServiceAlarmEmail', () => {
     expect(lines.some((l) => l.includes('validation_error') && l.includes('403'))).toBe(true);
     expect(lines.some((l) => l.includes(ADMIN))).toBe(false);
   });
+
+  it('resolves when Resend throws and logs only the error name and code — never its message', async () => {
+    mockSend.mockRejectedValueOnce(Object.assign(new Error(`socket hang up while sending to ${ADMIN}`), { code: 'ECONNRESET' }));
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBeUndefined();
+    const lines = consoleLines(...spies);
+    expect(lines.some((l) => l.includes(ADMIN))).toBe(false);
+    expect(lines.some((l) => l.includes('ECONNRESET'))).toBe(true);
+  });
+
+  it('resolves without sending when the admin lookup fails, logging only coded fields', async () => {
+    mockWhere.mockRejectedValueOnce(Object.assign(new Error(`lookup failed near ${ADMIN}`), { code: '57P01' }));
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBeUndefined();
+    expect(mockSend).not.toHaveBeenCalled();
+    const lines = consoleLines(...spies);
+    expect(lines.some((l) => l.includes(ADMIN))).toBe(false);
+    expect(lines.some((l) => l.includes('lookup_failed') && l.includes('57P01'))).toBe(true);
+  });
 });
