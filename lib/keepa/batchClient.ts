@@ -4,7 +4,8 @@
  *
  * No retries and no pacing here: services/keepa/loop.ts owns both. Errors are typed so the
  * loop can tell "tokens exhausted" (sleep refillIn) from "Keepa rejected the request" (4xx)
- * from "Keepa is down" (5xx / network). Error messages never carry the key.
+ * from "Keepa is down" (5xx / network / a reply that is not a product list). Error messages
+ * never carry the key.
  */
 import { BATCH_SIZE } from './lanes';
 
@@ -18,6 +19,10 @@ export const STATS_DAYS = '90';
  * and the parser reads the last csv value instead.
  */
 export const HISTORY_PARAMS: Readonly<Record<string, string>> = { history: '0' };
+/** A 429's wait when Keepa names none, and the bounds on any wait it names (no hot loop, no stall). */
+const DEFAULT_REFILL_WAIT_MS = 60_000;
+const MIN_REFILL_WAIT_MS = 1_000;
+const MAX_REFILL_WAIT_MS = 120_000;
 
 export interface KeepaBatchReply {
   products: unknown[];
@@ -51,7 +56,10 @@ export class KeepaTokenError extends Error {
   }
 }
 
-/** A 200 reply without a `products` array: retried like an outage, never read as "every ASIN delisted". */
+/**
+ * A 200 reply that is not a JSON object, or carries no non-empty `products` array: retried like
+ * an outage, never read as "every ASIN missing".
+ */
 export class KeepaReplyError extends Error {
   constructor() {
     super('keepa_bad_reply');
@@ -63,22 +71,35 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/** The body as a JSON object; null for anything else (null, an array, a primitive, invalid JSON). */
+async function readJsonObject(res: Response): Promise<Record<string, unknown> | null> {
+  const body: unknown = await res.json().catch(() => null);
+  return typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
+}
+
+function refillWaitMs(refillIn: number | null): number {
+  return Math.min(MAX_REFILL_WAIT_MS, Math.max(MIN_REFILL_WAIT_MS, refillIn ?? DEFAULT_REFILL_WAIT_MS));
+}
+
 export function buildProductUrl(asins: readonly string[], apiKey: string): string {
   const qs = new URLSearchParams({ key: apiKey, domain: '1', asin: asins.join(','), rating: '1', stats: STATS_DAYS, ...HISTORY_PARAMS });
   return `${KEEPA_PRODUCT_URL}?${qs.toString()}`;
 }
 
 export async function fetchKeepaBatch(asins: readonly string[], deps: KeepaClientDeps): Promise<KeepaBatchReply> {
-  if (asins.length === 0 || asins.length > BATCH_SIZE) throw new Error(`batch size ${asins.length} out of range 1..${BATCH_SIZE}`);
+  if (asins.length === 0 || asins.length > BATCH_SIZE) throw new RangeError(`batch size ${asins.length} out of range 1..${BATCH_SIZE}`);
   const f = deps.fetchImpl ?? fetch;
   const res = await f(buildProductUrl(asins, deps.apiKey), { signal: AbortSignal.timeout(deps.timeoutMs ?? 60_000) });
   if (res.status === 429) {
-    const body = (await res.json().catch(() => ({}))) as { refillIn?: unknown };
-    throw new KeepaTokenError(num(body.refillIn) ?? 60_000);
+    const body: Record<string, unknown> = (await readJsonObject(res)) ?? {};
+    throw new KeepaTokenError(refillWaitMs(num(body.refillIn)));
   }
-  if (!res.ok) throw new KeepaHttpError(res.status);
-  const body = (await res.json()) as Record<string, unknown>;
-  if (!Array.isArray(body.products)) throw new KeepaReplyError();
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new KeepaHttpError(res.status);
+  }
+  const body = await readJsonObject(res);
+  if (body === null || !Array.isArray(body.products) || body.products.length === 0) throw new KeepaReplyError();
   return {
     products: body.products,
     tokensLeft: num(body.tokensLeft),
@@ -93,7 +114,11 @@ export async function fetchTokenStatus(deps: KeepaClientDeps): Promise<{ tokensL
   const f = deps.fetchImpl ?? fetch;
   const qs = new URLSearchParams({ key: deps.apiKey });
   const res = await f(`${KEEPA_TOKEN_URL}?${qs.toString()}`, { signal: AbortSignal.timeout(deps.timeoutMs ?? 20_000) });
-  if (!res.ok) throw new KeepaHttpError(res.status);
-  const body = (await res.json()) as Record<string, unknown>;
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => undefined);
+    throw new KeepaHttpError(res.status);
+  }
+  const body = await readJsonObject(res);
+  if (body === null) throw new KeepaReplyError();
   return { tokensLeft: num(body.tokensLeft), refillRate: num(body.refillRate), refillIn: num(body.refillIn) };
 }

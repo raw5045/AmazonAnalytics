@@ -8,7 +8,7 @@ export type PriceSource = 'amazon' | 'new';
 
 export interface ProductFacts {
   asin: string;
-  /** 'error' here means a bad product object (never a transport failure — those never reach the parser). */
+  /** 'error' here means a bad or missing product object, or a batch Keepa never answered. */
   status: FactsStatus;
   errorCode: string | null;
   title: string | null;

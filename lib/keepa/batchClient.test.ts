@@ -17,6 +17,13 @@ function fakeFetch(status: number, body: unknown) {
   return vi.fn(async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as typeof fetch;
 }
 
+/** A reply whose unread body records a cancel. */
+function fakeFetchWithBody(status: number) {
+  const cancel = vi.fn(async () => undefined);
+  const f = vi.fn(async () => ({ ok: status >= 200 && status < 300, status, body: { cancel }, json: async () => ({}) })) as unknown as typeof fetch;
+  return { f, cancel };
+}
+
 describe('buildProductUrl', () => {
   it('asks for all ASINs in one request with rating and stats, and the history switch from the capture decision', () => {
     const url = new URL(buildProductUrl(['B000000001', 'B000000002'], KEY));
@@ -42,14 +49,28 @@ describe('fetchKeepaBatch', () => {
     expect(err).toBeInstanceOf(KeepaReplyError);
     expect(err).toMatchObject({ name: 'KeepaReplyError', message: 'keepa_bad_reply' });
   });
+  it('rejects an empty products array as KeepaReplyError, never "every ASIN missing"', async () => {
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { products: [], tokensLeft: 1 }) })).rejects.toBeInstanceOf(KeepaReplyError);
+  });
+  it('rejects a 200 whose body is not a JSON object (null, an array, invalid JSON) as KeepaReplyError', async () => {
+    const invalidJson = vi.fn(async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } })) as unknown as typeof fetch;
+    for (const fetchImpl of [fakeFetch(200, null), fakeFetch(200, [{ asin: 'B000000001' }]), invalidJson]) {
+      await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl })).rejects.toBeInstanceOf(KeepaReplyError);
+    }
+  });
   it('leaves envelope fields Keepa omitted as null', async () => {
-    const r = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { products: [], tokensLeft: 1 }) });
-    expect(r.products).toEqual([]);
+    const r = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { products: [{ asin: 'B000000001' }], tokensLeft: 1 }) });
+    expect(r.products).toHaveLength(1);
     expect(r.refillRate).toBeNull();
   });
   it('turns 429 into KeepaTokenError carrying refillIn (ms), defaulting to a minute', async () => {
     await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, { refillIn: 31_000 }) })).rejects.toMatchObject({ name: 'KeepaTokenError', refillInMs: 31_000 });
     await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, {}) })).rejects.toMatchObject({ refillInMs: 60_000 });
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, null) })).rejects.toMatchObject({ name: 'KeepaTokenError', refillInMs: 60_000 });
+  });
+  it('clamps the 429 wait to 1–120 s', async () => {
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, { refillIn: 0 }) })).rejects.toMatchObject({ refillInMs: 1_000 });
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, { refillIn: 999_999 }) })).rejects.toMatchObject({ refillInMs: 120_000 });
   });
   it('turns other failures into KeepaHttpError with the status and no key in the message', async () => {
     const err = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(503, {}) }).catch((e: unknown) => e);
@@ -58,11 +79,22 @@ describe('fetchKeepaBatch', () => {
     expect(String((err as Error).message)).not.toContain(KEY);
     expect(new KeepaTokenError(5).message).not.toContain(KEY);
   });
-  it('refuses an empty or oversized batch before any request', async () => {
+  it('cancels the unread body before throwing on an HTTP error', async () => {
+    const { f, cancel } = fakeFetchWithBody(503);
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: f })).rejects.toBeInstanceOf(KeepaHttpError);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+  it('refuses an empty or oversized batch with a RangeError before any request', async () => {
     const f = fakeFetch(200, {});
-    await expect(fetchKeepaBatch([], { apiKey: KEY, fetchImpl: f })).rejects.toThrow();
-    await expect(fetchKeepaBatch(new Array(101).fill('B000000001'), { apiKey: KEY, fetchImpl: f })).rejects.toThrow();
+    await expect(fetchKeepaBatch([], { apiKey: KEY, fetchImpl: f })).rejects.toThrow(RangeError);
+    await expect(fetchKeepaBatch(new Array(101).fill('B000000001'), { apiKey: KEY, fetchImpl: f })).rejects.toThrow(RangeError);
     expect(f).not.toHaveBeenCalled();
+  });
+  it('passes a timeout signal to fetch', async () => {
+    const f = fakeFetch(200, { products: [{ asin: 'B000000001' }] });
+    await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: f });
+    const init = (f as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0][1];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 });
 
@@ -72,5 +104,15 @@ describe('fetchTokenStatus', () => {
     await expect(fetchTokenStatus({ apiKey: KEY, fetchImpl: f })).resolves.toEqual({ tokensLeft: 15_000, refillRate: 250, refillIn: 12_729 });
     const url = (f as unknown as { mock: { calls: [string][] } }).mock.calls[0][0];
     expect(url.startsWith('https://api.keepa.com/token?')).toBe(true);
+  });
+  it('turns a non-OK reply into KeepaHttpError, cancelling the unread body', async () => {
+    const { f, cancel } = fakeFetchWithBody(500);
+    const err = await fetchTokenStatus({ apiKey: KEY, fetchImpl: f }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(KeepaHttpError);
+    expect((err as KeepaHttpError).status).toBe(500);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+  it('rejects a body that is not a JSON object as KeepaReplyError', async () => {
+    await expect(fetchTokenStatus({ apiKey: KEY, fetchImpl: fakeFetch(200, null) })).rejects.toBeInstanceOf(KeepaReplyError);
   });
 });

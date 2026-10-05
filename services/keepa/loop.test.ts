@@ -75,11 +75,11 @@ describe('runIteration', () => {
     expect(deps.sleeps).toEqual([240]);
   });
 
-  it('a product missing from the reply is written as delisted', async () => {
+  it('a product missing from the reply is written as an error', async () => {
     const store = makeStore([[row('B1'), row('B2')]]);
     const deps = makeDeps(store, async () => reply(['B1']));
     await runIteration(deps, initialState());
-    expect(store.written).toEqual([{ status: 'active', asin: 'B1' }, { status: 'delisted', asin: 'B2' }]);
+    expect(store.written).toEqual([{ status: 'active', asin: 'B1' }, { status: 'error', asin: 'B2' }]);
   });
 
   it('sleeps for Keepa\'s refill time on token exhaustion and retries the same batch', async () => {
