@@ -74,15 +74,28 @@ describe('loadKeepaServiceOverview', () => {
     expect(counts.kcsWeek).toBeNull();
   });
 
-  it('throws on a missing alias instead of reading it as 0 or null', async () => {
+  it('selects exactly the aliases the mapping reads, so an alias renamed in the SQL alone fails here', async () => {
+    arrange(AGG);
+    await loadKeepaServiceOverview(null);
+    const text = JSON.stringify(dbm.execute.mock.calls[0][0]);
+    const aliases = [...text.matchAll(/ AS (\w+)/g)].map((m) => m[1]).sort();
+    // AGG's keys are the mapping's keys: the mapping test reads every one of them (distinct values),
+    // and a key the mapping wanted but AGG lacked would throw overview_missing.
+    expect(aliases).toEqual(Object.keys(AGG).sort());
+  });
+
+  it('throws a coded error on a missing alias instead of reading it as 0 or null', async () => {
     for (const alias of Object.keys(AGG)) {
       const row = { ...AGG };
       delete row[alias];
       arrange(row);
-      await expect(loadKeepaServiceOverview(null)).rejects.toThrow(alias);
+      const err = await loadKeepaServiceOverview(null).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).toHaveProperty('code', `overview_missing:${alias}`);
+      expect(`overview_missing:${alias}`.length).toBeLessThan(64);
     }
     arrange(undefined); // no aggregate row at all
-    await expect(loadKeepaServiceOverview(null)).rejects.toThrow('tier1_in_scope');
+    await expect(loadKeepaServiceOverview(null)).rejects.toHaveProperty('code', 'overview_missing:tier1_in_scope');
   });
 
   it('returns a null status before the service has written its row', async () => {

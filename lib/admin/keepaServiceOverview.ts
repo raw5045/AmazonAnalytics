@@ -99,9 +99,10 @@ export async function loadKeepaServiceOverview(kcsWeek: string | null): Promise<
     : null;
 
   const c = countsRes.rows[0] ?? {};
-  // Every alias must be present: a renamed or dropped column fails loudly instead of reading as 0.
+  // Every alias must be present: a renamed or dropped column fails loudly, with a code the card and
+  // the log can show, instead of reading as 0.
   const col = (k: string): unknown => {
-    if (!(k in c)) throw new Error(`keepa overview: aggregate column ${k} missing`);
+    if (!(k in c)) throw Object.assign(new Error(`keepa overview: aggregate column ${k} missing`), { code: `overview_missing:${k}` });
     return c[k];
   };
   const n = (k: string) => Number(col(k));
