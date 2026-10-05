@@ -16,6 +16,7 @@ const days = (n: number) => new Date(NOW.getTime() + n * 86_400_000);
 
 describe('tierForRank', () => {
   it('puts rank 1,000,000 in tier 1 and 1,000,001 in tier 2', () => {
+    expect(TIER1_MAX_RANK).toBe(1_000_000);
     expect(tierForRank(1)).toBe(1);
     expect(tierForRank(TIER1_MAX_RANK)).toBe(1);
     expect(tierForRank(TIER1_MAX_RANK + 1)).toBe(2);
@@ -52,6 +53,10 @@ describe('msUntilTokens', () => {
   });
   it('assumes 250/min when the rate is unknown', () => {
     expect(msUntilTokens(0, null, 200)).toBe(48_000);
+  });
+  it('treats a zero or negative reported rate as unknown', () => {
+    expect(msUntilTokens(0, 0, 200)).toBe(48_000);
+    expect(msUntilTokens(0, -5, 200)).toBe(48_000);
   });
   it('a full batch costs 200 tokens', () => {
     expect(BATCH_SIZE * TOKENS_PER_ASIN).toBe(200);

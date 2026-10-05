@@ -18,8 +18,14 @@ export const STALE_CLAIM_MS = 10 * 60_000;
 export const BATCH_SIZE = 100;
 /** 1 base token + 1 for the rating/review history (`rating=1`). */
 export const TOKENS_PER_ASIN = 2;
-/** Assumed when Keepa has not told us the rate yet (the plan verified on 2026-10-05). */
+/** Assumed until Keepa reports the rate (the subscription's rate per the free /token call, 2026-10-05). */
 export const DEFAULT_REFILL_RATE_PER_MIN = 250;
+/**
+ * Postgres advisory-lock key shared by the enqueue-week upsert (exclusive) and the service's
+ * batch writes (shared): the upsert holds row locks on ~2.3M rows for minutes, in a different
+ * order than the batch writes, so without this handshake the two would deadlock.
+ */
+export const ENQUEUE_LOCK_KEY = 20261005;
 
 export type Tier = 1 | 2;
 export type Lane = 'new' | 'due' | 'tail';
