@@ -52,12 +52,12 @@ describe('enqueueWeekStatements', () => {
 });
 
 /** Recording fake of one dedicated connection. */
-function fakeClient(opts: { scopeWeek?: string | null; upsert?: { inserted: number; updated: number } | Error; retired?: number; vacuumFails?: boolean } = {}) {
+function fakeClient(opts: { older?: boolean; upsert?: { inserted: number; updated: number } | Error; retired?: number; vacuumFails?: boolean } = {}) {
   const calls: Array<{ text: string; values?: unknown[] }> = [];
   const client = {
     query: async (text: string, values?: unknown[]) => {
       calls.push({ text, values });
-      if (text.includes('max(scope_week)')) return { rowCount: 1, rows: [{ max_week: opts.scopeWeek ?? null }] };
+      if (text.includes('max(scope_week)')) return { rowCount: 1, rows: [{ older: opts.older ?? false }] };
       if (text.includes('INSERT INTO asin_products')) {
         if (opts.upsert instanceof Error) throw opts.upsert;
         return { rowCount: 1, rows: [opts.upsert ?? { inserted: 5, updated: 7 }] };
@@ -72,19 +72,20 @@ function fakeClient(opts: { scopeWeek?: string | null; upsert?: { inserted: numb
 
 describe('enqueueWeek', () => {
   it('runs the lock, scope check, upsert and retire in one transaction, then vacuums after COMMIT — and reports every count', async () => {
-    const f = fakeClient({ scopeWeek: '2026-09-26' });
+    const f = fakeClient({ older: false });
     await expect(enqueueWeek(f.client, '2026-10-03')).resolves.toEqual({ inserted: 5, updated: 7, retired: 2, vacuumed: true });
     expect(f.texts()).toEqual([
       'BEGIN',
       "SET LOCAL statement_timeout = '1800s'",
       'SELECT pg_advisory_xact_lock($1)',
-      expect.stringContaining('max(scope_week)'),
+      'SELECT (max(scope_week) > $1::date) AS older FROM asin_products',
       expect.stringContaining('INSERT INTO asin_products'),
       expect.stringContaining('SET in_scope = false'),
       'COMMIT',
       'VACUUM (ANALYZE) asin_products',
     ]);
     expect(f.calls[2].values).toEqual([ENQUEUE_LOCK_KEY]);
+    expect(f.calls[3].values).toEqual(['2026-10-03']);
     expect(f.calls[4].values).toEqual(enqueueWeekStatements('2026-10-03').upsert.values);
     expect(f.calls[5].values).toEqual(['2026-10-03']);
   });
@@ -100,11 +101,11 @@ describe('enqueueWeek', () => {
   });
 
   it('a week older than the catalog scope is refused before the upsert and rolled back, unless forced', async () => {
-    const f = fakeClient({ scopeWeek: '2026-10-03' });
+    const f = fakeClient({ older: true });
     await expect(enqueueWeek(f.client, '2026-09-26')).rejects.toMatchObject({ code: 'enqueue_week_older_than_scope' });
     expect(f.texts()).not.toContainEqual(expect.stringContaining('INSERT INTO asin_products'));
     expect(f.texts().at(-1)).toBe('ROLLBACK');
-    const g = fakeClient({ scopeWeek: '2026-10-03' });
+    const g = fakeClient({ older: true });
     await expect(enqueueWeek(g.client, '2026-09-26', { force: true })).resolves.toMatchObject({ inserted: 5 });
     expect(g.texts()).not.toContainEqual(expect.stringContaining('max(scope_week)'));
     expect(g.texts()).toContain('COMMIT');
@@ -129,11 +130,24 @@ describe('enqueueWeek', () => {
 
   it('a VACUUM failure is swallowed and reported as vacuumed: false', async () => {
     const f = fakeClient({ vacuumFails: true });
-    await expect(enqueueWeek(f.client, '2026-10-03')).resolves.toEqual({ inserted: 5, updated: 7, retired: 2, vacuumed: false });
+    await expect(enqueueWeek(f.client, '2026-10-03')).resolves.toEqual({ inserted: 5, updated: 7, retired: 2, vacuumed: false, vacuumError: '55P03' });
     const t = f.texts();
     const commit = t.indexOf('COMMIT');
     expect(commit).toBeGreaterThan(-1);
     expect(t.indexOf('VACUUM (ANALYZE) asin_products')).toBeGreaterThan(commit);
     expect(t).not.toContain('ROLLBACK');
+  });
+
+  it('a Pool is refused up front, before any statement', async () => {
+    const calls: string[] = [];
+    const pool = {
+      query: async (text: string) => {
+        calls.push(text);
+        return { rowCount: 0, rows: [] };
+      },
+      totalCount: 1,
+    };
+    await expect(enqueueWeek(pool as never, '2026-10-03')).rejects.toMatchObject({ code: 'enqueue_week_bad_client' });
+    expect(calls).toEqual([]);
   });
 });

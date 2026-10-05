@@ -49,6 +49,8 @@ export interface EnqueueWeekResult {
   updated: number;
   retired: number;
   vacuumed: boolean;
+  /** Only when the VACUUM threw: its pg code, else the error name ('unknown' if not an Error). */
+  vacuumError?: string;
 }
 export interface EnqueueWeekOptions {
   /** Enqueue a week older than the catalog's scope week anyway (never from the import hook). */
@@ -57,7 +59,7 @@ export interface EnqueueWeekOptions {
   vacuum?: boolean;
 }
 
-export type EnqueueWeekErrorCode = 'enqueue_week_bad_date' | 'enqueue_week_no_rows' | 'enqueue_week_older_than_scope';
+export type EnqueueWeekErrorCode = 'enqueue_week_bad_date' | 'enqueue_week_no_rows' | 'enqueue_week_older_than_scope' | 'enqueue_week_bad_client';
 
 /** Carries a `code` so the import hook's coded logging names the cause. */
 export class EnqueueWeekError extends Error {
@@ -120,6 +122,7 @@ export function enqueueWeekStatements(weekEndDate: string): EnqueueWeekStatement
 }
 
 export async function enqueueWeek(client: Queryable, weekEndDate: string, opts: EnqueueWeekOptions = {}): Promise<EnqueueWeekResult> {
+  if ('totalCount' in client) throw new EnqueueWeekError('enqueue_week_bad_client', 'enqueueWeek needs one dedicated connection, not a Pool');
   const s = enqueueWeekStatements(weekEndDate);
   let result: Omit<EnqueueWeekResult, 'vacuumed'>;
   await client.query('BEGIN');
@@ -128,10 +131,9 @@ export async function enqueueWeek(client: Queryable, weekEndDate: string, opts: 
     await client.query(`SET LOCAL statement_timeout = '1800s'`);
     await client.query('SELECT pg_advisory_xact_lock($1)', [ENQUEUE_LOCK_KEY]);
     if (!opts.force) {
-      const { rows } = await client.query('SELECT max(scope_week)::text AS max_week FROM asin_products');
-      const maxWeek = (rows[0] as { max_week: string | null } | undefined)?.max_week ?? null;
-      if (maxWeek !== null && weekEndDate < maxWeek) {
-        throw new EnqueueWeekError('enqueue_week_older_than_scope', `week ${weekEndDate} is older than the catalog's scope week ${maxWeek}`);
+      const { rows } = await client.query('SELECT (max(scope_week) > $1::date) AS older FROM asin_products', [weekEndDate]);
+      if ((rows[0] as { older: boolean | null } | undefined)?.older === true) {
+        throw new EnqueueWeekError('enqueue_week_older_than_scope', `week ${weekEndDate} is older than the catalog's scope week`);
       }
     }
     const up = await client.query(s.upsert.text, s.upsert.values);
@@ -147,13 +149,15 @@ export async function enqueueWeek(client: Queryable, weekEndDate: string, opts: 
     throw e;
   }
   let vacuumed = false;
+  let vacuumError: string | undefined;
   if (opts.vacuum !== false) {
     try {
       await client.query('VACUUM (ANALYZE) asin_products');
       vacuumed = true;
-    } catch {
+    } catch (e) {
       // Best-effort: the upsert and retire are committed; autovacuum (5% scale factor) covers a miss.
+      vacuumError = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : e instanceof Error ? e.name : 'unknown';
     }
   }
-  return { ...result, vacuumed };
+  return { ...result, vacuumed, ...(vacuumError ? { vacuumError } : {}) };
 }
