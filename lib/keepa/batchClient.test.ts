@@ -49,6 +49,10 @@ describe('fetchKeepaBatch', () => {
     expect(r.products).toHaveLength(1);
     expect(r).toMatchObject({ tokensLeft: 14_800, refillIn: 12_000, refillRate: 250, tokensConsumed: 2 });
   });
+  it('rounds the token envelope to integers (the service stores it in integer columns)', async () => {
+    const f = fakeFetch(200, { products: [{ asin: 'B000000001' }], tokensLeft: 14_800.4, refillIn: 12_000.6, refillRate: 249.5, tokensConsumed: 2.2 });
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: f })).resolves.toMatchObject({ tokensLeft: 14_800, refillIn: 12_001, refillRate: 250, tokensConsumed: 2 });
+  });
   it('rejects a 200 reply that carries no products array as KeepaReplyError', async () => {
     const err = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { tokensLeft: 1 }) }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(KeepaReplyError);
@@ -115,6 +119,10 @@ describe('fetchTokenStatus', () => {
     await expect(fetchTokenStatus({ apiKey: KEY, fetchImpl: f })).resolves.toEqual({ tokensLeft: 15_000, refillRate: 250, refillIn: 12_729 });
     const url = (f as unknown as { mock: { calls: [string][] } }).mock.calls[0][0];
     expect(url.startsWith('https://api.keepa.com/token?')).toBe(true);
+  });
+  it('rounds the token fields to integers', async () => {
+    const f = fakeFetch(200, { tokensLeft: 14_800.4, refillRate: 250.2, refillIn: 12_729.7 });
+    await expect(fetchTokenStatus({ apiKey: KEY, fetchImpl: f })).resolves.toEqual({ tokensLeft: 14_800, refillRate: 250, refillIn: 12_730 });
   });
   it('turns a non-OK reply into KeepaHttpError, cancelling the unread body', async () => {
     const { f, cancel } = fakeFetchWithBody(500);

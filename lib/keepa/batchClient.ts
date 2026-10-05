@@ -71,6 +71,12 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/** A token-envelope count as an integer: the service stores them in integer columns, where a fraction fails every write. */
+function int(v: unknown): number | null {
+  const n = num(v);
+  return n === null ? null : Math.round(n);
+}
+
 /**
  * The body as a JSON object; null for anything else (null, an array, a primitive, invalid JSON).
  * Any other failure while reading the body (a timeout, a reset connection) is rethrown, so the
@@ -113,10 +119,10 @@ export async function fetchKeepaBatch(asins: readonly string[], deps: KeepaClien
   if (body === null || !Array.isArray(body.products) || body.products.length === 0) throw new KeepaReplyError();
   return {
     products: body.products,
-    tokensLeft: num(body.tokensLeft),
-    refillIn: num(body.refillIn),
-    refillRate: num(body.refillRate),
-    tokensConsumed: num(body.tokensConsumed),
+    tokensLeft: int(body.tokensLeft),
+    refillIn: int(body.refillIn),
+    refillRate: int(body.refillRate),
+    tokensConsumed: int(body.tokensConsumed),
   };
 }
 
@@ -131,5 +137,5 @@ export async function fetchTokenStatus(deps: KeepaClientDeps): Promise<{ tokensL
   }
   const body = await readJsonObject(res);
   if (body === null) throw new KeepaReplyError();
-  return { tokensLeft: num(body.tokensLeft), refillRate: num(body.refillRate), refillIn: num(body.refillIn) };
+  return { tokensLeft: int(body.tokensLeft), refillRate: int(body.refillRate), refillIn: int(body.refillIn) };
 }

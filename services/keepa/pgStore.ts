@@ -261,4 +261,13 @@ export class PgKeepaStore implements KeepaStore {
       return r.rowCount ?? 0;
     });
   }
+
+  async oldJobRunning(): Promise<boolean> {
+    // A plain read of the old job's runs table (no asin_products write, so no lock handshake).
+    // Goes away with the old job in phase 3.
+    const r = await this.pool.query<{ running: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM keepa_enrichment_runs WHERE status = 'running' AND heartbeat_at > now() - interval '10 minutes') AS running`,
+    );
+    return r.rows[0]?.running === true;
+  }
 }

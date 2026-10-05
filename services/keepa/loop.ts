@@ -34,6 +34,11 @@ export const TOKENS_EXHAUSTED_AFTER = 5;
 export const OUTAGE_PAUSE_START_MS = 60_000;
 export const OUTAGE_PAUSE_MAX_MS = 15 * 60_000;
 export const HEARTBEAT_INTERVAL_MS = 60_000;
+/**
+ * While the old import-time enrichment job runs (shadow week until phase 3), the service yields:
+ * the two share one Keepa token bucket, and the old job turns a 429 into a week-long error row.
+ */
+export const OLD_JOB_YIELD_SLEEP_MS = 60_000;
 /** SIGTERM: how long the claim release may take before the process exits anyway. */
 export const SHUTDOWN_RELEASE_TIMEOUT_MS = 10_000;
 /** error_code and last_error_code carry a 64-character CHECK (migration 0050). */
@@ -69,12 +74,23 @@ export interface LoopState {
   outagePauseMs: number;
   /** The code the last batch ended with (a failed or all-error batch); null after a batch with any success. */
   lastBatchCode: string | null;
+  /** The last probe found the old enrichment job running (phase 3 removes this with the job). */
+  yieldingToOldJob: boolean;
 }
 
-export type IterationResult = 'batch' | 'idle' | 'keepa_error' | 'db_error' | 'threw';
+export type IterationResult = 'batch' | 'idle' | 'yielded' | 'keepa_error' | 'db_error' | 'threw';
 
 export function initialState(): LoopState {
-  return { tokensLeft: null, refillRate: null, lastClaimHadNew: false, dbFailures: 0, consecutive429: 0, outagePauseMs: 0, lastBatchCode: null };
+  return {
+    tokensLeft: null,
+    refillRate: null,
+    lastClaimHadNew: false,
+    dbFailures: 0,
+    consecutive429: 0,
+    outagePauseMs: 0,
+    lastBatchCode: null,
+    yieldingToOldJob: false,
+  };
 }
 
 /** Pause before the next claim: one minute, doubling to fifteen (the state carries the last pause). */
@@ -140,15 +156,45 @@ function commonErrorCode(facts: Map<string, ProductFacts>): string {
 }
 
 export async function runIteration(deps: LoopDeps, state: LoopState): Promise<IterationResult> {
-  let rows: ClaimedRow[];
-  let released = 0;
+  let released: number;
   try {
     released = await deps.store.releaseStaleClaims(STALE_CLAIM_MS);
+  } catch (e) {
+    return dbFailure(deps, state, 'release', e);
+  }
+  if (released > 0) deps.log({ event: 'stale_claims_released', count: released });
+
+  // Shadow week until phase 3, which removes this check and KeepaStore.oldJobRunning with the old
+  // job: while an old import-time enrichment run is live, yield the shared token bucket to it.
+  let oldJobRunning: boolean;
+  try {
+    oldJobRunning = await deps.store.oldJobRunning();
+  } catch (e) {
+    return dbFailure(deps, state, 'old_job_probe', e);
+  }
+  if (oldJobRunning) {
+    if (!state.yieldingToOldJob) deps.log({ event: 'yield_old_job' });
+    state.yieldingToOldJob = true;
+    try {
+      await deps.store.heartbeat({ tokensLeft: state.tokensLeft, refillRate: state.refillRate });
+    } catch (e) {
+      return dbFailure(deps, state, 'heartbeat', e);
+    }
+    state.dbFailures = 0;
+    await deps.sleep(OLD_JOB_YIELD_SLEEP_MS);
+    return 'yielded';
+  }
+  if (state.yieldingToOldJob) {
+    state.yieldingToOldJob = false;
+    deps.log({ event: 'resume_after_old_job' });
+  }
+
+  let rows: ClaimedRow[];
+  try {
     rows = await deps.store.claimBatch({ limit: deps.batchSize ?? BATCH_SIZE, tailEnabled: deps.tailEnabled, bootId: deps.bootId });
   } catch (e) {
     return dbFailure(deps, state, 'claim', e);
   }
-  if (released > 0) deps.log({ event: 'stale_claims_released', count: released });
 
   // The never-fetched lane just drained: the signal the watcher turns into an explorer sync.
   const hasNew = rows.some((r) => r.lane === 'new');
@@ -183,7 +229,8 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   const lane: Lane = rows[0].lane;
   let reply: KeepaBatchReply | null = null;
   let attempts = 0;
-  let lastCode = 'keepa_unreachable';
+  // Set by every failed attempt; read only once KEEPA_RETRY_ATTEMPTS of them have failed.
+  let lastCode!: string;
   const t0 = Date.now();
   while (reply === null && attempts < KEEPA_RETRY_ATTEMPTS) {
     try {

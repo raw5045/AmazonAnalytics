@@ -20,6 +20,7 @@ import {
   OUTAGE_PAUSE_MAX_MS,
   HEARTBEAT_INTERVAL_MS,
   SHUTDOWN_RELEASE_TIMEOUT_MS,
+  OLD_JOB_YIELD_SLEEP_MS,
 } from './loop';
 import type { ClaimedRow, KeepaStore } from './store';
 import { KeepaHttpError, KeepaReplyError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
@@ -47,6 +48,7 @@ function makeStore(claims: ClaimedRow[][]): KeepaStore & { calls: string[]; writ
     recordError: async (code) => { calls.push(`recordError:${code}`); },
     markNewLaneDrained: async () => { calls.push('drained'); },
     releaseOwnClaims: async () => { calls.push('releaseOwn'); return 0; },
+    oldJobRunning: async () => { calls.push('probe'); return false; },
   };
 }
 
@@ -73,8 +75,54 @@ describe('runIteration', () => {
     const store = makeStore([[]]);
     const deps = makeDeps(store, async () => reply([]));
     await expect(runIteration(deps, initialState())).resolves.toBe('idle');
-    expect(store.calls).toEqual(['release', 'claim', 'heartbeat']);
+    expect(store.calls).toEqual(['release', 'probe', 'claim', 'heartbeat']);
     expect(deps.sleeps).toEqual([IDLE_SLEEP_MS]);
+  });
+
+  it('yields while the old enrichment job runs: no claim, a heartbeat, a minute\'s sleep, one line on the transition', async () => {
+    const store = makeStore([[row('B1')]]);
+    store.oldJobRunning = async () => {
+      store.calls.push('probe');
+      return true;
+    };
+    const fetchBatch = vi.fn(async (asins: string[]) => reply(asins));
+    const deps = makeDeps(store, fetchBatch);
+    const state = initialState();
+    await expect(runIteration(deps, state)).resolves.toBe('yielded');
+    expect(store.calls).toEqual(['release', 'probe', 'heartbeat']);
+    expect(deps.sleeps).toEqual([OLD_JOB_YIELD_SLEEP_MS]);
+    expect(deps.logs).toEqual([{ event: 'yield_old_job' }]);
+    await expect(runIteration(deps, state)).resolves.toBe('yielded');
+    expect(deps.logs).toEqual([{ event: 'yield_old_job' }]); // still yielding: no second line
+    expect(store.calls).not.toContain('claim');
+    expect(fetchBatch).not.toHaveBeenCalled();
+  });
+
+  it('resumes once the old job is done: the claim happens again and one resume line is logged', async () => {
+    const store = makeStore([[row('B1')], [row('B2')]]);
+    let running = true;
+    store.oldJobRunning = async () => running;
+    const deps = makeDeps(store, async (asins) => reply(asins));
+    const state = initialState();
+    await expect(runIteration(deps, state)).resolves.toBe('yielded');
+    running = false;
+    await expect(runIteration(deps, state)).resolves.toBe('batch');
+    expect(store.calls).toContain('claim');
+    await expect(runIteration(deps, state)).resolves.toBe('batch');
+    expect(deps.logs.filter((l) => l.event === 'resume_after_old_job')).toHaveLength(1);
+    expect(deps.logs.filter((l) => l.event === 'yield_old_job')).toHaveLength(1);
+  });
+
+  it('a failed old-job probe counts like any database failure and claims nothing', async () => {
+    const store = makeStore([[row('B1')]]);
+    store.oldJobRunning = async () => { throw Object.assign(new Error('x'), { code: '57P01' }); };
+    const deps = makeDeps(store, async (asins) => reply(asins));
+    const state = initialState();
+    await expect(runIteration(deps, state)).resolves.toBe('db_error');
+    expect(state.dbFailures).toBe(1);
+    expect(deps.logs).toContainEqual({ event: 'db_error', stage: 'old_job_probe', error: 'Error', code: '57P01', failures: 1 });
+    expect(store.calls).not.toContain('claim');
+    expect(deps.sleeps).toEqual([DB_RETRY_SLEEP_MS]);
   });
 
   it('claims, fetches once, parses and writes a batch, then reports it', async () => {
