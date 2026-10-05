@@ -17,6 +17,11 @@ function fakeFetch(status: number, body: unknown) {
   return vi.fn(async () => ({ ok: status >= 200 && status < 300, status, json: async () => body })) as unknown as typeof fetch;
 }
 
+/** A reply whose body cannot be read: json() rejects with `err`. */
+function fakeFetchJsonRejects(status: number, err: unknown) {
+  return vi.fn(async () => ({ ok: status >= 200 && status < 300, status, json: async () => { throw err; } })) as unknown as typeof fetch;
+}
+
 /** A reply whose unread body records a cancel. */
 function fakeFetchWithBody(status: number) {
   const cancel = vi.fn(async () => undefined);
@@ -52,11 +57,15 @@ describe('fetchKeepaBatch', () => {
   it('rejects an empty products array as KeepaReplyError, never "every ASIN missing"', async () => {
     await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { products: [], tokensLeft: 1 }) })).rejects.toBeInstanceOf(KeepaReplyError);
   });
-  it('rejects a 200 whose body is not a JSON object (null, an array, invalid JSON) as KeepaReplyError', async () => {
-    const invalidJson = vi.fn(async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError('bad json'); } })) as unknown as typeof fetch;
-    for (const fetchImpl of [fakeFetch(200, null), fakeFetch(200, [{ asin: 'B000000001' }]), invalidJson]) {
+  it('rejects a 200 whose body is not a JSON object (null, an array, a primitive, invalid JSON) as KeepaReplyError', async () => {
+    const invalidJson = fakeFetchJsonRejects(200, new SyntaxError('bad json'));
+    for (const fetchImpl of [fakeFetch(200, null), fakeFetch(200, [{ asin: 'B000000001' }]), fakeFetch(200, 5), invalidJson]) {
       await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl })).rejects.toBeInstanceOf(KeepaReplyError);
     }
+  });
+  it('a failure while reading a 200 body keeps its own name instead of becoming KeepaReplyError', async () => {
+    const f = fakeFetchJsonRejects(200, Object.assign(new Error('t'), { name: 'TimeoutError' }));
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: f })).rejects.toMatchObject({ name: 'TimeoutError' });
   });
   it('leaves envelope fields Keepa omitted as null', async () => {
     const r = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { products: [{ asin: 'B000000001' }], tokensLeft: 1 }) });
@@ -67,6 +76,8 @@ describe('fetchKeepaBatch', () => {
     await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, { refillIn: 31_000 }) })).rejects.toMatchObject({ name: 'KeepaTokenError', refillInMs: 31_000 });
     await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, {}) })).rejects.toMatchObject({ refillInMs: 60_000 });
     await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, null) })).rejects.toMatchObject({ name: 'KeepaTokenError', refillInMs: 60_000 });
+    const unreadable = fakeFetchJsonRejects(429, Object.assign(new Error('t'), { name: 'TimeoutError' }));
+    await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: unreadable })).rejects.toMatchObject({ name: 'KeepaTokenError', refillInMs: 60_000 });
   });
   it('clamps the 429 wait to 1–120 s', async () => {
     await expect(fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(429, { refillIn: 0 }) })).rejects.toMatchObject({ refillInMs: 1_000 });

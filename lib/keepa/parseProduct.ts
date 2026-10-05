@@ -46,7 +46,7 @@ export function keepaMinutesToDate(km: unknown): string | null {
 /** A non-empty string with its NUL characters removed (Postgres text rejects them), else null. */
 function str(v: unknown): string | null {
   if (typeof v !== 'string') return null;
-  const s = v.replace(/\u0000/g, '');
+  const s = v.replaceAll('\u0000', '');
   return s.length > 0 ? s : null;
 }
 
@@ -101,8 +101,10 @@ export function parseProductFacts(raw: unknown, expectedAsin: string): ProductFa
   const p = raw as Record<string, unknown>;
   if (p.asin !== expectedAsin) return emptyFacts(expectedAsin, 'error', 'asin_mismatch');
   if (typeof p.productType === 'number' && DELISTED_PRODUCT_TYPES.has(p.productType)) return emptyFacts(expectedAsin, 'delisted');
-  // Fail closed: without stats or csv a Keepa format change would read as "no price" for every ASIN.
-  if (!Array.isArray((p.stats as Record<string, unknown> | null | undefined)?.current) && !Array.isArray(p.csv)) {
+  // Fail closed: without stats (a non-empty `current`) or csv, a Keepa format change would read as
+  // "no price" for every ASIN.
+  const statsCurrent = (p.stats as Record<string, unknown> | null | undefined)?.current;
+  if (!(Array.isArray(statsCurrent) && statsCurrent.length > 0) && !Array.isArray(p.csv)) {
     return emptyFacts(expectedAsin, 'error', 'no_stats');
   }
 

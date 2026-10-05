@@ -163,8 +163,9 @@ describe('parseProductFacts validation (spec §5.1 step 5)', () => {
     expect(g.currentPriceCents).toBe(1399);
   });
 
-  it('a product with neither stats nor csv is an error (no_stats), never no_price', () => {
+  it('a product with neither stats (a non-empty current array) nor csv is an error (no_stats), never no_price', () => {
     expect(parseProductFacts(base({ title: 'T' }), 'B000000001')).toEqual(emptyFacts('B000000001', 'error', 'no_stats'));
+    expect(parseProductFacts(base({ title: 'T', stats: { current: [] } }), 'B000000001')).toEqual(emptyFacts('B000000001', 'error', 'no_stats'));
   });
 
   it('a non-object, an array or a mismatched asin is an error for that ASIN only', () => {
@@ -189,7 +190,8 @@ describe('parseProductFacts validation (spec §5.1 step 5)', () => {
 
   it('a category tree with a nameless node has no path, root or leaf at all', () => {
     const tree = [{ name: 'Root' }, { catId: 1 }, { name: 'Leaf' }];
-    const f = parseProductFacts(base({ stats: { current: [] }, categoryTree: tree }), 'B000000001');
+    const f = parseProductFacts(base({ stats: { current: [-1] }, categoryTree: tree }), 'B000000001');
+    expect(f.status).toBe('no_price');
     expect([f.categoryPath, f.categoryRoot, f.categoryLeaf]).toEqual([null, null, null]);
   });
 });

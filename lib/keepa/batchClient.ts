@@ -71,9 +71,19 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
-/** The body as a JSON object; null for anything else (null, an array, a primitive, invalid JSON). */
+/**
+ * The body as a JSON object; null for anything else (null, an array, a primitive, invalid JSON).
+ * Any other failure while reading the body (a timeout, a reset connection) is rethrown, so the
+ * stored error code names it.
+ */
 async function readJsonObject(res: Response): Promise<Record<string, unknown> | null> {
-  const body: unknown = await res.json().catch(() => null);
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (e) {
+    if (e instanceof SyntaxError) return null;
+    throw e;
+  }
   return typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
 }
 
@@ -91,7 +101,8 @@ export async function fetchKeepaBatch(asins: readonly string[], deps: KeepaClien
   const f = deps.fetchImpl ?? fetch;
   const res = await f(buildProductUrl(asins, deps.apiKey), { signal: AbortSignal.timeout(deps.timeoutMs ?? 60_000) });
   if (res.status === 429) {
-    const body: Record<string, unknown> = (await readJsonObject(res)) ?? {};
+    // The 429 is the answer; a body that cannot be read only loses the refill hint.
+    const body: Record<string, unknown> = (await readJsonObject(res).catch(() => null)) ?? {};
     throw new KeepaTokenError(refillWaitMs(num(body.refillIn)));
   }
   if (!res.ok) {
