@@ -35,17 +35,16 @@ describe('parseProductFacts on the captured batch', () => {
     expect(f.avg90SalesRank).toBeGreaterThan(0);
     expect(f.newOfferCount).toBeGreaterThanOrEqual(0);
     expect(f.fbaOfferCount).toBeGreaterThanOrEqual(0);
-    expect(f.fbmOfferCount === null || f.fbmOfferCount >= 0).toBe(true);
+    expect(f.fbmOfferCount).toBe(0);
     expect(f.keepaUpdatedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(f.imageUrl).toMatch(/^https:\/\/m\.media-amazon\.com\/images\/I\//);
     expect([-1, 0, 1, 2, 3, 4, null]).toContain(f.amazonAvailability);
   });
 
-  it('parses the second product to a real status without throwing', () => {
-    const asin = (products[1] as { asin: string }).asin;
-    const f = parseProductFacts(products[1], asin);
-    expect(['active', 'no_price']).toContain(f.status);
-    expect(f.title).not.toBeNull();
+  it('parses the second product, which Keepa marks invalid (productType 4), as delisted', () => {
+    const raw = products[1] as { asin: string; productType: number };
+    expect(raw.productType).toBe(4);
+    expect(parseProductFacts(raw, raw.asin)).toEqual(emptyFacts(raw.asin, 'delisted'));
   });
 });
 
@@ -71,15 +70,16 @@ describe('parseProductFacts validation (spec §5.1 step 5)', () => {
     expect(f.avg30PriceCents).toBe(1850);
   });
 
-  it('nulls impossible values: negative counts, ratings off the 0–50 scale, non-positive prices and ranks', () => {
+  it('nulls impossible values: negative counts, ratings off the 0–50 scale, non-positive prices and ranks; an offer count of −1 means none (0)', () => {
     const current = [0, -5]; current[PRICE_TYPE.SALES] = 0; current[PRICE_TYPE.COUNT_REVIEWS] = -1;
-    current[PRICE_TYPE.RATING] = 51; current[PRICE_TYPE.COUNT_NEW] = -2;
+    current[PRICE_TYPE.RATING] = 51; current[PRICE_TYPE.COUNT_NEW] = -2; current[PRICE_TYPE.COUNT_NEW_FBM] = -1;
     const f = parseProductFacts(base({ stats: { current }, monthlySold: 0, availabilityAmazon: 9 }), 'B000000001');
     expect(f.status).toBe('no_price');
     expect(f.salesRank).toBeNull();
     expect(f.reviewCount).toBeNull();
     expect(f.averageRatingX10).toBeNull();
     expect(f.newOfferCount).toBeNull();
+    expect(f.fbmOfferCount).toBe(0);
     expect(f.monthlySold).toBeNull();
     expect(f.amazonAvailability).toBeNull();
   });
@@ -94,6 +94,11 @@ describe('parseProductFacts validation (spec §5.1 step 5)', () => {
   it('a non-object or a mismatched asin is an error for that ASIN only', () => {
     expect(parseProductFacts(null, 'B000000001')).toEqual(emptyFacts('B000000001', 'error', 'bad_object'));
     expect(parseProductFacts(base({ asin: 'B000000002' }), 'B000000001').errorCode).toBe('asin_mismatch');
+  });
+
+  it('Keepa productType 3 (inaccessible) is delisted like 4; a standard product (0) parses normally', () => {
+    expect(parseProductFacts(base({ productType: 3, title: 'T' }), 'B000000001')).toEqual(emptyFacts('B000000001', 'delisted'));
+    expect(parseProductFacts(base({ productType: 0, stats: { current: [1299] } }), 'B000000001').status).toBe('active');
   });
 });
 

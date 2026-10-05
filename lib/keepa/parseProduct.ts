@@ -6,7 +6,8 @@
  * Every number comes from the `stats` object (`current`, `avg30`, `avg90`, `avg180`, `avg365`),
  * indexed by Keepa's Price Type; when a reply carries csv history instead (the `days=7`
  * fallback), the last csv value stands in for `current`. Keepa's −1 and anything below a
- * field's floor becomes null. A missing product is the caller's "delisted" (parseKeepaBatch).
+ * field's floor becomes null. In the offer-count series Keepa's −1 means no offers, so it is
+ * stored as 0. A missing product is the caller's "delisted" (parseKeepaBatch).
  */
 import { emptyFacts, type PriceSource, type ProductFacts } from './productFacts';
 
@@ -40,13 +41,14 @@ export function primaryImageUrl(images: unknown): string | null {
   return typeof first.m === 'string' && first.m.length > 0 ? `${AMAZON_IMAGE_CDN}${first.m}` : null;
 }
 
-type Floor = 'positive' | 'nonNegative' | 'rating';
+type Floor = 'positive' | 'nonNegative' | 'rating' | 'count';
 
 function clean(v: unknown, floor: Floor): number | null {
   if (typeof v !== 'number' || !Number.isFinite(v)) return null;
   const n = Math.round(v);
   if (floor === 'positive') return n > 0 ? n : null;
   if (floor === 'rating') return n >= 0 && n <= 50 ? n : null;
+  if (floor === 'count') return v === -1 ? 0 : n >= 0 ? n : null;
   return n >= 0 ? n : null;
 }
 
@@ -70,10 +72,14 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
+/** Keepa productType 3 (inaccessible) and 4 (invalid): the ASIN no longer resolves to a product. */
+export const DELISTED_PRODUCT_TYPES: ReadonlySet<number> = new Set([3, 4]);
+
 export function parseProductFacts(raw: unknown, expectedAsin: string): ProductFacts {
   if (!raw || typeof raw !== 'object') return emptyFacts(expectedAsin, 'error', 'bad_object');
   const p = raw as Record<string, unknown>;
   if (p.asin !== expectedAsin) return emptyFacts(expectedAsin, 'error', 'asin_mismatch');
+  if (typeof p.productType === 'number' && DELISTED_PRODUCT_TYPES.has(p.productType)) return emptyFacts(expectedAsin, 'delisted');
 
   const amazon = current(p, PRICE_TYPE.AMAZON, 'positive');
   const newPrice = current(p, PRICE_TYPE.NEW, 'positive');
@@ -109,9 +115,9 @@ export function parseProductFacts(raw: unknown, expectedAsin: string): ProductFa
     lastRatingUpdate: keepaMinutesToDate(p.lastRatingUpdate),
     monthlySold: clean(p.monthlySold, 'positive'),
     keepaUpdatedAt: keepaMinutesToDate(p.lastUpdate),
-    newOfferCount: current(p, PRICE_TYPE.COUNT_NEW, 'nonNegative'),
-    fbaOfferCount: current(p, PRICE_TYPE.COUNT_NEW_FBA, 'nonNegative'),
-    fbmOfferCount: current(p, PRICE_TYPE.COUNT_NEW_FBM, 'nonNegative'),
+    newOfferCount: current(p, PRICE_TYPE.COUNT_NEW, 'count'),
+    fbaOfferCount: current(p, PRICE_TYPE.COUNT_NEW_FBA, 'count'),
+    fbmOfferCount: current(p, PRICE_TYPE.COUNT_NEW_FBM, 'count'),
     amazonAvailability: availability,
     avg30PriceCents: priceAvg('avg30'),
     avg90PriceCents: priceAvg('avg90'),

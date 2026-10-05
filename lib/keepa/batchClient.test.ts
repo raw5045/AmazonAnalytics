@@ -6,6 +6,7 @@ import {
   buildProductUrl,
   KeepaHttpError,
   KeepaTokenError,
+  KeepaReplyError,
   HISTORY_PARAMS,
   STATS_DAYS,
 } from './batchClient';
@@ -36,8 +37,13 @@ describe('fetchKeepaBatch', () => {
     expect(r.products).toHaveLength(1);
     expect(r).toMatchObject({ tokensLeft: 14_800, refillIn: 12_000, refillRate: 250, tokensConsumed: 2 });
   });
-  it('tolerates a reply without products', async () => {
-    const r = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { tokensLeft: 1 }) });
+  it('rejects a 200 reply that carries no products array as KeepaReplyError', async () => {
+    const err = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { tokensLeft: 1 }) }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(KeepaReplyError);
+    expect(err).toMatchObject({ name: 'KeepaReplyError', message: 'keepa_bad_reply' });
+  });
+  it('leaves envelope fields Keepa omitted as null', async () => {
+    const r = await fetchKeepaBatch(['B000000001'], { apiKey: KEY, fetchImpl: fakeFetch(200, { products: [], tokensLeft: 1 }) });
     expect(r.products).toEqual([]);
     expect(r.refillRate).toBeNull();
   });

@@ -51,6 +51,14 @@ export class KeepaTokenError extends Error {
   }
 }
 
+/** A 200 reply without a `products` array: retried like an outage, never read as "every ASIN delisted". */
+export class KeepaReplyError extends Error {
+  constructor() {
+    super('keepa_bad_reply');
+    this.name = 'KeepaReplyError';
+  }
+}
+
 function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
@@ -70,8 +78,9 @@ export async function fetchKeepaBatch(asins: readonly string[], deps: KeepaClien
   }
   if (!res.ok) throw new KeepaHttpError(res.status);
   const body = (await res.json()) as Record<string, unknown>;
+  if (!Array.isArray(body.products)) throw new KeepaReplyError();
   return {
-    products: Array.isArray(body.products) ? body.products : [],
+    products: body.products,
     tokensLeft: num(body.tokensLeft),
     refillIn: num(body.refillIn),
     refillRate: num(body.refillRate),
