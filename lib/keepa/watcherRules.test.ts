@@ -21,8 +21,10 @@ const base: WatcherInput = {
   now: NOW,
   serviceBooted: true,
   enqueueRunning: false,
+  oldJobRunning: false,
   heartbeatAt: min(1),
   lastBatchAt: min(2),
+  bootedAt: min(24 * 60),
   dueWorkExists: true,
   laneNewDrainedAt: null,
   syncFiredAt: null,
@@ -122,6 +124,33 @@ describe('decideWatcherActions', () => {
       { kind: 'sync', reason: 'new_lane_drained' },
       { kind: 'stamp', field: 'sync_fired_at', value: NOW },
     ]);
+  });
+
+  it('holds the stall alarm while the old enrichment job runs; down detection is unaffected', () => {
+    const job = { ...base, oldJobRunning: true };
+    expect(decideWatcherActions({ ...job, lastBatchAt: min(180) })).toEqual([]);
+    expect(decideWatcherActions({ ...job, heartbeatAt: min(20) })).toEqual([
+      { kind: 'email', variant: 'down' },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW, onlyIfSent: 'down' },
+    ]);
+    // A stall alarm already out stays out: the deliberately idle service cannot show a recovery yet.
+    expect(decideWatcherActions({ ...job, lastBatchAt: min(180), stallAlarmSentAt: min(60) })).toEqual([]);
+    // Back up while the job runs: the heartbeat recovery is reported; the held stall stays recorded.
+    expect(decideWatcherActions({ ...job, lastBatchAt: min(180), stallAlarmSentAt: min(60), downAlarmSentAt: min(10) })).toEqual([
+      { kind: 'email', variant: 'recovered' },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
+    ]);
+  });
+
+  it('ages a stall from boot until the first batch', () => {
+    const firstBatchPending = { ...base, lastBatchAt: null };
+    expect(decideWatcherActions({ ...firstBatchPending, bootedAt: min(30) })).toEqual([]);
+    expect(decideWatcherActions({ ...firstBatchPending, bootedAt: min(130) })).toEqual([
+      { kind: 'email', variant: 'stalled' },
+      { kind: 'stamp', field: 'stall_alarm_sent_at', value: NOW, onlyIfSent: 'stalled' },
+    ]);
+    // Neither a batch nor a boot time: no stall clock, so no stall.
+    expect(decideWatcherActions({ ...firstBatchPending, bootedAt: null })).toEqual([]);
   });
 
   it('fires the explorer sync once per drained new lane, only when the app reads the catalog', () => {
@@ -270,6 +299,7 @@ describe('heldReasons', () => {
   it('names suppressed alarms', () => {
     expect(heldReasons({ ...done, serviceBooted: false, laneNewDrainedAt: min(3) })).toEqual(['not_booted']);
     expect(heldReasons({ ...done, enqueueRunning: true })).toEqual(['enqueue_running']);
+    expect(heldReasons({ ...done, oldJobRunning: true })).toEqual(['old_job_running']);
   });
 
   it("names why a pending drain or tonight's sync was not sent", () => {

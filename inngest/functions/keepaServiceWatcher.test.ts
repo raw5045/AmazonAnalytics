@@ -19,6 +19,7 @@ const ago = (n: number, from: Date = NOW) => new Date(from.getTime() - n * 60_00
 
 interface Status {
   boot_id: string | null;
+  booted_at: Date | null;
   heartbeat_at: Date | null;
   last_batch_at: Date | null;
   tail_enabled: boolean;
@@ -31,6 +32,7 @@ interface Status {
 
 const healthy: Status = {
   boot_id: 'boot-1',
+  booted_at: ago(24 * 60),
   heartbeat_at: ago(1),
   last_batch_at: ago(2),
   tail_enabled: false,
@@ -50,6 +52,8 @@ interface FakeOpts {
   kcsWeek?: string | null;
   /** What sendAlarm reports: true = Resend accepted the email. */
   delivered?: boolean;
+  /** The old per-week enrichment job is running (keepa_enrichment_runs). */
+  oldJob?: boolean;
 }
 
 function orDefault<T>(v: T | undefined, d: T): T {
@@ -66,6 +70,7 @@ function harness(opts: FakeOpts = {}, over: Partial<Pick<WatcherTickDeps, 'now' 
     if (text.includes('FROM keepa_service_status')) return { rows: opts.status === null ? [] : [{ ...healthy, ...opts.status }] };
     if (text.includes(') AS due')) return { rows: [{ due: orDefault(opts.due, true) }] };
     if (text.includes('FROM pg_locks')) return { rows: [{ running: orDefault(opts.running, false) }] };
+    if (text.includes('FROM keepa_enrichment_runs')) return { rows: [{ running: orDefault(opts.oldJob, false) }] };
     if (text.includes('AS scope_week')) {
       return { rows: [{ scope_week: orDefault(opts.scopeWeek, '2026-10-03'), kcs_week: orDefault(opts.kcsWeek, '2026-10-03') }] };
     }
@@ -90,6 +95,8 @@ function harness(opts: FakeOpts = {}, over: Partial<Pick<WatcherTickDeps, 'now' 
     sendEvent,
     texts: () => calls.map((c) => c.text),
     updates: () => calls.filter((c) => c.text.startsWith('UPDATE')),
+    /** Everything after the reads, in order: alarms, events and writes. */
+    effects: () => trace.filter((t) => !t.startsWith('sql:SELECT')),
   };
 }
 
@@ -116,11 +123,11 @@ describe('runWatcherTick', () => {
   it('reads every status column the rules need, including boot_id, and does nothing on a healthy tick', async () => {
     const h = harness();
     await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: [] });
-    for (const col of ['boot_id', 'heartbeat_at', 'last_batch_at', 'tail_enabled', 'lane_new_drained_at', 'sync_fired_at', 'nightly_sync_date', 'down_alarm_sent_at', 'stall_alarm_sent_at']) {
+    for (const col of ['boot_id', 'booted_at', 'heartbeat_at', 'last_batch_at', 'tail_enabled', 'lane_new_drained_at', 'sync_fired_at', 'nightly_sync_date', 'down_alarm_sent_at', 'stall_alarm_sent_at']) {
       expect(h.calls[0].text).toContain(col);
     }
-    // The status row, the due probe and the lock probe: no weeks query, no writes.
-    expect(h.calls).toHaveLength(3);
+    // The status row, the due probe, the lock probe and the old-job probe: no weeks query, no writes.
+    expect(h.calls).toHaveLength(4);
     expect(h.sendAlarm).not.toHaveBeenCalled();
     expect(h.sendEvent).not.toHaveBeenCalled();
   });
@@ -168,7 +175,7 @@ describe('runWatcherTick', () => {
   it('work due and a three-hour-old last batch: the stall alarm goes out, then its stamp', async () => {
     const h = harness({ status: { last_batch_at: ago(180) }, due: true });
     await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: ['email:stalled', 'stamp:stall_alarm_sent_at'] });
-    expect(h.trace.slice(3)).toEqual(['alarm:stalled', `sql:${stampSql('stall_alarm_sent_at')}`]);
+    expect(h.effects()).toEqual(['alarm:stalled', `sql:${stampSql('stall_alarm_sent_at')}`]);
     expect(h.updates()).toEqual([{ text: stampSql('stall_alarm_sent_at'), values: [NOW] }]);
   });
 
@@ -186,11 +193,33 @@ describe('runWatcherTick', () => {
     expect(h.updates()).toEqual([]);
   });
 
+  it('while the old enrichment job runs, the stall alarm is held but a down alarm still goes out', async () => {
+    // Tonight's sync already ran, so the log's held list carries only the job.
+    const held = harness({ status: { last_batch_at: ago(180), nightly_sync_date: '2026-10-06' }, oldJob: true });
+    await expect(runWatcherTick(held.client, held.deps)).resolves.toEqual({ ok: true, actions: [] });
+    expect(flat(held.calls[3].text)).toContain(
+      "FROM keepa_enrichment_runs WHERE status = 'running' AND heartbeat_at > now() - interval '10 minutes'",
+    );
+    expect(held.sendAlarm).not.toHaveBeenCalled();
+    expect(held.updates()).toEqual([]);
+    expect(tickLog().held).toEqual(['old_job_running']);
+
+    const down = harness({ status: { heartbeat_at: ago(40) }, oldJob: true });
+    await expect(runWatcherTick(down.client, down.deps)).resolves.toEqual({ ok: true, actions: ['email:down', 'stamp:down_alarm_sent_at'] });
+  });
+
+  it('before the first batch the stall clock runs from boot', async () => {
+    const young = harness({ status: { last_batch_at: null, booted_at: ago(30) } });
+    await expect(runWatcherTick(young.client, young.deps)).resolves.toEqual({ ok: true, actions: [] });
+    const old = harness({ status: { last_batch_at: null, booted_at: ago(130) } });
+    await expect(runWatcherTick(old.client, old.deps)).resolves.toEqual({ ok: true, actions: ['email:stalled', 'stamp:stall_alarm_sent_at'] });
+  });
+
   it('a stale heartbeat sends the down alarm, then stamps it through the whitelist', async () => {
     const h = harness({ status: { heartbeat_at: ago(40) } });
     await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: ['email:down', 'stamp:down_alarm_sent_at'] });
     expect(h.sendAlarm).toHaveBeenCalledWith({ variant: 'down', heartbeatAt: ago(40), lastBatchAt: ago(2) });
-    expect(h.trace.slice(3)).toEqual(['alarm:down', `sql:${stampSql('down_alarm_sent_at')}`]);
+    expect(h.effects()).toEqual(['alarm:down', `sql:${stampSql('down_alarm_sent_at')}`]);
     expect(h.updates()).toEqual([{ text: stampSql('down_alarm_sent_at'), values: [NOW] }]);
   });
 
@@ -218,7 +247,7 @@ describe('runWatcherTick', () => {
     // Nothing was written, so the next tick sees the same row and sends the update again.
     const retry = harness({ status, delivered: true });
     await expect(runWatcherTick(retry.client, retry.deps)).resolves.toEqual({ ok: true, actions: ['email:stalled', 'stamp:down_alarm_sent_at'] });
-    expect(retry.trace.slice(3)).toEqual(['alarm:stalled', `sql:${stampSql('down_alarm_sent_at')}`]);
+    expect(retry.effects()).toEqual(['alarm:stalled', `sql:${stampSql('down_alarm_sent_at')}`]);
     expect(retry.updates()).toEqual([{ text: stampSql('down_alarm_sent_at'), values: [null] }]);
   });
 
@@ -226,7 +255,7 @@ describe('runWatcherTick', () => {
     const h = harness({ status: { lane_new_drained_at: ago(3) } });
     await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: ['sync:new_lane_drained', 'stamp:sync_fired_at'] });
     expect(h.sendEvent).toHaveBeenCalledWith('keepa/aggregates-sync-requested', { weekEndDate: '2026-10-03' });
-    expect(h.trace.slice(4)).toEqual(['event:keepa/aggregates-sync-requested', `sql:${stampSql('sync_fired_at')}`]);
+    expect(h.effects()).toEqual(['event:keepa/aggregates-sync-requested', `sql:${stampSql('sync_fired_at')}`]);
     expect(h.updates()).toEqual([{ text: stampSql('sync_fired_at'), values: [NOW] }]);
   });
 
@@ -237,7 +266,7 @@ describe('runWatcherTick', () => {
       actions: ['sync:nightly', 'stamp:nightly_sync_date', 'stamp:sync_fired_at'],
     });
     expect(h.sendEvent).toHaveBeenCalledWith('keepa/aggregates-sync-requested', { weekEndDate: '2026-10-03' });
-    expect(h.trace.slice(4)).toEqual([
+    expect(h.effects()).toEqual([
       'event:keepa/aggregates-sync-requested',
       `sql:${stampSql('nightly_sync_date')}`,
       `sql:${stampSql('sync_fired_at')}`,

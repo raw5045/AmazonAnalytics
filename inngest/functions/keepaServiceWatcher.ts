@@ -25,6 +25,7 @@ import { sendKeepaServiceAlarmEmail } from '@/lib/notifications/sendKeepaService
 
 interface StatusRow {
   boot_id: string | null;
+  booted_at: Date | null;
   heartbeat_at: Date | null;
   last_batch_at: Date | null;
   tail_enabled: boolean;
@@ -65,7 +66,7 @@ async function readWeeks(client: Queryable): Promise<{ scope: string | null; kcs
 export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): Promise<WatcherTickResult> {
   const { now, readSource } = deps;
   const { rows } = await client.query<StatusRow>(
-    `SELECT boot_id, heartbeat_at, last_batch_at, tail_enabled, lane_new_drained_at, sync_fired_at,
+    `SELECT boot_id, booted_at, heartbeat_at, last_batch_at, tail_enabled, lane_new_drained_at, sync_fired_at,
             nightly_sync_date::text AS nightly_sync_date, down_alarm_sent_at, stall_alarm_sent_at
      FROM keepa_service_status WHERE singleton`,
   );
@@ -101,6 +102,15 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
     lockKeyHalves(ENQUEUE_LOCK_KEY),
   );
   const enqueueRunning = lock[0]?.running ?? false;
+  // Until phase 3 the service idles on purpose while the old per-week enrichment job runs (they
+  // share the Keepa token bucket), so a live run — heartbeat under ten minutes old — holds the stall
+  // alarm. The (status, heartbeat_at) partial index on running rows keeps this cheap.
+  const { rows: oldJob } = await client.query<{ running: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM keepa_enrichment_runs WHERE status = 'running' AND heartbeat_at > now() - interval '10 minutes'
+     ) AS running`,
+  );
+  const oldJobRunning = oldJob[0]?.running ?? false;
   const et = easternClock(now);
   // The scope/explorer weeks matter only to the two sync branches, so they are read only when a
   // sync could fire this tick. Unread weeks count as unknown, which holds every sync — harmless,
@@ -112,8 +122,10 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
     now,
     serviceBooted: s.boot_id !== null,
     enqueueRunning,
+    oldJobRunning,
     heartbeatAt: s.heartbeat_at,
     lastBatchAt: s.last_batch_at,
+    bootedAt: s.booted_at,
     dueWorkExists,
     laneNewDrainedAt: s.lane_new_drained_at,
     syncFiredAt: s.sync_fired_at,

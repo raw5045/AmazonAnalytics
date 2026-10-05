@@ -38,8 +38,16 @@ export interface WatcherInput {
    * beating while its batch writes wait on it, so suppressing alarms meanwhile is extra caution.
    */
   enqueueRunning: boolean;
+  /**
+   * The old per-week enrichment job is running (a keepa_enrichment_runs row 'running' with a heartbeat
+   * under ten minutes old). Until phase 3 the service idles on purpose meanwhile (they share the
+   * Keepa token bucket), so the stall alarm is held; down detection is unaffected.
+   */
+  oldJobRunning: boolean;
   heartbeatAt: Date | null;
   lastBatchAt: Date | null;
+  /** When the service last booted: the stall clock until its first batch. */
+  bootedAt: Date | null;
   dueWorkExists: boolean;
   laneNewDrainedAt: Date | null;
   syncFiredAt: Date | null;
@@ -66,7 +74,7 @@ export type WatcherAction =
   | { kind: 'stamp'; field: StampField; value: Date | string | null; onlyIfSent?: AlarmVariant };
 
 /** Why a tick held something back, for the tick log (see heldReasons). */
-export type HeldReason = 'not_booted' | 'enqueue_running' | 'explorer_behind' | 'sync_gap' | 'night_missed';
+export type HeldReason = 'not_booted' | 'enqueue_running' | 'old_job_running' | 'explorer_behind' | 'sync_gap' | 'night_missed';
 
 export function easternClock(now: Date): EasternClock {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -148,7 +156,13 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
   // go. Extra caution on top of the service's independent heartbeat ticker, which keeps beating.
   if (!i.enqueueRunning) {
     const down = age(i.heartbeatAt) > DOWN_AFTER_MS;
-    const stalled = !down && i.dueWorkExists && age(i.lastBatchAt) > STALL_AFTER_MS;
+    // The stall clock runs from the last batch, or from boot until the first one (neither: no clock).
+    const stallSince = i.lastBatchAt ?? i.bootedAt;
+    // While the old enrichment job runs the service idles on purpose: the stall is held — neither
+    // alarmed nor cleared, so an alarm already out stays out until the stall can be judged again.
+    const stallHeld = i.oldJobRunning;
+    const stalled = !down && !stallHeld && i.dueWorkExists && stallSince !== null && age(stallSince) > STALL_AFTER_MS;
+    const stallCleared = !stallHeld && !!i.stallAlarmSentAt;
     // Back up after a down alarm. If a stall is still on, the stall is what gets reported, never "recovered".
     const backUp = !down && !!i.downAlarmSentAt;
     if (down && !i.downAlarmSentAt) {
@@ -168,9 +182,9 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
       emails.push('stalled');
       if (!i.stallAlarmSentAt) stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: i.now, onlyIfSent: 'stalled' });
     }
-    if (!down && !stalled && (backUp || i.stallAlarmSentAt)) {
+    if (!down && !stalled && (backUp || stallCleared)) {
       emails.push('recovered');
-      if (i.stallAlarmSentAt) stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: null });
+      if (stallCleared) stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: null });
     }
   }
 
@@ -213,15 +227,16 @@ export function syncCouldFire(i: Pick<WatcherInput, 'readSource' | 'laneNewDrain
 
 /**
  * Why this tick held something back — for the tick log only; decideWatcherActions decides. Alarms
- * suppressed: not_booted, enqueue_running. A pending drain not synced: sync_gap (under six hours
- * since the last sync) and/or explorer_behind. Tonight's sync owed: nothing before 03:30 ET; inside
- * the window, explorer_behind, or sync_gap (a recent sync's gap closes later in the window); after
- * 05:59 with the date still unstamped, night_missed.
+ * suppressed: not_booted, enqueue_running; the stall alarm held: old_job_running. A pending drain
+ * not synced: sync_gap (under six hours since the last sync) and/or explorer_behind. Tonight's sync
+ * owed: nothing before 03:30 ET; inside the window, explorer_behind, or sync_gap (a recent sync's
+ * gap closes later in the window); after 05:59 with the date still unstamped, night_missed.
  */
 export function heldReasons(i: WatcherInput): HeldReason[] {
   if (!i.serviceBooted) return ['not_booted'];
   const held = new Set<HeldReason>();
   if (i.enqueueRunning) held.add('enqueue_running');
+  if (i.oldJobRunning) held.add('old_job_running');
   if (i.readSource === 'products') {
     if (drainPending(i)) {
       if (syncGapOpen(i)) held.add('sync_gap');
