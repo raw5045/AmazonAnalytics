@@ -4,7 +4,7 @@ import { db } from '@/db/client';
 import { keywordCurrentSummaryMeta, keepaEnrichmentRuns } from '@/db/schema';
 import { desc } from 'drizzle-orm';
 import { KeepaEnrichmentButton } from './KeepaEnrichmentButton';
-import { loadKeepaServiceOverview } from '@/lib/keepa/adminOverview';
+import { loadKeepaServiceOverview } from '@/lib/admin/keepaServiceOverview';
 import { ServiceStatusCard } from './ServiceStatusCard';
 
 export const dynamic = 'force-dynamic';

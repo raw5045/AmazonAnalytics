@@ -1,6 +1,6 @@
 // app/admin/keepa-enrichment/ServiceStatusCard.tsx
-import type { KeepaServiceOverview } from '@/lib/keepa/adminOverview';
-import { WEEKLY_CAPACITY_ASINS } from '@/lib/keepa/adminOverview';
+import type { KeepaServiceOverview } from '@/lib/admin/keepaServiceOverview';
+import { WEEKLY_CAPACITY_ASINS } from '@/lib/admin/keepaServiceOverview';
 
 /** "just now" / "N min ago" / "N h ago" / "N days" / "never". Days are shown without "ago" (an age, not an event). */
 export function ageLabel(at: Date | null, now: Date): string {
@@ -18,7 +18,7 @@ export function ServiceStatusCard({ overview, now }: { overview: KeepaServiceOve
   const { status, counts } = overview;
   const unused = Math.max(0, WEEKLY_CAPACITY_ASINS - counts.fetchedLast7d);
   const unusedPct = Math.round((unused / WEEKLY_CAPACITY_ASINS) * 100);
-  const scopeBehind = Boolean(counts.scopeWeek && counts.kcsWeek && counts.scopeWeek !== counts.kcsWeek);
+  const scopeBehind = Boolean(counts.scopeWeek && counts.kcsWeek && counts.scopeWeek < counts.kcsWeek);
   const rows: Array<[string, string]> = [
     ['Heartbeat', ageLabel(status?.heartbeatAt ?? null, now)],
     ['Booted', ageLabel(status?.bootedAt ?? null, now)],

@@ -18,7 +18,7 @@ vi.mock('@/lib/auth/requireAdmin', async (importOriginal) => {
 const dbm = vi.hoisted(() => ({ select: vi.fn() }));
 vi.mock('@/db/client', () => ({ db: { select: dbm.select } }));
 const overviewMock = vi.hoisted(() => ({ load: vi.fn() }));
-vi.mock('@/lib/keepa/adminOverview', () => ({ loadKeepaServiceOverview: overviewMock.load, WEEKLY_CAPACITY_ASINS: 1_260_000 }));
+vi.mock('@/lib/admin/keepaServiceOverview', () => ({ loadKeepaServiceOverview: overviewMock.load, WEEKLY_CAPACITY_ASINS: 1_260_000 }));
 import KeepaEnrichmentAdminPage from './page';
 
 describe('KeepaEnrichmentAdminPage', () => {

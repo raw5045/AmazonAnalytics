@@ -5,7 +5,7 @@ import { render, screen } from '@testing-library/react';
 // it lib/env, whose load-time parse throws under vitest. The card never touches `db`, so an empty stub.
 vi.mock('@/db/client', () => ({ db: {} }));
 import { ServiceStatusCard, ageLabel } from './ServiceStatusCard';
-import type { KeepaServiceOverview } from '@/lib/keepa/adminOverview';
+import type { KeepaServiceOverview } from '@/lib/admin/keepaServiceOverview';
 
 const NOW = new Date('2026-10-06T12:00:00Z');
 const overview: KeepaServiceOverview = {
@@ -42,6 +42,12 @@ describe('ServiceStatusCard', () => {
   it('flags a catalog scope week behind the explorer week', () => {
     render(<ServiceStatusCard overview={{ ...overview, counts: { ...overview.counts, scopeWeek: '2026-09-26', kcsWeek: '2026-10-03' } }} now={NOW} />);
     expect(screen.getByText('2026-09-26 (behind the explorer)')).toBeInTheDocument();
+  });
+
+  it('does not flag a scope week ahead of the explorer week (the hours before the explorer refresh)', () => {
+    render(<ServiceStatusCard overview={{ ...overview, counts: { ...overview.counts, scopeWeek: '2026-10-10', kcsWeek: '2026-10-03' } }} now={NOW} />);
+    expect(screen.getByText('2026-10-10')).toBeInTheDocument();
+    expect(screen.queryByText(/behind the explorer/)).not.toBeInTheDocument();
   });
 });
 

@@ -1,7 +1,10 @@
-// lib/keepa/adminOverview.ts
+// lib/admin/keepaServiceOverview.ts
 /**
  * Data for the admin status card (spec 2026-10-05 §8): the service's status row plus one
  * aggregate pass over asin_products. Admin-only; a few seconds on 2.3M rows is acceptable.
+ *
+ * Lives outside lib/keepa/ on purpose: it loads the app's database client (db/client, and through
+ * it the full env schema), and lib/keepa/** is a Railway watch path for the Keepa service.
  */
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
