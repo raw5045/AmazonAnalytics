@@ -995,31 +995,57 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // runs skip it: a historical week must not reshape the live scope.
     // ------------------------------------------------------------------
     if (!isReplay) {
-      await timePhase(file.id, 'keepa_enqueue', async () => {
-        const enqueuePool = new Pool({ connectionString: env.DATABASE_URL, max: 1, statement_timeout: 1_800_000, keepAlive: true, keepAliveInitialDelayMillis: 10_000, connectionTimeoutMillis: 20_000 });
-        // Dropped-socket guards: pg-pool re-emits an idle client's 'error' on the pool but unhooks its listener at checkout, and an unhandled 'error' crashes the worker; the failed query still rejects into the catch.
-        enqueuePool.on('error', () => undefined);
-        try {
-          const client = await enqueuePool.connect();
-          client.on('error', () => undefined);
+      await timePhase(
+        file.id,
+        'keepa_enqueue',
+        async () => {
+          const enqueuePool = new Pool({
+            connectionString: env.DATABASE_URL,
+            max: 1,
+            statement_timeout: 1_800_000,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10_000,
+            connectionTimeoutMillis: 20_000,
+          });
+          // Dropped-socket guards: pg-pool re-emits an idle client's 'error'
+          // on the pool but unhooks its listener at checkout, and an
+          // unhandled 'error' crashes the worker; the failed query still
+          // rejects into the catch.
+          enqueuePool.on('error', () => undefined);
+          let stage: 'connect' | 'enqueue' = 'connect';
           try {
-            const r = await enqueueWeek(client, weekEndDate);
-            console.log(`[keepa-enqueue] week ${weekEndDate}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}${r.vacuumError ? ` vacuumError=${r.vacuumError}` : ''}`);
+            const client = await enqueuePool.connect();
+            stage = 'enqueue';
+            try {
+              client.on('error', () => undefined);
+              const r = await enqueueWeek(client, weekEndDate);
+              console.log(
+                `[keepa-enqueue] week ${weekEndDate}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}${r.vacuumError ? ` vacuumError=${r.vacuumError}` : ''}`,
+              );
+              return r;
+            } finally {
+              client.release();
+            }
+          } catch (e) {
+            if (e instanceof EnqueueWeekError && e.code === 'enqueue_week_older_than_scope') {
+              // A late re-import of an older week: the catalog keeps the
+              // newer scope. Expected, not a failure.
+              console.log(`[keepa-enqueue] skipped: ${e.code} (week ${weekEndDate})`);
+            } else {
+              const { error, code } = errFields(e);
+              console.error(
+                '[keepa-enqueue] failed (import continues)',
+                JSON.stringify({ week: weekEndDate, stage, error, code }),
+              );
+            }
+            return null;
           } finally {
-            client.release();
+            await enqueuePool.end();
           }
-        } catch (e) {
-          if (e instanceof EnqueueWeekError && e.code === 'enqueue_week_older_than_scope') {
-            // A late re-import of an older week: the catalog keeps the newer scope. Expected, not a failure.
-            console.log(`[keepa-enqueue] skipped: ${e.code} (week ${weekEndDate})`);
-          } else {
-            const { error, code } = errFields(e);
-            console.error('[keepa-enqueue] failed (import continues)', JSON.stringify({ week: weekEndDate, error, code }));
-          }
-        } finally {
-          await enqueuePool.end();
-        }
-      });
+        },
+        // rows_affected = inserted + updated; null marks a failed or skipped enqueue.
+        (r) => (r ? r.inserted + r.updated : null),
+      );
     }
 
     // ------------------------------------------------------------------
