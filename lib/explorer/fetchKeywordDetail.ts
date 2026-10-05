@@ -81,9 +81,11 @@ export interface KeywordVariantInfo {
 
 /**
  * Keepa-enriched product data for one of the top-3 ASINs on the keyword
- * detail page. Sourced from `asin_weekly_data` at the keyword's current
- * week. `null` when the ASIN isn't yet enriched (e.g. dormant keyword,
- * or an ASIN that was excluded from enrichment scope).
+ * detail page. Sourced from the `asin_products` catalog when
+ * KEEPA_READ_SOURCE=products, else `asin_weekly_data` at the keyword's
+ * current week (see enrichedProductsFor). `null` when the ASIN isn't yet
+ * enriched (e.g. dormant keyword, or an ASIN that was excluded from
+ * enrichment scope).
  */
 export interface EnrichedProduct {
   asin: string;
@@ -215,7 +217,8 @@ type NeonSql = ReturnType<typeof neon<false, false>>;
 /**
  * Keepa facts for a keyword's top-3 ASINs (≤ 3 rows). Spec 2026-10-05 §7: from the asin_products
  * catalog when KEEPA_READ_SOURCE=products (no week predicate — the catalog holds one current row
- * per ASIN), otherwise from asin_weekly_data at the keyword's current week. Both shapes map
+ * per ASIN; never-fetched rows, enrichment_status NULL, are skipped), otherwise from
+ * asin_weekly_data at the keyword's current week. Both shapes map
  * through mapEnrichedProducts; the catalog adds the new fields, null under the weekly source.
  */
 export function enrichedProductsFor(sql: NeonSql, searchTermId: string) {
@@ -241,6 +244,7 @@ export function enrichedProductsFor(sql: NeonSql, searchTermId: string) {
           kwm.top_clicked_product_2_asin,
           kwm.top_clicked_product_3_asin
         ]::text[])
+        AND a.enrichment_status IS NOT NULL
     `;
   }
   return sql`
@@ -812,10 +816,12 @@ export async function fetchCurrentWeekVariants(
 
 /**
  * Reads the current-week top-3 product ASINs/titles (from kwm) plus their Keepa
- * enrichment (from asin_weekly_data). Split out of fetchKeywordChartData and
- * streamed behind <Suspense>: the current-week kwm slice is a single row on the
- * 140M-row table that costs ~2s on a cold page, so off the charts' critical path
- * it no longer delays first paint.
+ * enrichment via enrichedProductsFor (the asin_products catalog when
+ * KEEPA_READ_SOURCE=products, else asin_weekly_data at the current week).
+ * Split out of fetchKeywordChartData and streamed behind <Suspense>: the
+ * current-week kwm slice is a single row on the 140M-row table that costs ~2s
+ * on a cold page, so off the charts' critical path it no longer delays first
+ * paint.
  *
  * The caller passes the current week (from kcs) and only invokes this for active
  * keywords (dormant ones have no current week and no products box).

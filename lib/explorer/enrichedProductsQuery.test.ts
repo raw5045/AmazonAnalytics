@@ -23,6 +23,7 @@ describe('enrichedProductsFor', () => {
     expect(q.text).not.toContain('a.week_end_date');
     expect(q.text).toContain('a.monthly_sold');
     expect(q.text).toContain('a.fba_offer_count');
+    expect(q.text).toContain('a.enrichment_status IS NOT NULL');
     expect(q.values).toEqual(['42']);
   });
 });

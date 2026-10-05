@@ -14,9 +14,11 @@
  * synchronous-return + detached Promise + completion event.
  *
  * Phases:
- *   1. Build tmp_asin_enriched_sync — most-recent enrichment per ASIN
- *      ≤ kcs.current_week_end_date (same fall-back logic as the main
- *      refresh job's stageEnrichedAsins)
+ *   1. Build tmp_asin_enriched_sync — the asin_products catalog's current
+ *      row per ASIN under KEEPA_READ_SOURCE=products, else the most-recent
+ *      asin_weekly_data enrichment per ASIN ≤ kcs.current_week_end_date
+ *      (same source choice and fall-back logic as the main refresh job's
+ *      stageEnrichedAsins)
  *   2. UPDATE kcs rows in place — touches all 3.9M rows but only
  *      ~5 cols. Earlier full backfill clocked at ~67 min; subsequent
  *      runs should be faster (warm pages).
@@ -76,7 +78,9 @@ export function startKcsKeepaSyncJob(
         const { cw, sv } = metaRows[0];
         log(`syncing against kcs week=${cw} snapshot=${sv.slice(0, 8)}`);
 
-        // Phase 1: build the enriched temp table (most-recent per ASIN ≤ cw).
+        // Phase 1: build the enriched temp table — under KEEPA_READ_SOURCE=products
+        // the asin_products catalog's current row per ASIN, else the most-recent
+        // asin_weekly_data row per ASIN ≤ cw (active rows only, either way).
         // Same query shape as refreshSummary.stageEnrichedAsins but
         // here we use a real (not TEMP) UNLOGGED table since this job
         // doesn't run inside the txn that owns latest_per_term.
