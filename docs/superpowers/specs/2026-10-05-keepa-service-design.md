@@ -77,7 +77,10 @@ Indexes:
 - `asin_products_never_fetched_idx` on `(tier, best_rank)` where `in_scope and claimed_at is null and last_fetched_at is null`;
 - `asin_products_due_idx` on `(tier, next_due_at)` where `in_scope and claimed_at is null and last_fetched_at is not null`;
 - `asin_products_claimed_idx` on `(claimed_at)` where `claimed_at is not null` (boot-time release);
-- `asin_products_category_path_idx` on `(category_path)` where `category_path is not null` (category builder's distinct paths).
+- `asin_products_category_path_idx` on `(category_path text_pattern_ops)` where `in_scope and category_path is not null` (category builder's prefix matches on live rows);
+- `asin_products_scope_week_idx` on `(scope_week)` (the `max(scope_week)` reads of the watcher, the admin card and the enqueue guard).
+
+The two lane indexes carry the claim tie-breaker as a trailing key: `(tier, best_rank, asin)` and `(tier, next_due_at, asin)`. `error_code` and `last_error_code` carry `CHECK (char_length(…) <= 64)`; the table sets `autovacuum_vacuum_scale_factor = 0.05`.
 
 Dropped versus `asin_weekly_data`: the `variations` and `promotions` JSON (nothing reads them), free-text `error_message`, the week key.
 
@@ -142,7 +145,7 @@ The migration number is 0050 (hand-numbered; the drizzle journal stays frozen). 
 
 ### 5.4 Code layout
 
-- `services/keepa/index.ts` — boot, health server, forever loop; `services/keepa/loop.ts` — one iteration with injected Keepa client, clock and sleep (testable); `services/keepa/claims.ts` — claim and release SQL; `services/keepa/write.ts` — the batch transaction; `services/keepa/status.ts` — status row writes; `services/keepa/README.md` — the Railway dashboard settings (§9) and the env list.
+- `services/keepa/index.ts` — boot, health server (503 until booted), independent 60-second heartbeat, SIGTERM claim release, forever loop; `services/keepa/loop.ts` — one iteration with injected store, Keepa client, clock and sleep (testable); `services/keepa/store.ts` — the store interface; `services/keepa/pgStore.ts` — claims, batch transaction, status writes (Postgres); `services/keepa/db.ts`, `log.ts`; `services/keepa/README.md` — the Railway dashboard settings (§9), the env list and an operations section.
 - `lib/keepa/batchClient.ts` — the multi-ASIN request and the token pacer; `lib/keepa/parseProduct.ts` — the parser of §5.1 step 5, producing a `ProductFacts` type; `lib/keepa/lanes.ts` — pure next-due and backoff rules; `lib/keepa/__fixtures__/batch-stats.json` — a fixture captured with the exact request shape.
 - The existing `lib/keepa/client.ts`, `parse.ts`, `worker/keepaJobs.ts` and `inngest/functions/enrichKeepaForWeek.ts` stay untouched until phase 3.
 
@@ -162,7 +165,7 @@ Runs in a few minutes (about 2.3M rows). Failure is logged and does not fail the
 
 Reads the status row and the due counts, then:
 
-- **Down:** `heartbeat_at` older than ten minutes → one "Keepa service down" email (records `down_alarm_sent_at`); a recovery email when the heartbeat is fresh again, then the stamp clears.
+- **Down:** `heartbeat_at` older than fifteen minutes → one "Keepa service down" email (records `down_alarm_sent_at`); a recovery email when the heartbeat is fresh again, then the stamp clears.
 - **Stalled:** heartbeat fresh, `last_batch_at` older than two hours, and claimable tier-1 work exists (or tier-2 work with the tail on) → one "Keepa service stalled" email; recovery email as above.
 - **Sync after an import:** `lane_new_drained_at` newer than `sync_fired_at` → send `keepa/aggregates-sync-requested` for the current kcs week and stamp `sync_fired_at`.
 - **Nightly sync:** in the 03:30–03:44 America/New_York window, when `last_batch_at` is within 24 hours and `nightly_sync_date` is not today → send the same event and stamp the date.
@@ -200,7 +203,7 @@ Until the service code ships, deploys fail at start; the restart policy stops af
 ## 10. Testing
 
 - **Unit:** `parseProduct` on the new fixture (captured once with the exact request for three known ASINs; a few tokens) including delisted, no-price and malformed objects; lane and next-due rules; validation floors; the never-downgrade rule; the pacer's sleep arithmetic; the enqueue tier-change rule; the watcher's alarm and sync decisions with a fake clock.
-- **Service loop:** `runOnce` with a fake Keepa client and fake clock: retries, token sleeps, claim release, error batches, the exit-after-ten-database-failures rule.
+- **Service loop:** `runIteration` with a fake Keepa client and fake clock: retries, token sleeps, claim release, error batches, the exit-after-ten-database-failures rule.
 - **Integration** (owner's go, real database, synthetic ASINs prefixed `TEST`, cleaned up): claim-and-write transaction, enqueue-week upsert on a seeded sample, every reader under both flag values, the seed on a sample.
 - **Smoke after each ship step:** batches landing within the first hour, card numbers moving, a detail page for a freshly fetched ASIN; after the flag flip, a detail page and an explorer price sort; after phase 3, the next weekly import's new ASINs fetched by the service.
 - Project suites (`pnpm typecheck`, `pnpm exec eslint <files>`, `pnpm test`) before every push, as always.
@@ -222,3 +225,19 @@ Every push is owner-gated (`scripts/checkActiveJobs.ts` first, bare `git push or
 - Railway: move the worker's `railway.json` settings to the dashboard, or migrate the project with `railway config migrate`, before 2026-12-01.
 - A Keepa tier upgrade if faster cycles are ever wanted (500 tokens/min halves tier 1 to about 2.8 days).
 - Drop `asin_weekly_data` once nothing has read it for a full quarter.
+
+## 13. Amendments as landed (2026-10-05, from the implementation reviews)
+
+Where a section above and this list disagree, this list is what shipped.
+
+- **§4.1 / §4.4.** Never fetched = `last_fetched_at IS NULL` (`enrichment_status` is NULL until the first outcome and `error` after a failed first fetch). Legacy `error` rows are not seeded as facts (those ASINs start never-fetched); seeded delisted rows get the 30-day recheck. The seed runs each step in its own transaction with `work_mem` raised, asserts indexes, constraints and column counts after the DDL, gates on the post-seed counts, and is idempotent (re-run on failure). Once the service is live, never re-run the apply script (its `CREATE INDEX IF NOT EXISTS` statements take a share lock); re-scope with `scripts/fireEnqueueWeek.ts`.
+- **§4.2.** No snapshot row for an `error` outcome (an outage is not a fetch): snapshots exist for `active`, `no_price` and `delisted` only.
+- **§5.1 step 4.** `history=0` still returns a small `salesRanks` object; nothing reads it. Replies pass a JSON-object guard: a 200 without a non-empty `products` array, or with a non-object body, is a bad reply (`keepa_bad_reply`) retried like an outage, never a delisting. `refillIn` is clamped to 1–120 s.
+- **§5.1 step 5.** Delisted = Keepa `productType` 3 (inaccessible) or 4 (invalid). An ASIN absent from a non-empty reply is an `error` (`missing_from_reply`, backoff), not a delisting. A product without a non-empty `stats.current` (and no csv) is an `error` (`no_stats`), so a format change can never null the catalog. In the offer-count series Keepa's −1 means no offers and is stored as 0. NUL characters are stripped, integers above 2³¹−1 become null, a category tree with an unnamed node yields no path, Keepa minutes outside 2011–2100 become null, and a product object that throws is an `error` (`parse_failed`) for that ASIN only. The parser never throws.
+- **§5.1 steps 2 and 6, §6.1 — the enqueue/batch handshake.** Neon's pooler is PgBouncer in transaction mode, so all advisory locks are transaction-scoped: `enqueueWeek` runs `BEGIN`, `SET LOCAL statement_timeout`, `pg_advisory_xact_lock(ENQUEUE_LOCK_KEY)`, the scope guard, the upsert, the retire, `COMMIT`, then a best-effort `VACUUM (ANALYZE)`; every service store transaction (release, claim, write, mark-errored, SIGTERM release) first takes `pg_advisory_xact_lock_shared` with a 1900-second wait and then returns to the 300-second statement timeout. The enqueue refuses a week older than the catalog's scope week unless forced, stops before the retire when the upsert touched zero rows, drops malformed ASINs, reports inserted/updated/retired/vacuumed (+ the vacuum error code), and must be given one dedicated connection. The import hook runs it before the summary refresh, fail-soft, with socket-error guards; an older-week result is logged as an expected skip.
+- **§5.2.** The success due date is chosen in SQL by the row's current tier (a mid-batch re-tier cannot undo a pull-forward). A batch whose outcomes are all errors writes its rows but surfaces as a failed batch on the status row (`last_error_code` set, `last_batch_at` untouched).
+- **§5.3.** Stored error codes: `keepa_http_<status>`, `keepa_bad_reply`, `keepa_timeout`, `keepa_network_<cause>`, capped at 64 characters. HTTP 400 marks the batch after three attempts; 401–499 retry forever. After an unanswered batch, a large all-error batch (≥ 10 rows) or a second consecutive 400 batch the loop pauses 1 → 15 minutes (doubling, reset on a batch with any success). Token waits are capped at 2 minutes; five consecutive 429s record `keepa_tokens_exhausted`. An escaped exception in an iteration is logged (`iteration_threw`) and counted like a database failure. The service has an independent 60-second heartbeat, answers 503 until booted, releases its own claims on SIGTERM, and discards a client whose transaction failed.
+- **§6.2.** Down = heartbeat older than 15 minutes. No actions before the service's first boot (`boot_id IS NULL`); no alarms while the enqueue holds its lock (`pg_locks` probe); the due-work probe is two EXISTS carrying the lane indexes' predicates. The drained-lane sync fires only when the last sync is at least 6 hours old and the explorer has reached the catalog's scope week; the nightly sync also waits for the explorer week. The scope/explorer weeks are read only when a sync decision needs them. The tick is a tested function (`runWatcherTick`).
+- **§7.** `mapEnrichedProducts` maps nine optional catalog fields (null under the weekly source). The catalog detail variant skips never-fetched rows; the category-builder catalog variants filter `in_scope`. Flipping `KEEPA_READ_SOURCE` on Vercel requires a redeploy (env changes reach new deployments only); Railway redeploys on a variable change.
+- **§8.** The card's headline is "tier-1 ASINs fetched more than 8 days ago" (delisted excluded) with a separate "tier 1 in error backoff" count, replacing the outlier-driven oldest-fetch age; it also shows the catalog scope week vs the explorer week ("behind the explorer" only when older), when the new lane last drained, tokens left with the refill rate, and capacity from the live refill rate. A loader failure renders one "Service status unavailable (code)" line and leaves the rest of the page intact. The loader lives in `lib/admin/`, outside the service's watch path.
+- **§10 / §11.** The integration test command is `RUN_INTEGRATION=1 pnpm vitest run tests/integration/keepaService.test.ts` (the `pnpm test:integration <file>` form runs the whole suite); it needs the service stopped and no enqueue running, briefly claims and releases real rows, and restores the status row. Before the flag flip, each catalog reader query is exercised once read-only on the owner's go. Pre-push, `scripts/checkActiveJobs.ts` also flags imports still mid-phase.
