@@ -4,6 +4,8 @@ import { db } from '@/db/client';
 import { keywordCurrentSummaryMeta, keepaEnrichmentRuns } from '@/db/schema';
 import { desc } from 'drizzle-orm';
 import { KeepaEnrichmentButton } from './KeepaEnrichmentButton';
+import { loadKeepaServiceOverview } from '@/lib/keepa/adminOverview';
+import { ServiceStatusCard } from './ServiceStatusCard';
 
 export const dynamic = 'force-dynamic';
 
@@ -24,6 +26,7 @@ export default async function KeepaEnrichmentAdminPage() {
     .from(keepaEnrichmentRuns)
     .orderBy(desc(keepaEnrichmentRuns.startedAt))
     .limit(5);
+  const overview = await loadKeepaServiceOverview();
 
   return (
     <div className="max-w-3xl">
@@ -39,6 +42,7 @@ export default async function KeepaEnrichmentAdminPage() {
         counts, and categories on every in-scope ASIN. Takes the full ~24 hours but
         guarantees current data on every product.
       </p>
+      <ServiceStatusCard overview={overview} now={new Date()} />
 
       <div className="mt-6 rounded border border-amber-200 bg-amber-50 p-4">
         <h2 className="text-sm font-semibold text-amber-900">Manual full refresh</h2>
