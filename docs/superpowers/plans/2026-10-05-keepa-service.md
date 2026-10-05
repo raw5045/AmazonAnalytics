@@ -732,7 +732,7 @@ async function main() {
     if (!week) throw new Error('no kcs meta week');
     log(`seed 2/4: scope for week ${week} (enqueue-week upsert)`);
     const scope = await enqueueWeek(c, week);
-    log(`seed 2/4 done: upserted=${scope.upserted} retired=${scope.retired}`);
+    log(`seed 2/4 done: inserted=${scope.inserted} updated=${scope.updated} retired=${scope.retired} vacuumed=${scope.vacuumed}`);
 
     log('seed 3/4: snapshots from distinct genuine fetches');
     const snaps = await c.query(`
@@ -2761,7 +2761,7 @@ The hook lands now, in phase 1, beside the old enrichment event (which Task 13 r
 Add to the imports at the top of `importFile.ts`:
 
 ```ts
-import { enqueueWeek } from '@/lib/keepa/enqueueWeek';
+import { enqueueWeek, EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { errFields } from '@/lib/ask/logSafe';
 ```
 
@@ -2783,13 +2783,18 @@ Insert immediately after the `await timePhase(file.id, 'mark_imported', …)` bl
           const client = await enqueuePool.connect();
           try {
             const r = await enqueueWeek(client, weekEndDate);
-            console.log(`[keepa-enqueue] week ${weekEndDate}: upserted=${r.upserted} retired=${r.retired}`);
+            console.log(`[keepa-enqueue] week ${weekEndDate}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}`);
           } finally {
             client.release();
           }
         } catch (e) {
-          const { error, code } = errFields(e);
-          console.error('[keepa-enqueue] failed (import continues)', JSON.stringify({ week: weekEndDate, error, code }));
+          if (e instanceof EnqueueWeekError && e.code === 'enqueue_week_older_than_scope') {
+            // A late re-import of an older week: the catalog keeps the newer scope. Expected, not a failure.
+            console.log(`[keepa-enqueue] skipped: ${e.code} (week ${weekEndDate})`);
+          } else {
+            const { error, code } = errFields(e);
+            console.error('[keepa-enqueue] failed (import continues)', JSON.stringify({ week: weekEndDate, error, code }));
+          }
         } finally {
           await enqueuePool.end();
         }
@@ -2808,6 +2813,7 @@ Check `timePhase`'s signature at line 142: it takes `(fileId, phase: string, fn)
  * import's own hook logged a failure. Idempotent upsert.
  *
  * Run: FIRE_ENQUEUE_WEEK=2026-10-03 node --env-file=.env.local --import tsx scripts/fireEnqueueWeek.ts
+ * Add FIRE_ENQUEUE_FORCE=1 to enqueue a week older than the catalog's scope week (never needed for a normal import).
  */
 import { Pool } from 'pg';
 import { enqueueWeek } from '@/lib/keepa/enqueueWeek';
@@ -2822,8 +2828,8 @@ if (!week || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1, statement_timeout: 1_800_000 });
   const client = await pool.connect();
   try {
-    const r = await enqueueWeek(client, week);
-    console.log(`enqueued week ${week}: upserted=${r.upserted} retired=${r.retired}`);
+    const r = await enqueueWeek(client, week, { force: process.env.FIRE_ENQUEUE_FORCE === '1' });
+    console.log(`enqueued week ${week}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}`);
   } finally {
     client.release();
     await pool.end();
@@ -3709,7 +3715,7 @@ Every push: `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts`
 - [ ] **Step 1 (owner's go): apply 0050 + seed.** `APPLY_0050=yes node --env-file=.env.local --import tsx scripts/applyMigration0050.ts`. Expected console table: tier1_in_scope ≈ 1,003,344, tier1_never_fetched ≈ 715,083, snapshots > 356,540, earliest_tier1_due around 2026-10-10. Paste the table into the Results row.
 - [ ] **Step 2 (owner's go): integration test.** `RUN_INTEGRATION=1 pnpm test:integration tests/integration/keepaService.test.ts` — 3 tests pass; `SELECT count(*) FROM asin_products WHERE asin LIKE 'TESTKS%'` returns 0 afterwards.
 - [ ] **Step 3 (owner's go): push Tasks 1–12** (phase 1 code; the flag defaults to `weekly`, so nothing user-facing changes). After the deploys: the owner's Railway service shows a healthy deploy; `GET` its public URL (or the deploy's health log) returns `{"ok":true,"service":"keepa-service",…}`; Railway logs show `[keepa-svc] {"event":"token_status",…}` then `{"event":"batch","lane":"new",…}` lines about every 48 seconds; `/admin/keepa-enrichment` shows the card with "Tier 1 never fetched" falling. The worker's boot log lists 13 functions.
-- [ ] **Step 4: shadow week (≈ 7 days, owner watches the card).** Expected: never-fetched tier 1 reaches 0 in about 4.5 days; fetched last 24 h ≈ 150–180k; oldest tier-1 fetch ≤ 8 days; no alarm emails; after the weekly import, Railway worker logs show `[keepa-enqueue] week …: upserted=… retired=…` and the service's new lane refills with that week's ASINs. Spot check (read-only script, 10 ASINs): `asin_products` values vs the old table's latest rows for the same ASINs — titles, categories equal; prices/reviews within normal drift.
+- [ ] **Step 4: shadow week (≈ 7 days, owner watches the card).** Expected: never-fetched tier 1 reaches 0 in about 4.5 days; fetched last 24 h ≈ 150–180k; oldest tier-1 fetch ≤ 8 days; no alarm emails; after the weekly import, Railway worker logs show `[keepa-enqueue] week …: inserted=… updated=… retired=… vacuumed=…` and the service's new lane refills with that week's ASINs. Spot check (read-only script, 10 ASINs): `asin_products` values vs the old table's latest rows for the same ASINs — titles, categories equal; prices/reviews within normal drift.
 - [ ] **Step 5 (owner): flag flip (phase 2).** Owner sets `KEEPA_READ_SOURCE=products` on Vercel (Production) and on the Railway worker. Smoke: a keyword detail page shows product data for an ASIN the service fetched (compare "last fetched" on the card); the explorer's avg-price sort still works after the next nightly sync (03:30 ET) or after the next import; the category builder still lists the departments. Revert = set the variable back to `weekly`.
 - [ ] **Step 6 (owner's go): push Task 13 (phase 3)** after one weekly import has gone through with both paths. Smoke after the next import: the service picks up the new ASINs (card's never-fetched count jumps then drains), no enrichment email arrives, the explorer sync runs (watcher log `sync:new_lane_drained`).
 - [ ] **Step 7: docs.** Append a "Landed shape" section to this plan (deviations found during execution) and fill the Results table; commit with the next push.
