@@ -35,7 +35,7 @@ export interface WatcherInput {
   /**
    * The explorer's current week has reached the catalog's scope week (true when either is unknown).
    * The import enqueues a new week before the ~4.5-hour explorer refresh, and the sync job reads the
-   * explorer's week itself, so a drained-lane sync waits for the refresh to swap the week in.
+   * explorer's week itself, so both explorer syncs wait for the refresh to swap the week in.
    */
   explorerCaughtUp: boolean;
   nightlySyncDate: string | null;
@@ -101,8 +101,10 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
   const actions: WatcherAction[] = [...emails.map((variant) => ({ kind: 'email' as const, variant })), ...stamps];
 
   if (i.readSource === 'products') {
-    // Both waits below (six hours since the last sync, the explorer on the scope week) are deferrals:
-    // the drain stamp stays newer than sync_fired_at, so a later tick fires the sync.
+    // The drained-lane waits (six hours since the last sync, the explorer on the scope week) are
+    // deferrals: the drain stamp stays newer than sync_fired_at, so a later tick fires the sync. A
+    // nightly window while the explorer is still on the previous week is skipped (a pending drain
+    // fires after the swap; otherwise the next night syncs).
     if (
       i.laneNewDrainedAt &&
       (!i.syncFiredAt || i.laneNewDrainedAt > i.syncFiredAt) &&
@@ -115,7 +117,8 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
       i.et.minute >= NIGHTLY_WINDOW.fromMinute &&
       i.et.minute <= NIGHTLY_WINDOW.toMinute &&
       age(i.lastBatchAt) <= RECENT_BATCH_MS &&
-      i.nightlySyncDate !== i.et.dateKey
+      i.nightlySyncDate !== i.et.dateKey &&
+      i.explorerCaughtUp
     ) {
       actions.push(
         { kind: 'sync', reason: 'nightly' },
@@ -125,4 +128,18 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
     }
   }
   return actions;
+}
+
+/**
+ * Whether either sync branch above could fire this tick, judged without the explorer and scope
+ * weeks: catalog reads on, and a drain newer than the last sync or the nightly window. The watcher
+ * reads those weeks only when this is true and passes explorerCaughtUp: true otherwise, which
+ * cannot change a decision.
+ */
+export function syncCouldFire(i: Pick<WatcherInput, 'readSource' | 'laneNewDrainedAt' | 'syncFiredAt' | 'et'>): boolean {
+  if (i.readSource !== 'products') return false;
+  const drainPending = !!i.laneNewDrainedAt && (!i.syncFiredAt || i.laneNewDrainedAt > i.syncFiredAt);
+  const inNightlyWindow =
+    i.et.hour === NIGHTLY_WINDOW.hour && i.et.minute >= NIGHTLY_WINDOW.fromMinute && i.et.minute <= NIGHTLY_WINDOW.toMinute;
+  return drainPending || inNightlyWindow;
 }

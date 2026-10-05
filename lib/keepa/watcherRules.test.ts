@@ -1,6 +1,6 @@
 // lib/keepa/watcherRules.test.ts
 import { describe, it, expect } from 'vitest';
-import { decideWatcherActions, easternClock, type WatcherInput } from './watcherRules';
+import { decideWatcherActions, easternClock, syncCouldFire, type EasternClock, type WatcherInput } from './watcherRules';
 
 const NOW = new Date('2026-10-06T12:00:00Z');
 const min = (n: number) => new Date(NOW.getTime() - n * 60_000);
@@ -100,6 +100,48 @@ describe('decideWatcherActions', () => {
     expect(decideWatcherActions({ ...night, nightlySyncDate: '2026-10-06' })).toEqual([]);
     expect(decideWatcherActions({ ...night, et: { ...night.et, minute: 45 } })).toEqual([]);
     expect(decideWatcherActions({ ...night, lastBatchAt: min(25 * 60), dueWorkExists: false })).toEqual([]);
+  });
+
+  it('skips the nightly sync while the explorer is still on the previous week', () => {
+    const night = { ...base, et: { hour: 3, minute: 31, dateKey: '2026-10-06' } };
+    expect(decideWatcherActions({ ...night, explorerCaughtUp: false })).toEqual([]);
+    // A drain pending in the window mid-refresh is held too; it fires after the swap.
+    expect(decideWatcherActions({ ...night, explorerCaughtUp: false, laneNewDrainedAt: min(3) })).toEqual([]);
+  });
+});
+
+describe('syncCouldFire', () => {
+  const NIGHT: EasternClock = { hour: 3, minute: 31, dateKey: '2026-10-06' };
+
+  it('is true only with catalog reads and either a drain newer than the last sync or the nightly window', () => {
+    expect(syncCouldFire(base)).toBe(false);
+    expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3) })).toBe(true);
+    expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3), syncFiredAt: min(2) })).toBe(false);
+    expect(syncCouldFire({ ...base, et: NIGHT })).toBe(true);
+    expect(syncCouldFire({ ...base, et: { ...NIGHT, minute: 45 } })).toBe(false);
+    expect(syncCouldFire({ ...base, readSource: 'weekly', laneNewDrainedAt: min(3), et: NIGHT })).toBe(false);
+  });
+
+  it('when false, the explorer week cannot change a decision, so the watcher may skip reading it', () => {
+    const grid = (['products', 'weekly'] as const).flatMap((readSource) =>
+      [null, min(3), min(500)].flatMap((laneNewDrainedAt) =>
+        [null, min(2), min(120), min(7 * 60)].flatMap((syncFiredAt) =>
+          [base.et, NIGHT, { ...NIGHT, minute: 45 }].flatMap((et) =>
+            [null, NIGHT.dateKey].flatMap((nightlySyncDate) =>
+              [min(2), min(25 * 60)].map((lastBatchAt): WatcherInput => ({ ...base, readSource, laneNewDrainedAt, syncFiredAt, et, nightlySyncDate, lastBatchAt })),
+            ),
+          ),
+        ),
+      ),
+    );
+    let differing = 0;
+    for (const i of grid) {
+      const behind = decideWatcherActions({ ...i, explorerCaughtUp: false });
+      const caughtUp = decideWatcherActions({ ...i, explorerCaughtUp: true });
+      if (!syncCouldFire(i)) expect(behind, JSON.stringify(i)).toEqual(caughtUp);
+      else if (JSON.stringify(behind) !== JSON.stringify(caughtUp)) differing += 1;
+    }
+    expect(differing).toBeGreaterThan(0);
   });
 });
 
