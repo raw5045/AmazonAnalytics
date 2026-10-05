@@ -41,8 +41,17 @@ async function main(): Promise<void> {
     }));
   }).listen(port, () => logLine({ event: 'listening', port, bootId: BOOT_ID, tailEnabled }));
 
-  const store = new PgKeepaStore(createPool(dbUrl));
+  const pool = createPool(dbUrl);
+  const store = new PgKeepaStore(pool);
   await store.recordBoot(BOOT_ID, tailEnabled);
+  // Our pool-level statement_timeout is a startup parameter the pooler may ignore: log what the
+  // server applies ('0' = none) so a silent mismatch is visible in the first boot line.
+  try {
+    const { rows } = await pool.query('SHOW statement_timeout');
+    logLine({ event: 'server_statement_timeout', value: String(Object.values((rows[0] as Record<string, unknown> | undefined) ?? {})[0] ?? '?') });
+  } catch (e) {
+    logLine({ event: 'server_statement_timeout_failed', ...errFields(e) });
+  }
   await runForever({
     store,
     keepa: {
