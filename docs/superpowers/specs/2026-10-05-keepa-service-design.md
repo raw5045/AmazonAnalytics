@@ -133,7 +133,7 @@ The migration number is 0050 (hand-numbered; the drizzle journal stays frozen). 
 | delisted | **kept** (title stays for display) | delisted | now | +30 days | reset as above |
 | error (Keepa failure, bad object) | kept | unchanged if it was ever fetched, else `error` | unchanged | +1 day × 2^(consecutive_errors − 1), capped at 7 days | `consecutive_errors + 1`, `error_code` set |
 
-`fetch_count` increments on active, no_price and delisted. Readers treat only `active` rows as enriched, as today.
+`fetch_count` increments on active, no_price and delisted. Readers take prices only from `active` rows; the explorer staging and sync also carry `no_price` and `delisted` rows for their reviews and category (§13), and the detail page hides a delisted product's point-in-time facts.
 
 ### 5.3 Failure handling
 
@@ -174,7 +174,7 @@ Emails go to the same admin recipients as the enrichment emails, through the exi
 
 ## 7. App readers (phase 2, behind a flag)
 
-`KEEPA_READ_SOURCE` = `weekly` (default) or `products`, read at request time through `lib/keepa/readSource.ts`. Set on Vercel and the Railway worker; flipping it is an env change, not a deploy. Readers with two SQL variants:
+`KEEPA_READ_SOURCE` = `weekly` (default) or `products`, read at request time through `lib/keepa/readSource.ts`. Set on Vercel and the Railway worker; flipping it is an env change PLUS a redeploy (Vercel applies env to new deployments only; Railway redeploys the worker on a variable change — run `scripts/checkActiveJobs.ts` first). Readers with two SQL variants:
 
 - **Keyword detail** (`lib/explorer/fetchKeywordDetail.ts`, both product queries): same joins to find the three ASINs, `FROM asin_products a WHERE a.asin = ANY(...)`, no week predicate. Column names match, so `mapEnrichedProducts` is unchanged; the new fields are selected and carried on the row type for a later UI arc.
 - **Weekly refresh staging** (`inngest/functions/refreshSummary.ts`, `stageEnrichedAsins`) and **aggregate sync phase 1** (`worker/kcsKeepaSyncJobs.ts`): `SELECT asin, current_price_cents, review_count, average_rating_x10, category_leaf, category_path FROM asin_products WHERE enrichment_status = 'active'` (no DISTINCT ON over 2.9M rows).
