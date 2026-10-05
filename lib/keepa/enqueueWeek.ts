@@ -12,16 +12,20 @@
  *
  * Concurrency: the upsert holds row locks on ~2.3M rows for minutes while the Keepa service
  * writes batches of 100 in claim order, so the two would deadlock. The runner holds the
- * exclusive advisory lock ENQUEUE_LOCK_KEY across the upsert and the retire; the service's batch
- * writes take the shared form first (services/keepa/pgStore.ts) and simply wait.
+ * exclusive transaction-scoped advisory lock ENQUEUE_LOCK_KEY (`pg_advisory_xact_lock`) across
+ * the scope check, the upsert and the retire, in one transaction — transaction-scoped because
+ * Neon's pooler (PgBouncer, transaction mode) does not keep session-level locks; the service's
+ * store transactions take the shared form first (services/keepa/pgStore.ts) and simply wait.
+ * VACUUM runs after COMMIT.
  *
  * Guards: a week that upserts zero rows (not imported yet, or a mistyped date) stops before the
  * retire, and a week older than the catalog's current scope week is refused unless `force` is
  * set — either would otherwise empty or rewind the queue, silently (an empty queue idles with a
  * fresh heartbeat, so no watcher alarm would fire).
  *
- * `client` must be ONE dedicated autocommit connection (a pg PoolClient or Client — never a Pool,
- * never inside BEGIN): the advisory lock is session-scoped and VACUUM cannot run in a transaction.
+ * `client` must be ONE dedicated connection (a pg PoolClient or Client — never a Pool, never
+ * already inside a transaction): the runner opens its own transaction, and VACUUM cannot run
+ * inside one.
  * Callers: the import's completion step (inngest/functions/importFile.ts, Task 10), the one-time
  * 0050 seed (untracked scripts/applyMigration0050.ts), and scripts/fireEnqueueWeek.ts (Task 10).
  */
@@ -44,6 +48,7 @@ export interface EnqueueWeekResult {
   inserted: number;
   updated: number;
   retired: number;
+  vacuumed: boolean;
 }
 export interface EnqueueWeekOptions {
   /** Enqueue a week older than the catalog's scope week anyway (never from the import hook). */
@@ -116,9 +121,12 @@ export function enqueueWeekStatements(weekEndDate: string): EnqueueWeekStatement
 
 export async function enqueueWeek(client: Queryable, weekEndDate: string, opts: EnqueueWeekOptions = {}): Promise<EnqueueWeekResult> {
   const s = enqueueWeekStatements(weekEndDate);
-  let result: EnqueueWeekResult;
-  await client.query('SELECT pg_advisory_lock($1)', [ENQUEUE_LOCK_KEY]);
+  let result: Omit<EnqueueWeekResult, 'vacuumed'>;
+  await client.query('BEGIN');
   try {
+    // The pool's statement timeout may not survive the pooler; set it for this transaction.
+    await client.query(`SET LOCAL statement_timeout = '1800s'`);
+    await client.query('SELECT pg_advisory_xact_lock($1)', [ENQUEUE_LOCK_KEY]);
     if (!opts.force) {
       const { rows } = await client.query('SELECT max(scope_week)::text AS max_week FROM asin_products');
       const maxWeek = (rows[0] as { max_week: string | null } | undefined)?.max_week ?? null;
@@ -133,9 +141,19 @@ export async function enqueueWeek(client: Queryable, weekEndDate: string, opts: 
     }
     const ret = await client.query(s.retire.text, s.retire.values);
     result = { inserted: counts.inserted, updated: counts.updated, retired: ret.rowCount ?? 0 };
-  } finally {
-    await client.query('SELECT pg_advisory_unlock($1)', [ENQUEUE_LOCK_KEY]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => undefined);
+    throw e;
   }
-  if (opts.vacuum !== false) await client.query('VACUUM (ANALYZE) asin_products');
-  return result;
+  let vacuumed = false;
+  if (opts.vacuum !== false) {
+    try {
+      await client.query('VACUUM (ANALYZE) asin_products');
+      vacuumed = true;
+    } catch {
+      // Best-effort: the upsert and retire are committed; autovacuum (5% scale factor) covers a miss.
+    }
+  }
+  return { ...result, vacuumed };
 }

@@ -52,7 +52,7 @@ describe('enqueueWeekStatements', () => {
 });
 
 /** Recording fake of one dedicated connection. */
-function fakeClient(opts: { scopeWeek?: string | null; upsert?: { inserted: number; updated: number } | Error; retired?: number } = {}) {
+function fakeClient(opts: { scopeWeek?: string | null; upsert?: { inserted: number; updated: number } | Error; retired?: number; vacuumFails?: boolean } = {}) {
   const calls: Array<{ text: string; values?: unknown[] }> = [];
   const client = {
     query: async (text: string, values?: unknown[]) => {
@@ -63,6 +63,7 @@ function fakeClient(opts: { scopeWeek?: string | null; upsert?: { inserted: numb
         return { rowCount: 1, rows: [opts.upsert ?? { inserted: 5, updated: 7 }] };
       }
       if (text.includes('SET in_scope = false')) return { rowCount: opts.retired ?? 2, rows: [] };
+      if (text.includes('VACUUM') && opts.vacuumFails) throw Object.assign(new Error('x'), { code: '55P03' });
       return { rowCount: 0, rows: [] };
     },
   };
@@ -70,49 +71,69 @@ function fakeClient(opts: { scopeWeek?: string | null; upsert?: { inserted: numb
 }
 
 describe('enqueueWeek', () => {
-  it('locks, checks the scope week, upserts, retires, unlocks, then vacuums — and reports all three counts', async () => {
+  it('runs the lock, scope check, upsert and retire in one transaction, then vacuums after COMMIT — and reports every count', async () => {
     const f = fakeClient({ scopeWeek: '2026-09-26' });
-    await expect(enqueueWeek(f.client, '2026-10-03')).resolves.toEqual({ inserted: 5, updated: 7, retired: 2 });
-    const t = f.texts();
-    expect(t[0]).toBe('SELECT pg_advisory_lock($1)');
-    expect(f.calls[0].values).toEqual([ENQUEUE_LOCK_KEY]);
-    expect(t[1]).toContain('max(scope_week)');
-    expect(t[2]).toContain('INSERT INTO asin_products');
-    expect(t[3]).toContain('SET in_scope = false');
-    expect(t[4]).toBe('SELECT pg_advisory_unlock($1)');
-    expect(t[5]).toBe('VACUUM (ANALYZE) asin_products');
-    expect(f.calls[2].values).toEqual(enqueueWeekStatements('2026-10-03').upsert.values);
-    expect(f.calls[3].values).toEqual(['2026-10-03']);
+    await expect(enqueueWeek(f.client, '2026-10-03')).resolves.toEqual({ inserted: 5, updated: 7, retired: 2, vacuumed: true });
+    expect(f.texts()).toEqual([
+      'BEGIN',
+      "SET LOCAL statement_timeout = '1800s'",
+      'SELECT pg_advisory_xact_lock($1)',
+      expect.stringContaining('max(scope_week)'),
+      expect.stringContaining('INSERT INTO asin_products'),
+      expect.stringContaining('SET in_scope = false'),
+      'COMMIT',
+      'VACUUM (ANALYZE) asin_products',
+    ]);
+    expect(f.calls[2].values).toEqual([ENQUEUE_LOCK_KEY]);
+    expect(f.calls[4].values).toEqual(enqueueWeekStatements('2026-10-03').upsert.values);
+    expect(f.calls[5].values).toEqual(['2026-10-03']);
   });
 
-  it('a week with no rows stops before the retire with a coded error, and still unlocks', async () => {
+  it('a week with no rows stops before the retire with a coded error, and rolls back without vacuuming', async () => {
     const f = fakeClient({ upsert: { inserted: 0, updated: 0 } });
     await expect(enqueueWeek(f.client, '2026-10-03')).rejects.toMatchObject({ name: 'EnqueueWeekError', code: 'enqueue_week_no_rows' });
-    expect(f.texts()).not.toContainEqual(expect.stringContaining('SET in_scope = false'));
-    expect(f.texts().at(-1)).toBe('SELECT pg_advisory_unlock($1)');
+    const t = f.texts();
+    expect(t).not.toContainEqual(expect.stringContaining('SET in_scope = false'));
+    expect(t).not.toContain('COMMIT');
+    expect(t).not.toContain('VACUUM (ANALYZE) asin_products');
+    expect(t.at(-1)).toBe('ROLLBACK');
   });
 
-  it('a week older than the catalog scope is refused before the upsert, unless forced', async () => {
+  it('a week older than the catalog scope is refused before the upsert and rolled back, unless forced', async () => {
     const f = fakeClient({ scopeWeek: '2026-10-03' });
     await expect(enqueueWeek(f.client, '2026-09-26')).rejects.toMatchObject({ code: 'enqueue_week_older_than_scope' });
     expect(f.texts()).not.toContainEqual(expect.stringContaining('INSERT INTO asin_products'));
+    expect(f.texts().at(-1)).toBe('ROLLBACK');
     const g = fakeClient({ scopeWeek: '2026-10-03' });
     await expect(enqueueWeek(g.client, '2026-09-26', { force: true })).resolves.toMatchObject({ inserted: 5 });
     expect(g.texts()).not.toContainEqual(expect.stringContaining('max(scope_week)'));
+    expect(g.texts()).toContain('COMMIT');
   });
 
-  it('an upsert failure skips the retire and the vacuum but still unlocks', async () => {
+  it('an upsert failure skips the retire and the vacuum and rolls back', async () => {
     const f = fakeClient({ upsert: Object.assign(new Error('x'), { code: '42P01' }) });
     await expect(enqueueWeek(f.client, '2026-10-03')).rejects.toMatchObject({ code: '42P01' });
     const t = f.texts();
     expect(t).not.toContainEqual(expect.stringContaining('SET in_scope = false'));
+    expect(t).not.toContain('COMMIT');
     expect(t).not.toContain('VACUUM (ANALYZE) asin_products');
-    expect(t.at(-1)).toBe('SELECT pg_advisory_unlock($1)');
+    expect(t.at(-1)).toBe('ROLLBACK');
   });
 
   it('the vacuum can be skipped', async () => {
     const f = fakeClient();
-    await enqueueWeek(f.client, '2026-10-03', { vacuum: false });
+    await expect(enqueueWeek(f.client, '2026-10-03', { vacuum: false })).resolves.toMatchObject({ vacuumed: false });
     expect(f.texts()).not.toContain('VACUUM (ANALYZE) asin_products');
+    expect(f.texts()).toContain('COMMIT');
+  });
+
+  it('a VACUUM failure is swallowed and reported as vacuumed: false', async () => {
+    const f = fakeClient({ vacuumFails: true });
+    await expect(enqueueWeek(f.client, '2026-10-03')).resolves.toEqual({ inserted: 5, updated: 7, retired: 2, vacuumed: false });
+    const t = f.texts();
+    const commit = t.indexOf('COMMIT');
+    expect(commit).toBeGreaterThan(-1);
+    expect(t.indexOf('VACUUM (ANALYZE) asin_products')).toBeGreaterThan(commit);
+    expect(t).not.toContain('ROLLBACK');
   });
 });
