@@ -16,11 +16,14 @@ if (!week || !/^\d{4}-\d{2}-\d{2}$/.test(week)) {
 }
 
 (async () => {
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1, statement_timeout: 1_800_000 });
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 1, statement_timeout: 1_800_000, keepAlive: true, keepAliveInitialDelayMillis: 10_000, connectionTimeoutMillis: 20_000 });
+  // Dropped-socket guards: pg-pool re-emits an idle client's 'error' on the pool but unhooks its listener at checkout, and an unhandled 'error' crashes the script; the failed query still rejects into the catch.
+  pool.on('error', () => undefined);
   const client = await pool.connect();
+  client.on('error', () => undefined);
   try {
     const r = await enqueueWeek(client, week, { force: process.env.FIRE_ENQUEUE_FORCE === '1' });
-    console.log(`enqueued week ${week}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}`);
+    console.log(`enqueued week ${week}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}${r.vacuumError ? ` vacuumError=${r.vacuumError}` : ''}`);
   } finally {
     client.release();
     await pool.end();

@@ -996,12 +996,15 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
     // ------------------------------------------------------------------
     if (!isReplay) {
       await timePhase(file.id, 'keepa_enqueue', async () => {
-        const enqueuePool = new Pool({ connectionString: env.DATABASE_URL, max: 1, statement_timeout: 1_800_000 });
+        const enqueuePool = new Pool({ connectionString: env.DATABASE_URL, max: 1, statement_timeout: 1_800_000, keepAlive: true, keepAliveInitialDelayMillis: 10_000, connectionTimeoutMillis: 20_000 });
+        // Dropped-socket guards: pg-pool re-emits an idle client's 'error' on the pool but unhooks its listener at checkout, and an unhandled 'error' crashes the worker; the failed query still rejects into the catch.
+        enqueuePool.on('error', () => undefined);
         try {
           const client = await enqueuePool.connect();
+          client.on('error', () => undefined);
           try {
             const r = await enqueueWeek(client, weekEndDate);
-            console.log(`[keepa-enqueue] week ${weekEndDate}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}`);
+            console.log(`[keepa-enqueue] week ${weekEndDate}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}${r.vacuumError ? ` vacuumError=${r.vacuumError}` : ''}`);
           } finally {
             client.release();
           }
