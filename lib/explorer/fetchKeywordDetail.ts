@@ -21,6 +21,7 @@
 import { cache } from 'react';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
+import { keepaReadSource } from '@/lib/keepa/readSource';
 import type { SeverityKey } from './types';
 import { pickFitForWeek, predictVolumeFromFit, type FitParams } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
@@ -101,6 +102,16 @@ export interface EnrichedProduct {
   avg90PriceCents: number | null;
   avg180PriceCents: number | null;
   avg365PriceCents: number | null;
+  /** Catalog-only fields (null under the weekly source). Spec 2026-10-05 §4.1. */
+  monthlySold?: number | null;
+  keepaUpdatedAt?: string | null;
+  listedSince?: string | null;
+  newOfferCount?: number | null;
+  fbaOfferCount?: number | null;
+  fbmOfferCount?: number | null;
+  amazonAvailability?: number | null;
+  avg30SalesRank?: number | null;
+  avg90SalesRank?: number | null;
   enrichmentStatus: 'active' | 'no_price' | 'delisted' | 'error';
 }
 
@@ -199,6 +210,61 @@ export interface KeywordProducts {
   enrichedProductsByAsin: Record<string, EnrichedProduct>;
 }
 
+type NeonSql = ReturnType<typeof neon<false, false>>;
+
+/**
+ * Keepa facts for a keyword's top-3 ASINs (≤ 3 rows). Spec 2026-10-05 §7: from the asin_products
+ * catalog when KEEPA_READ_SOURCE=products (no week predicate — the catalog holds one current row
+ * per ASIN), otherwise from asin_weekly_data at the keyword's current week. Both shapes map
+ * through mapEnrichedProducts; the catalog adds the new fields, null under the weekly source.
+ */
+export function enrichedProductsFor(sql: NeonSql, searchTermId: string) {
+  if (keepaReadSource() === 'products') {
+    return sql`
+      SELECT
+        a.asin, a.title, a.brand, a.image_url,
+        a.category_path, a.category_root, a.category_leaf,
+        a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
+        a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
+        a.monthly_sold, a.keepa_updated_at::text AS keepa_updated_at, a.listed_since::text AS listed_since,
+        a.new_offer_count, a.fba_offer_count, a.fbm_offer_count, a.amazon_availability,
+        a.avg30_sales_rank, a.avg90_sales_rank,
+        a.enrichment_status::text AS enrichment_status
+      FROM asin_products a
+      JOIN keyword_current_summary kcs
+        ON kcs.search_term_id = ${searchTermId}
+      JOIN keyword_weekly_metrics kwm
+        ON kwm.search_term_id = kcs.search_term_id
+        AND kwm.week_end_date = kcs.current_week_end_date
+      WHERE a.asin = ANY(ARRAY[
+          kwm.top_clicked_product_1_asin,
+          kwm.top_clicked_product_2_asin,
+          kwm.top_clicked_product_3_asin
+        ]::text[])
+    `;
+  }
+  return sql`
+      SELECT
+        a.asin, a.title, a.brand, a.image_url,
+        a.category_path, a.category_root, a.category_leaf,
+        a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
+        a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
+        a.enrichment_status::text AS enrichment_status
+      FROM asin_weekly_data a
+      JOIN keyword_current_summary kcs
+        ON kcs.search_term_id = ${searchTermId}
+      JOIN keyword_weekly_metrics kwm
+        ON kwm.search_term_id = kcs.search_term_id
+        AND kwm.week_end_date = kcs.current_week_end_date
+      WHERE a.week_end_date = kcs.current_week_end_date
+        AND a.asin = ANY(ARRAY[
+          kwm.top_clicked_product_1_asin,
+          kwm.top_clicked_product_2_asin,
+          kwm.top_clicked_product_3_asin
+        ]::text[])
+    `;
+}
+
 /**
  * Returns null when the search_term doesn't exist (404 case for the page).
  */
@@ -293,31 +359,8 @@ export async function fetchKeywordDetail(
       FROM import_duplicate_search_terms
       WHERE search_term_id = ${searchTermId}
     `,
-    // Keepa-enriched data for the top-3 ASINs at the current week. The
-    // JOIN narrows asin_weekly_data to (week = kcs.current_week,
-    // asin IN [top_1, top_2, top_3]) — at most 3 rows. Returns 0 rows
-    // for dormant keywords (no kcs row) or ones whose top-3 ASINs fall
-    // outside the enrichment scope (excluded category / rank > 100K).
-    sql`
-      SELECT
-        a.asin, a.title, a.brand, a.image_url,
-        a.category_path, a.category_root, a.category_leaf,
-        a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
-        a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
-        a.enrichment_status::text AS enrichment_status
-      FROM asin_weekly_data a
-      JOIN keyword_current_summary kcs
-        ON kcs.search_term_id = ${searchTermId}
-      JOIN keyword_weekly_metrics kwm
-        ON kwm.search_term_id = kcs.search_term_id
-        AND kwm.week_end_date = kcs.current_week_end_date
-      WHERE a.week_end_date = kcs.current_week_end_date
-        AND a.asin = ANY(ARRAY[
-          kwm.top_clicked_product_1_asin,
-          kwm.top_clicked_product_2_asin,
-          kwm.top_clicked_product_3_asin
-        ]::text[])
-    `,
+    // Keepa-enriched data for the top-3 ASINs (≤3 rows) — see enrichedProductsFor.
+    enrichedProductsFor(sql, searchTermId),
     // All calibration fits — used to compute per-week estimated volume.
     // Cardinality is small (a handful of monthly fits over the app's
     // lifetime), so fetching all and picking per-row in JS is cheaper
@@ -427,6 +470,15 @@ function mapEnrichedProducts(
       avg90PriceCents: (r.avg90_price_cents as number | null) ?? null,
       avg180PriceCents: (r.avg180_price_cents as number | null) ?? null,
       avg365PriceCents: (r.avg365_price_cents as number | null) ?? null,
+      monthlySold: (r.monthly_sold as number | null) ?? null,
+      keepaUpdatedAt: (r.keepa_updated_at as string | null) ?? null,
+      listedSince: (r.listed_since as string | null) ?? null,
+      newOfferCount: (r.new_offer_count as number | null) ?? null,
+      fbaOfferCount: (r.fba_offer_count as number | null) ?? null,
+      fbmOfferCount: (r.fbm_offer_count as number | null) ?? null,
+      amazonAvailability: (r.amazon_availability as number | null) ?? null,
+      avg30SalesRank: (r.avg30_sales_rank as number | null) ?? null,
+      avg90SalesRank: (r.avg90_sales_rank as number | null) ?? null,
       enrichmentStatus: r.enrichment_status as EnrichedProduct['enrichmentStatus'],
     };
   }
@@ -807,26 +859,7 @@ export async function fetchKeywordProducts(
   }
 
   // Keepa-enriched data for the top-3 ASINs at the current week (≤3 rows).
-  const enrichedRowsAny = await sql`
-    SELECT
-      a.asin, a.title, a.brand, a.image_url,
-      a.category_path, a.category_root, a.category_leaf,
-      a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
-      a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
-      a.enrichment_status::text AS enrichment_status
-    FROM asin_weekly_data a
-    JOIN keyword_current_summary kcs
-      ON kcs.search_term_id = ${searchTermId}
-    JOIN keyword_weekly_metrics kwm
-      ON kwm.search_term_id = kcs.search_term_id
-      AND kwm.week_end_date = kcs.current_week_end_date
-    WHERE a.week_end_date = kcs.current_week_end_date
-      AND a.asin = ANY(ARRAY[
-        kwm.top_clicked_product_1_asin,
-        kwm.top_clicked_product_2_asin,
-        kwm.top_clicked_product_3_asin
-      ]::text[])
-  `;
+  const enrichedRowsAny = await enrichedProductsFor(sql, searchTermId);
   const enrichedProductsByAsin = mapEnrichedProducts(
     enrichedRowsAny as unknown as Array<Record<string, unknown>>,
   );

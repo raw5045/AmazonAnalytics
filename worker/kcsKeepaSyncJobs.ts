@@ -28,6 +28,7 @@
 import { Pool } from 'pg';
 import { inngest } from '@/inngest/client';
 import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
+import { keepaReadSource } from '@/lib/keepa/readSource';
 
 const inflight = new Set<string>();
 
@@ -81,19 +82,25 @@ export function startKcsKeepaSyncJob(
         // doesn't run inside the txn that owns latest_per_term.
         log('phase=1 building tmp_asin_enriched_sync');
         await c.query(`DROP TABLE IF EXISTS tmp_asin_enriched_sync`);
+        const fromCatalog = keepaReadSource() === 'products';
         await c.query(
-          `CREATE UNLOGGED TABLE tmp_asin_enriched_sync AS
-           SELECT DISTINCT ON (a.asin)
-             a.asin,
-             a.current_price_cents,
-             a.review_count,
-             a.category_leaf,
-             a.category_path
-           FROM asin_weekly_data a
-           WHERE a.week_end_date <= $1::date
-             AND a.enrichment_status = 'active'
-           ORDER BY a.asin, a.week_end_date DESC`,
-          [cw],
+          fromCatalog
+            ? `CREATE UNLOGGED TABLE tmp_asin_enriched_sync AS
+               SELECT a.asin, a.current_price_cents, a.review_count, a.category_leaf, a.category_path
+               FROM asin_products a
+               WHERE a.enrichment_status = 'active'`
+            : `CREATE UNLOGGED TABLE tmp_asin_enriched_sync AS
+               SELECT DISTINCT ON (a.asin)
+                 a.asin,
+                 a.current_price_cents,
+                 a.review_count,
+                 a.category_leaf,
+                 a.category_path
+               FROM asin_weekly_data a
+               WHERE a.week_end_date <= $1::date
+                 AND a.enrichment_status = 'active'
+               ORDER BY a.asin, a.week_end_date DESC`,
+          fromCatalog ? [] : [cw],
         );
         await c.query(`CREATE UNIQUE INDEX ON tmp_asin_enriched_sync (asin)`);
         const { rows: cnt } = await c.query<{ n: string }>(

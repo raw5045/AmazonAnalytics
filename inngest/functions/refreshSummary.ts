@@ -41,6 +41,7 @@ import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 import { kwmRowToEntry, appendWeek, type ChartSeriesKwmRow } from '@/lib/explorer/chartSeries';
 import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
 import { warmChartSeriesLayers } from '@/lib/explorer/warmSeries';
+import { keepaReadSource } from '@/lib/keepa/readSource';
 
 /** Terms per chart-series rebuild chunk. Bounds worker memory: each chunk
  *  reads ≤52 kwm rows per term (~10k terms ≈ up to ~520k rows in flight). */
@@ -721,12 +722,31 @@ async function stageLatestPerTerm(client: PoolClient): Promise<void> {
  *
  * Only includes enrichment_status = 'active' rows; 'no_price' /
  * 'delisted' / 'error' rows have mostly NULL fields anyway.
+ *
+ * Under KEEPA_READ_SOURCE=products the catalog's current row replaces the latest-week lookup (spec 2026-10-05 §7).
  */
 async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string): Promise<void> {
   // Split into 2 separate calls — pg won't accept a multi-statement
   // string with bound params (treated as a prepared statement).
+  const fromCatalog = keepaReadSource() === 'products';
+  const asinsOfLatestTerms = `
+        SELECT DISTINCT asin FROM (
+          SELECT top_clicked_product_1_asin AS asin FROM latest_per_term WHERE top_clicked_product_1_asin IS NOT NULL
+          UNION
+          SELECT top_clicked_product_2_asin FROM latest_per_term WHERE top_clicked_product_2_asin IS NOT NULL
+          UNION
+          SELECT top_clicked_product_3_asin FROM latest_per_term WHERE top_clicked_product_3_asin IS NOT NULL
+        ) all_asins`;
   await client.query(
+    fromCatalog
+      ? `
+    CREATE TEMP TABLE asin_enriched_current ON COMMIT DROP AS
+    SELECT a.asin, a.current_price_cents, a.review_count, a.average_rating_x10, a.category_leaf, a.category_path
+    FROM asin_products a
+    WHERE a.enrichment_status = 'active'
+      AND a.asin IN (${asinsOfLatestTerms})
     `
+      : `
     CREATE TEMP TABLE asin_enriched_current ON COMMIT DROP AS
     SELECT DISTINCT ON (a.asin)
       a.asin,
@@ -738,18 +758,10 @@ async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string
     FROM asin_weekly_data a
     WHERE a.week_end_date <= $1::date
       AND a.enrichment_status = 'active'
-      AND a.asin IN (
-        SELECT DISTINCT asin FROM (
-          SELECT top_clicked_product_1_asin AS asin FROM latest_per_term WHERE top_clicked_product_1_asin IS NOT NULL
-          UNION
-          SELECT top_clicked_product_2_asin FROM latest_per_term WHERE top_clicked_product_2_asin IS NOT NULL
-          UNION
-          SELECT top_clicked_product_3_asin FROM latest_per_term WHERE top_clicked_product_3_asin IS NOT NULL
-        ) all_asins
-      )
+      AND a.asin IN (${asinsOfLatestTerms})
     ORDER BY a.asin, a.week_end_date DESC
     `,
-    [currentWeekEndDate],
+    fromCatalog ? [] : [currentWeekEndDate],
   );
   await client.query(`CREATE INDEX ON asin_enriched_current (asin)`);
 }

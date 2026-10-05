@@ -3,6 +3,8 @@
  * the current snapshot's week and cached by snapshot_version (a weekly refresh
  * mints a new snapshot_version, transparently rebuilding the cache).
  *
+ * Source table follows KEEPA_READ_SOURCE (lib/keepa/readSource.ts).
+ *
  * Everything is computed in SQL at the granularity the UI needs — root
  * departments, the children at a path, or the leaves under a path — so we never
  * materialize the full ~808 KB / 14,739-node tree just to render one level.
@@ -18,6 +20,7 @@
 import { unstable_cache } from 'next/cache';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
+import { keepaReadSource, type KeepaReadSource } from '@/lib/keepa/readSource';
 import { PATH_SEP } from './buildTree';
 import { type LightNode } from './treeNav';
 
@@ -45,9 +48,19 @@ function toSortedLevel(
 // ---- Root departments (initial page render) ----
 
 const buildCachedRoots = unstable_cache(
-  async (_sv: string, wk: string): Promise<LightNode[]> => {
+  async (_sv: string, wk: string, src: KeepaReadSource): Promise<LightNode[]> => {
     const sql = neon(env.DATABASE_URL);
-    const rows = (await sql`
+    const rows = (src === 'products'
+      ? await sql`
+      SELECT
+        split_part(category_path, ' › ', 1) AS name,
+        bool_or(category_path = split_part(category_path, ' › ', 1)) AS terminal,
+        bool_or(position(' › ' in category_path) > 0) AS has_children
+      FROM asin_products
+      WHERE in_scope AND category_path IS NOT NULL AND category_path <> ''
+      GROUP BY 1
+    `
+      : await sql`
       SELECT
         split_part(category_path, ' › ', 1) AS name,
         bool_or(category_path = split_part(category_path, ' › ', 1)) AS terminal,
@@ -66,17 +79,32 @@ const buildCachedRoots = unstable_cache(
 export async function loadRootDepartments(): Promise<LightNode[]> {
   const { sv, wk } = await getSnapshotMeta();
   if (!wk) return [];
-  return buildCachedRoots(sv ?? 'no-snapshot', wk);
+  return buildCachedRoots(sv ?? 'no-snapshot', wk, keepaReadSource());
 }
 
 // ---- Children at a path (drill-down) ----
 
 const buildCachedChildren = unstable_cache(
-  async (_sv: string, wk: string, prefix: string): Promise<LightNode[]> => {
+  async (_sv: string, wk: string, src: KeepaReadSource, prefix: string): Promise<LightNode[]> => {
     const sql = neon(env.DATABASE_URL);
     // Strip the path prefix, then group the next segment — same shape as roots,
     // but scoped to rows under `prefix`. starts_with avoids LIKE wildcard issues.
-    const rows = (await sql`
+    const rows = (src === 'products'
+      ? await sql`
+      WITH sub AS (
+        SELECT substring(category_path from char_length(${prefix}) + 1) AS rest
+        FROM asin_products
+        WHERE in_scope AND starts_with(category_path, ${prefix})
+      )
+      SELECT
+        split_part(rest, ' › ', 1) AS name,
+        bool_or(rest = split_part(rest, ' › ', 1)) AS terminal,
+        bool_or(position(' › ' in rest) > 0) AS has_children
+      FROM sub
+      WHERE rest <> ''
+      GROUP BY 1
+    `
+      : await sql`
       WITH sub AS (
         SELECT substring(category_path from char_length(${prefix}) + 1) AS rest
         FROM asin_weekly_data
@@ -99,17 +127,23 @@ const buildCachedChildren = unstable_cache(
 export async function loadChildrenAtPath(path: string[]): Promise<LightNode[]> {
   const { sv, wk } = await getSnapshotMeta();
   if (!wk) return [];
-  if (path.length === 0) return buildCachedRoots(sv ?? 'no-snapshot', wk);
+  if (path.length === 0) return buildCachedRoots(sv ?? 'no-snapshot', wk, keepaReadSource());
   const prefix = path.join(PATH_SEP) + PATH_SEP;
-  return buildCachedChildren(sv ?? 'no-snapshot', wk, prefix);
+  return buildCachedChildren(sv ?? 'no-snapshot', wk, keepaReadSource(), prefix);
 }
 
 // ---- Leaves under a path ("Add all of X") ----
 
 const buildCachedLeaves = unstable_cache(
-  async (_sv: string, wk: string, pathStr: string, prefix: string): Promise<string[]> => {
+  async (_sv: string, wk: string, src: KeepaReadSource, pathStr: string, prefix: string): Promise<string[]> => {
     const sql = neon(env.DATABASE_URL);
-    const rows = (await sql`
+    const rows = (src === 'products'
+      ? await sql`
+      SELECT DISTINCT category_path FROM asin_products
+      WHERE in_scope AND (category_path = ${pathStr} OR starts_with(category_path, ${prefix}))
+        AND category_path IS NOT NULL AND category_path <> ''
+    `
+      : await sql`
       SELECT DISTINCT category_path FROM asin_weekly_data
       WHERE week_end_date = ${wk}::date
         AND (category_path = ${pathStr} OR starts_with(category_path, ${prefix}))
@@ -129,5 +163,5 @@ export async function loadLeavesUnderPath(path: string[]): Promise<string[]> {
   const pathStr = path.join(PATH_SEP);
   // Empty path → every leaf in the tree (starts_with(x, '') matches all rows).
   const prefix = path.length === 0 ? '' : pathStr + PATH_SEP;
-  return buildCachedLeaves(sv ?? 'no-snapshot', wk, pathStr, prefix);
+  return buildCachedLeaves(sv ?? 'no-snapshot', wk, keepaReadSource(), pathStr, prefix);
 }
