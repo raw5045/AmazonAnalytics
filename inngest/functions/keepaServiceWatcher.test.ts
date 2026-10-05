@@ -52,7 +52,7 @@ interface FakeOpts {
   kcsWeek?: string | null;
   /** What sendAlarm reports: true = Resend accepted the email. */
   delivered?: boolean;
-  /** The old per-week enrichment job is running (keepa_enrichment_runs). */
+  /** An old per-week enrichment run (keepa_enrichment_runs) heartbeat in the last thirty minutes, any status. */
   oldJob?: boolean;
 }
 
@@ -193,16 +193,16 @@ describe('runWatcherTick', () => {
     expect(h.updates()).toEqual([]);
   });
 
-  it('while the old enrichment job runs, the stall alarm is held but a down alarm still goes out', async () => {
+  it("within thirty minutes of an old enrichment run's heartbeat the stall alarm is held, but a down alarm still goes out", async () => {
     // Tonight's sync already ran, so the log's held list carries only the job.
     const held = harness({ status: { last_batch_at: ago(180), nightly_sync_date: '2026-10-06' }, oldJob: true });
     await expect(runWatcherTick(held.client, held.deps)).resolves.toEqual({ ok: true, actions: [] });
-    expect(flat(held.calls[3].text)).toContain(
-      "FROM keepa_enrichment_runs WHERE status = 'running' AND heartbeat_at > now() - interval '10 minutes'",
-    );
+    // Any status: a run marked orphaned or completed can still have the service yielding to it.
+    expect(flat(held.calls[3].text)).toContain("FROM keepa_enrichment_runs WHERE heartbeat_at > now() - interval '30 minutes'");
+    expect(held.calls[3].text).not.toContain('status');
     expect(held.sendAlarm).not.toHaveBeenCalled();
     expect(held.updates()).toEqual([]);
-    expect(tickLog().held).toEqual(['old_job_running']);
+    expect(tickLog().held).toEqual(['old_job_recent']);
 
     const down = harness({ status: { heartbeat_at: ago(40) }, oldJob: true });
     await expect(runWatcherTick(down.client, down.deps)).resolves.toEqual({ ok: true, actions: ['email:down', 'stamp:down_alarm_sent_at'] });
