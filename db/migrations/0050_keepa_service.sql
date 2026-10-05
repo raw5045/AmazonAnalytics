@@ -67,6 +67,9 @@ CREATE INDEX IF NOT EXISTS asin_products_category_path_idx
   ON asin_products (category_path text_pattern_ops)
   WHERE in_scope AND category_path IS NOT NULL;
 --> statement-breakpoint
+CREATE INDEX IF NOT EXISTS asin_products_scope_week_idx
+  ON asin_products (scope_week);
+--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS asin_snapshots (
   asin text NOT NULL,
   fetched_at timestamptz NOT NULL,

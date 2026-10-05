@@ -59,11 +59,12 @@ export const asinProducts = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    // The four indexes are PARTIAL in the migration (drizzle's index().where() emits inconsistently) and the category_path index uses text_pattern_ops there; declared plain here for type-checking only.
+    // The four indexes are PARTIAL in the migration (drizzle's index().where() emits inconsistently) and the category_path index uses text_pattern_ops there, and scope_week has a plain index for max(scope_week); declared plain here for type-checking only.
     neverFetchedIdx: index('asin_products_never_fetched_idx').on(t.tier, t.bestRank, t.asin),
     dueIdx: index('asin_products_due_idx').on(t.tier, t.nextDueAt, t.asin),
     claimedIdx: index('asin_products_claimed_idx').on(t.claimedAt),
     categoryPathIdx: index('asin_products_category_path_idx').on(t.categoryPath),
+    scopeWeekIdx: index('asin_products_scope_week_idx').on(t.scopeWeek),
   }),
 );
 
