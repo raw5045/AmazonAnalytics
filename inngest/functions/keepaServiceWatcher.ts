@@ -76,6 +76,17 @@ export const keepaServiceWatcherFn = inngest.createFunction(
           [ENQUEUE_LOCK_KEY],
         );
         const running = lock[0]?.running ?? false;
+        // The catalog's scope week vs the explorer's current week: the import enqueues a new week
+        // before the ~4.5-hour explorer refresh, so a drained-lane sync waits until the refresh has
+        // swapped the week in (the sync job syncs whatever week the explorer is on).
+        const { rows: weeks } = await c.query<{ scope_week: string | null; kcs_week: string | null }>(
+          `SELECT (SELECT max(scope_week)::text FROM asin_products) AS scope_week,
+                  (SELECT current_week_end_date::text FROM keyword_current_summary_meta WHERE singleton = true) AS kcs_week`,
+        );
+        const scope = weeks[0]?.scope_week ?? null;
+        const kcs = weeks[0]?.kcs_week ?? null;
+        // ISO dates compare correctly as text.
+        const explorerCaughtUp = !scope || !kcs || kcs >= scope;
         const now = new Date();
         const actions = decideWatcherActions({
           now,
@@ -86,6 +97,7 @@ export const keepaServiceWatcherFn = inngest.createFunction(
           dueWorkExists: due[0]?.due ?? false,
           laneNewDrainedAt: s.lane_new_drained_at,
           syncFiredAt: s.sync_fired_at,
+          explorerCaughtUp,
           nightlySyncDate: s.nightly_sync_date,
           downAlarmSentAt: s.down_alarm_sent_at,
           stallAlarmSentAt: s.stall_alarm_sent_at,
@@ -96,10 +108,7 @@ export const keepaServiceWatcherFn = inngest.createFunction(
           if (a.kind === 'email') {
             await sendKeepaServiceAlarmEmail({ variant: a.variant, heartbeatAt: s.heartbeat_at, lastBatchAt: s.last_batch_at });
           } else if (a.kind === 'sync') {
-            const { rows: meta } = await c.query<{ cw: string }>(
-              `SELECT current_week_end_date::text AS cw FROM keyword_current_summary_meta WHERE singleton = true`,
-            );
-            if (meta[0]?.cw) await inngest.send({ name: 'keepa/aggregates-sync-requested', data: { weekEndDate: meta[0].cw } });
+            if (kcs) await inngest.send({ name: 'keepa/aggregates-sync-requested', data: { weekEndDate: kcs } });
           } else {
             await c.query(STAMP_SQL[a.field], [a.value]);
           }

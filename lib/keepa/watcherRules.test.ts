@@ -13,6 +13,7 @@ const base: WatcherInput = {
   dueWorkExists: true,
   laneNewDrainedAt: null,
   syncFiredAt: null,
+  explorerCaughtUp: true,
   nightlySyncDate: null,
   downAlarmSentAt: null,
   stallAlarmSentAt: null,
@@ -75,6 +76,15 @@ describe('decideWatcherActions', () => {
     const drained = { ...base, laneNewDrainedAt: min(3) };
     expect(decideWatcherActions({ ...drained, syncFiredAt: min(120) })).toEqual([]);
     expect(decideWatcherActions({ ...drained, syncFiredAt: min(7 * 60) })).toEqual([
+      { kind: 'sync', reason: 'new_lane_drained' },
+      { kind: 'stamp', field: 'sync_fired_at', value: NOW },
+    ]);
+  });
+
+  it('defers the drained-lane sync while the explorer is still on the previous week', () => {
+    const drained = { ...base, laneNewDrainedAt: min(3) };
+    expect(decideWatcherActions({ ...drained, explorerCaughtUp: false })).toEqual([]);
+    expect(decideWatcherActions({ ...drained, explorerCaughtUp: true })).toEqual([
       { kind: 'sync', reason: 'new_lane_drained' },
       { kind: 'stamp', field: 'sync_fired_at', value: NOW },
     ]);

@@ -32,6 +32,12 @@ export interface WatcherInput {
   dueWorkExists: boolean;
   laneNewDrainedAt: Date | null;
   syncFiredAt: Date | null;
+  /**
+   * The explorer's current week has reached the catalog's scope week (true when either is unknown).
+   * The import enqueues a new week before the ~4.5-hour explorer refresh, and the sync job reads the
+   * explorer's week itself, so a drained-lane sync waits for the refresh to swap the week in.
+   */
+  explorerCaughtUp: boolean;
   nightlySyncDate: string | null;
   downAlarmSentAt: Date | null;
   stallAlarmSentAt: Date | null;
@@ -95,10 +101,13 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
   const actions: WatcherAction[] = [...emails.map((variant) => ({ kind: 'email' as const, variant })), ...stamps];
 
   if (i.readSource === 'products') {
+    // Both waits below (six hours since the last sync, the explorer on the scope week) are deferrals:
+    // the drain stamp stays newer than sync_fired_at, so a later tick fires the sync.
     if (
       i.laneNewDrainedAt &&
       (!i.syncFiredAt || i.laneNewDrainedAt > i.syncFiredAt) &&
-      (!i.syncFiredAt || age(i.syncFiredAt) >= SYNC_MIN_GAP_MS)
+      (!i.syncFiredAt || age(i.syncFiredAt) >= SYNC_MIN_GAP_MS) &&
+      i.explorerCaughtUp
     ) {
       actions.push({ kind: 'sync', reason: 'new_lane_drained' }, { kind: 'stamp', field: 'sync_fired_at', value: i.now });
     } else if (
