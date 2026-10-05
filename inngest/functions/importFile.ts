@@ -20,6 +20,8 @@ import {
 } from '@/db/schema';
 import { refreshKeywordCurrentSummary } from './refreshSummary';
 import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
+import { enqueueWeek, EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
+import { errFields } from '@/lib/ask/logSafe';
 
 export interface ImportFileInput {
   uploadedFileId: string;
@@ -983,6 +985,39 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         })
         .where(eq(uploadedFiles.id, file.id));
     });
+
+    // ------------------------------------------------------------------
+    // Keepa service hand-off (spec 2026-10-05 §6.1): enqueue this week's
+    // top-3 ASINs for the always-on Keepa service BEFORE the long summary
+    // refresh so its never-fetched lane starts at once. Fail-soft: a failure
+    // here never fails the import — the service keeps working on the previous
+    // scope and scripts/fireEnqueueWeek.ts re-runs the hook by hand. Replay
+    // runs skip it: a historical week must not reshape the live scope.
+    // ------------------------------------------------------------------
+    if (!isReplay) {
+      await timePhase(file.id, 'keepa_enqueue', async () => {
+        const enqueuePool = new Pool({ connectionString: env.DATABASE_URL, max: 1, statement_timeout: 1_800_000 });
+        try {
+          const client = await enqueuePool.connect();
+          try {
+            const r = await enqueueWeek(client, weekEndDate);
+            console.log(`[keepa-enqueue] week ${weekEndDate}: inserted=${r.inserted} updated=${r.updated} retired=${r.retired} vacuumed=${r.vacuumed}`);
+          } finally {
+            client.release();
+          }
+        } catch (e) {
+          if (e instanceof EnqueueWeekError && e.code === 'enqueue_week_older_than_scope') {
+            // A late re-import of an older week: the catalog keeps the newer scope. Expected, not a failure.
+            console.log(`[keepa-enqueue] skipped: ${e.code} (week ${weekEndDate})`);
+          } else {
+            const { error, code } = errFields(e);
+            console.error('[keepa-enqueue] failed (import continues)', JSON.stringify({ week: weekEndDate, error, code }));
+          }
+        } finally {
+          await enqueuePool.end();
+        }
+      });
+    }
 
     // ------------------------------------------------------------------
     // Phase 5: refresh keyword_current_summary (Plan 3.1).
