@@ -119,12 +119,14 @@ async function writeRow(c: Queryable, row: ClaimedRow, f: ProductFacts, now: Dat
  * Wait for any running enqueue-week upsert (spec §6.1): the upsert holds the exclusive form of
  * ENQUEUE_LOCK_KEY for minutes and locks rows in a different order than a batch write, so a batch
  * that started mid-upsert would deadlock with it. Taken by every store transaction, before any row
- * lock. The statement timeout is raised for this transaction only: the pool's five-minute default
- * is shorter than a weekly upsert over ~2.3M rows.
+ * lock. The 20-minute statement timeout covers the lock wait only (a weekly upsert over ~2.3M rows
+ * outlasts the pool's five-minute ceiling); once the lock is held it goes back to five minutes, so
+ * the row statements keep the pool's ceiling.
  */
 async function awaitEnqueueLock(c: Queryable): Promise<void> {
   await c.query(`SET LOCAL statement_timeout = '1200s'`);
   await c.query('SELECT pg_advisory_xact_lock_shared($1)', [ENQUEUE_LOCK_KEY]);
+  await c.query(`SET LOCAL statement_timeout = '300s'`);
 }
 
 async function inTransaction<T>(pool: Pool, fn: (c: PoolClient) => Promise<T>): Promise<T> {

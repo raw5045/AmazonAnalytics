@@ -123,8 +123,9 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
         continue;
       }
       attempts += 1;
+      // Stored as error_code / last_error_code (CHECK ≤ 64 chars): an arbitrary error's name is capped.
       lastCode =
-        e instanceof KeepaHttpError ? `keepa_http_${e.status}` : e instanceof KeepaReplyError ? 'keepa_bad_reply' : e instanceof Error ? e.name : 'keepa_error';
+        e instanceof KeepaHttpError ? `keepa_http_${e.status}` : e instanceof KeepaReplyError ? 'keepa_bad_reply' : e instanceof Error ? e.name.slice(0, 64) : 'keepa_error';
       deps.log({ event: 'keepa_retry', attempt: attempts, ...errFields(e) });
       if (attempts < KEEPA_RETRY_ATTEMPTS) await deps.sleep(KEEPA_RETRY_SLEEP_MS);
     }

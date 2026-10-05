@@ -110,6 +110,18 @@ describe('runIteration', () => {
     expect(store.calls).toContain('errored:keepa_bad_reply');
   });
 
+  it('a non-Keepa error is stored under its name, capped at the error-code column\'s 64 characters', async () => {
+    const store = makeStore([[row('B1')]]);
+    const name = 'A'.repeat(40) + 'B'.repeat(40);
+    const fetchBatch = vi.fn().mockRejectedValue(Object.assign(new Error('x'), { name }));
+    const deps = makeDeps(store, fetchBatch);
+    await expect(runIteration(deps, initialState())).resolves.toBe('keepa_error');
+    expect(fetchBatch).toHaveBeenCalledTimes(3);
+    const code = store.calls.find((c) => c.startsWith('errored:'))?.slice('errored:'.length);
+    expect(code).toHaveLength(64);
+    expect(code).toBe(name.slice(0, 64));
+  });
+
   it('a rejected request (4xx) is recorded, waited out ten minutes, and retried without counting as an attempt', async () => {
     const store = makeStore([[row('B1')]]);
     const fetchBatch = vi.fn().mockRejectedValueOnce(new KeepaHttpError(401)).mockImplementation(async (asins: string[]) => reply(asins));
