@@ -138,4 +138,9 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
       await pool.query(`UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE asin = ANY($1)`, [[A.notDue, A.tier2]]);
     }
   });
+
+  it('oldJobRunning reads the real keepa_enrichment_runs table and answers a boolean', async () => {
+    const running = await store.oldJobRunning();
+    expect(typeof running).toBe('boolean');
+  });
 });

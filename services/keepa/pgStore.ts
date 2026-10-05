@@ -264,9 +264,13 @@ export class PgKeepaStore implements KeepaStore {
 
   async oldJobRunning(): Promise<boolean> {
     // A plain read of the old job's runs table (no asin_products write, so no lock handshake).
+    // Any live heartbeat counts, whatever the status: the orchestrator marks a still-running detached
+    // job 'orphaned' once its 24-hour poll budget is spent, but updateRunCounts keeps heartbeat_at
+    // fresh whatever the status. A finished run's heartbeat goes stale within 10 minutes, so this costs
+    // at most ten idle minutes per run (and the table holds one row per run, so no index matters).
     // Goes away with the old job in phase 3.
     const r = await this.pool.query<{ running: boolean }>(
-      `SELECT EXISTS (SELECT 1 FROM keepa_enrichment_runs WHERE status = 'running' AND heartbeat_at > now() - interval '10 minutes') AS running`,
+      `SELECT EXISTS (SELECT 1 FROM keepa_enrichment_runs WHERE heartbeat_at > now() - interval '10 minutes') AS running`,
     );
     return r.rows[0]?.running === true;
   }

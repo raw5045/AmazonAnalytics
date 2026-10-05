@@ -34,8 +34,9 @@ export interface KeepaStore {
   releaseOwnClaims(bootId: string): Promise<number>;
   /**
    * The old import-time enrichment job (worker/keepaJobs.ts) is mid-run: a keepa_enrichment_runs row
-   * is 'running' with a heartbeat from the last ten minutes. It shares the Keepa token bucket and has
-   * no 429 handling, so the service yields while it runs. Goes away with the old job in phase 3.
+   * has a heartbeat from the last ten minutes, whatever its status (a detached run past its poll
+   * budget is marked 'orphaned' but keeps heartbeating). It shares the Keepa token bucket and has no
+   * 429 handling, so the service yields while it runs. Goes away with the old job in phase 3.
    */
   oldJobRunning(): Promise<boolean>;
 }

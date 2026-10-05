@@ -115,6 +115,41 @@ async function dbFailure(deps: LoopDeps, state: LoopState, stage: string, e: unk
   return 'db_error';
 }
 
+/**
+ * Shadow week until phase 3, which removes this (and KeepaStore.oldJobRunning) with the old job: is
+ * an old import-time enrichment run live? It shares the Keepa token bucket and turns a 429 into a
+ * week-long error row, so the service yields to it. Logs the transitions: `yield_old_job` once when
+ * yielding starts, `resume_after_old_job` once when it ends. A failed probe counts like any other
+ * database failure.
+ */
+async function probeOldJob(deps: LoopDeps, state: LoopState): Promise<'clear' | 'old_job' | 'db_error'> {
+  let running: boolean;
+  try {
+    running = await deps.store.oldJobRunning();
+  } catch (e) {
+    return dbFailure(deps, state, 'old_job_probe', e);
+  }
+  if (running) {
+    if (!state.yieldingToOldJob) deps.log({ event: 'yield_old_job' });
+    state.yieldingToOldJob = true;
+    return 'old_job';
+  }
+  if (state.yieldingToOldJob) {
+    state.yieldingToOldJob = false;
+    deps.log({ event: 'resume_after_old_job' });
+  }
+  return 'clear';
+}
+
+/** Yielding mid-batch: free this boot's claims at once; a failure leaves them to the stale release. */
+async function releaseOwnClaimsQuietly(deps: LoopDeps): Promise<void> {
+  try {
+    await deps.store.releaseOwnClaims(deps.bootId);
+  } catch (e) {
+    deps.log({ event: 'release_own_claims_failed', ...errFields(e) });
+  }
+}
+
 /** The status row's last error, best-effort: a failure to record it is logged, never thrown. */
 async function recordErrorQuietly(deps: LoopDeps, code: string): Promise<void> {
   try {
@@ -164,17 +199,10 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   }
   if (released > 0) deps.log({ event: 'stale_claims_released', count: released });
 
-  // Shadow week until phase 3, which removes this check and KeepaStore.oldJobRunning with the old
-  // job: while an old import-time enrichment run is live, yield the shared token bucket to it.
-  let oldJobRunning: boolean;
-  try {
-    oldJobRunning = await deps.store.oldJobRunning();
-  } catch (e) {
-    return dbFailure(deps, state, 'old_job_probe', e);
-  }
-  if (oldJobRunning) {
-    if (!state.yieldingToOldJob) deps.log({ event: 'yield_old_job' });
-    state.yieldingToOldJob = true;
+  // Before claiming: while an old enrichment run is live, idle (heartbeat and a minute's nap per tick).
+  const beforeClaim = await probeOldJob(deps, state);
+  if (beforeClaim === 'db_error') return 'db_error';
+  if (beforeClaim === 'old_job') {
     try {
       await deps.store.heartbeat({ tokensLeft: state.tokensLeft, refillRate: state.refillRate });
     } catch (e) {
@@ -183,10 +211,6 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
     state.dbFailures = 0;
     await deps.sleep(OLD_JOB_YIELD_SLEEP_MS);
     return 'yielded';
-  }
-  if (state.yieldingToOldJob) {
-    state.yieldingToOldJob = false;
-    deps.log({ event: 'resume_after_old_job' });
   }
 
   let rows: ClaimedRow[];
@@ -233,6 +257,16 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   let lastCode!: string;
   const t0 = Date.now();
   while (reply === null && attempts < KEEPA_RETRY_ATTEMPTS) {
+    // Before EVERY request: an old run may have started during the token wait or a retry's sleep (its
+    // first Keepa call follows its row by seconds to minutes). Yield at once — free the claims, no
+    // nap here; the next iteration's pre-claim probe naps. A failed probe leaves the claims to the
+    // stale release.
+    const beforeFetch = await probeOldJob(deps, state);
+    if (beforeFetch === 'db_error') return 'db_error';
+    if (beforeFetch === 'old_job') {
+      await releaseOwnClaimsQuietly(deps);
+      return 'yielded';
+    }
     try {
       reply = await deps.keepa.fetchBatch(asins);
     } catch (e) {

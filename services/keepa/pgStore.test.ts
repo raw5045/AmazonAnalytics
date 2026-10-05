@@ -270,11 +270,11 @@ describe('markBatchErrored, releaseStaleClaims, status writes', () => {
     ]);
     expect(calls[LOCK_OPENING.length].values).toEqual(['boot-1']);
   });
-  it('oldJobRunning is one plain read of the old job\'s runs table (no lock handshake)', async () => {
+  it('oldJobRunning is one plain read of the old job\'s runs table: any live heartbeat, whatever the status, no lock handshake', async () => {
     const { pool, calls } = fakePool(() => ({ rows: [{ running: true }] }));
     await expect(new PgKeepaStore(pool).oldJobRunning()).resolves.toBe(true);
     expect(calls).toEqual([
-      { text: "SELECT EXISTS (SELECT 1 FROM keepa_enrichment_runs WHERE status = 'running' AND heartbeat_at > now() - interval '10 minutes') AS running", values: undefined },
+      { text: "SELECT EXISTS (SELECT 1 FROM keepa_enrichment_runs WHERE heartbeat_at > now() - interval '10 minutes') AS running", values: undefined },
     ]);
     const { pool: quiet } = fakePool(() => ({ rows: [{ running: false }] }));
     await expect(new PgKeepaStore(quiet).oldJobRunning()).resolves.toBe(false);

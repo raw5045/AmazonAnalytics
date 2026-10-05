@@ -125,6 +125,90 @@ describe('runIteration', () => {
     expect(deps.sleeps).toEqual([DB_RETRY_SLEEP_MS]);
   });
 
+  it('a failed heartbeat while yielding counts as a database failure (stage heartbeat)', async () => {
+    const store = makeStore([[row('B1')]]);
+    store.oldJobRunning = async () => true;
+    store.heartbeat = async () => { throw Object.assign(new Error('x'), { code: '57P01' }); };
+    const deps = makeDeps(store, async (asins) => reply(asins));
+    const state = initialState();
+    await expect(runIteration(deps, state)).resolves.toBe('db_error');
+    expect(state.dbFailures).toBe(1);
+    expect(deps.logs).toContainEqual({ event: 'db_error', stage: 'heartbeat', error: 'Error', code: '57P01', failures: 1 });
+    expect(deps.sleeps).toEqual([DB_RETRY_SLEEP_MS]);
+  });
+
+  it('a completed yield tick resets the database-failure count', async () => {
+    const store = makeStore([]);
+    store.oldJobRunning = async () => true;
+    const deps = makeDeps(store, async (asins) => reply(asins));
+    const state = { ...initialState(), dbFailures: MAX_DB_FAILURES - 1 };
+    await expect(runIteration(deps, state)).resolves.toBe('yielded');
+    expect(state.dbFailures).toBe(0);
+    expect(deps.exit).not.toHaveBeenCalled();
+  });
+
+  it('an old run that starts after the claim: no request, this boot\'s claims released, yielded, one transition line', async () => {
+    const store = makeStore([[row('B1')]]);
+    const probes = [false, true]; // clear before the claim, live before the request
+    store.oldJobRunning = async () => probes.shift() ?? true;
+    const released: string[] = [];
+    store.releaseOwnClaims = async (bootId) => {
+      released.push(bootId);
+      return 1;
+    };
+    const fetchBatch = vi.fn(async (asins: string[]) => reply(asins));
+    const deps = makeDeps(store, fetchBatch);
+    const state = initialState();
+    await expect(runIteration(deps, state)).resolves.toBe('yielded');
+    expect(fetchBatch).not.toHaveBeenCalled();
+    expect(released).toEqual(['boot-1']);
+    expect(deps.logs.filter((l) => l.event === 'yield_old_job')).toHaveLength(1);
+    expect(deps.sleeps).toEqual([]); // no nap mid-batch; the next iteration's pre-claim probe naps
+    await expect(runIteration(deps, state)).resolves.toBe('yielded');
+    expect(deps.sleeps).toEqual([OLD_JOB_YIELD_SLEEP_MS]);
+    expect(deps.logs.filter((l) => l.event === 'yield_old_job')).toHaveLength(1);
+  });
+
+  it('re-probes before every retry: a 503, then the old run is live → yielded after exactly one request', async () => {
+    const store = makeStore([[row('B1')]]);
+    const probes = [false, false, true]; // before the claim, before attempt 1, before attempt 2
+    store.oldJobRunning = async () => probes.shift() ?? true;
+    const fetchBatch = vi.fn().mockRejectedValue(new KeepaHttpError(503));
+    const deps = makeDeps(store, fetchBatch);
+    await expect(runIteration(deps, initialState())).resolves.toBe('yielded');
+    expect(fetchBatch).toHaveBeenCalledTimes(1);
+    expect(store.calls).toContain('releaseOwn');
+    expect(store.calls.some((c) => c.startsWith('errored:'))).toBe(false);
+    expect(deps.sleeps).toEqual([KEEPA_RETRY_SLEEP_MS]);
+  });
+
+  it('a failed re-probe before a request counts as a database failure; the claims are left to the stale release', async () => {
+    const store = makeStore([[row('B1')]]);
+    let probes = 0;
+    store.oldJobRunning = async () => {
+      probes += 1;
+      if (probes === 2) throw Object.assign(new Error('x'), { code: '57P01' });
+      return false;
+    };
+    const fetchBatch = vi.fn(async (asins: string[]) => reply(asins));
+    const deps = makeDeps(store, fetchBatch);
+    const state = initialState();
+    await expect(runIteration(deps, state)).resolves.toBe('db_error');
+    expect(fetchBatch).not.toHaveBeenCalled();
+    expect(deps.logs).toContainEqual({ event: 'db_error', stage: 'old_job_probe', error: 'Error', code: '57P01', failures: 1 });
+    expect(store.calls).not.toContain('releaseOwn');
+  });
+
+  it('a failed claim release while yielding mid-batch is logged; the stale release covers it', async () => {
+    const store = makeStore([[row('B1')]]);
+    const probes = [false, true];
+    store.oldJobRunning = async () => probes.shift() ?? true;
+    store.releaseOwnClaims = async () => { throw Object.assign(new Error('x'), { code: '57014' }); };
+    const deps = makeDeps(store, async (asins) => reply(asins));
+    await expect(runIteration(deps, initialState())).resolves.toBe('yielded');
+    expect(deps.logs).toContainEqual({ event: 'release_own_claims_failed', error: 'Error', code: '57014' });
+  });
+
   it('claims, fetches once, parses and writes a batch, then reports it', async () => {
     const store = makeStore([[row('B1'), row('B2', 'due')]]);
     const fetchBatch = vi.fn(async (asins: string[]) => reply(asins));
