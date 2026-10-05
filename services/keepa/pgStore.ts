@@ -9,10 +9,11 @@
  *
  * Concurrency: the weekly enqueue upsert (lib/keepa/enqueueWeek.ts) holds the exclusive advisory
  * lock ENQUEUE_LOCK_KEY while it row-locks ~2.3M catalog rows in its own order. Every store
- * transaction (the stale-claim release, the claim, both batch writes) takes the shared form first,
- * before any row lock, so while an upsert runs the service waits before claiming — instead of a
- * batch write deadlocking with it, the release running into the statement timeout on its row
- * locks, or a claim spending tokens on a batch whose write would then block.
+ * transaction (the stale-claim release, the claim, both batch writes, the SIGTERM release of this
+ * boot's own claims) takes the shared form first, before any row lock, so while an upsert runs the
+ * service waits before claiming — instead of a batch write deadlocking with it, the release running
+ * into the statement timeout on its row locks, or a claim spending tokens on a batch whose write
+ * would then block.
  */
 import type { Pool, PoolClient } from 'pg';
 import { ENQUEUE_LOCK_KEY, nextDueAfterDelisted, nextDueAfterError, nextDueAfterSuccess, type Lane, type Tier } from '@/lib/keepa/lanes';
@@ -119,30 +120,40 @@ async function writeRow(c: Queryable, row: ClaimedRow, f: ProductFacts, now: Dat
  * Wait for any running enqueue-week upsert (spec §6.1): the upsert holds the exclusive form of
  * ENQUEUE_LOCK_KEY for minutes and locks rows in a different order than a batch write, so a batch
  * that started mid-upsert would deadlock with it. Taken by every store transaction, before any row
- * lock. The 20-minute statement timeout covers the lock wait only (a weekly upsert over ~2.3M rows
- * outlasts the pool's five-minute ceiling); once the lock is held it goes back to five minutes, so
- * the row statements keep the pool's ceiling.
+ * lock. The lock wait gets 1900 s (the enqueue's own budget is 1800 s; a weekly upsert over ~2.3M
+ * rows outlasts the pool's five-minute ceiling); once the lock is held the timeout goes back to five
+ * minutes, so the row statements keep the pool's ceiling.
  */
 async function awaitEnqueueLock(c: Queryable): Promise<void> {
-  await c.query(`SET LOCAL statement_timeout = '1200s'`);
+  await c.query(`SET LOCAL statement_timeout = '1900s'`);
   await c.query('SELECT pg_advisory_xact_lock_shared($1)', [ENQUEUE_LOCK_KEY]);
   await c.query(`SET LOCAL statement_timeout = '300s'`);
 }
 
+/**
+ * BEGIN … COMMIT on one pooled client (the pattern of lib/db/tcpPool.ts withReadOnlyTx). pg-pool
+ * removes its own idle-client 'error' listener the moment a client is checked out, so a socket drop
+ * mid-transaction would otherwise be an uncaught 'error' event on the client and crash the process.
+ * A no-op listener absorbs it; the failure still reaches the caller through the rejected query. A
+ * client whose transaction failed is in doubt, so it is discarded (`release(true)`), not pooled.
+ */
 async function inTransaction<T>(pool: Pool, fn: (c: PoolClient) => Promise<T>): Promise<T> {
   const c = await pool.connect();
+  const onSocketError = () => undefined;
+  c.on('error', onSocketError);
+  let failed = false;
   try {
     await c.query('BEGIN');
-    try {
-      const out = await fn(c);
-      await c.query('COMMIT');
-      return out;
-    } catch (e) {
-      await c.query('ROLLBACK').catch(() => undefined);
-      throw e;
-    }
+    const out = await fn(c);
+    await c.query('COMMIT');
+    return out;
+  } catch (e) {
+    failed = true;
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw e;
   } finally {
-    c.release();
+    c.removeListener('error', onSocketError);
+    c.release(failed ? true : undefined);
   }
 }
 
@@ -193,11 +204,21 @@ export class PgKeepaStore implements KeepaStore {
     });
   }
 
-  async writeBatch(args: { rows: ClaimedRow[]; facts: Map<string, ProductFacts>; lane: Lane; tokens: TokenInfo; now: Date }): Promise<void> {
+  async writeBatch(args: { rows: ClaimedRow[]; facts: Map<string, ProductFacts>; lane: Lane; tokens: TokenInfo; now: Date; batchErrorCode?: string }): Promise<void> {
     await inTransaction(this.pool, async (c) => {
       await awaitEnqueueLock(c);
       for (const row of args.rows) {
         await writeRow(c, row, args.facts.get(row.asin) ?? emptyFacts(row.asin, 'error', 'missing_from_parse'), args.now);
+      }
+      if (args.batchErrorCode !== undefined) {
+        // Every outcome was an error: a failed batch, so last_batch_at keeps meaning "the last
+        // batch that yielded anything" and the code becomes the last error.
+        await c.query(
+          `UPDATE keepa_service_status SET heartbeat_at = now(), last_error_code = $1, last_error_at = now(),
+             tokens_left = COALESCE($2, tokens_left), refill_rate = COALESCE($3, refill_rate) WHERE singleton`,
+          [args.batchErrorCode, args.tokens.tokensLeft, args.tokens.refillRate],
+        );
+        return;
       }
       await c.query(
         `UPDATE keepa_service_status SET heartbeat_at = now(), last_batch_at = $1, last_batch_lane = $2,
@@ -228,5 +249,16 @@ export class PgKeepaStore implements KeepaStore {
 
   async markNewLaneDrained(): Promise<void> {
     await this.pool.query(`UPDATE keepa_service_status SET lane_new_drained_at = now() WHERE singleton`);
+  }
+
+  async releaseOwnClaims(bootId: string): Promise<number> {
+    // A store transaction like the others (an autocommit multi-row UPDATE could deadlock with the
+    // enqueue upsert). `claimed_at IS NOT NULL` lets the planner use the partial claimed index
+    // instead of scanning the whole catalog; claimed_by is only ever set together with claimed_at.
+    return inTransaction(this.pool, async (c) => {
+      await awaitEnqueueLock(c);
+      const r = await c.query(`UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE claimed_at IS NOT NULL AND claimed_by = $1`, [bootId]);
+      return r.rowCount ?? 0;
+    });
   }
 }

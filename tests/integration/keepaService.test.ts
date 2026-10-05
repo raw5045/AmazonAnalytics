@@ -1,8 +1,12 @@
 // tests/integration/keepaService.test.ts
 /**
  * Keepa service store against the real tables (migration 0050 applied). Synthetic ASINs
- * prefixed TESTKS are inserted and removed by this file; no real row is touched, and the status
- * row's heartbeat, batch and token columns are put back as found (the watcher reads them).
+ * prefixed TESTKS are inserted and removed by this file. The claim test DOES claim real rows for a
+ * moment (whatever else is claimable) and releases them in a finally. The status row's heartbeat,
+ * batch and token columns are put back as found (the watcher reads them).
+ *
+ * Preconditions: the Keepa service STOPPED (it would claim, write and heartbeat alongside the test)
+ * and no weekly enqueue in progress (every store transaction waits for its lock).
  *
  * Run (owner's go): RUN_INTEGRATION=1 pnpm vitest run tests/integration/keepaService.test.ts
  */
@@ -68,21 +72,22 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
   it('claims never-fetched tier 1 by rank, then due tier 1, skips not-due and tier 2 with the tail off', async () => {
     // Other rows in the real table may be claimable too, so assert on our rows only.
     const rows = await store.claimBatch({ limit: 100, tailEnabled: false, bootId: 'test-boot' });
-    const ours = rows.filter((r) => r.asin.startsWith(PREFIX));
-    const asins = ours.map((r) => r.asin);
-    expect(asins).not.toContain(A.notDue);
-    expect(asins).not.toContain(A.tier2);
-    const { rows: claimed } = await pool.query<{ asin: string; claimed_by: string }>(`SELECT asin, claimed_by FROM asin_products WHERE asin LIKE $1 AND claimed_at IS NOT NULL`, [`${PREFIX}%`]);
-    for (const c of claimed) expect(c.claimed_by).toBe('test-boot');
-    // Release everything this test claimed (our rows and any real rows), as a crashed service would after ten minutes.
-    await pool.query(`UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE claimed_by = 'test-boot'`);
-    // Ranks 0 and 1 sort first in the never-fetched lane, and the ten-years-overdue row first in the
-    // due lane, whatever the real table holds. Asserted after the release so a failure leaves no claims.
-    expect(asins).toContain(A.newTop);
-    expect(asins).toContain(A.newDeep);
-    // The due lane only fills once the never-fetched lane has fewer than 100 claimable rows.
-    expect(asins.includes(A.due)).toBe(rows.filter((r) => r.lane === 'new').length < 100);
-    expect(asins.indexOf(A.newTop)).toBeLessThan(asins.indexOf(A.newDeep));
+    try {
+      const asins = rows.filter((r) => r.asin.startsWith(PREFIX)).map((r) => r.asin);
+      expect(asins).not.toContain(A.notDue);
+      expect(asins).not.toContain(A.tier2);
+      const { rows: claimed } = await pool.query<{ asin: string; claimed_by: string }>(`SELECT asin, claimed_by FROM asin_products WHERE asin LIKE $1 AND claimed_at IS NOT NULL`, [`${PREFIX}%`]);
+      for (const c of claimed) expect(c.claimed_by).toBe('test-boot');
+      // Ranks 0 and 1 sort first in the never-fetched lane, and the ten-years-overdue row first in the
+      // due lane, whatever the real table holds. Membership only: RETURNING order is not guaranteed.
+      expect(asins).toContain(A.newTop);
+      expect(asins).toContain(A.newDeep);
+      // The due lane only fills once the never-fetched lane has fewer than 100 claimable rows.
+      expect(asins.includes(A.due)).toBe(rows.filter((r) => r.lane === 'new').length < 100);
+    } finally {
+      // Release everything this test claimed (our rows and any real rows), as a crashed service would after ten minutes.
+      await pool.query(`UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE claimed_at IS NOT NULL AND claimed_by = 'test-boot'`);
+    }
   });
 
   it('writeBatch applies the three outcomes and inserts snapshots', async () => {
@@ -119,5 +124,18 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
     expect(rows.find((r) => r.asin === A.notDue)?.claimed_by).toBeNull();
     expect(rows.find((r) => r.asin === A.tier2)?.claimed_by).toBe('live-boot');
     await pool.query(`UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE asin = $1`, [A.tier2]);
+  });
+
+  it('releaseOwnClaims frees only the given boot\'s claims', async () => {
+    await pool.query(`UPDATE asin_products SET claimed_at = now(), claimed_by = 'own-boot' WHERE asin = $1`, [A.notDue]);
+    await pool.query(`UPDATE asin_products SET claimed_at = now(), claimed_by = 'other-boot' WHERE asin = $1`, [A.tier2]);
+    try {
+      await expect(store.releaseOwnClaims('own-boot')).resolves.toBe(1);
+      const { rows } = await pool.query<{ asin: string; claimed_by: string | null }>(`SELECT asin, claimed_by FROM asin_products WHERE asin IN ($1, $2)`, [A.notDue, A.tier2]);
+      expect(rows.find((r) => r.asin === A.notDue)?.claimed_by).toBeNull();
+      expect(rows.find((r) => r.asin === A.tier2)?.claimed_by).toBe('other-boot');
+    } finally {
+      await pool.query(`UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE asin = ANY($1)`, [[A.notDue, A.tier2]]);
+    }
   });
 });

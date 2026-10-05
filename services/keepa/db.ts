@@ -10,7 +10,8 @@ export function createPool(connectionString: string): Pool {
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,
     connectionTimeoutMillis: 20_000,
-    idleTimeoutMillis: 30_000,
+    // Longer than the 60-second heartbeat, so the beat reuses a connection instead of reconnecting.
+    idleTimeoutMillis: 120_000,
     statement_timeout: 300_000,
   });
   pool.on('error', (e) => logLine({ event: 'pool_error', ...errFields(e) }));

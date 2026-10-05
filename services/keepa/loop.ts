@@ -3,11 +3,13 @@
  * The Keepa service loop (spec 2026-10-05 §5.1, §5.3). One iteration = release stale claims,
  * claim up to a batch, wait for tokens, one Keepa request (with the retry policy), parse,
  * one write transaction. Fully injectable: the store, the Keepa calls, the clock, sleep and
- * exit are dependencies, so the policy is unit-tested without Postgres or Keepa.
+ * exit are dependencies, so the policy is unit-tested without Postgres or Keepa. Also here, for
+ * the same reason: the independent heartbeat and the SIGTERM claim release that index.ts runs.
  */
 import { BATCH_SIZE, STALE_CLAIM_MS, TOKENS_PER_ASIN, msUntilTokens, type Lane } from '@/lib/keepa/lanes';
 import { KeepaHttpError, KeepaReplyError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
 import { parseKeepaBatch } from '@/lib/keepa/parseProduct';
+import type { ProductFacts } from '@/lib/keepa/productFacts';
 import type { ClaimedRow, KeepaStore } from './store';
 import { errFields } from './log';
 
@@ -17,6 +19,18 @@ export const KEEPA_RETRY_SLEEP_MS = 30_000;
 export const KEEPA_RETRY_ATTEMPTS = 3;
 export const BAD_REQUEST_SLEEP_MS = 10 * 60_000;
 export const MAX_DB_FAILURES = 10;
+/** The longest single token wait; the next request reveals the real balance anyway. */
+export const MAX_TOKEN_WAIT_MS = 2 * 60_000;
+/** 429s since the last good fetch before the status row says the tokens are exhausted. */
+export const TOKENS_EXHAUSTED_AFTER = 5;
+/** Pause after a batch Keepa never answered: one minute, doubling to fifteen, reset by a good fetch. */
+export const OUTAGE_PAUSE_START_MS = 60_000;
+export const OUTAGE_PAUSE_MAX_MS = 15 * 60_000;
+export const HEARTBEAT_INTERVAL_MS = 60_000;
+/** SIGTERM: how long the claim release may take before the process exits anyway. */
+export const SHUTDOWN_RELEASE_TIMEOUT_MS = 10_000;
+/** error_code and last_error_code carry a 64-character CHECK (migration 0050). */
+const MAX_CODE_LENGTH = 64;
 
 export interface KeepaApi {
   fetchBatch(asins: string[]): Promise<KeepaBatchReply>;
@@ -40,34 +54,85 @@ export interface LoopState {
   tokensLeft: number | null;
   refillRate: number | null;
   lastClaimHadNew: boolean;
+  /** Database failures (and escaped throws) in a row; MAX_DB_FAILURES ends the process. */
   dbFailures: number;
+  /** 429s since the last good fetch. */
+  consecutive429: number;
+  /** The pause after the last unanswered batch; 0 once Keepa answers again. */
+  outagePauseMs: number;
 }
 
-export type IterationResult = 'batch' | 'idle' | 'keepa_error' | 'db_error';
+export type IterationResult = 'batch' | 'idle' | 'keepa_error' | 'db_error' | 'threw';
 
 export function initialState(): LoopState {
-  return { tokensLeft: null, refillRate: null, lastClaimHadNew: false, dbFailures: 0 };
+  return { tokensLeft: null, refillRate: null, lastClaimHadNew: false, dbFailures: 0, consecutive429: 0, outagePauseMs: 0 };
 }
 
-async function dbFailure(deps: LoopDeps, state: LoopState, stage: string, e: unknown): Promise<'db_error'> {
+async function countFailure(deps: LoopDeps, state: LoopState, fields: Record<string, unknown>): Promise<void> {
   state.dbFailures += 1;
-  deps.log({ event: 'db_error', stage, failures: state.dbFailures, ...errFields(e) });
+  deps.log({ ...fields, failures: state.dbFailures });
   if (state.dbFailures >= MAX_DB_FAILURES) {
     deps.log({ event: 'exit_db_failures', failures: state.dbFailures });
     deps.exit(1);
   }
   await deps.sleep(DB_RETRY_SLEEP_MS);
+}
+
+async function dbFailure(deps: LoopDeps, state: LoopState, stage: string, e: unknown): Promise<'db_error'> {
+  await countFailure(deps, state, { event: 'db_error', stage, ...errFields(e) });
   return 'db_error';
+}
+
+/** The status row's last error, best-effort: a failure to record it is logged, never thrown. */
+async function recordErrorQuietly(deps: LoopDeps, code: string): Promise<void> {
+  try {
+    await deps.store.recordError(code);
+  } catch (e) {
+    deps.log({ event: 'record_error_failed', ...errFields(e) });
+  }
+}
+
+/** The stored code for a failed Keepa request: coded and bounded, never a message. */
+function keepaErrorCode(e: unknown): string {
+  if (e instanceof KeepaHttpError) return `keepa_http_${e.status}`;
+  if (e instanceof KeepaReplyError) return 'keepa_bad_reply';
+  const o = (e ?? null) as { name?: unknown; cause?: unknown } | null;
+  // AbortSignal.timeout() rejects with a DOMException named TimeoutError (AbortError on older paths).
+  if (o?.name === 'TimeoutError' || o?.name === 'AbortError') return 'keepa_timeout';
+  // fetch wraps a network failure in a TypeError whose cause carries the code (ENOTFOUND, ECONNRESET…).
+  const causeCode = ((o?.cause ?? null) as { code?: unknown } | null)?.code;
+  if (typeof causeCode === 'string') return `keepa_network_${causeCode}`.slice(0, MAX_CODE_LENGTH);
+  return e instanceof Error ? e.name.slice(0, MAX_CODE_LENGTH) : 'keepa_error';
+}
+
+/** The most frequent error code in a parsed batch; the first one seen wins a tie. */
+function commonErrorCode(facts: Map<string, ProductFacts>): string {
+  const seen = new Map<string, number>();
+  let best = 'error';
+  let bestCount = 0;
+  for (const f of facts.values()) {
+    if (f.status !== 'error') continue;
+    const code = f.errorCode ?? 'error';
+    const n = (seen.get(code) ?? 0) + 1;
+    seen.set(code, n);
+    if (n > bestCount) {
+      best = code;
+      bestCount = n;
+    }
+  }
+  return best;
 }
 
 export async function runIteration(deps: LoopDeps, state: LoopState): Promise<IterationResult> {
   let rows: ClaimedRow[];
+  let released = 0;
   try {
-    await deps.store.releaseStaleClaims(STALE_CLAIM_MS);
+    released = await deps.store.releaseStaleClaims(STALE_CLAIM_MS);
     rows = await deps.store.claimBatch({ limit: deps.batchSize ?? BATCH_SIZE, tailEnabled: deps.tailEnabled, bootId: deps.bootId });
   } catch (e) {
     return dbFailure(deps, state, 'claim', e);
   }
+  if (released > 0) deps.log({ event: 'stale_claims_released', count: released });
 
   // The never-fetched lane just drained: the signal the watcher turns into an explorer sync.
   const hasNew = rows.some((r) => r.lane === 'new');
@@ -91,8 +156,11 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
     return 'idle';
   }
 
-  const wait = msUntilTokens(state.tokensLeft, state.refillRate, rows.length * TOKENS_PER_ASIN);
-  if (wait > 0) await deps.sleep(wait);
+  const wait = Math.min(msUntilTokens(state.tokensLeft, state.refillRate, rows.length * TOKENS_PER_ASIN), MAX_TOKEN_WAIT_MS);
+  if (wait > 0) {
+    deps.log({ event: 'token_wait', ms: wait });
+    await deps.sleep(wait);
+  }
 
   const asins = rows.map((r) => r.asin);
   const lane: Lane = rows[0].lane;
@@ -105,27 +173,29 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
       reply = await deps.keepa.fetchBatch(asins);
     } catch (e) {
       if (e instanceof KeepaTokenError) {
-        // Not an attempt: Keepa told us exactly how long to wait.
+        // Not an attempt: Keepa told us exactly how long to wait. Persistent 429s (TOKENS_EXHAUSTED_AFTER
+        // since the last good fetch) go on the status row, so the watcher can tell "out of tokens" from "down".
         state.tokensLeft = 0;
+        state.consecutive429 += 1;
+        if (state.consecutive429 >= TOKENS_EXHAUSTED_AFTER) {
+          await recordErrorQuietly(deps, 'keepa_tokens_exhausted');
+          deps.log({ event: 'tokens_exhausted', consecutive: state.consecutive429 });
+        }
         await deps.sleep(e.refillInMs);
         continue;
       }
-      if (e instanceof KeepaHttpError && e.status >= 400 && e.status < 500) {
-        // Rejected request (bad key, bad parameters): nothing to retry quickly. Record it so the
+      if (e instanceof KeepaHttpError && e.status > 400 && e.status < 500) {
+        // Rejected (bad key, plan lapsed, forbidden): nothing to retry quickly. Record it so the
         // watcher alarms, wait ten minutes, try again — indefinitely, the rows stay claimed.
-        try {
-          await deps.store.recordError(`keepa_http_${e.status}`);
-        } catch (dbErr) {
-          deps.log({ event: 'record_error_failed', ...errFields(dbErr) });
-        }
+        await recordErrorQuietly(deps, `keepa_http_${e.status}`);
         deps.log({ event: 'keepa_rejected', status: e.status });
         await deps.sleep(BAD_REQUEST_SLEEP_MS);
         continue;
       }
+      // An outage (5xx, network, timeout, a reply that is not a product list) or a 400 (this batch's
+      // request itself is bad): three attempts 30 s apart, then the batch is marked errored.
       attempts += 1;
-      // Stored as error_code / last_error_code (CHECK ≤ 64 chars): an arbitrary error's name is capped.
-      lastCode =
-        e instanceof KeepaHttpError ? `keepa_http_${e.status}` : e instanceof KeepaReplyError ? 'keepa_bad_reply' : e instanceof Error ? e.name.slice(0, 64) : 'keepa_error';
+      lastCode = keepaErrorCode(e);
       deps.log({ event: 'keepa_retry', attempt: attempts, ...errFields(e) });
       if (attempts < KEEPA_RETRY_ATTEMPTS) await deps.sleep(KEEPA_RETRY_SLEEP_MS);
     }
@@ -139,24 +209,108 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
     }
     state.dbFailures = 0;
     deps.log({ event: 'batch_errored', lane, requested: rows.length, code: lastCode });
+    if (lastCode !== 'keepa_http_400') {
+      // Keepa never answered: pause before the next claim (one minute doubling to fifteen), so a
+      // long outage costs one attempt series per pause rather than one per batch. A 400 is about
+      // this batch's request, not an outage, so the next batch goes at once.
+      state.outagePauseMs = state.outagePauseMs === 0 ? OUTAGE_PAUSE_START_MS : Math.min(state.outagePauseMs * 2, OUTAGE_PAUSE_MAX_MS);
+      deps.log({ event: 'outage_pause', ms: state.outagePauseMs });
+      await deps.sleep(state.outagePauseMs);
+    }
     return 'keepa_error';
   }
 
+  // Keepa answered: the 429 count and the outage pause start over.
+  state.consecutive429 = 0;
+  state.outagePauseMs = 0;
   state.tokensLeft = reply.tokensLeft;
   state.refillRate = reply.refillRate ?? state.refillRate;
   const facts = parseKeepaBatch(asins, reply.products);
+  const counts = { active: 0, no_price: 0, delisted: 0, error: 0 };
+  for (const f of facts.values()) counts[f.status] += 1;
+  // Nothing usable came back (every outcome an error): the rows are still written, so their backoff
+  // stops repeated spend, but as a failed batch the watcher can see.
+  const batchErrorCode = counts.error === facts.size ? commonErrorCode(facts) : undefined;
   const now = deps.now();
   try {
-    await deps.store.writeBatch({ rows, facts, lane, tokens: { tokensLeft: reply.tokensLeft, refillRate: reply.refillRate }, now });
+    await deps.store.writeBatch({ rows, facts, lane, tokens: { tokensLeft: reply.tokensLeft, refillRate: reply.refillRate }, now, batchErrorCode });
   } catch (e) {
     return dbFailure(deps, state, 'write', e);
   }
   state.dbFailures = 0;
+  if (batchErrorCode !== undefined) {
+    deps.log({ event: 'batch_all_errors', lane, requested: rows.length, code: batchErrorCode });
+    return 'keepa_error';
+  }
   deps.onBatch?.(now);
-  const counts = { active: 0, no_price: 0, delisted: 0, error: 0 };
-  for (const f of facts.values()) counts[f.status] += 1;
   deps.log({ event: 'batch', lane, requested: rows.length, ...counts, tokensLeft: reply.tokensLeft, ms: Date.now() - t0 });
   return 'batch';
+}
+
+/**
+ * One iteration that never rejects: anything runIteration lets escape (a throwing logger or
+ * callback) is logged and counted like a database failure, so ten in a row still end the process.
+ */
+export async function safeIteration(deps: LoopDeps, state: LoopState): Promise<IterationResult> {
+  try {
+    return await runIteration(deps, state);
+  } catch (e) {
+    await countFailure(deps, state, { event: 'iteration_threw', ...errFields(e) });
+    return 'threw';
+  }
+}
+
+/**
+ * The independent heartbeat (index.ts): "process alive and database reachable", whatever the loop
+ * is doing — a store transaction can wait ~30 minutes on the enqueue lock, and this status-row
+ * UPDATE takes no advisory lock. Null token values leave the stored ones as they are. One beat at a
+ * time, so a slow database cannot pile up connections; unref'd, so it never keeps the process up.
+ */
+export function startHeartbeat(store: Pick<KeepaStore, 'heartbeat'>, log: LoopDeps['log'], intervalMs = HEARTBEAT_INTERVAL_MS): ReturnType<typeof setInterval> {
+  let inFlight = false;
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    store
+      .heartbeat({ tokensLeft: null, refillRate: null })
+      .catch((e: unknown) => log({ event: 'heartbeat_failed', ...errFields(e) }))
+      .finally(() => {
+        inFlight = false;
+      });
+  }, intervalMs);
+  timer.unref();
+  return timer;
+}
+
+/**
+ * SIGTERM (index.ts): free this boot's claims at once instead of after STALE_CLAIM_MS. Bounded by
+ * `timeoutMs`, so a hung database cannot block shutdown (the claims then free themselves later).
+ * Resolves to the number released, or null when the release failed or timed out.
+ */
+export async function releaseOwnClaimsOnShutdown(
+  store: Pick<KeepaStore, 'releaseOwnClaims'>,
+  bootId: string,
+  log: LoopDeps['log'],
+  timeoutMs = SHUTDOWN_RELEASE_TIMEOUT_MS,
+): Promise<number | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeoutMs);
+  });
+  try {
+    const r = await Promise.race([store.releaseOwnClaims(bootId), timedOut]);
+    if (r === 'timeout') {
+      log({ event: 'sigterm', released: null, timedOut: true });
+      return null;
+    }
+    log({ event: 'sigterm', released: r });
+    return r;
+  } catch (e) {
+    log({ event: 'sigterm', released: null, ...errFields(e) });
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Never returns on its own; `deps.exit` ends the process after MAX_DB_FAILURES in a row. */
@@ -171,6 +325,6 @@ export async function runForever(deps: LoopDeps): Promise<void> {
     deps.log({ event: 'token_status_failed', ...errFields(e) });
   }
   for (;;) {
-    await runIteration(deps, state);
+    await safeIteration(deps, state);
   }
 }

@@ -21,4 +21,32 @@ Every iteration: release claims older than ten minutes → claim up to 100 due A
 
 Status lives in `keepa_service_status`; the admin page `/admin/keepa-enrichment` shows it; the main worker's watcher cron emails on a stale heartbeat or a stall and fires the explorer aggregate sync.
 
-Logs: one JSON line per batch under `[keepa-svc]`, coded errors only.
+## Operations
+
+- **The weekly enqueue pauses the service.** While an import's enqueue-week step runs (it holds the enqueue lock, up to ~30 minutes), every store transaction waits for it: no claims, no writes, then the loop carries on by itself. The heartbeat keeps landing every 60 seconds meanwhile (it does not wait on that lock), so the watcher sees the service alive.
+- **Stopping it is safe.** Claims left behind free themselves after 10 minutes; on SIGTERM (a Railway redeploy or stop) the service releases its own claims at once (given at most 10 seconds) and exits.
+- **Health:** `/` answers 503 `{"ok":false,"booting":true}` until this boot is on the status row, then 200.
+- **Exits:** ten database failures in a row end the process with code 1 (Railway restarts it). Keepa trouble never does: it is retried, paused for, and recorded as the status row's last error.
+- **The integration test** (`tests/integration/keepaService.test.ts`) needs the service STOPPED and no weekly enqueue in progress; it claims real rows for a moment and releases them.
+
+### Log events
+
+Every line is `[keepa-svc]` plus one JSON object with coded fields only (an error's class name, a Postgres `code`, an HTTP `status`, a network `causeCode`, never a message or the key).
+
+| Event | Meaning |
+|---|---|
+| `batch` | A batch was fetched and written: outcome counts, tokens left, `ms` for fetch + parse + write. |
+| `batch_errored` | Keepa never answered after three attempts (or answered 400 three times): the rows were marked errored with `code`. |
+| `batch_all_errors` | Keepa answered but no product was usable: the rows were written with their error backoff, and `code` (the most common error) became the status row's last error. |
+| `keepa_retry` | One failed attempt (`attempt` 1–3) of a batch request. |
+| `keepa_rejected` | Keepa refused the request (401/402/403 and other 4xx except 400): recorded, retried every 10 minutes until fixed. |
+| `token_wait` | Waiting `ms` (at most 2 minutes) for tokens before a request. |
+| `tokens_exhausted` | `consecutive` 429s since the last good fetch (5 or more): recorded as `keepa_tokens_exhausted`. |
+| `outage_pause` | Pausing `ms` after a batch Keepa never answered: 1 minute, doubling to 15, back to none once Keepa answers. |
+| `db_error` | A database step (`stage`) failed; `failures` in a row, ten end the process. |
+| `iteration_threw` | An unexpected error escaped an iteration; counted like a database failure. |
+| `heartbeat_failed` | The 60-second heartbeat could not reach the database. |
+| `stale_claims_released` | `count` claims older than 10 minutes (left by a dead process) were freed. |
+| `sigterm` | Shutdown: `released` own claims (null when the release failed or ran past 10 seconds). |
+
+Rarer lines: `listening`, `server_statement_timeout` and `token_status` at boot; `pool_error`, `record_error_failed`, `drained_stamp_failed`, `exit_db_failures`, `boot_failed`.

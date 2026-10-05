@@ -3,6 +3,7 @@
  * SQL-shape tests with a recording fake client. Order of statements, parameters and the
  * never-downgrade rule are asserted here; Task 8's integration test runs the real thing.
  */
+import { EventEmitter } from 'node:events';
 import { describe, it, expect } from 'vitest';
 import { PgKeepaStore } from './pgStore';
 import type { ClaimedRow } from './store';
@@ -13,25 +14,79 @@ interface Call { text: string; values: unknown[] | undefined }
 
 function fakePool(responder: (text: string, values: unknown[] | undefined) => { rows?: unknown[]; rowCount?: number } = () => ({})) {
   const calls: Call[] = [];
+  /** Every client interaction in order: query texts, 'on:error' / 'off:error', 'release:pool' / 'release:discard'. */
+  const trace: string[] = [];
+  const emitter = new EventEmitter();
   const query = async (text: string, values?: unknown[]) => {
     calls.push({ text, values });
+    trace.push(text);
     const r = responder(text, values);
     return { rows: r.rows ?? [], rowCount: r.rowCount ?? 0 };
   };
-  const client = { query, release: () => {} };
-  return { pool: { query, connect: async () => client } as never, calls };
+  const client = {
+    query,
+    on: (event: string, fn: () => void) => {
+      trace.push(`on:${event}`);
+      emitter.on(event, fn);
+      return client;
+    },
+    removeListener: (event: string, fn: () => void) => {
+      trace.push(`off:${event}`);
+      emitter.removeListener(event, fn);
+      return client;
+    },
+    release: (discard?: boolean) => {
+      trace.push(discard === true ? 'release:discard' : 'release:pool');
+    },
+    /** A dropped socket as pg reports it: an 'error' event on the checked-out client (throws when nobody listens). */
+    emitSocketError: () => emitter.emit('error', new Error('Connection terminated unexpectedly')),
+    errorListeners: () => emitter.listenerCount('error'),
+  };
+  return { pool: { query, connect: async () => client } as never, calls, trace, client };
 }
 
 const NOW = new Date('2026-10-06T12:00:00Z');
 const row = (asin: string, over: Partial<ClaimedRow> = {}): ClaimedRow => ({ asin, tier: 1, lane: 'new', lastFetchedAt: null, consecutiveErrors: 0, ...over });
 const active = (asin: string): ProductFacts => ({ ...emptyFacts(asin, 'delisted'), status: 'active', title: 'T', currentPriceCents: 1299, priceSource: 'amazon', salesRank: 10, reviewCount: 5 });
+/** Every fact populated and distinct, so a swapped pair of parameters fails an assertion. */
+const full = (asin: string): ProductFacts => ({
+  asin,
+  status: 'active',
+  errorCode: null,
+  title: 'Title',
+  brand: 'Brand',
+  imageUrl: 'https://m.media-amazon.com/images/I/x.jpg',
+  categoryPath: 'Root › Mid › Leaf',
+  categoryRoot: 'Root',
+  categoryLeaf: 'Leaf',
+  listedSince: '2019-01-02',
+  trackingSince: '2018-03-04',
+  currentPriceCents: 1299,
+  priceSource: 'new',
+  salesRank: 4321,
+  reviewCount: 87,
+  averageRatingX10: 45,
+  lastRatingUpdate: '2026-09-30',
+  monthlySold: 200,
+  keepaUpdatedAt: '2026-10-05',
+  newOfferCount: 7,
+  fbaOfferCount: 3,
+  fbmOfferCount: 4,
+  amazonAvailability: 1,
+  avg30PriceCents: 1301,
+  avg90PriceCents: 1302,
+  avg180PriceCents: 1303,
+  avg365PriceCents: 1304,
+  avg30SalesRank: 4400,
+  avg90SalesRank: 4500,
+});
 /**
  * Every store transaction opens with the enqueue-lock handshake, before any row lock: the long
  * timeout covers the lock wait only, then the row statements are back under five minutes.
  */
 const LOCK_OPENING = [
   { text: 'BEGIN', values: undefined },
-  { text: "SET LOCAL statement_timeout = '1200s'", values: undefined },
+  { text: "SET LOCAL statement_timeout = '1900s'", values: undefined },
   { text: 'SELECT pg_advisory_xact_lock_shared($1)', values: [ENQUEUE_LOCK_KEY] },
   { text: "SET LOCAL statement_timeout = '300s'", values: undefined },
 ];
@@ -93,8 +148,48 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     const snap = calls.find((c) => c.text.includes('INSERT INTO asin_snapshots'))!;
     expect(snap.values).toEqual(['B1', NOW, 1299, 10, 5, null, null, null, null, null, 'active']);
     const status = calls.find((c) => c.text.includes('UPDATE keepa_service_status'))!;
+    expect(status.text).toContain('last_batch_at = $1, last_batch_lane = $2');
+    expect(status.text).not.toContain('last_error');
     expect(status.values).toEqual([NOW, 'new', 14_800, 250]);
     expect(calls.slice(0, LOCK_OPENING.length)).toEqual(LOCK_OPENING);
+    expect(calls.at(-1)?.text).toBe('COMMIT');
+  });
+
+  it('passes all 31 success parameters in column order, every fact to its own column', async () => {
+    const { pool, calls } = fakePool();
+    await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map([['B1', full('B1')]]), lane: 'new', tokens: { tokensLeft: 1, refillRate: 250 }, now: NOW });
+    const upd = calls.find((c) => c.text.includes('title = $2'))!;
+    expect(upd.values).toEqual([
+      'B1', 'Title', 'Brand', 'https://m.media-amazon.com/images/I/x.jpg', 'Root › Mid › Leaf', 'Root', 'Leaf',
+      '2019-01-02', '2018-03-04',
+      1299, 'new', 4321, 87, 45, '2026-09-30',
+      200, '2026-10-05', 7, 3, 4, 1,
+      1301, 1302, 1303, 1304, 4400, 4500,
+      'active', NOW, new Date('2026-10-13T12:00:00Z'), new Date('2026-11-05T12:00:00Z'),
+    ]);
+    // The same, read through the SQL text: each `column = $n` gets the fact named like it.
+    const byColumn = Object.fromEntries([...upd.text.matchAll(/(\w+) = \$(\d+)/g)].map(([, column, n]) => [column, upd.values?.[Number(n) - 1]]));
+    expect(byColumn).toEqual({
+      asin: 'B1', title: 'Title', brand: 'Brand', image_url: 'https://m.media-amazon.com/images/I/x.jpg',
+      category_path: 'Root › Mid › Leaf', category_root: 'Root', category_leaf: 'Leaf',
+      listed_since: '2019-01-02', tracking_since: '2018-03-04',
+      current_price_cents: 1299, price_source: 'new', sales_rank: 4321, review_count: 87, average_rating_x10: 45, last_rating_update: '2026-09-30',
+      monthly_sold: 200, keepa_updated_at: '2026-10-05', new_offer_count: 7, fba_offer_count: 3, fbm_offer_count: 4, amazon_availability: 1,
+      avg30_price_cents: 1301, avg90_price_cents: 1302, avg180_price_cents: 1303, avg365_price_cents: 1304, avg30_sales_rank: 4400, avg90_sales_rank: 4500,
+      enrichment_status: 'active', last_fetched_at: NOW,
+    });
+    expect(calls.find(isSnapshot)?.values).toEqual(['B1', NOW, 1299, 4321, 87, 45, 200, 7, 3, 4, 'active']);
+  });
+
+  it('an all-error batch records its code as the last error and leaves last_batch_at alone', async () => {
+    const { pool, calls } = fakePool();
+    await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map([['B1', emptyFacts('B1', 'error', 'no_stats')]]), lane: 'new', tokens: { tokensLeft: 900, refillRate: 250 }, now: NOW, batchErrorCode: 'no_stats' });
+    const status = calls.find((c) => c.text.includes('UPDATE keepa_service_status'))!;
+    expect(status.text).toContain('heartbeat_at = now(), last_error_code = $1, last_error_at = now()');
+    expect(status.text).toContain('tokens_left = COALESCE($2, tokens_left), refill_rate = COALESCE($3, refill_rate)');
+    expect(status.text).not.toContain('last_batch');
+    expect(status.values).toEqual(['no_stats', 900, 250]);
+    expect(calls.filter((c) => c.text.includes('consecutive_errors = consecutive_errors + 1'))).toHaveLength(1);
     expect(calls.at(-1)?.text).toBe('COMMIT');
   });
 
@@ -164,5 +259,54 @@ describe('markBatchErrored, releaseStaleClaims, status writes', () => {
     expect(calls[1].values).toEqual([null, 250]);
     await store.markNewLaneDrained();
     expect(calls[2].text).toContain('lane_new_drained_at = now()');
+  });
+  it('releaseOwnClaims frees this boot\'s claims inside the lock handshake and reports the count', async () => {
+    const { pool, calls } = fakePool(() => ({ rowCount: 3 }));
+    await expect(new PgKeepaStore(pool).releaseOwnClaims('boot-1')).resolves.toBe(3);
+    expect(calls.map((c) => c.text)).toEqual([
+      ...LOCK_OPENING.map((c) => c.text),
+      'UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE claimed_at IS NOT NULL AND claimed_by = $1',
+      'COMMIT',
+    ]);
+    expect(calls[LOCK_OPENING.length].values).toEqual(['boot-1']);
+  });
+});
+
+describe('transactions survive a dropped connection', () => {
+  it('attaches the socket-error listener before BEGIN, removes it after COMMIT, then returns the client to the pool', async () => {
+    const { pool, trace, client } = fakePool((text) => (text.includes('RETURNING') ? { rows: [] } : {}));
+    await new PgKeepaStore(pool).claimBatch({ limit: 5, tailEnabled: false, bootId: 'b' });
+    expect(trace.slice(0, 2)).toEqual(['on:error', 'BEGIN']);
+    expect(trace.slice(-3)).toEqual(['COMMIT', 'off:error', 'release:pool']);
+    expect(client.errorListeners()).toBe(0);
+  });
+
+  it('discards the client (release(true)) when the transaction body throws, after removing the listener', async () => {
+    const { pool, trace, client } = fakePool((text) => {
+      if (text.includes('consecutive_errors = consecutive_errors + 1')) throw Object.assign(new Error('x'), { code: '57P01' });
+      return {};
+    });
+    await expect(new PgKeepaStore(pool).markBatchErrored({ rows: [row('B1')], errorCode: 'keepa_http_503', now: NOW })).rejects.toMatchObject({ code: '57P01' });
+    expect(trace[0]).toBe('on:error');
+    expect(trace.slice(-3)).toEqual(['ROLLBACK', 'off:error', 'release:discard']);
+    expect(client.errorListeners()).toBe(0);
+  });
+
+  it('absorbs the socket error event a dropped connection emits mid-transaction; the failed query still rejects', async () => {
+    let emitSocketError: () => boolean = () => false;
+    let absorbed: boolean | undefined;
+    const fake = fakePool((text) => {
+      if (text.includes('RETURNING')) {
+        absorbed = emitSocketError();
+        throw new Error('Connection terminated unexpectedly');
+      }
+      return {};
+    });
+    emitSocketError = fake.client.emitSocketError;
+    await expect(new PgKeepaStore(fake.pool).claimBatch({ limit: 5, tailEnabled: false, bootId: 'b' })).rejects.toThrow('Connection terminated unexpectedly');
+    expect(absorbed).toBe(true);
+    expect(fake.trace.at(-1)).toBe('release:discard');
+    // Outside a transaction nobody listens any more: the same event would be thrown.
+    expect(() => fake.client.emitSocketError()).toThrow('Connection terminated unexpectedly');
   });
 });

@@ -20,9 +20,16 @@ export interface KeepaStore {
   recordBoot(bootId: string, tailEnabled: boolean): Promise<void>;
   releaseStaleClaims(olderThanMs: number): Promise<number>;
   claimBatch(args: { limit: number; tailEnabled: boolean; bootId: string }): Promise<ClaimedRow[]>;
-  writeBatch(args: { rows: ClaimedRow[]; facts: Map<string, ProductFacts>; lane: Lane; tokens: TokenInfo; now: Date }): Promise<void>;
+  /**
+   * `batchErrorCode`: every outcome in the batch was an error. The rows are written as usual (their
+   * backoff stops repeated spend), but the status row records the code as its last error instead
+   * of a batch.
+   */
+  writeBatch(args: { rows: ClaimedRow[]; facts: Map<string, ProductFacts>; lane: Lane; tokens: TokenInfo; now: Date; batchErrorCode?: string }): Promise<void>;
   markBatchErrored(args: { rows: ClaimedRow[]; errorCode: string; now: Date }): Promise<void>;
   heartbeat(tokens: TokenInfo): Promise<void>;
   recordError(code: string): Promise<void>;
   markNewLaneDrained(): Promise<void>;
+  /** SIGTERM: free every claim this boot holds at once. Resolves to the number released. */
+  releaseOwnClaims(bootId: string): Promise<number>;
 }

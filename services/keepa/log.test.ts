@@ -11,6 +11,14 @@ describe('errFields', () => {
     expect(JSON.stringify(errFields(pgErr))).not.toContain('password');
     expect(errFields('boom')).toEqual({ error: 'string' });
   });
+
+  it('adds the code of a fetch failure\'s cause, never its message', () => {
+    const net = new TypeError('fetch failed', { cause: Object.assign(new Error('getaddrinfo ENOTFOUND api.keepa.com'), { code: 'ENOTFOUND' }) });
+    expect(errFields(net)).toEqual({ error: 'TypeError', causeCode: 'ENOTFOUND' });
+    expect(JSON.stringify(errFields(net))).not.toContain('keepa.com');
+    expect(errFields(new Error('x', { cause: 'not an object' }))).toEqual({ error: 'Error' });
+    expect(errFields(new Error('x', { cause: { code: 42 } }))).toEqual({ error: 'Error' });
+  });
 });
 
 describe('logLine', () => {

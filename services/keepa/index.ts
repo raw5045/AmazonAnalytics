@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { fetchKeepaBatch, fetchTokenStatus } from '@/lib/keepa/batchClient';
 import { createPool } from './db';
 import { PgKeepaStore } from './pgStore';
-import { runForever } from './loop';
+import { releaseOwnClaimsOnShutdown, runForever, startHeartbeat } from './loop';
 import { errFields, logLine } from './log';
 
 const BOOT_ID = randomUUID();
@@ -26,10 +26,16 @@ async function main(): Promise<void> {
   }
   const tailEnabled = process.env.KEEPA_TAIL_LANE === '1';
   const port = parseInt(process.env.PORT || '8080', 10);
-  const live = { lastBatchAt: null as Date | null };
+  const live = { lastBatchAt: null as Date | null, booted: false };
 
   createServer((_req, res) => {
     res.setHeader('content-type', 'application/json');
+    if (!live.booted) {
+      // Railway's healthcheck waits for a 200: not before this boot is on the status row.
+      res.statusCode = 503;
+      res.end(JSON.stringify({ ok: false, booting: true }));
+      return;
+    }
     res.end(JSON.stringify({
       ok: true,
       service: 'keepa-service',
@@ -43,12 +49,21 @@ async function main(): Promise<void> {
 
   const pool = createPool(dbUrl);
   const store = new PgKeepaStore(pool);
+  // Stopping is safe without this (claims free themselves after ten minutes); with it, this boot's
+  // claims are free at once. Bounded, so a hung database cannot block the shutdown.
+  process.once('SIGTERM', () => {
+    void releaseOwnClaimsOnShutdown(store, BOOT_ID, logLine).finally(() => process.exit(0));
+  });
   await store.recordBoot(BOOT_ID, tailEnabled);
+  live.booted = true;
+  // The heartbeat means "process alive and database reachable", independent of the loop, which can
+  // wait out a weekly enqueue for up to ~30 minutes. The loop keeps its own heartbeat writes too.
+  startHeartbeat(store, logLine);
   // Our pool-level statement_timeout is a startup parameter the pooler may ignore: log what the
   // server applies ('0' = none) so a silent mismatch is visible in the first boot line.
   try {
-    const { rows } = await pool.query('SHOW statement_timeout');
-    logLine({ event: 'server_statement_timeout', value: String(Object.values((rows[0] as Record<string, unknown> | undefined) ?? {})[0] ?? '?') });
+    const { rows } = await pool.query<{ statement_timeout: string }>('SHOW statement_timeout');
+    logLine({ event: 'server_statement_timeout', value: rows[0]?.statement_timeout ?? '?' });
   } catch (e) {
     logLine({ event: 'server_statement_timeout_failed', ...errFields(e) });
   }
