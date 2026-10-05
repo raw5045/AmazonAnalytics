@@ -4,21 +4,26 @@
  * most_reviews, top_clicked_leaf_category, top_clicked_category_path)
  * + the category-path facets table — without doing a full kcs rebuild.
  *
- * Triggered by `keepa/aggregates-sync-requested` after a successful
- * Keepa enrichment run, so that newly-enriched ASINs (especially
- * those that weren't in any prior week's enrichment) show up in the
- * explorer within minutes of enrichment finishing — rather than
- * waiting until the next weekly refresh.
+ * Triggered by `keepa/aggregates-sync-requested`, which is fired by:
+ *   - the weekly Keepa enrichment run (inngest/functions/enrichKeepaForWeek.ts)
+ *     after it completes, so that newly-enriched ASINs (especially those
+ *     that weren't in any prior week's enrichment) show up in the explorer
+ *     within minutes of enrichment finishing — rather than waiting until
+ *     the next weekly refresh;
+ *   - the Keepa service watcher (inngest/functions/keepaServiceWatcher.ts),
+ *     under KEEPA_READ_SOURCE=products only: once the never-fetched lane
+ *     drains after an import, and nightly from 03:30 ET.
  *
  * Mirrors worker/calibrationJobs.ts / worker/keepaJobs.ts pattern:
  * synchronous-return + detached Promise + completion event.
  *
  * Phases:
- *   1. Build tmp_asin_enriched_sync — the asin_products catalog's current
- *      row per ASIN under KEEPA_READ_SOURCE=products, else the most-recent
- *      asin_weekly_data enrichment per ASIN ≤ kcs.current_week_end_date
- *      (same source choice and fall-back logic as the main refresh job's
- *      stageEnrichedAsins)
+ *   1. Build tmp_asin_enriched_sync (enrichedSyncSourceSql) — under
+ *      KEEPA_READ_SOURCE=products the asin_products catalog's current row
+ *      per ASIN in status active, no_price or delisted (priced only when
+ *      active), else the most-recent active asin_weekly_data enrichment per
+ *      ASIN ≤ kcs.current_week_end_date (same row choice as the main
+ *      refresh job's stageEnrichedAsins)
  *   2. UPDATE kcs rows in place — touches all 3.9M rows but only
  *      ~5 cols. Earlier full backfill clocked at ~67 min; subsequent
  *      runs should be faster (warm pages).
@@ -30,13 +35,52 @@
 import { Pool } from 'pg';
 import { inngest } from '@/inngest/client';
 import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
-import { keepaReadSource } from '@/lib/keepa/readSource';
+import { keepaReadSource, type KeepaReadSource } from '@/lib/keepa/readSource';
 
 const inflight = new Set<string>();
 
 export interface StartKcsKeepaSyncArgs {
   /** The Keepa-enrichment week that just completed. Used as the concurrency key. */
   weekEndDate: string;
+}
+
+/**
+ * Phase 1's tmp_asin_enriched_sync statement for a Keepa read source, text and bound values
+ * together. Pure, so the choice is pinned against the schema (inngest/functions/
+ * enrichedSourceSql.test.ts). Same row choice as refreshSummary's stageEnrichedAsinsSql, over
+ * every ASIN rather than the active terms' top-3: weekly = the most recent active row per ASIN
+ * at or before the kcs week `cw`; products = the catalog's one current row per ASIN in status
+ * active, no_price or delisted, priced only when active.
+ */
+export function enrichedSyncSourceSql(source: KeepaReadSource, cw: string): { text: string; values: unknown[] } {
+  if (source === 'products') {
+    return {
+      text: `CREATE UNLOGGED TABLE tmp_asin_enriched_sync AS
+       SELECT
+         a.asin,
+         CASE WHEN a.enrichment_status = 'active' THEN a.current_price_cents END AS current_price_cents,
+         a.review_count,
+         a.category_leaf,
+         a.category_path
+       FROM asin_products a
+       WHERE a.enrichment_status IN ('active', 'no_price', 'delisted')`,
+      values: [],
+    };
+  }
+  return {
+    text: `CREATE UNLOGGED TABLE tmp_asin_enriched_sync AS
+       SELECT DISTINCT ON (a.asin)
+         a.asin,
+         a.current_price_cents,
+         a.review_count,
+         a.category_leaf,
+         a.category_path
+       FROM asin_weekly_data a
+       WHERE a.week_end_date <= $1::date
+         AND a.enrichment_status = 'active'
+       ORDER BY a.asin, a.week_end_date DESC`,
+    values: [cw],
+  };
 }
 
 export function startKcsKeepaSyncJob(
@@ -78,39 +122,23 @@ export function startKcsKeepaSyncJob(
         const { cw, sv } = metaRows[0];
         log(`syncing against kcs week=${cw} snapshot=${sv.slice(0, 8)}`);
 
-        // Phase 1: build the enriched temp table — under KEEPA_READ_SOURCE=products
-        // the asin_products catalog's current row per ASIN, else the most-recent
-        // asin_weekly_data row per ASIN ≤ cw (active rows only, either way).
-        // Same query shape as refreshSummary.stageEnrichedAsins but
+        // Phase 1: build the enriched temp table (enrichedSyncSourceSql) —
+        // under KEEPA_READ_SOURCE=products the asin_products catalog's current
+        // row per ASIN (active, no_price or delisted; priced only when active),
+        // else the most-recent active asin_weekly_data row per ASIN ≤ cw.
+        // Same row choice as refreshSummary.stageEnrichedAsins but
         // here we use a real (not TEMP) UNLOGGED table since this job
         // doesn't run inside the txn that owns latest_per_term.
         log('phase=1 building tmp_asin_enriched_sync');
         await c.query(`DROP TABLE IF EXISTS tmp_asin_enriched_sync`);
-        const fromCatalog = keepaReadSource() === 'products';
-        await c.query(
-          fromCatalog
-            ? `CREATE UNLOGGED TABLE tmp_asin_enriched_sync AS
-               SELECT a.asin, a.current_price_cents, a.review_count, a.category_leaf, a.category_path
-               FROM asin_products a
-               WHERE a.enrichment_status = 'active'`
-            : `CREATE UNLOGGED TABLE tmp_asin_enriched_sync AS
-               SELECT DISTINCT ON (a.asin)
-                 a.asin,
-                 a.current_price_cents,
-                 a.review_count,
-                 a.category_leaf,
-                 a.category_path
-               FROM asin_weekly_data a
-               WHERE a.week_end_date <= $1::date
-                 AND a.enrichment_status = 'active'
-               ORDER BY a.asin, a.week_end_date DESC`,
-          fromCatalog ? [] : [cw],
-        );
+        const source = keepaReadSource();
+        const phase1 = enrichedSyncSourceSql(source, cw);
+        await c.query(phase1.text, phase1.values);
         await c.query(`CREATE UNIQUE INDEX ON tmp_asin_enriched_sync (asin)`);
         const { rows: cnt } = await c.query<{ n: string }>(
           `SELECT COUNT(*)::text AS n FROM tmp_asin_enriched_sync`,
         );
-        log(`phase=1 done: ${cnt[0].n} enriched ASINs in scope`);
+        log(`phase=1 done: ${cnt[0].n} ${source === 'products' ? 'active-or-fetched catalog rows' : 'enriched ASINs in scope'}`);
 
         // Phase 2: UPDATE kcs with aggregates over top-3 ASINs.
         // Joins kwm to look up the 3 ASINs at kcs.current_week_end_date,

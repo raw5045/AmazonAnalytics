@@ -1,9 +1,13 @@
 /**
- * Category Builder data, loaded per-level from asin_weekly_data.category_path for
- * the current snapshot's week and cached by snapshot_version (a weekly refresh
- * mints a new snapshot_version, transparently rebuilding the cache).
+ * Category Builder data, loaded per-level from category_path and cached by
+ * snapshot_version (a weekly refresh mints a new snapshot_version, transparently
+ * rebuilding the cache).
  *
- * Source table follows KEEPA_READ_SOURCE (lib/keepa/readSource.ts).
+ * Source table follows KEEPA_READ_SOURCE (lib/keepa/readSource.ts): `weekly`
+ * reads asin_weekly_data at the current snapshot's week; `products` reads the
+ * in-scope rows of the asin_products catalog (no week). The source is a builder
+ * argument, so it is part of every cache key and a flag flip never serves the
+ * other table's cached tree.
  *
  * Everything is computed in SQL at the granularity the UI needs — root
  * departments, the children at a path, or the leaves under a path — so we never
@@ -14,8 +18,10 @@
  *  - loadLeavesUnderPath(path): all terminal leaves under a path (the /leaves
  *    route — "Add all of X")
  *
- * Each query is verified byte-identical to the buildTree-based childrenAtPath /
- * leavesAtPath against prod data (see the throwaway scripts/checkCb* probes).
+ * Each weekly query is verified byte-identical to the buildTree-based
+ * childrenAtPath / leavesAtPath against prod data (see the throwaway
+ * scripts/checkCb* probes). The catalog variants keep the weekly queries' shape,
+ * with the week predicate replaced by in_scope (the partial index's predicate).
  */
 import { unstable_cache } from 'next/cache';
 import { neon } from '@neondatabase/serverless';
@@ -57,6 +63,7 @@ const buildCachedRoots = unstable_cache(
         bool_or(category_path = split_part(category_path, ' › ', 1)) AS terminal,
         bool_or(position(' › ' in category_path) > 0) AS has_children
       FROM asin_products
+      -- in_scope: partial-index predicate — keep
       WHERE in_scope AND category_path IS NOT NULL AND category_path <> ''
       GROUP BY 1
     `
@@ -94,6 +101,7 @@ const buildCachedChildren = unstable_cache(
       WITH sub AS (
         SELECT substring(category_path from char_length(${prefix}) + 1) AS rest
         FROM asin_products
+        -- in_scope: partial-index predicate — keep
         WHERE in_scope AND starts_with(category_path, ${prefix})
       )
       SELECT
@@ -140,6 +148,7 @@ const buildCachedLeaves = unstable_cache(
     const rows = (src === 'products'
       ? await sql`
       SELECT DISTINCT category_path FROM asin_products
+      -- in_scope: partial-index predicate — keep
       WHERE in_scope AND (category_path = ${pathStr} OR starts_with(category_path, ${prefix}))
         AND category_path IS NOT NULL AND category_path <> ''
     `

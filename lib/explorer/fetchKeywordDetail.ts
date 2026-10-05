@@ -19,7 +19,7 @@
  *       callers.
  */
 import { cache } from 'react';
-import { neon } from '@neondatabase/serverless';
+import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import { keepaReadSource } from '@/lib/keepa/readSource';
 import type { SeverityKey } from './types';
@@ -95,24 +95,35 @@ export interface EnrichedProduct {
   categoryPath: string | null;
   categoryRoot: string | null;
   categoryLeaf: string | null;
+  /** Null unless enrichmentStatus is 'active' (see mapEnrichedProducts). */
   currentPriceCents: number | null;
   salesRank: number | null;
   reviewCount: number | null;
   /** 0-50 scale (divide by 10 to display as 0.0-5.0 stars). */
   averageRatingX10: number | null;
+  // Keepa's time-weighted average prices — like currentPriceCents, null unless active.
   avg30PriceCents: number | null;
   avg90PriceCents: number | null;
   avg180PriceCents: number | null;
   avg365PriceCents: number | null;
-  /** Catalog-only fields (null under the weekly source). Spec 2026-10-05 §4.1. */
+  // Catalog-only fields: optional, and null under the weekly source (spec 2026-10-05 §4.1).
+  /** Amazon's "bought in past month" floor (e.g. 100000 = 100K+); null when the badge is absent. */
   monthlySold?: number | null;
+  /** Keepa's lastUpdate (YYYY-MM-DD): the "as of" date for monthlySold and the offer counts. */
   keepaUpdatedAt?: string | null;
+  /** Keepa's listedSince listing date (YYYY-MM-DD); null when Keepa has none. */
   listedSince?: string | null;
+  /** Current new offers, all fulfilment types (Keepa price type 11; no offers = 0). */
   newOfferCount?: number | null;
+  /** Current new FBA offers, Amazon's own offer included (price type 34; no offers = 0). */
   fbaOfferCount?: number | null;
+  /** Current new FBM offers (price type 35; no offers = 0). */
   fbmOfferCount?: number | null;
+  /** Keepa's Amazon-offer availability: −1 no Amazon offer, 0 in stock, 1 pre-order, 2 unknown, 3 back-order, 4 delayed. */
   amazonAvailability?: number | null;
+  /** 30-day time-weighted average sales rank (Keepa stats). */
   avg30SalesRank?: number | null;
+  /** 90-day time-weighted average sales rank (Keepa stats). */
   avg90SalesRank?: number | null;
   enrichmentStatus: 'active' | 'no_price' | 'delisted' | 'error';
 }
@@ -158,10 +169,10 @@ export interface KeywordDetail {
   /** Up to 52 rows, oldest first. (Page renderer reverses for display.) */
   history: KeywordDetailHistoryRow[];
   /**
-   * Keepa-enriched product data for the top-3 ASINs at the current week,
-   * keyed by ASIN. Empty when the keyword is dormant (no current week) or
-   * when none of the top-3 ASINs have been enriched yet (e.g. ASINs in
-   * the excluded-category scope).
+   * Keepa-enriched product data for the current week's top-3 ASINs (source
+   * per enrichedProductsFor), keyed by ASIN. Empty when the keyword is
+   * dormant (no current week) or when none of the top-3 ASINs have been
+   * enriched yet (e.g. ASINs in the excluded-category scope).
    */
   enrichedProductsByAsin: Record<string, EnrichedProduct>;
 }
@@ -208,18 +219,19 @@ export interface KeywordProducts {
    * Used to populate TopProductsTable (slots 2 & 3 aren't in kcs).
    */
   currentWeekProductSlots: CurrentWeekProductSlot[];
-  /** Keepa-enriched data for the top-3 ASINs at the current week, keyed by ASIN. */
+  /** Keepa-enriched data for the current week's top-3 ASINs (source per enrichedProductsFor), keyed by ASIN. */
   enrichedProductsByAsin: Record<string, EnrichedProduct>;
 }
 
-type NeonSql = ReturnType<typeof neon<false, false>>;
+type NeonSql = NeonQueryFunction<false, false>;
 
 /**
  * Keepa facts for a keyword's top-3 ASINs (≤ 3 rows). Spec 2026-10-05 §7: from the asin_products
  * catalog when KEEPA_READ_SOURCE=products (no week predicate — the catalog holds one current row
- * per ASIN; never-fetched rows, enrichment_status NULL, are skipped), otherwise from
+ * per ASIN; rows with no outcome yet, enrichment_status NULL, are skipped), otherwise from
  * asin_weekly_data at the keyword's current week. Both shapes map
- * through mapEnrichedProducts; the catalog adds the new fields, null under the weekly source.
+ * through mapEnrichedProducts (prices only for active rows); the catalog adds the new fields,
+ * null under the weekly source.
  */
 export function enrichedProductsFor(sql: NeonSql, searchTermId: string) {
   if (keepaReadSource() === 'products') {
@@ -452,12 +464,21 @@ export async function fetchKeywordDetail(
   };
 }
 
-function mapEnrichedProducts(
+/**
+ * Enriched rows keyed by ASIN. Prices — current and the four averages — come through only for
+ * active rows: a no_price row has no current offer price, and a delisted catalog row keeps its
+ * last fetch's facts, whose prices are stale. Reviews, rating, rank and category map regardless.
+ * Weekly delisted rows are empty and weekly no_price rows have no current price, so the detail
+ * page shows the same prices under the weekly source.
+ */
+export function mapEnrichedProducts(
   rows: Array<Record<string, unknown>>,
 ): Record<string, EnrichedProduct> {
   const result: Record<string, EnrichedProduct> = {};
   for (const r of rows) {
     const asin = r.asin as string;
+    const priced = r.enrichment_status === 'active';
+    const price = (v: unknown): number | null => (priced ? ((v as number | null) ?? null) : null);
     result[asin] = {
       asin,
       title: (r.title as string | null) ?? null,
@@ -466,14 +487,14 @@ function mapEnrichedProducts(
       categoryPath: (r.category_path as string | null) ?? null,
       categoryRoot: (r.category_root as string | null) ?? null,
       categoryLeaf: (r.category_leaf as string | null) ?? null,
-      currentPriceCents: (r.current_price_cents as number | null) ?? null,
+      currentPriceCents: price(r.current_price_cents),
       salesRank: (r.sales_rank as number | null) ?? null,
       reviewCount: (r.review_count as number | null) ?? null,
       averageRatingX10: (r.average_rating_x10 as number | null) ?? null,
-      avg30PriceCents: (r.avg30_price_cents as number | null) ?? null,
-      avg90PriceCents: (r.avg90_price_cents as number | null) ?? null,
-      avg180PriceCents: (r.avg180_price_cents as number | null) ?? null,
-      avg365PriceCents: (r.avg365_price_cents as number | null) ?? null,
+      avg30PriceCents: price(r.avg30_price_cents),
+      avg90PriceCents: price(r.avg90_price_cents),
+      avg180PriceCents: price(r.avg180_price_cents),
+      avg365PriceCents: price(r.avg365_price_cents),
       monthlySold: (r.monthly_sold as number | null) ?? null,
       keepaUpdatedAt: (r.keepa_updated_at as string | null) ?? null,
       listedSince: (r.listed_since as string | null) ?? null,
@@ -864,7 +885,7 @@ export async function fetchKeywordProducts(
     ];
   }
 
-  // Keepa-enriched data for the top-3 ASINs at the current week (≤3 rows).
+  // Keepa-enriched data for the current week's top-3 ASINs (≤3 rows) — see enrichedProductsFor.
   const enrichedRowsAny = await enrichedProductsFor(sql, searchTermId);
   const enrichedProductsByAsin = mapEnrichedProducts(
     enrichedRowsAny as unknown as Array<Record<string, unknown>>,
