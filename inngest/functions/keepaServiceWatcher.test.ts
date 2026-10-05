@@ -1,19 +1,21 @@
 // inngest/functions/keepaServiceWatcher.test.ts
 /**
- * SQL-shape tests for one watcher tick with a recording fake client that answers by statement
- * text. The decisions themselves are covered in lib/keepa/watcherRules.test.ts.
+ * One watcher tick against a recording fake client that answers by statement text. The alarm and
+ * event senders write into the same ordered trace as the SQL, so "send, then stamp" is pinned. The
+ * decisions themselves are covered in lib/keepa/watcherRules.test.ts; the real schema in
+ * tests/integration/keepaWatcher.test.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { spyOnConsole } from '@/tests/unit/consoleLines';
+import { consoleLines, spyOnConsole } from '@/tests/unit/consoleLines';
 
 // The alarm sender is injected; its module graph still imports the database client.
 vi.mock('@/db/client', () => ({ db: {} }));
 
-import { lockKeyHalves, runWatcherTick, type WatcherTickDeps } from './keepaServiceWatcher';
-import { ENQUEUE_LOCK_KEY } from '@/lib/keepa/lanes';
+import { runWatcherTick, type WatcherTickDeps } from './keepaServiceWatcher';
 
 const NOW = new Date('2026-10-06T12:00:00Z'); // 08:00 ET: outside the nightly window
-const min = (n: number) => new Date(NOW.getTime() - n * 60_000);
+const NIGHT_NOW = new Date('2026-10-06T07:31:00Z'); // 03:31 ET
+const ago = (n: number, from: Date = NOW) => new Date(from.getTime() - n * 60_000);
 
 interface Status {
   boot_id: string | null;
@@ -29,8 +31,8 @@ interface Status {
 
 const healthy: Status = {
   boot_id: 'boot-1',
-  heartbeat_at: min(1),
-  last_batch_at: min(2),
+  heartbeat_at: ago(1),
+  last_batch_at: ago(2),
   tail_enabled: false,
   lane_new_drained_at: null,
   sync_fired_at: null,
@@ -39,134 +41,239 @@ const healthy: Status = {
   stall_alarm_sent_at: null,
 };
 
-interface Call { text: string; values: unknown[] | undefined }
+interface FakeOpts {
+  /** Overrides on the healthy status row; null = no status row. */
+  status?: Partial<Status> | null;
+  due?: boolean;
+  running?: boolean;
+  scopeWeek?: string | null;
+  kcsWeek?: string | null;
+  /** What sendAlarm reports: true = Resend accepted the email. */
+  delivered?: boolean;
+}
 
-function fakeClient(opts: { status?: Status | null; scopeWeek?: string | null; kcsWeek?: string | null } = {}) {
-  const calls: Call[] = [];
-  const scopeWeek = opts.scopeWeek === undefined ? '2026-10-03' : opts.scopeWeek;
-  const kcsWeek = opts.kcsWeek === undefined ? '2026-10-03' : opts.kcsWeek;
+function orDefault<T>(v: T | undefined, d: T): T {
+  return v === undefined ? d : v;
+}
+
+function harness(opts: FakeOpts = {}, over: Partial<Pick<WatcherTickDeps, 'now' | 'readSource'>> = {}) {
+  /** Every interaction in order: `sql:<text>`, `alarm:<variant>`, `event:<name>`. */
+  const trace: string[] = [];
+  const calls: Array<{ text: string; values: unknown[] | undefined }> = [];
   const query = async (text: string, values?: unknown[]) => {
     calls.push({ text, values });
-    if (text.includes('FROM keepa_service_status')) return { rows: opts.status === null ? [] : [opts.status ?? healthy] };
-    if (text.includes(') AS due')) return { rows: [{ due: true }] };
-    if (text.includes('FROM pg_locks')) return { rows: [{ running: false }] };
-    if (text.includes('AS scope_week')) return { rows: [{ scope_week: scopeWeek, kcs_week: kcsWeek }] };
-    if (text.includes('AS cw')) return { rows: [{ cw: kcsWeek }] };
+    trace.push(`sql:${text}`);
+    if (text.includes('FROM keepa_service_status')) return { rows: opts.status === null ? [] : [{ ...healthy, ...opts.status }] };
+    if (text.includes(') AS due')) return { rows: [{ due: orDefault(opts.due, true) }] };
+    if (text.includes('FROM pg_locks')) return { rows: [{ running: orDefault(opts.running, false) }] };
+    if (text.includes('AS scope_week')) {
+      return { rows: [{ scope_week: orDefault(opts.scopeWeek, '2026-10-03'), kcs_week: orDefault(opts.kcsWeek, '2026-10-03') }] };
+    }
     if (text.startsWith('UPDATE keepa_service_status SET ')) return { rows: [] };
     throw new Error(`unexpected statement: ${text}`);
   };
-  return { client: { query } as never, calls, texts: () => calls.map((c) => c.text) };
-}
-
-function deps(over: Partial<WatcherTickDeps> = {}) {
-  const sendAlarm = vi.fn<WatcherTickDeps['sendAlarm']>(async () => {});
-  const sendEvent = vi.fn<WatcherTickDeps['sendEvent']>(async () => ({}));
-  return { deps: { now: NOW, readSource: 'products' as const, sendAlarm, sendEvent, ...over }, sendAlarm, sendEvent };
+  const sendAlarm = vi.fn<WatcherTickDeps['sendAlarm']>(async (input) => {
+    trace.push(`alarm:${input.variant}`);
+    return orDefault(opts.delivered, true);
+  });
+  const sendEvent = vi.fn<WatcherTickDeps['sendEvent']>(async (name) => {
+    trace.push(`event:${name}`);
+    return {};
+  });
+  const deps: WatcherTickDeps = { now: NOW, readSource: 'products', sendAlarm, sendEvent, ...over };
+  return {
+    client: { query } as never,
+    deps,
+    calls,
+    trace,
+    sendAlarm,
+    sendEvent,
+    texts: () => calls.map((c) => c.text),
+    updates: () => calls.filter((c) => c.text.startsWith('UPDATE')),
+  };
 }
 
 const flat = (text: string) => text.replace(/\s+/g, ' ');
 const readsWeeks = (texts: string[]) => texts.some((t) => t.includes('AS scope_week'));
-
-describe('lockKeyHalves', () => {
-  it('splits a bigint advisory-lock key the way pg_locks shows it', () => {
-    expect(lockKeyHalves(ENQUEUE_LOCK_KEY)).toEqual([0, 20261005]);
-    expect(lockKeyHalves(2 ** 32 + 5)).toEqual([1, 5]);
-  });
-});
+const stampSql = (field: string) => `UPDATE keepa_service_status SET ${field} = $1 WHERE singleton`;
 
 describe('runWatcherTick', () => {
+  let spies: ReturnType<typeof spyOnConsole>;
   beforeEach(() => {
-    spyOnConsole();
+    spies = spyOnConsole();
   });
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
+  /** The tick's one log line, parsed. */
+  function tickLog(): Record<string, unknown> {
+    const line = consoleLines(...spies).find((l) => l.startsWith('[keepa-watcher] '));
+    if (!line) throw new Error('no tick log line');
+    return JSON.parse(line.slice('[keepa-watcher] '.length)) as Record<string, unknown>;
+  }
+
   it('reads every status column the rules need, including boot_id, and does nothing on a healthy tick', async () => {
-    const f = fakeClient();
-    const d = deps();
-    await expect(runWatcherTick(f.client, d.deps)).resolves.toEqual({ ok: true, actions: [] });
+    const h = harness();
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: [] });
     for (const col of ['boot_id', 'heartbeat_at', 'last_batch_at', 'tail_enabled', 'lane_new_drained_at', 'sync_fired_at', 'nightly_sync_date', 'down_alarm_sent_at', 'stall_alarm_sent_at']) {
-      expect(f.calls[0].text).toContain(col);
+      expect(h.calls[0].text).toContain(col);
     }
     // The status row, the due probe and the lock probe: no weeks query, no writes.
-    expect(f.calls).toHaveLength(3);
-    expect(d.sendAlarm).not.toHaveBeenCalled();
-    expect(d.sendEvent).not.toHaveBeenCalled();
+    expect(h.calls).toHaveLength(3);
+    expect(h.sendAlarm).not.toHaveBeenCalled();
+    expect(h.sendEvent).not.toHaveBeenCalled();
   });
 
-  it("probes due work with both lanes' literal partial-index predicates and the tail flag", async () => {
-    const f = fakeClient({ status: { ...healthy, tail_enabled: true } });
-    await runWatcherTick(f.client, deps().deps);
-    const probe = flat(f.calls[1].text);
-    expect(probe).toContain('WHERE in_scope AND claimed_at IS NULL AND last_fetched_at IS NULL AND next_due_at <= now() AND (tier = 1 OR $1::boolean)');
-    expect(probe).toContain('WHERE in_scope AND claimed_at IS NULL AND last_fetched_at IS NOT NULL AND next_due_at <= now() AND (tier = 1 OR $1::boolean)');
-    expect(f.calls[1].values).toEqual([true]);
-  });
-
-  it('probes the enqueue lock with both key halves as parameters', async () => {
-    const f = fakeClient();
-    await runWatcherTick(f.client, deps().deps);
-    expect(flat(f.calls[2].text)).toContain(
-      "WHERE locktype = 'advisory' AND classid = $1::oid AND objid = $2::oid AND objsubid = 1 AND mode = 'ExclusiveLock' AND granted",
+  it("probes due work with both lanes' literal partial-index predicates, five minutes of grace and the tail flag", async () => {
+    const h = harness({ status: { tail_enabled: true } });
+    await runWatcherTick(h.client, h.deps);
+    const probe = flat(h.calls[1].text);
+    expect(probe).toContain(
+      "WHERE in_scope AND claimed_at IS NULL AND last_fetched_at IS NULL AND next_due_at <= now() - interval '5 minutes' AND (tier = 1 OR $1::boolean)",
     );
-    expect(f.calls[2].values).toEqual([0, 20261005]);
+    expect(probe).toContain(
+      "WHERE in_scope AND claimed_at IS NULL AND last_fetched_at IS NOT NULL AND next_due_at <= now() - interval '5 minutes' AND (tier = 1 OR $1::boolean)",
+    );
+    expect(h.calls[1].values).toEqual([true]);
+  });
+
+  it('probes the enqueue lock in this database with both key halves as parameters', async () => {
+    const h = harness();
+    await runWatcherTick(h.client, h.deps);
+    expect(flat(h.calls[2].text)).toContain(
+      "WHERE locktype = 'advisory' AND classid = $1::oid AND objid = $2::oid AND objsubid = 1 AND mode = 'ExclusiveLock' AND granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
+    );
+    expect(h.calls[2].values).toEqual([0, 20261005]);
   });
 
   it('reads the scope and explorer weeks only when a sync decision needs them', async () => {
-    const quiet = fakeClient();
-    await runWatcherTick(quiet.client, deps().deps);
+    const quiet = harness();
+    await runWatcherTick(quiet.client, quiet.deps);
     expect(readsWeeks(quiet.texts())).toBe(false);
 
-    const drained = fakeClient({ status: { ...healthy, lane_new_drained_at: min(3) } });
-    await runWatcherTick(drained.client, deps().deps);
+    const drained = harness({ status: { lane_new_drained_at: ago(3) } });
+    await runWatcherTick(drained.client, drained.deps);
     expect(readsWeeks(drained.texts())).toBe(true);
 
-    const weekly = fakeClient({ status: { ...healthy, lane_new_drained_at: min(3) } });
-    await runWatcherTick(weekly.client, deps({ readSource: 'weekly' }).deps);
+    const weekly = harness({ status: { lane_new_drained_at: ago(3) } }, { readSource: 'weekly' });
+    await runWatcherTick(weekly.client, weekly.deps);
     expect(readsWeeks(weekly.texts())).toBe(false);
 
-    const night = fakeClient();
-    await runWatcherTick(night.client, deps({ now: new Date('2026-10-06T07:31:00Z') }).deps); // 03:31 ET
+    const night = harness({}, { now: NIGHT_NOW });
+    await runWatcherTick(night.client, night.deps);
     expect(readsWeeks(night.texts())).toBe(true);
   });
 
-  it('a stale heartbeat sends the down alarm and stamps it through the whitelist', async () => {
-    const f = fakeClient({ status: { ...healthy, heartbeat_at: min(40) } });
-    const d = deps();
-    await expect(runWatcherTick(f.client, d.deps)).resolves.toEqual({ ok: true, actions: ['email:down', 'stamp:down_alarm_sent_at'] });
-    expect(d.sendAlarm).toHaveBeenCalledWith({ variant: 'down', heartbeatAt: min(40), lastBatchAt: min(2) });
-    expect(f.calls.at(-1)).toEqual({ text: 'UPDATE keepa_service_status SET down_alarm_sent_at = $1 WHERE singleton', values: [NOW] });
+  it('work due and a three-hour-old last batch: the stall alarm goes out, then its stamp', async () => {
+    const h = harness({ status: { last_batch_at: ago(180) }, due: true });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: ['email:stalled', 'stamp:stall_alarm_sent_at'] });
+    expect(h.trace.slice(3)).toEqual(['alarm:stalled', `sql:${stampSql('stall_alarm_sent_at')}`]);
+    expect(h.updates()).toEqual([{ text: stampSql('stall_alarm_sent_at'), values: [NOW] }]);
   });
 
-  it('a drained lane with the explorer caught up requests the sync for the explorer week and stamps it', async () => {
-    const f = fakeClient({ status: { ...healthy, lane_new_drained_at: min(3) } });
-    const d = deps();
-    await expect(runWatcherTick(f.client, d.deps)).resolves.toEqual({ ok: true, actions: ['sync:new_lane_drained', 'stamp:sync_fired_at'] });
-    expect(d.sendEvent).toHaveBeenCalledWith('keepa/aggregates-sync-requested', { weekEndDate: '2026-10-03' });
-    expect(f.calls.at(-1)).toEqual({ text: 'UPDATE keepa_service_status SET sync_fired_at = $1 WHERE singleton', values: [NOW] });
+  it('no due work: a three-hour-old last batch is not a stall', async () => {
+    const h = harness({ status: { last_batch_at: ago(180) }, due: false });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: [] });
+    expect(h.sendAlarm).not.toHaveBeenCalled();
+    expect(h.updates()).toEqual([]);
   });
 
-  it('holds the drained-lane sync while the explorer is still on the previous week', async () => {
-    const f = fakeClient({ status: { ...healthy, lane_new_drained_at: min(3) }, scopeWeek: '2026-10-03', kcsWeek: '2026-09-26' });
-    const d = deps();
-    await expect(runWatcherTick(f.client, d.deps)).resolves.toEqual({ ok: true, actions: [] });
-    expect(d.sendEvent).not.toHaveBeenCalled();
-    expect(f.texts().some((t) => t.startsWith('UPDATE'))).toBe(false);
+  it('while the weekly enqueue holds its lock, a stale heartbeat raises nothing', async () => {
+    const h = harness({ status: { heartbeat_at: ago(40) }, running: true });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: [] });
+    expect(h.sendAlarm).not.toHaveBeenCalled();
+    expect(h.updates()).toEqual([]);
+  });
+
+  it('a stale heartbeat sends the down alarm, then stamps it through the whitelist', async () => {
+    const h = harness({ status: { heartbeat_at: ago(40) } });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: ['email:down', 'stamp:down_alarm_sent_at'] });
+    expect(h.sendAlarm).toHaveBeenCalledWith({ variant: 'down', heartbeatAt: ago(40), lastBatchAt: ago(2) });
+    expect(h.trace.slice(3)).toEqual(['alarm:down', `sql:${stampSql('down_alarm_sent_at')}`]);
+    expect(h.updates()).toEqual([{ text: stampSql('down_alarm_sent_at'), values: [NOW] }]);
+  });
+
+  it('a failed alarm send leaves its stamp unset so the next tick retries; clearing a stamp does not wait on the send', async () => {
+    const failed = harness({ status: { heartbeat_at: ago(40) }, delivered: false });
+    await expect(runWatcherTick(failed.client, failed.deps)).resolves.toEqual({
+      ok: true,
+      actions: ['email:down:unsent', 'stamp:down_alarm_sent_at:skipped'],
+    });
+    expect(failed.updates()).toEqual([]);
+
+    const back = harness({ status: { down_alarm_sent_at: ago(30) }, delivered: false });
+    await expect(runWatcherTick(back.client, back.deps)).resolves.toEqual({ ok: true, actions: ['email:recovered:unsent', 'stamp:down_alarm_sent_at'] });
+    expect(back.updates()).toEqual([{ text: stampSql('down_alarm_sent_at'), values: [null] }]);
+  });
+
+  it('a drained lane with the explorer caught up requests the sync for the explorer week, then stamps it', async () => {
+    const h = harness({ status: { lane_new_drained_at: ago(3) } });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: ['sync:new_lane_drained', 'stamp:sync_fired_at'] });
+    expect(h.sendEvent).toHaveBeenCalledWith('keepa/aggregates-sync-requested', { weekEndDate: '2026-10-03' });
+    expect(h.trace.slice(4)).toEqual(['event:keepa/aggregates-sync-requested', `sql:${stampSql('sync_fired_at')}`]);
+    expect(h.updates()).toEqual([{ text: stampSql('sync_fired_at'), values: [NOW] }]);
+  });
+
+  it('03:31 ET with a batch today: the nightly sync, then the ET date and the sync time stamped', async () => {
+    const h = harness({ status: { heartbeat_at: ago(1, NIGHT_NOW), last_batch_at: ago(20, NIGHT_NOW) } }, { now: NIGHT_NOW });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({
+      ok: true,
+      actions: ['sync:nightly', 'stamp:nightly_sync_date', 'stamp:sync_fired_at'],
+    });
+    expect(h.sendEvent).toHaveBeenCalledWith('keepa/aggregates-sync-requested', { weekEndDate: '2026-10-03' });
+    expect(h.trace.slice(4)).toEqual([
+      'event:keepa/aggregates-sync-requested',
+      `sql:${stampSql('nightly_sync_date')}`,
+      `sql:${stampSql('sync_fired_at')}`,
+    ]);
+    expect(h.updates()).toEqual([
+      { text: stampSql('nightly_sync_date'), values: ['2026-10-06'] },
+      { text: stampSql('sync_fired_at'), values: [NIGHT_NOW] },
+    ]);
+  });
+
+  it('holds the drained-lane sync while the explorer is behind or its week is unknown', async () => {
+    for (const kcsWeek of ['2026-09-26', null]) {
+      const h = harness({ status: { lane_new_drained_at: ago(3) }, scopeWeek: '2026-10-03', kcsWeek });
+      await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: [] });
+      expect(h.sendEvent).not.toHaveBeenCalled();
+      expect(h.updates()).toEqual([]);
+    }
   });
 
   it('before the first boot: only the reads, no actions', async () => {
-    const f = fakeClient({ status: { ...healthy, boot_id: null, heartbeat_at: null, last_batch_at: null, lane_new_drained_at: min(3) } });
-    const d = deps();
-    await expect(runWatcherTick(f.client, d.deps)).resolves.toEqual({ ok: true, actions: [] });
-    expect(f.texts().every((t) => t.trimStart().startsWith('SELECT'))).toBe(true);
-    expect(d.sendAlarm).not.toHaveBeenCalled();
-    expect(d.sendEvent).not.toHaveBeenCalled();
+    const h = harness({ status: { boot_id: null, heartbeat_at: null, last_batch_at: null, lane_new_drained_at: ago(3) } });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: [] });
+    expect(h.texts().every((t) => t.trimStart().startsWith('SELECT'))).toBe(true);
+    expect(h.sendAlarm).not.toHaveBeenCalled();
+    expect(h.sendEvent).not.toHaveBeenCalled();
+    expect(tickLog().held).toEqual(['not_booted']);
   });
 
   it('skips the tick when the status row is missing', async () => {
-    const f = fakeClient({ status: null });
-    await expect(runWatcherTick(f.client, deps().deps)).resolves.toEqual({ ok: true, skipped: 'no status row' });
-    expect(f.calls).toHaveLength(1);
+    const h = harness({ status: null });
+    await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, skipped: 'no status row' });
+    expect(h.calls).toHaveLength(1);
+  });
+
+  it('logs compact context: ages, probe results, the explorer state and why something was held', async () => {
+    const h = harness({ status: { lane_new_drained_at: ago(3), sync_fired_at: ago(120) } });
+    await runWatcherTick(h.client, h.deps);
+    expect(tickLog()).toEqual({
+      actions: [],
+      heartbeatAgeMin: 1,
+      lastBatchAgeMin: 2,
+      due: true,
+      enqueueRunning: false,
+      explorerCaughtUp: true,
+      held: ['sync_gap', 'window'],
+    });
+  });
+
+  it('logs the explorer state as unknown when the weeks were not read', async () => {
+    const h = harness();
+    await runWatcherTick(h.client, h.deps);
+    expect(tickLog().explorerCaughtUp).toBeNull();
   });
 });

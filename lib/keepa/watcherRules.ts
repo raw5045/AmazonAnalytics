@@ -16,7 +16,11 @@ export const STALL_AFTER_MS = 2 * 60 * 60_000;
 export const RECENT_BATCH_MS = 24 * 60 * 60_000;
 /** A drained-lane sync waits until this long after the last sync: a deferral, not a drop (the drain stamp stays newer, so a later tick fires it). */
 export const SYNC_MIN_GAP_MS = 6 * 60 * 60_000;
-export const NIGHTLY_WINDOW = { hour: 3, fromMinute: 30, toMinute: 44 } as const;
+/**
+ * The nightly sync's window in ET minutes of the day, 03:30 through 05:59: wide enough that a missed
+ * tick does not skip the night. nightly_sync_date keeps it to once per ET date.
+ */
+export const NIGHTLY_WINDOW = { fromMinute: 3 * 60 + 30, toMinute: 5 * 60 + 59 } as const;
 
 export interface EasternClock {
   hour: number;
@@ -40,7 +44,7 @@ export interface WatcherInput {
   laneNewDrainedAt: Date | null;
   syncFiredAt: Date | null;
   /**
-   * The explorer's current week has reached the catalog's scope week (true when either is unknown).
+   * The explorer's week is known and has reached the catalog's scope week (isExplorerCaughtUp).
    * The import enqueues a new week before the ~4.5-hour explorer refresh, and the sync job reads the
    * explorer's week itself, so both explorer syncs wait for the refresh to swap the week in.
    */
@@ -60,6 +64,9 @@ export type WatcherAction =
   | { kind: 'sync'; reason: 'new_lane_drained' | 'nightly' }
   | { kind: 'stamp'; field: StampField; value: Date | string | null };
 
+/** Why a tick held something back, for the tick log (see heldReasons). */
+export type HeldReason = 'not_booted' | 'enqueue_running' | 'explorer_behind' | 'sync_gap' | 'window';
+
 export function easternClock(now: Date): EasternClock {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -74,10 +81,49 @@ export function easternClock(now: Date): EasternClock {
   return { hour: Number(get('hour')) % 24, minute: Number(get('minute')), dateKey: `${get('year')}-${get('month')}-${get('day')}` };
 }
 
+/** A non-negative bigint advisory-lock key as pg_locks shows it: the high 32 bits in classid, the low 32 bits in objid (objsubid = 1). */
+export function lockKeyHalves(key: number): [classid: number, objid: number] {
+  const k = BigInt(key);
+  return [Number(k >> BigInt(32)), Number(k & BigInt(0xffffffff))];
+}
+
+/**
+ * The explorer has reached the catalog's scope week. An unknown explorer week holds the sync (that
+ * week is what the sync job would sync); a catalog without a scope week has nothing to wait for.
+ * ISO dates compare correctly as text.
+ */
+export function isExplorerCaughtUp(scopeWeek: string | null, kcsWeek: string | null): boolean {
+  return kcsWeek !== null && (scopeWeek === null || kcsWeek >= scopeWeek);
+}
+
+/** The never-fetched lane drained after the last sync. */
+export function drainPending(i: Pick<WatcherInput, 'laneNewDrainedAt' | 'syncFiredAt'>): boolean {
+  return !!i.laneNewDrainedAt && (!i.syncFiredAt || i.laneNewDrainedAt > i.syncFiredAt);
+}
+
+export function inNightlyWindow(et: EasternClock): boolean {
+  const minuteOfDay = et.hour * 60 + et.minute;
+  return minuteOfDay >= NIGHTLY_WINDOW.fromMinute && minuteOfDay <= NIGHTLY_WINDOW.toMinute;
+}
+
+function ageMs(now: Date, d: Date | null): number {
+  return d ? now.getTime() - d.getTime() : Number.POSITIVE_INFINITY;
+}
+
+/** The last sync is under SYNC_MIN_GAP_MS old. */
+function syncGapOpen(i: Pick<WatcherInput, 'now' | 'syncFiredAt'>): boolean {
+  return !!i.syncFiredAt && ageMs(i.now, i.syncFiredAt) < SYNC_MIN_GAP_MS;
+}
+
+/** Tonight's sync is still owed: something was fetched in the last day and today's date is not stamped. */
+function nightlyOwed(i: Pick<WatcherInput, 'now' | 'lastBatchAt' | 'nightlySyncDate' | 'et'>): boolean {
+  return ageMs(i.now, i.lastBatchAt) <= RECENT_BATCH_MS && i.nightlySyncDate !== i.et.dateKey;
+}
+
 export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
   // Launch day: the service has never booted, so there is nothing to alarm about and nothing to sync.
   if (!i.serviceBooted) return [];
-  const age = (d: Date | null) => (d ? i.now.getTime() - d.getTime() : Number.POSITIVE_INFINITY);
+  const age = (d: Date | null) => ageMs(i.now, d);
 
   const emails: AlarmVariant[] = [];
   const stamps: WatcherAction[] = [];
@@ -86,22 +132,20 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
   if (!i.enqueueRunning) {
     const down = age(i.heartbeatAt) > DOWN_AFTER_MS;
     const stalled = !down && i.dueWorkExists && age(i.lastBatchAt) > STALL_AFTER_MS;
-
+    // Back up after a down alarm. If a stall is still on, the stall is what gets reported, never "recovered".
+    const backUp = !down && !!i.downAlarmSentAt;
     if (down && !i.downAlarmSentAt) {
       emails.push('down');
       stamps.push({ kind: 'stamp', field: 'down_alarm_sent_at', value: i.now });
     }
-    if (!down && i.downAlarmSentAt) {
-      emails.push('recovered');
-      stamps.push({ kind: 'stamp', field: 'down_alarm_sent_at', value: null });
-    }
-    if (stalled && !i.stallAlarmSentAt) {
+    if (backUp) stamps.push({ kind: 'stamp', field: 'down_alarm_sent_at', value: null });
+    if (stalled && (!i.stallAlarmSentAt || backUp)) {
       emails.push('stalled');
-      stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: i.now });
+      if (!i.stallAlarmSentAt) stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: i.now });
     }
-    if (!stalled && !down && i.stallAlarmSentAt) {
-      if (!emails.includes('recovered')) emails.push('recovered');
-      stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: null });
+    if (!down && !stalled && (backUp || i.stallAlarmSentAt)) {
+      emails.push('recovered');
+      if (i.stallAlarmSentAt) stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: null });
     }
   }
 
@@ -110,28 +154,21 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
   if (i.readSource === 'products') {
     // The drained-lane waits (six hours since the last sync, the explorer on the scope week) are
     // deferrals: the drain stamp stays newer than sync_fired_at, so a later tick fires the sync. A
-    // nightly window while the explorer is still on the previous week is skipped (a pending drain
-    // fires after the swap; otherwise the next night syncs).
-    if (
-      i.laneNewDrainedAt &&
-      (!i.syncFiredAt || i.laneNewDrainedAt > i.syncFiredAt) &&
-      (!i.syncFiredAt || age(i.syncFiredAt) >= SYNC_MIN_GAP_MS) &&
-      i.explorerCaughtUp
-    ) {
+    // night whose window passes while the explorer is still on the previous week is skipped (a
+    // pending drain fires after the swap; otherwise the next night syncs).
+    if (drainPending(i) && !syncGapOpen(i) && i.explorerCaughtUp) {
       actions.push({ kind: 'sync', reason: 'new_lane_drained' }, { kind: 'stamp', field: 'sync_fired_at', value: i.now });
-    } else if (
-      i.et.hour === NIGHTLY_WINDOW.hour &&
-      i.et.minute >= NIGHTLY_WINDOW.fromMinute &&
-      i.et.minute <= NIGHTLY_WINDOW.toMinute &&
-      age(i.lastBatchAt) <= RECENT_BATCH_MS &&
-      i.nightlySyncDate !== i.et.dateKey &&
-      i.explorerCaughtUp
-    ) {
-      actions.push(
-        { kind: 'sync', reason: 'nightly' },
-        { kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey },
-        { kind: 'stamp', field: 'sync_fired_at', value: i.now },
-      );
+    } else if (inNightlyWindow(i.et) && nightlyOwed(i) && i.explorerCaughtUp) {
+      if (syncGapOpen(i)) {
+        // A sync under six hours old counts as tonight's: record the date without a second sync.
+        actions.push({ kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey });
+      } else {
+        actions.push(
+          { kind: 'sync', reason: 'nightly' },
+          { kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey },
+          { kind: 'stamp', field: 'sync_fired_at', value: i.now },
+        );
+      }
     }
   }
   return actions;
@@ -140,13 +177,33 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
 /**
  * Whether either sync branch above could fire this tick, judged without the explorer and scope
  * weeks: catalog reads on, and a drain newer than the last sync or the nightly window. The watcher
- * reads those weeks only when this is true and passes explorerCaughtUp: true otherwise, which
- * cannot change a decision.
+ * reads those weeks only when this is true; otherwise the explorerCaughtUp it passes cannot change
+ * a decision.
  */
 export function syncCouldFire(i: Pick<WatcherInput, 'readSource' | 'laneNewDrainedAt' | 'syncFiredAt' | 'et'>): boolean {
-  if (i.readSource !== 'products') return false;
-  const drainPending = !!i.laneNewDrainedAt && (!i.syncFiredAt || i.laneNewDrainedAt > i.syncFiredAt);
-  const inNightlyWindow =
-    i.et.hour === NIGHTLY_WINDOW.hour && i.et.minute >= NIGHTLY_WINDOW.fromMinute && i.et.minute <= NIGHTLY_WINDOW.toMinute;
-  return drainPending || inNightlyWindow;
+  return i.readSource === 'products' && (drainPending(i) || inNightlyWindow(i.et));
+}
+
+/**
+ * Why this tick held something back — for the tick log only; decideWatcherActions decides. Alarms
+ * suppressed: not_booted, enqueue_running. A pending drain not synced: sync_gap (under six hours
+ * since the last sync) and/or explorer_behind. Tonight's sync owed but not sent: window (before
+ * its window), explorer_behind, or sync_gap (a recent sync counted as the night's).
+ */
+export function heldReasons(i: WatcherInput): HeldReason[] {
+  if (!i.serviceBooted) return ['not_booted'];
+  const held = new Set<HeldReason>();
+  if (i.enqueueRunning) held.add('enqueue_running');
+  if (i.readSource === 'products') {
+    if (drainPending(i)) {
+      if (syncGapOpen(i)) held.add('sync_gap');
+      if (!i.explorerCaughtUp) held.add('explorer_behind');
+    }
+    if (nightlyOwed(i)) {
+      if (!inNightlyWindow(i.et)) held.add('window');
+      else if (!i.explorerCaughtUp) held.add('explorer_behind');
+      else if (syncGapOpen(i)) held.add('sync_gap');
+    }
+  }
+  return [...held];
 }

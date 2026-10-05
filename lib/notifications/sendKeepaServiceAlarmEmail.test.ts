@@ -24,16 +24,16 @@ describe('sendKeepaServiceAlarmEmail', () => {
     vi.restoreAllMocks();
   });
 
-  it('skips the lookup and the send when the API key is missing', async () => {
+  it('skips the lookup and the send when the API key is missing, and reports nothing sent', async () => {
     vi.stubEnv('RESEND_API_KEY', '');
-    await sendKeepaServiceAlarmEmail(input);
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBe(false);
     expect(mockWhere).not.toHaveBeenCalled();
     expect(mockSend).not.toHaveBeenCalled();
   });
 
-  it('sends to the admins and logs a count, never an address', async () => {
+  it('sends to the admins, logs a count but never an address, and reports the send', async () => {
     mockSend.mockResolvedValueOnce({ data: { id: 'email_1' }, error: null });
-    await sendKeepaServiceAlarmEmail(input);
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBe(true);
     const arg = mockSend.mock.calls[0][0] as Record<string, unknown>;
     expect(arg.to).toEqual([ADMIN]);
     expect(arg.subject).toBe('Keepa service down');
@@ -42,25 +42,31 @@ describe('sendKeepaServiceAlarmEmail', () => {
     expect(lines.some((l) => l.includes(ADMIN))).toBe(false);
   });
 
-  it('resolves on a Resend error and logs only the coded name and status', async () => {
+  it('reports nothing sent when there is no admin to send to', async () => {
+    mockWhere.mockResolvedValueOnce([]);
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBe(false);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('resolves false on a Resend error and logs only the coded name and status', async () => {
     mockSend.mockResolvedValueOnce({ data: null, error: { name: 'validation_error', statusCode: 403, message: `only ${ADMIN}` } });
-    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBeUndefined();
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBe(false);
     const lines = consoleLines(...spies);
     expect(lines.some((l) => l.includes('validation_error') && l.includes('403'))).toBe(true);
     expect(lines.some((l) => l.includes(ADMIN))).toBe(false);
   });
 
-  it('resolves when Resend throws and logs only the error name and code — never its message', async () => {
+  it('resolves false when Resend throws and logs only the error name and code — never its message', async () => {
     mockSend.mockRejectedValueOnce(Object.assign(new Error(`socket hang up while sending to ${ADMIN}`), { code: 'ECONNRESET' }));
-    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBeUndefined();
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBe(false);
     const lines = consoleLines(...spies);
     expect(lines.some((l) => l.includes(ADMIN))).toBe(false);
     expect(lines.some((l) => l.includes('ECONNRESET'))).toBe(true);
   });
 
-  it('resolves without sending when the admin lookup fails, logging only coded fields', async () => {
+  it('resolves false without sending when the admin lookup fails, logging only coded fields', async () => {
     mockWhere.mockRejectedValueOnce(Object.assign(new Error(`lookup failed near ${ADMIN}`), { code: '57P01' }));
-    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBeUndefined();
+    await expect(sendKeepaServiceAlarmEmail(input)).resolves.toBe(false);
     expect(mockSend).not.toHaveBeenCalled();
     const lines = consoleLines(...spies);
     expect(lines.some((l) => l.includes(ADMIN))).toBe(false);

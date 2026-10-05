@@ -1,9 +1,22 @@
 // lib/keepa/watcherRules.test.ts
 import { describe, it, expect } from 'vitest';
-import { decideWatcherActions, easternClock, syncCouldFire, type EasternClock, type WatcherInput } from './watcherRules';
+import {
+  decideWatcherActions,
+  drainPending,
+  easternClock,
+  heldReasons,
+  inNightlyWindow,
+  isExplorerCaughtUp,
+  lockKeyHalves,
+  syncCouldFire,
+  type EasternClock,
+  type WatcherInput,
+} from './watcherRules';
+import { ENQUEUE_LOCK_KEY } from './lanes';
 
 const NOW = new Date('2026-10-06T12:00:00Z');
 const min = (n: number) => new Date(NOW.getTime() - n * 60_000);
+const NIGHT: EasternClock = { hour: 3, minute: 31, dateKey: '2026-10-06' };
 const base: WatcherInput = {
   now: NOW,
   serviceBooted: true,
@@ -20,6 +33,11 @@ const base: WatcherInput = {
   readSource: 'products',
   et: { hour: 8, minute: 0, dateKey: '2026-10-06' },
 };
+const nightlySync = [
+  { kind: 'sync', reason: 'nightly' },
+  { kind: 'stamp', field: 'nightly_sync_date', value: '2026-10-06' },
+  { kind: 'stamp', field: 'sync_fired_at', value: NOW },
+];
 
 describe('decideWatcherActions', () => {
   it('does nothing while the service is healthy', () => {
@@ -52,6 +70,36 @@ describe('decideWatcherActions', () => {
     expect(decideWatcherActions({ ...base, lastBatchAt: min(121), heartbeatAt: min(16) }).map((a) => a.kind === 'email' && a.variant)).toEqual(['down', false]);
     expect(decideWatcherActions({ ...base, stallAlarmSentAt: min(60) })).toEqual([
       { kind: 'email', variant: 'recovered' },
+      { kind: 'stamp', field: 'stall_alarm_sent_at', value: null },
+    ]);
+  });
+
+  it('a down alarm that clears into an ongoing stall reports the stall, never "recovered"', () => {
+    // The stall alarm went out; then the service went down; then it came back with still no batch.
+    const stalledOut = { ...base, lastBatchAt: min(180), stallAlarmSentAt: min(60) };
+    expect(decideWatcherActions(stalledOut)).toEqual([]);
+    expect(decideWatcherActions({ ...stalledOut, heartbeatAt: min(20) })).toEqual([
+      { kind: 'email', variant: 'down' },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW },
+    ]);
+    expect(decideWatcherActions({ ...stalledOut, downAlarmSentAt: min(10) })).toEqual([
+      { kind: 'email', variant: 'stalled' },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
+    ]);
+  });
+
+  it('back after a long outage with work due and no batch since: the stall only, not "recovered" too', () => {
+    expect(decideWatcherActions({ ...base, lastBatchAt: min(5 * 60), downAlarmSentAt: min(4 * 60) })).toEqual([
+      { kind: 'email', variant: 'stalled' },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
+      { kind: 'stamp', field: 'stall_alarm_sent_at', value: NOW },
+    ]);
+  });
+
+  it('both alarms cleared at once: exactly one "recovered" and both stamps cleared', () => {
+    expect(decideWatcherActions({ ...base, downAlarmSentAt: min(60), stallAlarmSentAt: min(120) })).toEqual([
+      { kind: 'email', variant: 'recovered' },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
       { kind: 'stamp', field: 'stall_alarm_sent_at', value: null },
     ]);
   });
@@ -90,35 +138,74 @@ describe('decideWatcherActions', () => {
     ]);
   });
 
-  it('fires the nightly sync in the 03:30–03:44 ET window once per date when something was fetched today', () => {
-    const night = { ...base, et: { hour: 3, minute: 31, dateKey: '2026-10-06' } };
-    expect(decideWatcherActions(night)).toEqual([
-      { kind: 'sync', reason: 'nightly' },
-      { kind: 'stamp', field: 'nightly_sync_date', value: '2026-10-06' },
-      { kind: 'stamp', field: 'sync_fired_at', value: NOW },
-    ]);
+  it('fires the nightly sync in the 03:30–05:59 ET window once per date when something was fetched today', () => {
+    const night = { ...base, et: NIGHT };
+    expect(decideWatcherActions(night)).toEqual(nightlySync);
     expect(decideWatcherActions({ ...night, nightlySyncDate: '2026-10-06' })).toEqual([]);
-    expect(decideWatcherActions({ ...night, et: { ...night.et, minute: 45 } })).toEqual([]);
+    expect(decideWatcherActions({ ...night, et: { ...NIGHT, minute: 29 } })).toEqual([]);
+    expect(decideWatcherActions({ ...night, et: { ...NIGHT, hour: 6, minute: 0 } })).toEqual([]);
     expect(decideWatcherActions({ ...night, lastBatchAt: min(25 * 60), dueWorkExists: false })).toEqual([]);
   });
 
+  it('a missed 03:30 tick does not skip the night: any tick until 05:59 ET fires it', () => {
+    expect(decideWatcherActions({ ...base, et: { ...NIGHT, hour: 5, minute: 59 } })).toEqual(nightlySync);
+  });
+
+  it("a sync under six hours old counts as the night's: the date is stamped without another sync", () => {
+    const night = { ...base, et: NIGHT };
+    expect(decideWatcherActions({ ...night, syncFiredAt: min(120) })).toEqual([{ kind: 'stamp', field: 'nightly_sync_date', value: '2026-10-06' }]);
+    expect(decideWatcherActions({ ...night, syncFiredAt: min(7 * 60) })).toEqual(nightlySync);
+  });
+
   it('skips the nightly sync while the explorer is still on the previous week', () => {
-    const night = { ...base, et: { hour: 3, minute: 31, dateKey: '2026-10-06' } };
+    const night = { ...base, et: NIGHT };
     expect(decideWatcherActions({ ...night, explorerCaughtUp: false })).toEqual([]);
     // A drain pending in the window mid-refresh is held too; it fires after the swap.
     expect(decideWatcherActions({ ...night, explorerCaughtUp: false, laneNewDrainedAt: min(3) })).toEqual([]);
   });
 });
 
-describe('syncCouldFire', () => {
-  const NIGHT: EasternClock = { hour: 3, minute: 31, dateKey: '2026-10-06' };
+describe('isExplorerCaughtUp', () => {
+  it('holds while the explorer week is unknown or behind; an empty catalog has nothing to wait for', () => {
+    expect(isExplorerCaughtUp('2026-10-03', '2026-10-03')).toBe(true);
+    expect(isExplorerCaughtUp('2026-10-03', '2026-10-10')).toBe(true);
+    expect(isExplorerCaughtUp('2026-10-03', '2026-09-26')).toBe(false);
+    expect(isExplorerCaughtUp('2026-10-03', null)).toBe(false);
+    expect(isExplorerCaughtUp(null, '2026-10-03')).toBe(true);
+    expect(isExplorerCaughtUp(null, null)).toBe(false);
+  });
+});
 
+describe('lockKeyHalves', () => {
+  it('splits a bigint advisory-lock key the way pg_locks shows it', () => {
+    expect(lockKeyHalves(ENQUEUE_LOCK_KEY)).toEqual([0, 20261005]);
+    expect(lockKeyHalves(2 ** 32 + 5)).toEqual([1, 5]);
+  });
+});
+
+describe('drainPending and inNightlyWindow', () => {
+  it('a drain is pending only when it is newer than the last sync', () => {
+    expect(drainPending({ laneNewDrainedAt: null, syncFiredAt: null })).toBe(false);
+    expect(drainPending({ laneNewDrainedAt: min(3), syncFiredAt: null })).toBe(true);
+    expect(drainPending({ laneNewDrainedAt: min(3), syncFiredAt: min(10) })).toBe(true);
+    expect(drainPending({ laneNewDrainedAt: min(3), syncFiredAt: min(2) })).toBe(false);
+  });
+
+  it('the window runs from 03:30 through 05:59 ET', () => {
+    expect(inNightlyWindow({ ...NIGHT, hour: 3, minute: 29 })).toBe(false);
+    expect(inNightlyWindow({ ...NIGHT, hour: 3, minute: 30 })).toBe(true);
+    expect(inNightlyWindow({ ...NIGHT, hour: 5, minute: 59 })).toBe(true);
+    expect(inNightlyWindow({ ...NIGHT, hour: 6, minute: 0 })).toBe(false);
+  });
+});
+
+describe('syncCouldFire', () => {
   it('is true only with catalog reads and either a drain newer than the last sync or the nightly window', () => {
     expect(syncCouldFire(base)).toBe(false);
     expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3) })).toBe(true);
     expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3), syncFiredAt: min(2) })).toBe(false);
     expect(syncCouldFire({ ...base, et: NIGHT })).toBe(true);
-    expect(syncCouldFire({ ...base, et: { ...NIGHT, minute: 45 } })).toBe(false);
+    expect(syncCouldFire({ ...base, et: { ...NIGHT, hour: 6, minute: 0 } })).toBe(false);
     expect(syncCouldFire({ ...base, readSource: 'weekly', laneNewDrainedAt: min(3), et: NIGHT })).toBe(false);
   });
 
@@ -126,7 +213,7 @@ describe('syncCouldFire', () => {
     const grid = (['products', 'weekly'] as const).flatMap((readSource) =>
       [null, min(3), min(500)].flatMap((laneNewDrainedAt) =>
         [null, min(2), min(120), min(7 * 60)].flatMap((syncFiredAt) =>
-          [base.et, NIGHT, { ...NIGHT, minute: 45 }].flatMap((et) =>
+          [base.et, NIGHT, { ...NIGHT, hour: 5, minute: 59 }, { ...NIGHT, hour: 6, minute: 0 }].flatMap((et) =>
             [null, NIGHT.dateKey].flatMap((nightlySyncDate) =>
               [min(2), min(25 * 60)].map((lastBatchAt): WatcherInput => ({ ...base, readSource, laneNewDrainedAt, syncFiredAt, et, nightlySyncDate, lastBatchAt })),
             ),
@@ -142,6 +229,28 @@ describe('syncCouldFire', () => {
       else if (JSON.stringify(behind) !== JSON.stringify(caughtUp)) differing += 1;
     }
     expect(differing).toBeGreaterThan(0);
+  });
+});
+
+describe('heldReasons', () => {
+  // Tonight's sync already ran, so no 'window' reason unless a case asks for one.
+  const done = { ...base, nightlySyncDate: base.et.dateKey };
+
+  it('names suppressed alarms', () => {
+    expect(heldReasons({ ...done, serviceBooted: false, laneNewDrainedAt: min(3) })).toEqual(['not_booted']);
+    expect(heldReasons({ ...done, enqueueRunning: true })).toEqual(['enqueue_running']);
+  });
+
+  it('names why a pending drain or tonight\'s sync was not sent', () => {
+    expect(heldReasons(done)).toEqual([]);
+    expect(heldReasons({ ...done, laneNewDrainedAt: min(3), syncFiredAt: min(120) })).toEqual(['sync_gap']);
+    expect(heldReasons({ ...done, laneNewDrainedAt: min(3), explorerCaughtUp: false })).toEqual(['explorer_behind']);
+    // Tonight's sync is due (a batch today, not yet run) but the tick is before its window.
+    expect(heldReasons(base)).toEqual(['window']);
+    expect(heldReasons({ ...base, et: NIGHT, explorerCaughtUp: false })).toEqual(['explorer_behind']);
+    expect(heldReasons({ ...base, et: NIGHT, syncFiredAt: min(120) })).toEqual(['sync_gap']);
+    expect(heldReasons({ ...base, et: NIGHT })).toEqual([]);
+    expect(heldReasons({ ...base, readSource: 'weekly' })).toEqual([]);
   });
 });
 
