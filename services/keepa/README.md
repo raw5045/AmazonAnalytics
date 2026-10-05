@@ -35,14 +35,14 @@ Every line is `[keepa-svc]` plus one JSON object with coded fields only (an erro
 
 | Event | Meaning |
 |---|---|
-| `batch` | A batch was fetched and written: outcome counts, tokens left, `ms` for fetch + parse + write. |
+| `batch` | A batch was fetched and written: outcome counts, tokens left, `tokenWaitMs` (the token wait before it; 40–48 s is normal), `ms` for fetch + parse + write. |
 | `batch_errored` | Keepa never answered after three attempts (or answered 400 three times): the rows were marked errored with `code`. |
 | `batch_all_errors` | Keepa answered but no product was usable: the rows were written with their error backoff, and `code` (the most common error) became the status row's last error. |
 | `keepa_retry` | One failed attempt (`attempt` 1–3) of a batch request. |
 | `keepa_rejected` | Keepa refused the request (401/402/403 and other 4xx except 400): recorded, retried every 10 minutes until fixed. |
-| `token_wait` | Waiting `ms` (at most 2 minutes) for tokens before a request. |
+| `token_wait` | A token wait over a minute is starting: `ms` (at most 2 minutes). Shorter waits appear only as `tokenWaitMs` on the `batch` line. |
 | `tokens_exhausted` | `consecutive` 429s since the last good fetch (5 or more): recorded as `keepa_tokens_exhausted`. |
-| `outage_pause` | Pausing `ms` after a batch Keepa never answered: 1 minute, doubling to 15, back to none once Keepa answers. |
+| `outage_pause` | Pausing `ms` before the next claim after a batch Keepa never answered, an all-error batch of 10+ rows, or a second 400 in a row: 1 minute, doubling to 15, back to none after a batch with any success. |
 | `db_error` | A database step (`stage`) failed; `failures` in a row, ten end the process. |
 | `iteration_threw` | An unexpected error escaped an iteration; counted like a database failure. |
 | `heartbeat_failed` | The 60-second heartbeat could not reach the database. |

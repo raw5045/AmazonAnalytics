@@ -6,6 +6,7 @@ import { errFields, logLine } from './log';
 export function createPool(connectionString: string): Pool {
   const pool = new Pool({
     connectionString,
+    // Loop transaction + heartbeat ticker + SIGTERM release; do not add a fourth concurrent user without raising this.
     max: 3,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10_000,

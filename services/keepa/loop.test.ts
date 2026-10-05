@@ -13,6 +13,8 @@ import {
   BAD_REQUEST_SLEEP_MS,
   MAX_DB_FAILURES,
   MAX_TOKEN_WAIT_MS,
+  TOKEN_WAIT_LOG_MS,
+  ALL_ERROR_PAUSE_MIN_ROWS,
   TOKENS_EXHAUSTED_AFTER,
   OUTAGE_PAUSE_START_MS,
   OUTAGE_PAUSE_MAX_MS,
@@ -95,7 +97,22 @@ describe('runIteration', () => {
     const state = { ...initialState(), tokensLeft: 1, refillRate: 250 };
     await runIteration(deps, state);
     expect(deps.sleeps).toEqual([240]);
-    expect(deps.logs).toContainEqual({ event: 'token_wait', ms: 240 });
+    // A steady-state wait has no line of its own; it rides on the batch line.
+    expect(deps.logs.some((l) => l.event === 'token_wait')).toBe(false);
+    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: 240 });
+  });
+
+  it('a token wait gets its own line only above a minute', async () => {
+    const store = makeStore([[row('B1')], [row('B2')]]);
+    const deps = makeDeps(store, async (asins) => reply(asins));
+    // 2 tokens needed at 250/min: 248 below zero is exactly a minute short, 249 a little more.
+    await runIteration(deps, { ...initialState(), tokensLeft: -248, refillRate: 250 });
+    expect(deps.sleeps).toEqual([TOKEN_WAIT_LOG_MS]);
+    expect(deps.logs.some((l) => l.event === 'token_wait')).toBe(false);
+    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: TOKEN_WAIT_LOG_MS });
+    await runIteration(deps, { ...initialState(), tokensLeft: -249, refillRate: 250 });
+    expect(deps.logs).toContainEqual({ event: 'token_wait', ms: 60_240 });
+    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: 60_240 });
   });
 
   it('caps a token wait at two minutes', async () => {
@@ -161,6 +178,20 @@ describe('runIteration', () => {
     expect(deps.sleeps).toEqual([KEEPA_RETRY_SLEEP_MS, KEEPA_RETRY_SLEEP_MS]);
     expect(store.calls).toContain('errored:keepa_http_400');
     expect(store.calls.some((c) => c.startsWith('recordError:'))).toBe(false);
+  });
+
+  it('a second 400 batch in a row pauses like an outage; the first never does', async () => {
+    const store = makeStore([[row('B1')], [row('B2')], [row('B3')]]);
+    const deps = makeDeps(store, vi.fn().mockRejectedValue(new KeepaHttpError(400)));
+    const state = initialState();
+    const pauses = () => deps.logs.filter((l) => l.event === 'outage_pause').map((l) => l.ms);
+    await runIteration(deps, state);
+    expect(pauses()).toEqual([]);
+    await runIteration(deps, state);
+    expect(pauses()).toEqual([OUTAGE_PAUSE_START_MS]);
+    expect(deps.sleeps.at(-1)).toBe(OUTAGE_PAUSE_START_MS);
+    await runIteration(deps, state);
+    expect(pauses()).toEqual([OUTAGE_PAUSE_START_MS, 2 * OUTAGE_PAUSE_START_MS]);
   });
 
   it('a reply without a products array is retried like an outage, then stored as keepa_bad_reply', async () => {
@@ -233,6 +264,30 @@ describe('runIteration', () => {
     expect(deps.logs.at(-1)).toEqual({ event: 'batch_all_errors', lane: 'new', requested: 2, code: 'missing_from_reply' });
     expect(deps.logs.some((l) => l.event === 'batch')).toBe(false);
     expect(onBatch).not.toHaveBeenCalled();
+  });
+
+  it('an all-error batch of ten or more rows pauses like an outage (doubling); a smaller one never does; any success resets', async () => {
+    const asins = (n: number, from: number) => new Array(n).fill(0).map((_, i) => `B${from + i}`);
+    const below = asins(ALL_ERROR_PAUSE_MIN_ROWS - 1, 0);
+    const at = asins(ALL_ERROR_PAUSE_MIN_ROWS, 100);
+    const again = asins(ALL_ERROR_PAUSE_MIN_ROWS, 200);
+    const store = makeStore([below.map((a) => row(a)), at.map((a) => row(a)), again.map((a) => row(a)), [row('G1')]]);
+    let mismatch = true;
+    // While `mismatch`, the reply carries other ASINs only, so every requested one is an error.
+    const deps = makeDeps(store, async (requested) => reply(mismatch ? requested.map((a) => `X${a}`) : requested));
+    const state = initialState();
+    const pauses = () => deps.logs.filter((l) => l.event === 'outage_pause').map((l) => l.ms);
+    await expect(runIteration(deps, state)).resolves.toBe('keepa_error');
+    expect(pauses()).toEqual([]);
+    await expect(runIteration(deps, state)).resolves.toBe('keepa_error');
+    expect(pauses()).toEqual([OUTAGE_PAUSE_START_MS]);
+    await runIteration(deps, state);
+    expect(pauses()).toEqual([OUTAGE_PAUSE_START_MS, 2 * OUTAGE_PAUSE_START_MS]);
+    expect(state.lastBatchCode).toBe('missing_from_reply');
+    mismatch = false;
+    await expect(runIteration(deps, state)).resolves.toBe('batch');
+    expect(state.outagePauseMs).toBe(0);
+    expect(state.lastBatchCode).toBeNull();
   });
 
   it('the failed batch\'s code is its most common error', async () => {

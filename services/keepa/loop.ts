@@ -21,9 +21,16 @@ export const BAD_REQUEST_SLEEP_MS = 10 * 60_000;
 export const MAX_DB_FAILURES = 10;
 /** The longest single token wait; the next request reveals the real balance anyway. */
 export const MAX_TOKEN_WAIT_MS = 2 * 60_000;
+/** Token waits up to this are steady state (40–48 s is normal) and ride on the batch line as tokenWaitMs. */
+export const TOKEN_WAIT_LOG_MS = 60_000;
+/** An all-error batch this large pauses like an outage; smaller ones (a lane's tail) never do. */
+export const ALL_ERROR_PAUSE_MIN_ROWS = 10;
 /** 429s since the last good fetch before the status row says the tokens are exhausted. */
 export const TOKENS_EXHAUSTED_AFTER = 5;
-/** Pause after a batch Keepa never answered: one minute, doubling to fifteen, reset by a good fetch. */
+/**
+ * Pause before the next claim after a batch Keepa never answered, a large all-error batch, or a
+ * second 400 in a row: one minute, doubling to fifteen, reset by a batch with any success.
+ */
 export const OUTAGE_PAUSE_START_MS = 60_000;
 export const OUTAGE_PAUSE_MAX_MS = 15 * 60_000;
 export const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -58,14 +65,23 @@ export interface LoopState {
   dbFailures: number;
   /** 429s since the last good fetch. */
   consecutive429: number;
-  /** The pause after the last unanswered batch; 0 once Keepa answers again. */
+  /** The last pause before a claim (see OUTAGE_PAUSE_START_MS); 0 after a batch with any success. */
   outagePauseMs: number;
+  /** The code the last batch ended with (a failed or all-error batch); null after a batch with any success. */
+  lastBatchCode: string | null;
 }
 
 export type IterationResult = 'batch' | 'idle' | 'keepa_error' | 'db_error' | 'threw';
 
 export function initialState(): LoopState {
-  return { tokensLeft: null, refillRate: null, lastClaimHadNew: false, dbFailures: 0, consecutive429: 0, outagePauseMs: 0 };
+  return { tokensLeft: null, refillRate: null, lastClaimHadNew: false, dbFailures: 0, consecutive429: 0, outagePauseMs: 0, lastBatchCode: null };
+}
+
+/** Pause before the next claim: one minute, doubling to fifteen (the state carries the last pause). */
+async function outagePause(deps: LoopDeps, state: LoopState): Promise<void> {
+  state.outagePauseMs = state.outagePauseMs === 0 ? OUTAGE_PAUSE_START_MS : Math.min(state.outagePauseMs * 2, OUTAGE_PAUSE_MAX_MS);
+  deps.log({ event: 'outage_pause', ms: state.outagePauseMs });
+  await deps.sleep(state.outagePauseMs);
 }
 
 async function countFailure(deps: LoopDeps, state: LoopState, fields: Record<string, unknown>): Promise<void> {
@@ -158,7 +174,8 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
 
   const wait = Math.min(msUntilTokens(state.tokensLeft, state.refillRate, rows.length * TOKENS_PER_ASIN), MAX_TOKEN_WAIT_MS);
   if (wait > 0) {
-    deps.log({ event: 'token_wait', ms: wait });
+    // A long wait gets its own line up front; every wait also rides on the batch line as tokenWaitMs.
+    if (wait > TOKEN_WAIT_LOG_MS) deps.log({ event: 'token_wait', ms: wait });
     await deps.sleep(wait);
   }
 
@@ -209,20 +226,17 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
     }
     state.dbFailures = 0;
     deps.log({ event: 'batch_errored', lane, requested: rows.length, code: lastCode });
-    if (lastCode !== 'keepa_http_400') {
-      // Keepa never answered: pause before the next claim (one minute doubling to fifteen), so a
-      // long outage costs one attempt series per pause rather than one per batch. A 400 is about
-      // this batch's request, not an outage, so the next batch goes at once.
-      state.outagePauseMs = state.outagePauseMs === 0 ? OUTAGE_PAUSE_START_MS : Math.min(state.outagePauseMs * 2, OUTAGE_PAUSE_MAX_MS);
-      deps.log({ event: 'outage_pause', ms: state.outagePauseMs });
-      await deps.sleep(state.outagePauseMs);
-    }
+    // Keepa never answered: pause before the next claim, so a long outage costs one attempt series
+    // per pause rather than one per batch. A 400 is about this batch's request, so a single one
+    // goes on at once; a second in a row is systematic and pauses too.
+    const repeated400 = lastCode === 'keepa_http_400' && state.lastBatchCode === 'keepa_http_400';
+    state.lastBatchCode = lastCode;
+    if (lastCode !== 'keepa_http_400' || repeated400) await outagePause(deps, state);
     return 'keepa_error';
   }
 
-  // Keepa answered: the 429 count and the outage pause start over.
+  // Keepa answered: the 429 count starts over (the outage pause resets only on a batch with any success).
   state.consecutive429 = 0;
-  state.outagePauseMs = 0;
   state.tokensLeft = reply.tokensLeft;
   state.refillRate = reply.refillRate ?? state.refillRate;
   const facts = parseKeepaBatch(asins, reply.products);
@@ -240,10 +254,16 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   state.dbFailures = 0;
   if (batchErrorCode !== undefined) {
     deps.log({ event: 'batch_all_errors', lane, requested: rows.length, code: batchErrorCode });
+    state.lastBatchCode = batchErrorCode;
+    // A systematic parse failure must not chew through the queue: a large all-error batch pauses
+    // like an outage. A small one (a lane's tail) never does.
+    if (rows.length >= ALL_ERROR_PAUSE_MIN_ROWS) await outagePause(deps, state);
     return 'keepa_error';
   }
+  state.outagePauseMs = 0;
+  state.lastBatchCode = null;
   deps.onBatch?.(now);
-  deps.log({ event: 'batch', lane, requested: rows.length, ...counts, tokensLeft: reply.tokensLeft, ms: Date.now() - t0 });
+  deps.log({ event: 'batch', lane, requested: rows.length, ...counts, tokensLeft: reply.tokensLeft, tokenWaitMs: wait, ms: Date.now() - t0 });
   return 'batch';
 }
 
