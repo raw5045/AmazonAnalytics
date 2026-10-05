@@ -8,9 +8,7 @@
  */
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
-
-export const DAILY_CAPACITY_ASINS = 180_000;
-export const WEEKLY_CAPACITY_ASINS = 7 * DAILY_CAPACITY_ASINS;
+import { keepaServiceStatus } from '@/db/schema';
 
 export interface KeepaServiceStatusView {
   bootId: string | null;
@@ -31,11 +29,16 @@ export interface KeepaQueueCounts {
   tier1InScope: number;
   tier1NeverFetched: number;
   tier1Due: number;
+  /** In-scope tier 1, not delisted, last fetched more than 8 days ago. The freshness target is 0. */
+  tier1Stale: number;
+  /** In-scope tier 1 whose latest fetch failed (consecutive_errors > 0), i.e. in error backoff. */
+  tier1Erroring: number;
   tier2InScope: number;
   tier2NeverFetched: number;
   tier2Due: number;
   fetchedLast24h: number;
   fetchedLast7d: number;
+  /** Oldest fetch among in-scope tier-1 rows that are not delisted (delisted rows recheck monthly). */
   oldestTier1FetchedAt: Date | null;
   claimed: number;
   scopeWeek: string | null;
@@ -49,65 +52,76 @@ export interface KeepaServiceOverview {
 
 function ts(v: unknown): Date | null {
   if (v instanceof Date) return v;
-  if (typeof v === 'string') return new Date(v);
+  if (typeof v === 'string') {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
   return null;
 }
 
-export async function loadKeepaServiceOverview(): Promise<KeepaServiceOverview> {
-  const statusRes = await db.execute<Record<string, unknown>>(sql`
-    SELECT boot_id, booted_at, heartbeat_at, last_batch_at, last_batch_lane, tokens_left, refill_rate, tail_enabled,
-           last_error_code, last_error_at, lane_new_drained_at, sync_fired_at
-    FROM keepa_service_status WHERE singleton`);
-  const s = statusRes.rows[0];
-  const status: KeepaServiceStatusView | null = s
-    ? {
-        bootId: (s.boot_id as string | null) ?? null,
-        bootedAt: ts(s.booted_at),
-        heartbeatAt: ts(s.heartbeat_at),
-        lastBatchAt: ts(s.last_batch_at),
-        lastBatchLane: (s.last_batch_lane as string | null) ?? null,
-        tokensLeft: (s.tokens_left as number | null) ?? null,
-        refillRate: (s.refill_rate as number | null) ?? null,
-        tailEnabled: Boolean(s.tail_enabled),
-        lastErrorCode: (s.last_error_code as string | null) ?? null,
-        lastErrorAt: ts(s.last_error_at),
-        laneNewDrainedAt: ts(s.lane_new_drained_at),
-        syncFiredAt: ts(s.sync_fired_at),
-      }
-    : null;
-
-  const countsRes = await db.execute<Record<string, unknown>>(sql`
+/** `kcsWeek` is the explorer's current week, which the page has already read from keyword_current_summary_meta. */
+export async function loadKeepaServiceOverview(kcsWeek: string | null): Promise<KeepaServiceOverview> {
+  const [statusRows, countsRes] = await Promise.all([
+    db.select().from(keepaServiceStatus).limit(1),
+    db.execute<Record<string, unknown>>(sql`
     SELECT
       COUNT(*) FILTER (WHERE in_scope AND tier = 1)::int AS tier1_in_scope,
       COUNT(*) FILTER (WHERE in_scope AND tier = 1 AND last_fetched_at IS NULL)::int AS tier1_never_fetched,
       COUNT(*) FILTER (WHERE in_scope AND tier = 1 AND last_fetched_at IS NOT NULL AND next_due_at <= now())::int AS tier1_due,
+      COUNT(*) FILTER (WHERE in_scope AND tier = 1 AND enrichment_status IS DISTINCT FROM 'delisted' AND last_fetched_at < now() - interval '8 days')::int AS tier1_stale,
+      COUNT(*) FILTER (WHERE in_scope AND tier = 1 AND consecutive_errors > 0)::int AS tier1_erroring,
       COUNT(*) FILTER (WHERE in_scope AND tier = 2)::int AS tier2_in_scope,
       COUNT(*) FILTER (WHERE in_scope AND tier = 2 AND last_fetched_at IS NULL)::int AS tier2_never_fetched,
       COUNT(*) FILTER (WHERE in_scope AND tier = 2 AND last_fetched_at IS NOT NULL AND next_due_at <= now())::int AS tier2_due,
       COUNT(*) FILTER (WHERE last_fetched_at > now() - interval '24 hours')::int AS fetched_last_24h,
       COUNT(*) FILTER (WHERE last_fetched_at > now() - interval '7 days')::int AS fetched_last_7d,
-      MIN(last_fetched_at) FILTER (WHERE in_scope AND tier = 1) AS oldest_tier1_fetched_at,
+      MIN(last_fetched_at) FILTER (WHERE in_scope AND tier = 1 AND enrichment_status IS DISTINCT FROM 'delisted') AS oldest_tier1_fetched_at,
       COUNT(*) FILTER (WHERE claimed_at IS NOT NULL)::int AS claimed,
       MAX(scope_week)::text AS scope_week
-    FROM asin_products`);
+    FROM asin_products`),
+  ]);
+  const s = statusRows[0];
+  const status: KeepaServiceStatusView | null = s
+    ? {
+        bootId: s.bootId,
+        bootedAt: s.bootedAt,
+        heartbeatAt: s.heartbeatAt,
+        lastBatchAt: s.lastBatchAt,
+        lastBatchLane: s.lastBatchLane,
+        tokensLeft: s.tokensLeft,
+        refillRate: s.refillRate,
+        tailEnabled: s.tailEnabled,
+        lastErrorCode: s.lastErrorCode,
+        lastErrorAt: s.lastErrorAt,
+        laneNewDrainedAt: s.laneNewDrainedAt,
+        syncFiredAt: s.syncFiredAt,
+      }
+    : null;
+
   const c = countsRes.rows[0] ?? {};
-  const n = (k: string) => Number(c[k] ?? 0);
-  const kcsRes = await db.execute(sql`SELECT current_week_end_date::text AS cw FROM keyword_current_summary_meta WHERE singleton = true`);
+  // Every alias must be present: a renamed or dropped column fails loudly instead of reading as 0.
+  const col = (k: string): unknown => {
+    if (!(k in c)) throw new Error(`keepa overview: aggregate column ${k} missing`);
+    return c[k];
+  };
+  const n = (k: string) => Number(col(k));
   return {
     status,
     counts: {
       tier1InScope: n('tier1_in_scope'),
       tier1NeverFetched: n('tier1_never_fetched'),
       tier1Due: n('tier1_due'),
+      tier1Stale: n('tier1_stale'),
+      tier1Erroring: n('tier1_erroring'),
       tier2InScope: n('tier2_in_scope'),
       tier2NeverFetched: n('tier2_never_fetched'),
       tier2Due: n('tier2_due'),
       fetchedLast24h: n('fetched_last_24h'),
       fetchedLast7d: n('fetched_last_7d'),
-      oldestTier1FetchedAt: ts(c.oldest_tier1_fetched_at),
+      oldestTier1FetchedAt: ts(col('oldest_tier1_fetched_at')),
       claimed: n('claimed'),
-      scopeWeek: (c.scope_week as string | null) ?? null,
-      kcsWeek: (kcsRes.rows[0]?.cw as string | null | undefined) ?? null,
+      scopeWeek: (col('scope_week') as string | null) ?? null,
+      kcsWeek,
     },
   };
 }

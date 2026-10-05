@@ -4,7 +4,8 @@ import { db } from '@/db/client';
 import { keywordCurrentSummaryMeta, keepaEnrichmentRuns } from '@/db/schema';
 import { desc } from 'drizzle-orm';
 import { KeepaEnrichmentButton } from './KeepaEnrichmentButton';
-import { loadKeepaServiceOverview } from '@/lib/admin/keepaServiceOverview';
+import { loadKeepaServiceOverview, type KeepaServiceOverview } from '@/lib/admin/keepaServiceOverview';
+import { errFields } from '@/lib/ask/logSafe';
 import { ServiceStatusCard } from './ServiceStatusCard';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,17 @@ export default async function KeepaEnrichmentAdminPage() {
     .from(keepaEnrichmentRuns)
     .orderBy(desc(keepaEnrichmentRuns.startedAt))
     .limit(5);
-  const overview = await loadKeepaServiceOverview();
+  // The status card is best-effort: a failed read degrades to one line on the card instead of taking
+  // the page (and its manual-refresh controls) down. Coded fields only in the log, never a message.
+  let overview: KeepaServiceOverview | null = null;
+  let overviewError: string | null = null;
+  try {
+    overview = await loadKeepaServiceOverview(meta?.currentWeekEndDate ?? null);
+  } catch (e) {
+    const { error, code } = errFields(e);
+    console.error('[keepa-admin] overview failed', JSON.stringify({ error, code }));
+    overviewError = code ?? error;
+  }
 
   return (
     <div className="max-w-3xl">
@@ -42,7 +53,7 @@ export default async function KeepaEnrichmentAdminPage() {
         counts, and categories on every in-scope ASIN. Takes the full ~24 hours but
         guarantees current data on every product.
       </p>
-      <ServiceStatusCard overview={overview} now={new Date()} />
+      <ServiceStatusCard overview={overview} error={overviewError} now={new Date()} />
 
       <div className="mt-6 rounded border border-amber-200 bg-amber-50 p-4">
         <h2 className="text-sm font-semibold text-amber-900">Manual full refresh</h2>
