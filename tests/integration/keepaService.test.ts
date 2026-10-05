@@ -1,7 +1,8 @@
 // tests/integration/keepaService.test.ts
 /**
  * Keepa service store against the real tables (migration 0050 applied). Synthetic ASINs
- * prefixed TESTKS are inserted and removed by this file; no real row is touched.
+ * prefixed TESTKS are inserted and removed by this file; no real row is touched, and the status
+ * row's heartbeat, batch and token columns are put back as found (the watcher reads them).
  *
  * Run (owner's go): RUN_INTEGRATION=1 pnpm vitest run tests/integration/keepaService.test.ts
  */
@@ -14,13 +15,29 @@ const RUN = !!process.env.RUN_INTEGRATION;
 const PREFIX = 'TESTKS';
 const A = { newTop: `${PREFIX}0001`, newDeep: `${PREFIX}0002`, due: `${PREFIX}0003`, notDue: `${PREFIX}0004`, tier2: `${PREFIX}0005` };
 
+interface StatusRow {
+  boot_id: string | null;
+  heartbeat_at: Date | null;
+  last_batch_at: Date | null;
+  last_batch_lane: string | null;
+  tokens_left: number | null;
+  refill_rate: number | null;
+}
+
 describe.skipIf(!RUN)('Keepa service store (integration)', () => {
   let pool: Pool;
   let store: PgKeepaStore;
+  // writeBatch stamps a fake heartbeat and token counts on the status row; afterAll puts these
+  // back so the watcher never sees the test's values (undefined = there was no status row).
+  let statusBefore: StatusRow | undefined;
 
   beforeAll(async () => {
     pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 2 });
     store = new PgKeepaStore(pool);
+    const { rows: status } = await pool.query<StatusRow>(
+      `SELECT boot_id, heartbeat_at, last_batch_at, last_batch_lane, tokens_left, refill_rate FROM keepa_service_status WHERE singleton`,
+    );
+    statusBefore = status[0];
     await pool.query(`DELETE FROM asin_snapshots WHERE asin LIKE $1`, [`${PREFIX}%`]);
     await pool.query(`DELETE FROM asin_products WHERE asin LIKE $1`, [`${PREFIX}%`]);
     await pool.query(
@@ -38,6 +55,13 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
     if (!pool) return;
     await pool.query(`DELETE FROM asin_snapshots WHERE asin LIKE $1`, [`${PREFIX}%`]);
     await pool.query(`DELETE FROM asin_products WHERE asin LIKE $1`, [`${PREFIX}%`]);
+    if (statusBefore) {
+      const s = statusBefore;
+      await pool.query(
+        `UPDATE keepa_service_status SET boot_id = $1, heartbeat_at = $2, last_batch_at = $3, last_batch_lane = $4, tokens_left = $5, refill_rate = $6 WHERE singleton`,
+        [s.boot_id, s.heartbeat_at, s.last_batch_at, s.last_batch_lane, s.tokens_left, s.refill_rate],
+      );
+    }
     await pool.end();
   });
 
@@ -56,7 +80,8 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
     // due lane, whatever the real table holds. Asserted after the release so a failure leaves no claims.
     expect(asins).toContain(A.newTop);
     expect(asins).toContain(A.newDeep);
-    expect(asins).toContain(A.due);
+    // The due lane only fills once the never-fetched lane has fewer than 100 claimable rows.
+    expect(asins.includes(A.due)).toBe(rows.filter((r) => r.lane === 'new').length < 100);
     expect(asins.indexOf(A.newTop)).toBeLessThan(asins.indexOf(A.newDeep));
   });
 
