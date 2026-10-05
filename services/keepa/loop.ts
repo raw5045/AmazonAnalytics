@@ -6,7 +6,7 @@
  * exit are dependencies, so the policy is unit-tested without Postgres or Keepa.
  */
 import { BATCH_SIZE, STALE_CLAIM_MS, TOKENS_PER_ASIN, msUntilTokens, type Lane } from '@/lib/keepa/lanes';
-import { KeepaHttpError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
+import { KeepaHttpError, KeepaReplyError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
 import { parseKeepaBatch } from '@/lib/keepa/parseProduct';
 import type { ClaimedRow, KeepaStore } from './store';
 import { errFields } from './log';
@@ -99,6 +99,7 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   let reply: KeepaBatchReply | null = null;
   let attempts = 0;
   let lastCode = 'keepa_unreachable';
+  const t0 = Date.now();
   while (reply === null && attempts < KEEPA_RETRY_ATTEMPTS) {
     try {
       reply = await deps.keepa.fetchBatch(asins);
@@ -122,7 +123,8 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
         continue;
       }
       attempts += 1;
-      lastCode = e instanceof KeepaHttpError ? `keepa_http_${e.status}` : e instanceof Error ? e.name : 'keepa_error';
+      lastCode =
+        e instanceof KeepaHttpError ? `keepa_http_${e.status}` : e instanceof KeepaReplyError ? 'keepa_bad_reply' : e instanceof Error ? e.name : 'keepa_error';
       deps.log({ event: 'keepa_retry', attempt: attempts, ...errFields(e) });
       if (attempts < KEEPA_RETRY_ATTEMPTS) await deps.sleep(KEEPA_RETRY_SLEEP_MS);
     }
@@ -152,7 +154,7 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   deps.onBatch?.(now);
   const counts = { active: 0, no_price: 0, delisted: 0, error: 0 };
   for (const f of facts.values()) counts[f.status] += 1;
-  deps.log({ event: 'batch', lane, requested: rows.length, ...counts, tokensLeft: reply.tokensLeft });
+  deps.log({ event: 'batch', lane, requested: rows.length, ...counts, tokensLeft: reply.tokensLeft, ms: Date.now() - t0 });
   return 'batch';
 }
 

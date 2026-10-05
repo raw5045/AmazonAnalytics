@@ -2,7 +2,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runIteration, initialState, type LoopDeps, IDLE_SLEEP_MS, DB_RETRY_SLEEP_MS, KEEPA_RETRY_SLEEP_MS, BAD_REQUEST_SLEEP_MS, MAX_DB_FAILURES } from './loop';
 import type { ClaimedRow, KeepaStore } from './store';
-import { KeepaHttpError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
+import { KeepaHttpError, KeepaReplyError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
 
 const NOW = new Date('2026-10-06T12:00:00Z');
 const row = (asin: string, lane: ClaimedRow['lane'] = 'new'): ClaimedRow => ({ asin, tier: 1, lane, lastFetchedAt: null, consecutiveErrors: 0 });
@@ -63,6 +63,7 @@ describe('runIteration', () => {
     expect(store.written.map((w) => w.status)).toEqual(['active', 'active']);
     expect(state.tokensLeft).toBe(14_000);
     expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', lane: 'new', requested: 2, active: 2, tokensLeft: 14_000 });
+    expect(typeof deps.logs.at(-1)?.ms).toBe('number');
     expect(deps.sleeps).toEqual([]);
   });
 
@@ -98,6 +99,15 @@ describe('runIteration', () => {
     expect(fetchBatch).toHaveBeenCalledTimes(3);
     expect(deps.sleeps).toEqual([KEEPA_RETRY_SLEEP_MS, KEEPA_RETRY_SLEEP_MS]);
     expect(store.calls).toContain('errored:keepa_http_503');
+  });
+
+  it('a reply without a products array is retried like an outage, then stored as keepa_bad_reply', async () => {
+    const store = makeStore([[row('B1')]]);
+    const fetchBatch = vi.fn().mockRejectedValue(new KeepaReplyError());
+    const deps = makeDeps(store, fetchBatch);
+    await expect(runIteration(deps, initialState())).resolves.toBe('keepa_error');
+    expect(fetchBatch).toHaveBeenCalledTimes(3);
+    expect(store.calls).toContain('errored:keepa_bad_reply');
   });
 
   it('a rejected request (4xx) is recorded, waited out ten minutes, and retried without counting as an attempt', async () => {

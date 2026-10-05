@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { PgKeepaStore } from './pgStore';
 import type { ClaimedRow } from './store';
+import { ENQUEUE_LOCK_KEY } from '@/lib/keepa/lanes';
 import { emptyFacts, type ProductFacts } from '@/lib/keepa/productFacts';
 
 interface Call { text: string; values: unknown[] | undefined }
@@ -24,13 +25,21 @@ function fakePool(responder: (text: string, values: unknown[] | undefined) => { 
 const NOW = new Date('2026-10-06T12:00:00Z');
 const row = (asin: string, over: Partial<ClaimedRow> = {}): ClaimedRow => ({ asin, tier: 1, lane: 'new', lastFetchedAt: null, consecutiveErrors: 0, ...over });
 const active = (asin: string): ProductFacts => ({ ...emptyFacts(asin, 'delisted'), status: 'active', title: 'T', currentPriceCents: 1299, priceSource: 'amazon', salesRank: 10, reviewCount: 5 });
+/** Every store transaction opens with the enqueue-lock handshake, before any row lock. */
+const LOCK_OPENING = [
+  { text: 'BEGIN', values: undefined },
+  { text: "SET LOCAL statement_timeout = '1200s'", values: undefined },
+  { text: 'SELECT pg_advisory_xact_lock_shared($1)', values: [ENQUEUE_LOCK_KEY] },
+];
+const DUE_BY_TIER = 'next_due_at = CASE WHEN tier = 1 THEN $30::timestamptz ELSE $31::timestamptz END';
+const isSnapshot = (c: Call) => c.text.includes('INSERT INTO asin_snapshots');
 
 describe('claimBatch', () => {
   it('fills the batch lane by lane inside one transaction: tier-1 new, tier-1 due, then tier 2 only with the tail on', async () => {
     const { pool, calls } = fakePool((text, values) => (text.includes('RETURNING') ? { rows: [{ asin: `A${values?.[0]}${text.includes('IS NULL AND tier') ? 'N' : 'D'}`, tier: values?.[0], last_fetched_at: null, consecutive_errors: 0 }] } : {}));
     const store = new PgKeepaStore(pool);
     const rows = await store.claimBatch({ limit: 100, tailEnabled: false, bootId: 'boot-1' });
-    expect(calls[0].text).toBe('BEGIN');
+    expect(calls.slice(0, 3)).toEqual(LOCK_OPENING);
     expect(calls.at(-1)?.text).toBe('COMMIT');
     const claims = calls.filter((c) => c.text.includes('RETURNING'));
     expect(claims).toHaveLength(2);
@@ -58,7 +67,7 @@ describe('claimBatch', () => {
   it('rolls back when a claim statement fails', async () => {
     const { pool, calls } = fakePool((text) => { if (text.includes('RETURNING')) throw Object.assign(new Error('x'), { code: '57014' }); return {}; });
     await expect(new PgKeepaStore(pool).claimBatch({ limit: 5, tailEnabled: false, bootId: 'b' })).rejects.toMatchObject({ code: '57014' });
-    expect(calls.map((c) => c.text)).toEqual(['BEGIN', expect.stringContaining('RETURNING'), 'ROLLBACK']);
+    expect(calls.map((c) => c.text)).toEqual([...LOCK_OPENING.map((c) => c.text), expect.stringContaining('RETURNING'), 'ROLLBACK']);
   });
 });
 
@@ -68,25 +77,29 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     const r = row('B1');
     await new PgKeepaStore(pool).writeBatch({ rows: [r], facts: new Map([['B1', active('B1')]]), lane: 'new', tokens: { tokensLeft: 14_800, refillRate: 250 }, now: NOW });
     const upd = calls.find((c) => c.text.includes('UPDATE asin_products SET') && c.text.includes('title = $2'))!;
+    expect(upd.values).toHaveLength(31);
     expect(upd.values?.[0]).toBe('B1');
     expect(upd.values?.[27]).toBe('active');
     expect(upd.values?.[28]).toEqual(NOW);
     expect(upd.values?.[29]).toEqual(new Date('2026-10-13T12:00:00Z'));
+    expect(upd.values?.[30]).toEqual(new Date('2026-11-05T12:00:00Z'));
+    expect(upd.text).toContain(DUE_BY_TIER);
     expect(upd.text).toContain('fetch_count = fetch_count + 1, consecutive_errors = 0');
     expect(upd.text).toContain('claimed_at = NULL, claimed_by = NULL');
     const snap = calls.find((c) => c.text.includes('INSERT INTO asin_snapshots'))!;
     expect(snap.values).toEqual(['B1', NOW, 1299, 10, 5, null, null, null, null, null, 'active']);
     const status = calls.find((c) => c.text.includes('UPDATE keepa_service_status'))!;
     expect(status.values).toEqual([NOW, 'new', 14_800, 250]);
-    expect(calls[0].text).toBe('BEGIN');
+    expect(calls.slice(0, 3)).toEqual(LOCK_OPENING);
     expect(calls.at(-1)?.text).toBe('COMMIT');
   });
 
-  it('tier 2 gets a 30-day due date', async () => {
+  it('the due date follows the row\'s current tier in SQL, not the tier read at claim time', async () => {
     const { pool, calls } = fakePool();
     await new PgKeepaStore(pool).writeBatch({ rows: [row('B1', { tier: 2, lane: 'tail' })], facts: new Map([['B1', active('B1')]]), lane: 'tail', tokens: { tokensLeft: null, refillRate: null }, now: NOW });
     const upd = calls.find((c) => c.text.includes('title = $2'))!;
-    expect(upd.values?.[29]).toEqual(new Date('2026-11-05T12:00:00Z'));
+    expect(upd.text).toContain(DUE_BY_TIER);
+    expect(upd.values?.slice(29)).toEqual([new Date('2026-10-13T12:00:00Z'), new Date('2026-11-05T12:00:00Z')]);
   });
 
   it('a delisted product keeps its facts, flips the status, and is rechecked in 30 days', async () => {
@@ -105,12 +118,14 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     expect(upd.text).toContain("CASE WHEN last_fetched_at IS NULL THEN 'error'::asin_enrichment_status ELSE enrichment_status END");
     expect(upd.text).not.toContain('last_fetched_at = ');
     expect(upd.values).toEqual(['B1', 'bad_object', new Date('2026-10-10T12:00:00Z')]);
+    expect(calls.some(isSnapshot)).toBe(false);
   });
 
   it('a row missing from the parse map is written as an error too', async () => {
     const { pool, calls } = fakePool();
     await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map(), lane: 'new', tokens: { tokensLeft: 1, refillRate: 250 }, now: NOW });
     expect(calls.find((c) => c.text.includes('consecutive_errors = consecutive_errors + 1'))?.values?.[1]).toBe('missing_from_parse');
+    expect(calls.some(isSnapshot)).toBe(false);
   });
 });
 
@@ -120,12 +135,19 @@ describe('markBatchErrored, releaseStaleClaims, status writes', () => {
     await new PgKeepaStore(pool).markBatchErrored({ rows: [row('B1'), row('B2')], errorCode: 'keepa_http_503', now: NOW });
     expect(calls.filter((c) => c.text.includes('consecutive_errors = consecutive_errors + 1'))).toHaveLength(2);
     expect(calls.find((c) => c.text.includes('last_error_code = $1'))?.values).toEqual(['keepa_http_503']);
+    expect(calls.filter(isSnapshot)).toHaveLength(0);
+    expect(calls.slice(0, 3)).toEqual(LOCK_OPENING);
   });
   it('releaseStaleClaims clears claims older than the threshold and reports the count', async () => {
     const { pool, calls } = fakePool(() => ({ rowCount: 7 }));
     await expect(new PgKeepaStore(pool).releaseStaleClaims(600_000).then((n) => n)).resolves.toBe(7);
-    expect(calls[0].text).toContain('SET claimed_at = NULL, claimed_by = NULL WHERE claimed_at IS NOT NULL AND claimed_at <');
-    expect(calls[0].values).toEqual([600]);
+    expect(calls.slice(0, 3)).toEqual(LOCK_OPENING);
+    expect(calls.map((c) => c.text)).toEqual([
+      ...LOCK_OPENING.map((c) => c.text),
+      expect.stringContaining('SET claimed_at = NULL, claimed_by = NULL WHERE claimed_at IS NOT NULL AND claimed_at <'),
+      'COMMIT',
+    ]);
+    expect(calls[3].values).toEqual([600]);
   });
   it('recordBoot upserts the singleton with the tail switch; heartbeat keeps known token values', async () => {
     const { pool, calls } = fakePool();

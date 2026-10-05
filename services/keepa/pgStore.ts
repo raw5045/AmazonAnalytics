@@ -4,10 +4,18 @@
  *
  * Claims: lane by lane, each an index-ordered `SELECT … FOR UPDATE SKIP LOCKED LIMIT n` turned
  * into an UPDATE, all in one transaction. Writes: one transaction per batch — a per-row UPDATE
- * (success / delisted / error shape), one snapshot INSERT per row, the status row last.
+ * (success / delisted / error shape), one snapshot INSERT per fetched row (an error is not a
+ * fetch, so it writes none), the status row last.
+ *
+ * Concurrency: the weekly enqueue upsert (lib/keepa/enqueueWeek.ts) holds the exclusive advisory
+ * lock ENQUEUE_LOCK_KEY while it row-locks ~2.3M catalog rows in its own order. Every store
+ * transaction (the stale-claim release, the claim, both batch writes) takes the shared form first,
+ * before any row lock, so while an upsert runs the service waits before claiming — instead of a
+ * batch write deadlocking with it, the release running into the statement timeout on its row
+ * locks, or a claim spending tokens on a batch whose write would then block.
  */
 import type { Pool, PoolClient } from 'pg';
-import { nextDueAfterDelisted, nextDueAfterError, nextDueAfterSuccess, type Lane, type Tier } from '@/lib/keepa/lanes';
+import { ENQUEUE_LOCK_KEY, nextDueAfterDelisted, nextDueAfterError, nextDueAfterSuccess, type Lane, type Tier } from '@/lib/keepa/lanes';
 import { emptyFacts, type ProductFacts } from '@/lib/keepa/productFacts';
 import type { ClaimedRow, KeepaStore, TokenInfo } from './store';
 
@@ -42,6 +50,12 @@ const CLAIM_DUE = `
   FROM picked WHERE p.asin = picked.asin
   RETURNING p.asin, p.tier, p.last_fetched_at, p.consecutive_errors`;
 
+/**
+ * The due date follows the row's CURRENT tier ($30 weekly, $31 monthly), not the tier read at
+ * claim time: a weekly upsert that promoted a claimed tier-2 row to tier 1 and pulled it forward
+ * must not be undone by a +30-day write. The casts are required: untyped parameters inside a
+ * CASE resolve to text, which Postgres will not assign to a timestamptz column.
+ */
 const SUCCESS_UPDATE = `
   UPDATE asin_products SET
     title = $2, brand = $3, image_url = $4, category_path = $5, category_root = $6, category_leaf = $7,
@@ -51,7 +65,7 @@ const SUCCESS_UPDATE = `
     avg30_price_cents = $22, avg90_price_cents = $23, avg180_price_cents = $24, avg365_price_cents = $25, avg30_sales_rank = $26, avg90_sales_rank = $27,
     enrichment_status = $28::asin_enrichment_status, error_code = NULL,
     last_fetched_at = $29, fetch_count = fetch_count + 1, consecutive_errors = 0,
-    next_due_at = $30, claimed_at = NULL, claimed_by = NULL, updated_at = now()
+    next_due_at = CASE WHEN tier = 1 THEN $30::timestamptz ELSE $31::timestamptz END, claimed_at = NULL, claimed_by = NULL, updated_at = now()
   WHERE asin = $1`;
 
 const DELISTED_UPDATE = `
@@ -85,17 +99,32 @@ async function writeRow(c: Queryable, row: ClaimedRow, f: ProductFacts, now: Dat
       f.currentPriceCents, f.priceSource, f.salesRank, f.reviewCount, f.averageRatingX10, f.lastRatingUpdate,
       f.monthlySold, f.keepaUpdatedAt, f.newOfferCount, f.fbaOfferCount, f.fbmOfferCount, f.amazonAvailability,
       f.avg30PriceCents, f.avg90PriceCents, f.avg180PriceCents, f.avg365PriceCents, f.avg30SalesRank, f.avg90SalesRank,
-      f.status, now, nextDueAfterSuccess(row.tier, now),
+      f.status, now, nextDueAfterSuccess(1, now), nextDueAfterSuccess(2, now),
     ]);
   } else if (f.status === 'delisted') {
     await c.query(DELISTED_UPDATE, [row.asin, now, nextDueAfterDelisted(now)]);
   } else {
     await c.query(ERROR_UPDATE, [row.asin, f.errorCode ?? 'error', nextDueAfterError(row.consecutiveErrors + 1, now)]);
   }
+  // One snapshot per fetch. An error is not a fetch (a bad object, a row missing from the parse,
+  // a batch Keepa never answered), so it writes none; delisted and no_price fetches still do.
+  if (f.status === 'error') return;
   await c.query(SNAPSHOT_INSERT, [
     row.asin, now, f.currentPriceCents, f.salesRank, f.reviewCount, f.averageRatingX10,
     f.monthlySold, f.newOfferCount, f.fbaOfferCount, f.fbmOfferCount, f.status,
   ]);
+}
+
+/**
+ * Wait for any running enqueue-week upsert (spec §6.1): the upsert holds the exclusive form of
+ * ENQUEUE_LOCK_KEY for minutes and locks rows in a different order than a batch write, so a batch
+ * that started mid-upsert would deadlock with it. Taken by every store transaction, before any row
+ * lock. The statement timeout is raised for this transaction only: the pool's five-minute default
+ * is shorter than a weekly upsert over ~2.3M rows.
+ */
+async function awaitEnqueueLock(c: Queryable): Promise<void> {
+  await c.query(`SET LOCAL statement_timeout = '1200s'`);
+  await c.query('SELECT pg_advisory_xact_lock_shared($1)', [ENQUEUE_LOCK_KEY]);
 }
 
 async function inTransaction<T>(pool: Pool, fn: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -129,11 +158,14 @@ export class PgKeepaStore implements KeepaStore {
   }
 
   async releaseStaleClaims(olderThanMs: number): Promise<number> {
-    const r = await this.pool.query(
-      `UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE claimed_at IS NOT NULL AND claimed_at < now() - make_interval(secs => $1::float8)`,
-      [olderThanMs / 1000],
-    );
-    return r.rowCount ?? 0;
+    return inTransaction(this.pool, async (c) => {
+      await awaitEnqueueLock(c);
+      const r = await c.query(
+        `UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE claimed_at IS NOT NULL AND claimed_at < now() - make_interval(secs => $1::float8)`,
+        [olderThanMs / 1000],
+      );
+      return r.rowCount ?? 0;
+    });
   }
 
   async claimBatch(args: { limit: number; tailEnabled: boolean; bootId: string }): Promise<ClaimedRow[]> {
@@ -145,6 +177,7 @@ export class PgKeepaStore implements KeepaStore {
         : []),
     ];
     return inTransaction(this.pool, async (c) => {
+      await awaitEnqueueLock(c);
       const out: ClaimedRow[] = [];
       for (const step of plan) {
         const remaining = args.limit - out.length;
@@ -160,6 +193,7 @@ export class PgKeepaStore implements KeepaStore {
 
   async writeBatch(args: { rows: ClaimedRow[]; facts: Map<string, ProductFacts>; lane: Lane; tokens: TokenInfo; now: Date }): Promise<void> {
     await inTransaction(this.pool, async (c) => {
+      await awaitEnqueueLock(c);
       for (const row of args.rows) {
         await writeRow(c, row, args.facts.get(row.asin) ?? emptyFacts(row.asin, 'error', 'missing_from_parse'), args.now);
       }
@@ -173,6 +207,7 @@ export class PgKeepaStore implements KeepaStore {
 
   async markBatchErrored(args: { rows: ClaimedRow[]; errorCode: string; now: Date }): Promise<void> {
     await inTransaction(this.pool, async (c) => {
+      await awaitEnqueueLock(c);
       for (const row of args.rows) await writeRow(c, row, emptyFacts(row.asin, 'error', args.errorCode), args.now);
       await c.query(`UPDATE keepa_service_status SET heartbeat_at = now(), last_error_code = $1, last_error_at = now() WHERE singleton`, [args.errorCode]);
     });

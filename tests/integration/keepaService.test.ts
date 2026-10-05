@@ -3,7 +3,7 @@
  * Keepa service store against the real tables (migration 0050 applied). Synthetic ASINs
  * prefixed TESTKS are inserted and removed by this file; no real row is touched.
  *
- * Run (owner's go): RUN_INTEGRATION=1 pnpm test:integration tests/integration/keepaService.test.ts
+ * Run (owner's go): RUN_INTEGRATION=1 pnpm vitest run tests/integration/keepaService.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool } from 'pg';
@@ -25,9 +25,9 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
     await pool.query(`DELETE FROM asin_products WHERE asin LIKE $1`, [`${PREFIX}%`]);
     await pool.query(
       `INSERT INTO asin_products (asin, best_rank, tier, in_scope, last_fetched_at, next_due_at, enrichment_status, title) VALUES
-       ($1, 500, 1, true, NULL, now(), NULL, NULL),
-       ($2, 900000, 1, true, NULL, now(), NULL, NULL),
-       ($3, 1000, 1, true, now() - interval '8 days', now() - interval '1 day', 'active', 'old title'),
+       ($1, 0, 1, true, NULL, now(), NULL, NULL),
+       ($2, 1, 1, true, NULL, now(), NULL, NULL),
+       ($3, 1000, 1, true, now() - interval '8 days', now() - interval '10 years', 'active', 'old title'),
        ($4, 1000, 1, true, now() - interval '1 day', now() + interval '6 days', 'active', 'fresh'),
        ($5, 1500000, 2, true, NULL, now(), NULL, NULL)`,
       [A.newTop, A.newDeep, A.due, A.notDue, A.tier2],
@@ -52,7 +52,12 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
     for (const c of claimed) expect(c.claimed_by).toBe('test-boot');
     // Release everything this test claimed (our rows and any real rows), as a crashed service would after ten minutes.
     await pool.query(`UPDATE asin_products SET claimed_at = NULL, claimed_by = NULL WHERE claimed_by = 'test-boot'`);
-    if (asins.includes(A.newTop) && asins.includes(A.newDeep)) expect(asins.indexOf(A.newTop)).toBeLessThan(asins.indexOf(A.newDeep));
+    // Ranks 0 and 1 sort first in the never-fetched lane, and the ten-years-overdue row first in the
+    // due lane, whatever the real table holds. Asserted after the release so a failure leaves no claims.
+    expect(asins).toContain(A.newTop);
+    expect(asins).toContain(A.newDeep);
+    expect(asins).toContain(A.due);
+    expect(asins.indexOf(A.newTop)).toBeLessThan(asins.indexOf(A.newDeep));
   });
 
   it('writeBatch applies the three outcomes and inserts snapshots', async () => {
@@ -74,7 +79,8 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
     expect(new Date(by[A.newTop].next_due_at).getTime() - now.getTime()).toBeCloseTo(7 * 86_400_000, -4);
 
     const { rows: snaps } = await pool.query(`SELECT asin, enrichment_status::text AS s, review_count FROM asin_snapshots WHERE asin = ANY($1) ORDER BY asin`, [[A.newTop, A.due, A.newDeep]]);
-    expect(snaps.map((s) => s.s).sort()).toEqual(['active', 'delisted', 'error']);
+    expect(snaps.map((s) => s.s).sort()).toEqual(['active', 'delisted']);
+    expect(snaps.find((s) => s.asin === A.newDeep)).toBeUndefined();
     expect(snaps.find((s) => s.asin === A.newTop)?.review_count).toBe(7);
     const { rows: st } = await pool.query(`SELECT tokens_left, last_batch_lane FROM keepa_service_status WHERE singleton`);
     expect(st[0]).toMatchObject({ tokens_left: 123, last_batch_lane: 'new' });
