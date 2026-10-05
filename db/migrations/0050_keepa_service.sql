@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS asin_products (
   avg30_sales_rank integer,
   avg90_sales_rank integer,
   enrichment_status asin_enrichment_status,
-  error_code text,
+  error_code text CHECK (char_length(error_code) <= 64),
   last_fetched_at timestamptz,
   fetch_count integer NOT NULL DEFAULT 0,
   consecutive_errors integer NOT NULL DEFAULT 0,
@@ -47,14 +47,16 @@ CREATE TABLE IF NOT EXISTS asin_products (
 );
 --> statement-breakpoint
 COMMENT ON TABLE asin_products IS
-  'One row per ASIN: current Keepa facts + the Keepa service queue state. enrichment_status NULL = never fetched. Spec 2026-10-05 §4.1.';
+  'One row per ASIN: current Keepa facts + the Keepa service queue state. Never fetched = last_fetched_at IS NULL (enrichment_status is NULL until the first outcome and ''error'' after a failed first fetch). Spec 2026-10-05 §4.1.';
+--> statement-breakpoint
+ALTER TABLE asin_products SET (autovacuum_vacuum_scale_factor = 0.05);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS asin_products_never_fetched_idx
-  ON asin_products (tier, best_rank)
+  ON asin_products (tier, best_rank, asin)
   WHERE in_scope AND claimed_at IS NULL AND last_fetched_at IS NULL;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS asin_products_due_idx
-  ON asin_products (tier, next_due_at)
+  ON asin_products (tier, next_due_at, asin)
   WHERE in_scope AND claimed_at IS NULL AND last_fetched_at IS NOT NULL;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS asin_products_claimed_idx
@@ -62,8 +64,8 @@ CREATE INDEX IF NOT EXISTS asin_products_claimed_idx
   WHERE claimed_at IS NOT NULL;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS asin_products_category_path_idx
-  ON asin_products (category_path)
-  WHERE category_path IS NOT NULL;
+  ON asin_products (category_path text_pattern_ops)
+  WHERE in_scope AND category_path IS NOT NULL;
 --> statement-breakpoint
 CREATE TABLE IF NOT EXISTS asin_snapshots (
   asin text NOT NULL,
@@ -93,7 +95,7 @@ CREATE TABLE IF NOT EXISTS keepa_service_status (
   tokens_left integer,
   refill_rate integer,
   tail_enabled boolean NOT NULL DEFAULT false,
-  last_error_code text,
+  last_error_code text CHECK (char_length(last_error_code) <= 64),
   last_error_at timestamptz,
   lane_new_drained_at timestamptz,
   sync_fired_at timestamptz,

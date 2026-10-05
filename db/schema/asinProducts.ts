@@ -42,7 +42,7 @@ export const asinProducts = pgTable(
     avg365PriceCents: integer('avg365_price_cents'),
     avg30SalesRank: integer('avg30_sales_rank'),
     avg90SalesRank: integer('avg90_sales_rank'),
-    /** null = never fetched. */
+    /** NULL until the first fetch outcome ('error' after a failed first fetch). Never fetched = lastFetchedAt IS NULL. */
     enrichmentStatus: asinEnrichmentStatusEnum('enrichment_status'),
     errorCode: text('error_code'),
     lastFetchedAt: timestamp('last_fetched_at', { withTimezone: true }),
@@ -59,10 +59,9 @@ export const asinProducts = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
-    // The four indexes are PARTIAL in the migration (drizzle's index().where() emits
-    // inconsistently); declared plain here for type-checking only.
-    neverFetchedIdx: index('asin_products_never_fetched_idx').on(t.tier, t.bestRank),
-    dueIdx: index('asin_products_due_idx').on(t.tier, t.nextDueAt),
+    // The four indexes are PARTIAL in the migration (drizzle's index().where() emits inconsistently) and the category_path index uses text_pattern_ops there; declared plain here for type-checking only.
+    neverFetchedIdx: index('asin_products_never_fetched_idx').on(t.tier, t.bestRank, t.asin),
+    dueIdx: index('asin_products_due_idx').on(t.tier, t.nextDueAt, t.asin),
     claimedIdx: index('asin_products_claimed_idx').on(t.claimedAt),
     categoryPathIdx: index('asin_products_category_path_idx').on(t.categoryPath),
   }),
