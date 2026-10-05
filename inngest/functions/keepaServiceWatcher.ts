@@ -42,9 +42,6 @@ const STAMP_SQL: Record<StampField, string> = {
   nightly_sync_date: 'UPDATE keepa_service_status SET nightly_sync_date = $1 WHERE singleton',
 };
 
-/** The alarm an "alarm sent" stamp records: setting it waits on that send; clearing it never does. */
-const ALARM_OF_STAMP: Partial<Record<StampField, AlarmVariant>> = { down_alarm_sent_at: 'down', stall_alarm_sent_at: 'stalled' };
-
 export interface WatcherTickDeps {
   now: Date;
   readSource: KeepaReadSource;
@@ -140,10 +137,9 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
       await deps.sendEvent('keepa/aggregates-sync-requested', { weekEndDate: weeks.kcs });
       summary.push(`sync:${a.reason}`);
     } else {
-      // An alarm counts as sent only once Resend accepted it: a failed send leaves the stamp unset,
-      // so the next tick retries. Clearing a stamp (recovery) never waits on a send.
-      const alarm = ALARM_OF_STAMP[a.field];
-      if (a.value !== null && alarm && !delivered.has(alarm)) {
+      // A stamp tied to an email (onlyIfSent) is written only once Resend accepted that email: a
+      // failed send leaves the row as it was, so the next tick retries. Untied stamps never wait.
+      if (a.onlyIfSent && !delivered.has(a.onlyIfSent)) {
         summary.push(`stamp:${a.field}:skipped`);
         continue;
       }

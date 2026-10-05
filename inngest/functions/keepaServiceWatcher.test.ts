@@ -207,6 +207,21 @@ describe('runWatcherTick', () => {
     expect(back.updates()).toEqual([{ text: stampSql('down_alarm_sent_at'), values: [null] }]);
   });
 
+  it('back up but still stalled: the down alarm clears only once the stall update went out, else the next tick retries', async () => {
+    const status = { down_alarm_sent_at: ago(30), stall_alarm_sent_at: ago(90), last_batch_at: ago(180) };
+    const failed = harness({ status, delivered: false });
+    await expect(runWatcherTick(failed.client, failed.deps)).resolves.toEqual({
+      ok: true,
+      actions: ['email:stalled:unsent', 'stamp:down_alarm_sent_at:skipped'],
+    });
+    expect(failed.updates()).toEqual([]);
+    // Nothing was written, so the next tick sees the same row and sends the update again.
+    const retry = harness({ status, delivered: true });
+    await expect(runWatcherTick(retry.client, retry.deps)).resolves.toEqual({ ok: true, actions: ['email:stalled', 'stamp:down_alarm_sent_at'] });
+    expect(retry.trace.slice(3)).toEqual(['alarm:stalled', `sql:${stampSql('down_alarm_sent_at')}`]);
+    expect(retry.updates()).toEqual([{ text: stampSql('down_alarm_sent_at'), values: [null] }]);
+  });
+
   it('a drained lane with the explorer caught up requests the sync for the explorer week, then stamps it', async () => {
     const h = harness({ status: { lane_new_drained_at: ago(3) } });
     await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: ['sync:new_lane_drained', 'stamp:sync_fired_at'] });
@@ -267,7 +282,7 @@ describe('runWatcherTick', () => {
       due: true,
       enqueueRunning: false,
       explorerCaughtUp: true,
-      held: ['sync_gap', 'window'],
+      held: ['sync_gap', 'night_missed'],
     });
   });
 

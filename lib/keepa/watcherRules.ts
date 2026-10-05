@@ -62,10 +62,11 @@ export type StampField = 'down_alarm_sent_at' | 'stall_alarm_sent_at' | 'sync_fi
 export type WatcherAction =
   | { kind: 'email'; variant: AlarmVariant }
   | { kind: 'sync'; reason: 'new_lane_drained' | 'nightly' }
-  | { kind: 'stamp'; field: StampField; value: Date | string | null };
+  /** `onlyIfSent`: write the stamp only once this tick's email of that variant was delivered, so a failed send is retried next tick. */
+  | { kind: 'stamp'; field: StampField; value: Date | string | null; onlyIfSent?: AlarmVariant };
 
 /** Why a tick held something back, for the tick log (see heldReasons). */
-export type HeldReason = 'not_booted' | 'enqueue_running' | 'explorer_behind' | 'sync_gap' | 'window';
+export type HeldReason = 'not_booted' | 'enqueue_running' | 'explorer_behind' | 'sync_gap' | 'night_missed';
 
 export function easternClock(now: Date): EasternClock {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -101,18 +102,34 @@ export function drainPending(i: Pick<WatcherInput, 'laneNewDrainedAt' | 'syncFir
   return !!i.laneNewDrainedAt && (!i.syncFiredAt || i.laneNewDrainedAt > i.syncFiredAt);
 }
 
+function minuteOfDay(et: EasternClock): number {
+  return et.hour * 60 + et.minute;
+}
+
 export function inNightlyWindow(et: EasternClock): boolean {
-  const minuteOfDay = et.hour * 60 + et.minute;
-  return minuteOfDay >= NIGHTLY_WINDOW.fromMinute && minuteOfDay <= NIGHTLY_WINDOW.toMinute;
+  const m = minuteOfDay(et);
+  return m >= NIGHTLY_WINDOW.fromMinute && m <= NIGHTLY_WINDOW.toMinute;
 }
 
 function ageMs(now: Date, d: Date | null): number {
   return d ? now.getTime() - d.getTime() : Number.POSITIVE_INFINITY;
 }
 
+/** Whole minutes until the six-hour gap since the last sync closes; 0 once it has, or before any sync. */
+function gapMinutesLeft(i: Pick<WatcherInput, 'now' | 'syncFiredAt'>): number {
+  if (!i.syncFiredAt) return 0;
+  const leftMs = SYNC_MIN_GAP_MS - ageMs(i.now, i.syncFiredAt);
+  return leftMs > 0 ? Math.ceil(leftMs / 60_000) : 0;
+}
+
 /** The last sync is under SYNC_MIN_GAP_MS old. */
 function syncGapOpen(i: Pick<WatcherInput, 'now' | 'syncFiredAt'>): boolean {
-  return !!i.syncFiredAt && ageMs(i.now, i.syncFiredAt) < SYNC_MIN_GAP_MS;
+  return gapMinutesLeft(i) > 0;
+}
+
+/** The gap closes by 05:59 ET, so a later tick in tonight's window can still sync. */
+function gapClosesInWindow(i: Pick<WatcherInput, 'now' | 'syncFiredAt' | 'et'>): boolean {
+  return minuteOfDay(i.et) + gapMinutesLeft(i) <= NIGHTLY_WINDOW.toMinute;
 }
 
 /** Tonight's sync is still owed: something was fetched in the last day and today's date is not stamped. */
@@ -136,12 +153,20 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
     const backUp = !down && !!i.downAlarmSentAt;
     if (down && !i.downAlarmSentAt) {
       emails.push('down');
-      stamps.push({ kind: 'stamp', field: 'down_alarm_sent_at', value: i.now });
+      stamps.push({ kind: 'stamp', field: 'down_alarm_sent_at', value: i.now, onlyIfSent: 'down' });
     }
-    if (backUp) stamps.push({ kind: 'stamp', field: 'down_alarm_sent_at', value: null });
+    if (backUp) {
+      // Into an ongoing stall the down alarm clears only once the stall update went out; a plain
+      // recovery clears it regardless.
+      stamps.push(
+        stalled
+          ? { kind: 'stamp', field: 'down_alarm_sent_at', value: null, onlyIfSent: 'stalled' }
+          : { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
+      );
+    }
     if (stalled && (!i.stallAlarmSentAt || backUp)) {
       emails.push('stalled');
-      if (!i.stallAlarmSentAt) stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: i.now });
+      if (!i.stallAlarmSentAt) stamps.push({ kind: 'stamp', field: 'stall_alarm_sent_at', value: i.now, onlyIfSent: 'stalled' });
     }
     if (!down && !stalled && (backUp || i.stallAlarmSentAt)) {
       emails.push('recovered');
@@ -159,16 +184,18 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
     if (drainPending(i) && !syncGapOpen(i) && i.explorerCaughtUp) {
       actions.push({ kind: 'sync', reason: 'new_lane_drained' }, { kind: 'stamp', field: 'sync_fired_at', value: i.now });
     } else if (inNightlyWindow(i.et) && nightlyOwed(i) && i.explorerCaughtUp) {
-      if (syncGapOpen(i)) {
-        // A sync under six hours old counts as tonight's: record the date without a second sync.
-        actions.push({ kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey });
-      } else {
+      if (!syncGapOpen(i)) {
         actions.push(
           { kind: 'sync', reason: 'nightly' },
           { kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey },
           { kind: 'stamp', field: 'sync_fired_at', value: i.now },
         );
+      } else if (!gapClosesInWindow(i)) {
+        // A recent sync whose gap cannot close inside the window counts as tonight's: record the
+        // date without a second sync.
+        actions.push({ kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey });
       }
+      // Otherwise hold: a later tick in the window syncs once the gap has closed.
     }
   }
   return actions;
@@ -187,8 +214,9 @@ export function syncCouldFire(i: Pick<WatcherInput, 'readSource' | 'laneNewDrain
 /**
  * Why this tick held something back — for the tick log only; decideWatcherActions decides. Alarms
  * suppressed: not_booted, enqueue_running. A pending drain not synced: sync_gap (under six hours
- * since the last sync) and/or explorer_behind. Tonight's sync owed but not sent: window (before
- * its window), explorer_behind, or sync_gap (a recent sync counted as the night's).
+ * since the last sync) and/or explorer_behind. Tonight's sync owed: nothing before 03:30 ET; inside
+ * the window, explorer_behind, or sync_gap (a recent sync's gap closes later in the window); after
+ * 05:59 with the date still unstamped, night_missed.
  */
 export function heldReasons(i: WatcherInput): HeldReason[] {
   if (!i.serviceBooted) return ['not_booted'];
@@ -200,9 +228,12 @@ export function heldReasons(i: WatcherInput): HeldReason[] {
       if (!i.explorerCaughtUp) held.add('explorer_behind');
     }
     if (nightlyOwed(i)) {
-      if (!inNightlyWindow(i.et)) held.add('window');
-      else if (!i.explorerCaughtUp) held.add('explorer_behind');
-      else if (syncGapOpen(i)) held.add('sync_gap');
+      const m = minuteOfDay(i.et);
+      if (m > NIGHTLY_WINDOW.toMinute) held.add('night_missed');
+      else if (m >= NIGHTLY_WINDOW.fromMinute) {
+        if (!i.explorerCaughtUp) held.add('explorer_behind');
+        else if (syncGapOpen(i) && gapClosesInWindow(i)) held.add('sync_gap');
+      }
     }
   }
   return [...held];

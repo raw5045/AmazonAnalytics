@@ -39,6 +39,12 @@ const nightlySync = [
   { kind: 'stamp', field: 'sync_fired_at', value: NOW },
 ];
 
+/** The base input at another instant: the clock agrees with `now`; the heartbeat and last batch stay fresh. */
+function atInstant(iso: string): WatcherInput {
+  const now = new Date(iso);
+  return { ...base, now, heartbeatAt: new Date(now.getTime() - 60_000), lastBatchAt: new Date(now.getTime() - 120_000), et: easternClock(now) };
+}
+
 describe('decideWatcherActions', () => {
   it('does nothing while the service is healthy', () => {
     expect(decideWatcherActions(base)).toEqual([]);
@@ -50,10 +56,11 @@ describe('decideWatcherActions', () => {
 
   it('alarms once when the heartbeat is older than fifteen minutes, then recovers once', () => {
     const down = decideWatcherActions({ ...base, heartbeatAt: min(16) });
-    expect(down).toEqual([{ kind: 'email', variant: 'down' }, { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW }]);
+    expect(down).toEqual([{ kind: 'email', variant: 'down' }, { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW, onlyIfSent: 'down' }]);
     // Still inside the fifteen-minute threshold: not down yet.
     expect(decideWatcherActions({ ...base, heartbeatAt: min(14) })).toEqual([]);
     expect(decideWatcherActions({ ...base, heartbeatAt: min(30), downAlarmSentAt: min(19) })).toEqual([]);
+    // A plain recovery clears the stamp whether or not the email goes out.
     expect(decideWatcherActions({ ...base, downAlarmSentAt: min(19) })).toEqual([
       { kind: 'email', variant: 'recovered' },
       { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
@@ -65,7 +72,10 @@ describe('decideWatcherActions', () => {
   });
 
   it('alarms on a stall: alive, work due, no batch for two hours — never while down, never without due work', () => {
-    expect(decideWatcherActions({ ...base, lastBatchAt: min(121) })).toEqual([{ kind: 'email', variant: 'stalled' }, { kind: 'stamp', field: 'stall_alarm_sent_at', value: NOW }]);
+    expect(decideWatcherActions({ ...base, lastBatchAt: min(121) })).toEqual([
+      { kind: 'email', variant: 'stalled' },
+      { kind: 'stamp', field: 'stall_alarm_sent_at', value: NOW, onlyIfSent: 'stalled' },
+    ]);
     expect(decideWatcherActions({ ...base, lastBatchAt: min(121), dueWorkExists: false })).toEqual([]);
     expect(decideWatcherActions({ ...base, lastBatchAt: min(121), heartbeatAt: min(16) }).map((a) => a.kind === 'email' && a.variant)).toEqual(['down', false]);
     expect(decideWatcherActions({ ...base, stallAlarmSentAt: min(60) })).toEqual([
@@ -80,19 +90,20 @@ describe('decideWatcherActions', () => {
     expect(decideWatcherActions(stalledOut)).toEqual([]);
     expect(decideWatcherActions({ ...stalledOut, heartbeatAt: min(20) })).toEqual([
       { kind: 'email', variant: 'down' },
-      { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW, onlyIfSent: 'down' },
     ]);
+    // The down alarm clears only once the stall update went out (a failed send is retried next tick).
     expect(decideWatcherActions({ ...stalledOut, downAlarmSentAt: min(10) })).toEqual([
       { kind: 'email', variant: 'stalled' },
-      { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: null, onlyIfSent: 'stalled' },
     ]);
   });
 
   it('back after a long outage with work due and no batch since: the stall only, not "recovered" too', () => {
     expect(decideWatcherActions({ ...base, lastBatchAt: min(5 * 60), downAlarmSentAt: min(4 * 60) })).toEqual([
       { kind: 'email', variant: 'stalled' },
-      { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
-      { kind: 'stamp', field: 'stall_alarm_sent_at', value: NOW },
+      { kind: 'stamp', field: 'down_alarm_sent_at', value: null, onlyIfSent: 'stalled' },
+      { kind: 'stamp', field: 'stall_alarm_sent_at', value: NOW, onlyIfSent: 'stalled' },
     ]);
   });
 
@@ -151,10 +162,30 @@ describe('decideWatcherActions', () => {
     expect(decideWatcherActions({ ...base, et: { ...NIGHT, hour: 5, minute: 59 } })).toEqual(nightlySync);
   });
 
-  it("a sync under six hours old counts as the night's: the date is stamped without another sync", () => {
-    const night = { ...base, et: NIGHT };
-    expect(decideWatcherActions({ ...night, syncFiredAt: min(120) })).toEqual([{ kind: 'stamp', field: 'nightly_sync_date', value: '2026-10-06' }]);
-    expect(decideWatcherActions({ ...night, syncFiredAt: min(7 * 60) })).toEqual(nightlySync);
+  it("a recent sync whose six-hour gap cannot close inside the window counts as the night's: the date is stamped, no second sync", () => {
+    // 03:31 ET, synced at 01:31 ET: the gap closes at 07:31, after the window.
+    const at0331 = { ...atInstant('2026-10-06T07:31:00Z'), syncFiredAt: new Date('2026-10-06T05:31:00Z') };
+    expect(decideWatcherActions(at0331)).toEqual([{ kind: 'stamp', field: 'nightly_sync_date', value: '2026-10-06' }]);
+    expect(heldReasons(at0331)).toEqual([]);
+  });
+
+  it('a recent sync holds the night until its gap closes, when that happens by 05:59 ET', () => {
+    const drainedSyncAt = new Date('2026-10-06T02:00:00Z'); // 22:00 ET the evening before
+    const at0330 = { ...atInstant('2026-10-06T07:30:00Z'), syncFiredAt: drainedSyncAt };
+    expect(decideWatcherActions(at0330)).toEqual([]);
+    expect(heldReasons(at0330)).toEqual(['sync_gap']);
+    const at0400 = { ...atInstant('2026-10-06T08:00:00Z'), syncFiredAt: drainedSyncAt };
+    expect(decideWatcherActions(at0400)).toEqual([
+      { kind: 'sync', reason: 'nightly' },
+      { kind: 'stamp', field: 'nightly_sync_date', value: '2026-10-06' },
+      { kind: 'stamp', field: 'sync_fired_at', value: at0400.now },
+    ]);
+    // The boundary at 03:30: a gap closing at 05:59 still holds; one closing at 06:00 stamps the date.
+    const minutesBefore = (n: number) => new Date(at0330.now.getTime() - n * 60_000);
+    expect(decideWatcherActions({ ...at0330, syncFiredAt: minutesBefore(211) })).toEqual([]);
+    expect(decideWatcherActions({ ...at0330, syncFiredAt: minutesBefore(210) })).toEqual([
+      { kind: 'stamp', field: 'nightly_sync_date', value: '2026-10-06' },
+    ]);
   });
 
   it('skips the nightly sync while the explorer is still on the previous week', () => {
@@ -233,7 +264,7 @@ describe('syncCouldFire', () => {
 });
 
 describe('heldReasons', () => {
-  // Tonight's sync already ran, so no 'window' reason unless a case asks for one.
+  // Tonight's sync already ran, so the night adds no reason unless a case asks for one.
   const done = { ...base, nightlySyncDate: base.et.dateKey };
 
   it('names suppressed alarms', () => {
@@ -241,14 +272,15 @@ describe('heldReasons', () => {
     expect(heldReasons({ ...done, enqueueRunning: true })).toEqual(['enqueue_running']);
   });
 
-  it('names why a pending drain or tonight\'s sync was not sent', () => {
+  it("names why a pending drain or tonight's sync was not sent", () => {
     expect(heldReasons(done)).toEqual([]);
     expect(heldReasons({ ...done, laneNewDrainedAt: min(3), syncFiredAt: min(120) })).toEqual(['sync_gap']);
     expect(heldReasons({ ...done, laneNewDrainedAt: min(3), explorerCaughtUp: false })).toEqual(['explorer_behind']);
-    // Tonight's sync is due (a batch today, not yet run) but the tick is before its window.
-    expect(heldReasons(base)).toEqual(['window']);
+    // Owed but before the window: nothing to report yet.
+    expect(heldReasons({ ...base, et: { ...NIGHT, hour: 2, minute: 0 } })).toEqual([]);
+    // Owed once the window has closed: the night was missed.
+    expect(heldReasons(base)).toEqual(['night_missed']);
     expect(heldReasons({ ...base, et: NIGHT, explorerCaughtUp: false })).toEqual(['explorer_behind']);
-    expect(heldReasons({ ...base, et: NIGHT, syncFiredAt: min(120) })).toEqual(['sync_gap']);
     expect(heldReasons({ ...base, et: NIGHT })).toEqual([]);
     expect(heldReasons({ ...base, readSource: 'weekly' })).toEqual([]);
   });
