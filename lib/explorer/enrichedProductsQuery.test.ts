@@ -79,17 +79,56 @@ describe('mapEnrichedProducts', () => {
     expect(prices(mapEnrichedProducts([row('active')]).B0A)).toEqual([1999, 2001, 2002, 2003, 2004]);
   });
 
-  it.each(['no_price', 'delisted', 'error'])('drops every price of a %s row but keeps reviews, rating, rank and category', (status) => {
-    const p = mapEnrichedProducts([row(status)]).B0A;
+  it.each(['no_price', 'error'])('drops every price of a %s row but keeps reviews, rating, rank, counts and category', (status) => {
+    const p = mapEnrichedProducts([row(status, { monthly_sold: 1000, fba_offer_count: 5 })]).B0A;
     expect(prices(p)).toEqual([null, null, null, null, null]);
     expect(p).toMatchObject({
       title: 'Oil',
       reviewCount: 4321,
       averageRatingX10: 45,
       salesRank: 500,
+      monthlySold: 1000,
+      fbaOfferCount: 5,
       categoryPath: 'Health › Oils',
       categoryLeaf: 'Oils',
       enrichmentStatus: status,
+    });
+  });
+
+  it('drops the prices and point-in-time facts of a delisted row but keeps its historical facts', () => {
+    const p = mapEnrichedProducts([
+      row('delisted', {
+        image_url: 'https://example.com/oil.jpg',
+        monthly_sold: 1000,
+        new_offer_count: 7,
+        fba_offer_count: 5,
+        fbm_offer_count: 2,
+        amazon_availability: 0,
+        avg30_sales_rank: 480,
+        avg90_sales_rank: 510,
+      }),
+    ]).B0A;
+    expect(prices(p)).toEqual([null, null, null, null, null]);
+    expect([
+      p.salesRank,
+      p.monthlySold,
+      p.newOfferCount,
+      p.fbaOfferCount,
+      p.fbmOfferCount,
+      p.amazonAvailability,
+      p.avg30SalesRank,
+      p.avg90SalesRank,
+    ]).toEqual([null, null, null, null, null, null, null, null]);
+    expect(p).toMatchObject({
+      title: 'Oil',
+      brand: 'Acme',
+      imageUrl: 'https://example.com/oil.jpg',
+      reviewCount: 4321,
+      averageRatingX10: 45,
+      categoryPath: 'Health › Oils',
+      categoryRoot: 'Health',
+      categoryLeaf: 'Oils',
+      enrichmentStatus: 'delisted',
     });
   });
 

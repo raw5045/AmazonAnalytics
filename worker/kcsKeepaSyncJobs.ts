@@ -138,7 +138,7 @@ export function startKcsKeepaSyncJob(
         const { rows: cnt } = await c.query<{ n: string }>(
           `SELECT COUNT(*)::text AS n FROM tmp_asin_enriched_sync`,
         );
-        log(`phase=1 done: ${cnt[0].n} ${source === 'products' ? 'active-or-fetched catalog rows' : 'enriched ASINs in scope'}`);
+        log(`phase=1 done: ${cnt[0].n} ${source === 'products' ? 'active/no_price/delisted catalog rows' : 'enriched ASINs in scope'}`);
 
         // Phase 2: UPDATE kcs with aggregates over top-3 ASINs.
         // Joins kwm to look up the 3 ASINs at kcs.current_week_end_date,

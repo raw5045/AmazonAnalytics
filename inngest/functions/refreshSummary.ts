@@ -785,7 +785,7 @@ export function stageEnrichedAsinsSql(
  * Under KEEPA_READ_SOURCE=products the catalog's current row replaces the latest-week lookup
  * (spec 2026-10-05 §7). The catalog keeps one row per ASIN, so there is no earlier active week
  * to fall back to: no_price rows (out of stock; facts refreshed) and delisted rows (facts kept
- * from the last fetch) are staged too, so their reviews, rating and category still reach kcs,
+ * from the last fetch) are staged too, so their reviews and category still reach kcs,
  * but the price comes through only for active rows. Rows with no outcome yet or only errors
  * are left out.
  */

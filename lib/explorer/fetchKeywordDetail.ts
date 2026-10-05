@@ -97,6 +97,7 @@ export interface EnrichedProduct {
   categoryLeaf: string | null;
   /** Null unless enrichmentStatus is 'active' (see mapEnrichedProducts). */
   currentPriceCents: number | null;
+  /** Null for a delisted row — a point-in-time fact (see mapEnrichedProducts). */
   salesRank: number | null;
   reviewCount: number | null;
   /** 0-50 scale (divide by 10 to display as 0.0-5.0 stars). */
@@ -107,6 +108,7 @@ export interface EnrichedProduct {
   avg180PriceCents: number | null;
   avg365PriceCents: number | null;
   // Catalog-only fields: optional, and null under the weekly source (spec 2026-10-05 §4.1).
+  // All but keepaUpdatedAt and listedSince are point-in-time facts, null for a delisted row.
   /** Amazon's "bought in past month" floor (e.g. 100000 = 100K+); null when the badge is absent. */
   monthlySold?: number | null;
   /** Keepa's lastUpdate (YYYY-MM-DD): the "as of" date for monthlySold and the offer counts. */
@@ -230,8 +232,8 @@ type NeonSql = NeonQueryFunction<false, false>;
  * catalog when KEEPA_READ_SOURCE=products (no week predicate — the catalog holds one current row
  * per ASIN; rows with no outcome yet, enrichment_status NULL, are skipped), otherwise from
  * asin_weekly_data at the keyword's current week. Both shapes map
- * through mapEnrichedProducts (prices only for active rows); the catalog adds the new fields,
- * null under the weekly source.
+ * through mapEnrichedProducts (prices only for active rows, no point-in-time facts for delisted
+ * ones); the catalog adds the new fields, null under the weekly source.
  */
 export function enrichedProductsFor(sql: NeonSql, searchTermId: string) {
   if (keepaReadSource() === 'products') {
@@ -467,9 +469,11 @@ export async function fetchKeywordDetail(
 /**
  * Enriched rows keyed by ASIN. Prices — current and the four averages — come through only for
  * active rows: a no_price row has no current offer price, and a delisted catalog row keeps its
- * last fetch's facts, whose prices are stale. Reviews, rating, rank and category map regardless.
- * Weekly delisted rows are empty and weekly no_price rows have no current price, so the detail
- * page shows the same prices under the weekly source.
+ * last fetch's facts, whose prices are stale. A delisted row also hides its other point-in-time
+ * facts (sales rank and its averages, monthly sold, offer counts, Amazon availability); its
+ * historical facts (title, brand, image, reviews, rating, category) still map. A no_price row's
+ * rank and counts are refreshed on every fetch, so they map. Weekly delisted rows are empty and
+ * weekly no_price rows have no current price, so nothing shown changes under the weekly source.
  */
 export function mapEnrichedProducts(
   rows: Array<Record<string, unknown>>,
@@ -478,7 +482,9 @@ export function mapEnrichedProducts(
   for (const r of rows) {
     const asin = r.asin as string;
     const priced = r.enrichment_status === 'active';
+    const listed = r.enrichment_status !== 'delisted';
     const price = (v: unknown): number | null => (priced ? ((v as number | null) ?? null) : null);
+    const pointInTime = (v: unknown): number | null => (listed ? ((v as number | null) ?? null) : null);
     result[asin] = {
       asin,
       title: (r.title as string | null) ?? null,
@@ -488,22 +494,22 @@ export function mapEnrichedProducts(
       categoryRoot: (r.category_root as string | null) ?? null,
       categoryLeaf: (r.category_leaf as string | null) ?? null,
       currentPriceCents: price(r.current_price_cents),
-      salesRank: (r.sales_rank as number | null) ?? null,
+      salesRank: pointInTime(r.sales_rank),
       reviewCount: (r.review_count as number | null) ?? null,
       averageRatingX10: (r.average_rating_x10 as number | null) ?? null,
       avg30PriceCents: price(r.avg30_price_cents),
       avg90PriceCents: price(r.avg90_price_cents),
       avg180PriceCents: price(r.avg180_price_cents),
       avg365PriceCents: price(r.avg365_price_cents),
-      monthlySold: (r.monthly_sold as number | null) ?? null,
+      monthlySold: pointInTime(r.monthly_sold),
       keepaUpdatedAt: (r.keepa_updated_at as string | null) ?? null,
       listedSince: (r.listed_since as string | null) ?? null,
-      newOfferCount: (r.new_offer_count as number | null) ?? null,
-      fbaOfferCount: (r.fba_offer_count as number | null) ?? null,
-      fbmOfferCount: (r.fbm_offer_count as number | null) ?? null,
-      amazonAvailability: (r.amazon_availability as number | null) ?? null,
-      avg30SalesRank: (r.avg30_sales_rank as number | null) ?? null,
-      avg90SalesRank: (r.avg90_sales_rank as number | null) ?? null,
+      newOfferCount: pointInTime(r.new_offer_count),
+      fbaOfferCount: pointInTime(r.fba_offer_count),
+      fbmOfferCount: pointInTime(r.fbm_offer_count),
+      amazonAvailability: pointInTime(r.amazon_availability),
+      avg30SalesRank: pointInTime(r.avg30_sales_rank),
+      avg90SalesRank: pointInTime(r.avg90_sales_rank),
       enrichmentStatus: r.enrichment_status as EnrichedProduct['enrichmentStatus'],
     };
   }
