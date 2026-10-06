@@ -3769,7 +3769,7 @@ Also remove both `keepa_enrichment_runs` probes (the service's `oldJobRunning` a
 |---|---|---|---|
 | 0050 applied + seeded | 2026-10-06 | OK (215 s) | DDL 1 s, assertions passed; seed: 620,627 ASINs with facts, scope week 2026-10-03 inserted 1,983,001 / updated 365,837, 1,872,106 snapshots; totals 2,603,628 rows, tier 1 in scope 1,000,586 (707,288 never fetched), tier 2 1,348,252, out of scope 254,790, earliest tier-1 due 2026-05-22 |
 | Integration tests (service, watcher) | 2026-10-06 | PASS 5/5 + 3/3 | 18:48–18:49 UTC (between quarter-hours), service not yet deployed; cleanup verified read-only afterwards |
-| Phase 1 push + first batches + fire drill | | | |
+| Phase 1 push + first batches + fire drill | 2026-10-06 | push + boot OK; fire drill pending | pushed 18:52 UTC (c715f5c → e5ae273); Vercel green 18:53, worker 18:54, keepa-importer 18:54:30; service boot recorded 18:54:23 (an earlier container had run 8 batches 18:53:51–18:54:14 and handed over cleanly — no stale claims); 4,000 ASINs by 18:56 with 0 errors (≈95% active, 4% no_price, 0.7% delisted); tokens 15,000 → 10,079 as the full bucket drains to the steady pace |
 | Shadow week | | | |
 | Pre-flip check + flag flip | | | |
 | Phase 3 push | | | |
