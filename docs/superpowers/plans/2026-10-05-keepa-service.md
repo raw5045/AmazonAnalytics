@@ -3767,7 +3767,7 @@ Also remove both `keepa_enrichment_runs` probes (the service's `oldJobRunning` a
 
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
-| 0050 applied + seeded | | | |
+| 0050 applied + seeded | 2026-10-06 | OK (215 s) | DDL 1 s, assertions passed; seed: 620,627 ASINs with facts, scope week 2026-10-03 inserted 1,983,001 / updated 365,837, 1,872,106 snapshots; totals 2,603,628 rows, tier 1 in scope 1,000,586 (707,288 never fetched), tier 2 1,348,252, out of scope 254,790, earliest tier-1 due 2026-05-22 |
 | Integration tests (service, watcher) | | | |
 | Phase 1 push + first batches + fire drill | | | |
 | Shadow week | | | |
