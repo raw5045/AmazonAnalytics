@@ -254,7 +254,7 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   }
 
   // Pace on Keepa's once-a-minute refill and leave TOKEN_RESERVE in the bucket after the batch (the
-  // old job's one-token calls during the shadow week). A refill time already past falls back to the
+  // old job's two-token calls during the shadow week). A refill time already past falls back to the
   // continuous estimate.
   const nowMs = deps.now().getTime();
   const refillInMs = state.refillAt !== null && state.refillAt > nowMs ? state.refillAt - nowMs : null;
