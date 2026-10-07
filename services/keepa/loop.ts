@@ -6,7 +6,7 @@
  * exit are dependencies, so the policy is unit-tested without Postgres or Keepa. Also here, for
  * the same reason: the independent heartbeat and the SIGTERM claim release that index.ts runs.
  */
-import { BATCH_SIZE, STALE_CLAIM_MS, TOKENS_PER_ASIN, msUntilTokens, type Lane } from '@/lib/keepa/lanes';
+import { BATCH_SIZE, STALE_CLAIM_MS, TOKENS_PER_ASIN, TOKEN_RESERVE, msUntilTokens, type Lane } from '@/lib/keepa/lanes';
 import { KeepaHttpError, KeepaReplyError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
 import { parseKeepaBatch } from '@/lib/keepa/parseProduct';
 import type { ProductFacts } from '@/lib/keepa/productFacts';
@@ -21,7 +21,10 @@ export const BAD_REQUEST_SLEEP_MS = 10 * 60_000;
 export const MAX_DB_FAILURES = 10;
 /** The longest single token wait; the next request reveals the real balance anyway. */
 export const MAX_TOKEN_WAIT_MS = 2 * 60_000;
-/** Token waits up to this are steady state (40–48 s is normal) and ride on the batch line as tokenWaitMs. */
+/**
+ * Token waits up to this are steady state (the wait for Keepa's next once-a-minute refill) and ride
+ * on the batch line as tokenWaitMs; a longer one gets its own line.
+ */
 export const TOKEN_WAIT_LOG_MS = 60_000;
 /** An all-error batch this large pauses like an outage; smaller ones (a lane's tail) never do. */
 export const ALL_ERROR_PAUSE_MIN_ROWS = 10;
@@ -46,7 +49,7 @@ const MAX_CODE_LENGTH = 64;
 
 export interface KeepaApi {
   fetchBatch(asins: string[]): Promise<KeepaBatchReply>;
-  tokenStatus(): Promise<{ tokensLeft: number | null; refillRate: number | null }>;
+  tokenStatus(): Promise<{ tokensLeft: number | null; refillRate: number | null; refillIn: number | null }>;
 }
 
 export interface LoopDeps {
@@ -65,6 +68,8 @@ export interface LoopDeps {
 export interface LoopState {
   tokensLeft: number | null;
   refillRate: number | null;
+  /** Epoch ms of Keepa's next refill (it adds refillRate tokens once a minute), from the last reply, 429 or boot status. */
+  refillAt: number | null;
   lastClaimHadNew: boolean;
   /** Database failures (and escaped throws) in a row; MAX_DB_FAILURES ends the process. */
   dbFailures: number;
@@ -84,6 +89,7 @@ export function initialState(): LoopState {
   return {
     tokensLeft: null,
     refillRate: null,
+    refillAt: null,
     lastClaimHadNew: false,
     dbFailures: 0,
     consecutive429: 0,
@@ -91,6 +97,11 @@ export function initialState(): LoopState {
     lastBatchCode: null,
     yieldingToOldJob: false,
   };
+}
+
+/** Epoch ms of Keepa's next refill from a `refillIn` it just reported; null when it reported none usable. */
+function refillAtFrom(deps: LoopDeps, refillInMs: number | null): number | null {
+  return refillInMs !== null && Number.isFinite(refillInMs) && refillInMs >= 0 ? deps.now().getTime() + refillInMs : null;
 }
 
 /** Pause before the next claim: one minute, doubling to fifteen (the state carries the last pause). */
@@ -242,7 +253,12 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
     return 'idle';
   }
 
-  const wait = Math.min(msUntilTokens(state.tokensLeft, state.refillRate, rows.length * TOKENS_PER_ASIN), MAX_TOKEN_WAIT_MS);
+  // Pace on Keepa's once-a-minute refill and leave TOKEN_RESERVE in the bucket after the batch (the
+  // old job's one-token calls during the shadow week). A refill time already past falls back to the
+  // continuous estimate.
+  const nowMs = deps.now().getTime();
+  const refillInMs = state.refillAt !== null && state.refillAt > nowMs ? state.refillAt - nowMs : null;
+  const wait = Math.min(msUntilTokens(state.tokensLeft, state.refillRate, rows.length * TOKENS_PER_ASIN + TOKEN_RESERVE, refillInMs), MAX_TOKEN_WAIT_MS);
   if (wait > 0) {
     // A long wait gets its own line up front; every wait also rides on the batch line as tokenWaitMs.
     if (wait > TOKEN_WAIT_LOG_MS) deps.log({ event: 'token_wait', ms: wait });
@@ -274,6 +290,7 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
         // Not an attempt: Keepa told us exactly how long to wait. Persistent 429s (TOKENS_EXHAUSTED_AFTER
         // since the last good fetch) go on the status row, so the watcher can tell "out of tokens" from "down".
         state.tokensLeft = 0;
+        state.refillAt = deps.now().getTime() + e.refillInMs;
         state.consecutive429 += 1;
         if (state.consecutive429 >= TOKENS_EXHAUSTED_AFTER) {
           await recordErrorQuietly(deps, 'keepa_tokens_exhausted');
@@ -320,6 +337,7 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
   state.consecutive429 = 0;
   state.tokensLeft = reply.tokensLeft;
   state.refillRate = reply.refillRate ?? state.refillRate;
+  state.refillAt = refillAtFrom(deps, reply.refillIn) ?? state.refillAt;
   const facts = parseKeepaBatch(asins, reply.products);
   const counts = { active: 0, no_price: 0, delisted: 0, error: 0 };
   for (const f of facts.values()) counts[f.status] += 1;
@@ -414,17 +432,23 @@ export async function releaseOwnClaimsOnShutdown(
   }
 }
 
-/** Never returns on its own; `deps.exit` ends the process after MAX_DB_FAILURES in a row. */
-export async function runForever(deps: LoopDeps): Promise<void> {
-  const state = initialState();
+/** Boot: the free token-status call seeds the balance, the rate and the next refill; a failure only logs. */
+export async function seedTokenStatus(deps: LoopDeps, state: LoopState): Promise<void> {
   try {
     const t = await deps.keepa.tokenStatus();
     state.tokensLeft = t.tokensLeft;
     state.refillRate = t.refillRate;
+    state.refillAt = refillAtFrom(deps, t.refillIn);
     deps.log({ event: 'token_status', ...t });
   } catch (e) {
     deps.log({ event: 'token_status_failed', ...errFields(e) });
   }
+}
+
+/** Never returns on its own; `deps.exit` ends the process after MAX_DB_FAILURES in a row. */
+export async function runForever(deps: LoopDeps): Promise<void> {
+  const state = initialState();
+  await seedTokenStatus(deps, state);
   for (;;) {
     await safeIteration(deps, state);
   }

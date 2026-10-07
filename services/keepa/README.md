@@ -20,6 +20,8 @@ Variables: `DATABASE_URL` (the worker's value), `KEEPA_API_KEY`; `KEEPA_TAIL_LAN
 
 Every iteration: release claims older than ten minutes → probe the old enrichment job (yield while it runs) → claim up to 100 due ASINs lane by lane (tier-1 never-fetched by rank, tier-1 due oldest first, tier 2 only with the tail on) → wait for tokens → probe again (before every request, retries included) → one Keepa request (`rating=1&stats=90`, no history) → parse/validate → one transaction (catalog update, snapshots, claims cleared, status row). Nothing due: heartbeat and a 60-second nap.
 
+Before each batch the loop waits for Keepa's next refill when the balance is short (Keepa adds `refillRate` tokens once a minute; `refillIn` says when) and keeps `TOKEN_RESERVE` (50) tokens in the bucket after a batch so the old import-time job's one-token calls never find it empty during the shadow week. Throughput is unchanged: 250 tokens/min.
+
 Status lives in `keepa_service_status`; the admin page `/admin/keepa-enrichment` shows it; the main worker's watcher cron emails on a stale heartbeat or a stall and fires the explorer aggregate sync.
 
 ## Operations
@@ -37,7 +39,7 @@ Every line is `[keepa-svc]` plus one JSON object with coded fields only (an erro
 
 | Event | Meaning |
 |---|---|
-| `batch` | A batch was fetched and written: outcome counts, tokens left, `tokenWaitMs` (the token wait before it; 40–48 s is normal), `ms` for fetch + parse + write. |
+| `batch` | A batch was fetched and written: outcome counts, tokens left, `tokenWaitMs` (the token wait before it; up to a minute, the wait for Keepa's next refill, is normal), `ms` for fetch + parse + write. |
 | `batch_errored` | Keepa never answered after three attempts (or answered 400 three times): the rows were marked errored with `code`. |
 | `batch_all_errors` | Keepa answered but no product was usable: the rows were written with their error backoff, and `code` (the most common error) became the status row's last error. |
 | `keepa_retry` | One failed attempt (`attempt` 1–3) of a batch request. |

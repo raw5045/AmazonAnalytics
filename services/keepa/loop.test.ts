@@ -21,8 +21,10 @@ import {
   HEARTBEAT_INTERVAL_MS,
   SHUTDOWN_RELEASE_TIMEOUT_MS,
   OLD_JOB_YIELD_SLEEP_MS,
+  seedTokenStatus,
 } from './loop';
 import type { ClaimedRow, KeepaStore } from './store';
+import { REFILL_MARGIN_MS, TOKEN_RESERVE, TOKENS_PER_ASIN } from '@/lib/keepa/lanes';
 import { KeepaHttpError, KeepaReplyError, KeepaTokenError, type KeepaBatchReply } from '@/lib/keepa/batchClient';
 
 const NOW = new Date('2026-10-06T12:00:00Z');
@@ -58,7 +60,7 @@ function makeDeps(store: KeepaStore, fetchBatch: LoopDeps['keepa']['fetchBatch']
   const exit = vi.fn();
   return {
     store,
-    keepa: { fetchBatch, tokenStatus: async () => ({ tokensLeft: 15_000, refillRate: 250 }) },
+    keepa: { fetchBatch, tokenStatus: async () => ({ tokensLeft: 15_000, refillRate: 250, refillIn: null }) },
     sleep: async (ms) => { sleeps.push(ms); },
     now: () => NOW,
     log: (f) => { logs.push(f); },
@@ -223,37 +225,87 @@ describe('runIteration', () => {
     expect(deps.sleeps).toEqual([]);
   });
 
-  it('waits for tokens before fetching when the balance is short', async () => {
+  it('waits for Keepa\'s next refill before fetching when the balance is short', async () => {
     const store = makeStore([[row('B1')]]);
     const deps = makeDeps(store, async (asins) => reply(asins));
-    const state = { ...initialState(), tokensLeft: 1, refillRate: 250 };
+    // 2 tokens + the 50 reserve needed, 1 left, the next refill in 40 s.
+    const state = { ...initialState(), tokensLeft: 1, refillRate: 250, refillAt: NOW.getTime() + 40_000 };
     await runIteration(deps, state);
-    expect(deps.sleeps).toEqual([240]);
+    expect(deps.sleeps).toEqual([40_000 + REFILL_MARGIN_MS]);
     // A steady-state wait has no line of its own; it rides on the batch line.
     expect(deps.logs.some((l) => l.event === 'token_wait')).toBe(false);
-    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: 240 });
+    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: 40_500 });
+  });
+
+  it('paces on the reply\'s refillIn and keeps the reserve: 100 left, 30 rows need 60 + 50 → wait for the refill', async () => {
+    const thirty = new Array(30).fill(0).map((_, i) => row(`C${i}`));
+    const store = makeStore([[row('B1')], thirty]);
+    const deps = makeDeps(store, async (asins) => ({ ...reply(asins, 100), refillIn: 20_000 }));
+    const state = initialState();
+    await runIteration(deps, state); // the first reply: 100 left, the next refill in 20 s
+    expect(state.refillAt).toBe(NOW.getTime() + 20_000);
+    expect(deps.sleeps).toEqual([]);
+    // 30 rows cost 60 (100 would cover it); only the reserve makes this a wait.
+    expect(30 * TOKENS_PER_ASIN + TOKEN_RESERVE).toBe(110);
+    await runIteration(deps, state);
+    expect(deps.sleeps).toEqual([20_500]);
+    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', requested: 30, tokenWaitMs: 20_500 });
+  });
+
+  it('a refill time already past falls back to the continuous estimate', async () => {
+    const store = makeStore([[row('B1')]]);
+    const deps = makeDeps(store, async (asins) => reply(asins));
+    // 52 needed, -73 left: 125 short is half a minute at 250/min.
+    await runIteration(deps, { ...initialState(), tokensLeft: -73, refillRate: 250, refillAt: NOW.getTime() - 1_000 });
+    expect(deps.sleeps).toEqual([30_000]);
   });
 
   it('a token wait gets its own line only above a minute', async () => {
     const store = makeStore([[row('B1')], [row('B2')]]);
     const deps = makeDeps(store, async (asins) => reply(asins));
-    // 2 tokens needed at 250/min: 248 below zero is exactly a minute short, 249 a little more.
-    await runIteration(deps, { ...initialState(), tokensLeft: -248, refillRate: 250 });
+    // One refill short: the wait is the refill time plus the margin, exactly a minute here…
+    await runIteration(deps, { ...initialState(), tokensLeft: 0, refillRate: 250, refillAt: NOW.getTime() + 59_500 });
     expect(deps.sleeps).toEqual([TOKEN_WAIT_LOG_MS]);
     expect(deps.logs.some((l) => l.event === 'token_wait')).toBe(false);
     expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: TOKEN_WAIT_LOG_MS });
-    await runIteration(deps, { ...initialState(), tokensLeft: -249, refillRate: 250 });
-    expect(deps.logs).toContainEqual({ event: 'token_wait', ms: 60_240 });
-    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: 60_240 });
+    // …and a millisecond more gets its own line.
+    await runIteration(deps, { ...initialState(), tokensLeft: 0, refillRate: 250, refillAt: NOW.getTime() + 59_501 });
+    expect(deps.logs).toContainEqual({ event: 'token_wait', ms: 60_001 });
+    expect(deps.logs.at(-1)).toMatchObject({ event: 'batch', tokenWaitMs: 60_001 });
   });
 
   it('caps a token wait at two minutes', async () => {
-    const store = makeStore([[row('B1')]]);
+    const store = makeStore([[row('B1')], [row('B2')]]);
     const deps = makeDeps(store, async (asins) => reply(asins));
-    // Keepa lets the balance go negative: 1002 tokens short at 250/min would be four minutes.
+    // Keepa lets the balance go negative: 1052 short (2 + the 50 reserve) is over four minutes either way.
     await runIteration(deps, { ...initialState(), tokensLeft: -1000, refillRate: 250 });
     expect(deps.sleeps).toEqual([MAX_TOKEN_WAIT_MS]);
     expect(deps.logs).toContainEqual({ event: 'token_wait', ms: MAX_TOKEN_WAIT_MS });
+    await runIteration(deps, { ...initialState(), tokensLeft: -1000, refillRate: 250, refillAt: NOW.getTime() + 30_000 });
+    expect(deps.sleeps).toEqual([MAX_TOKEN_WAIT_MS, MAX_TOKEN_WAIT_MS]);
+  });
+
+  it('a 429 seeds the next refill from Keepa\'s wait', async () => {
+    const store = makeStore([[row('B1')]]);
+    const fetchBatch = vi.fn().mockRejectedValueOnce(new KeepaTokenError(31_000)).mockImplementation(async (asins: string[]) => ({ ...reply(asins), refillIn: null }));
+    const deps = makeDeps(store, fetchBatch);
+    const state = initialState();
+    await expect(runIteration(deps, state)).resolves.toBe('batch');
+    expect(state.refillAt).toBe(NOW.getTime() + 31_000); // a reply without refillIn leaves it
+  });
+
+  it('the boot token status seeds the balance, the rate and the next refill; a failure only logs', async () => {
+    const deps = makeDeps(makeStore([]), async (asins) => reply(asins));
+    deps.keepa.tokenStatus = async () => ({ tokensLeft: 900, refillRate: 250, refillIn: 12_000 });
+    const state = initialState();
+    await seedTokenStatus(deps, state);
+    expect(state).toMatchObject({ tokensLeft: 900, refillRate: 250, refillAt: NOW.getTime() + 12_000 });
+    expect(deps.logs).toEqual([{ event: 'token_status', tokensLeft: 900, refillRate: 250, refillIn: 12_000 }]);
+    deps.keepa.tokenStatus = async () => { throw new KeepaHttpError(503); };
+    const fresh = initialState();
+    await seedTokenStatus(deps, fresh);
+    expect(fresh.refillAt).toBeNull();
+    expect(deps.logs.at(-1)).toEqual({ event: 'token_status_failed', error: 'KeepaHttpError', status: 503 });
   });
 
   it('a product missing from the reply is written as an error', async () => {
