@@ -20,7 +20,7 @@ Variables: `DATABASE_URL` (the worker's value), `KEEPA_API_KEY`; `KEEPA_TAIL_LAN
 
 Every iteration: release claims older than ten minutes → probe the old enrichment job (yield while it runs) → claim up to 100 due ASINs lane by lane (tier-1 never-fetched by rank, tier-1 due oldest first, tier 2 only with the tail on) → wait for tokens → probe again (before every request, retries included) → one Keepa request (`rating=1&stats=90`, no history) → parse/validate → one transaction (catalog update, snapshots, claims cleared, status row). Nothing due: heartbeat and a 60-second nap.
 
-Before each batch the loop waits for Keepa's next refill when the balance is short (Keepa adds `refillRate` tokens once a minute; `refillIn` says when) and keeps `TOKEN_RESERVE` (50) tokens in the bucket after a batch so the old import-time job's one-token calls never find it empty during the shadow week. Throughput is unchanged: 250 tokens/min.
+Before each batch the loop waits for Keepa's next refill when the balance is short (Keepa adds `refillRate` tokens once a minute; `refillIn` says when) and keeps `TOKEN_RESERVE` (50) tokens in the bucket after a batch so the old import-time job's two-token calls (its per-ASIN requests cost 2 tokens) never find it empty during the shadow week. Throughput is unchanged: 250 tokens/min.
 
 Status lives in `keepa_service_status`; the admin page `/admin/keepa-enrichment` shows it; the main worker's watcher cron emails on a stale heartbeat or a stall and fires the explorer aggregate sync.
 

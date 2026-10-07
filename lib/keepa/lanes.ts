@@ -21,7 +21,7 @@ export const TOKENS_PER_ASIN = 2;
 /** Assumed until Keepa reports the rate (the subscription's rate per the free /token call, 2026-10-05). */
 export const DEFAULT_REFILL_RATE_PER_MIN = 250;
 /**
- * Tokens left in the bucket after each batch, for the old import-time job's one-token calls during
+ * Tokens left in the bucket after each batch, for the old import-time job's two-token calls (its per-ASIN requests cost 2 tokens) during
  * the shadow week (it has no 429 handling). A constant offset, so throughput is unchanged.
  */
 export const TOKEN_RESERVE = 50;
