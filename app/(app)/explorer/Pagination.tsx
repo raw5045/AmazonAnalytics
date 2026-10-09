@@ -9,8 +9,20 @@ import { LoadingOverlay } from './LoadingOverlay';
  * N+1 probe) so they render immediately — no total/count needed. The `children`
  * slot renders right after "Page N" (the streamed-in " of M" suffix); the
  * "N matches" total + jump-to live in the top summary's ResultCount.
+ * `basePath` is the route the pager stays on: /explorer by default; the
+ * Products page passes /products.
  */
-export function PaginationControls({ page, hasNext, children }: { page: number; hasNext: boolean; children?: ReactNode }) {
+export function PaginationControls({
+  page,
+  hasNext,
+  children,
+  basePath = '/explorer',
+}: {
+  page: number;
+  hasNext: boolean;
+  children?: ReactNode;
+  basePath?: string;
+}) {
   const router = useRouter();
   const sp = useSearchParams();
   const [isPending, startTransition] = useTransition();
@@ -22,7 +34,7 @@ export function PaginationControls({ page, hasNext, children }: { page: number; 
     const params = new URLSearchParams(sp?.toString());
     if (target === 1) params.delete('page');
     else params.set('page', String(target));
-    startTransition(() => router.replace(`/explorer?${params.toString()}`, { scroll: true }));
+    startTransition(() => router.replace(`${basePath}?${params.toString()}`, { scroll: true }));
   };
 
   return (
