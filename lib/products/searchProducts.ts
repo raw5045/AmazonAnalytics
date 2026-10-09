@@ -6,17 +6,22 @@
  * indexes' WHERE clause exactly.
  *
  * Two rules keep a page cheap on a multi-million-row catalog:
- *  - Page first, count second. The filter, the order and the 50-row page are a subquery, and the
- *    lateral keyword count joins only those rows (spec §5.2). The `keywords` sort is the exception:
- *    it orders by the count, so its lateral runs for every candidate row.
+ *  - Page first, count second. The filter, the order and the 50-row page are a subquery (it also
+ *    carries the raw sort value as `sort_key`); the lateral keyword count joins only those rows
+ *    (spec §5.2) and the outer ORDER BY restates the order, since a join promises none. The
+ *    `keywords` sort is the exception: it orders by the count, so it stays single-level and its
+ *    lateral runs for every candidate row.
  *  - Sorts hide rows whose sort key is NULL (the explorer's rule for its avg sorts). The WHERE gets
- *    `<key> IS NOT NULL` and the ORDER BY has no NULLS clause, so it matches a forward (ASC) or a
- *    backward (DESC) scan of the key's ascending partial index and the top-N comes off the index
- *    instead of sorting every candidate. The page says so with SORT_KEY_LABEL.
+ *    `<key> IS NOT NULL`, the ORDER BY has no NULLS clause, and its `asin` tie-breaker runs in the
+ *    sort direction, so the order is exactly a forward (ASC) or backward (DESC) scan of the key's
+ *    `(<key>, asin)` partial index and the top-N comes off the index instead of sorting every
+ *    candidate. The tie-breaker stays: without a total order, rows could repeat or skip across
+ *    pages when updates move rows inside a tie. The page says so with SORT_KEY_LABEL.
  */
-import { PRODUCT_PAGE_SIZE, type ProductFilters } from './filters';
+import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, type ProductFilters } from './filters';
 
-export const PRODUCT_COUNT_CAP = 10_000;
+/** Exact up to the pager's last reachable row (200 pages of 50), then "10,000+". */
+export const PRODUCT_COUNT_CAP = PRODUCT_MAX_PAGE * PRODUCT_PAGE_SIZE;
 export interface SqlStatement { text: string; values: unknown[] }
 export type SqlRunner = (text: string, values: unknown[]) => Promise<unknown[]>;
 
@@ -30,16 +35,16 @@ export interface ProductSearchResult { rows: ProductSummaryRow[]; total: number;
 const BASE = "a.in_scope AND a.enrichment_status IN ('active', 'no_price')";
 
 /** Every sort but `keywords` orders by a nullable catalog column. */
-export type NullKeySort = Exclude<ProductFilters['sort'], 'keywords'>;
-const SORT_COLUMN: Record<NullKeySort, string> = {
+export type NullableKeySort = Exclude<ProductFilters['sort'], 'keywords'>;
+const SORT_COLUMN: Record<NullableKeySort, string> = {
   sold: 'monthly_sold', listed: 'listed_since', reviews: 'review_count', price: 'current_price_cents', bsr: 'sales_rank', ratio: 'rank_ratio_x100',
 };
 /** The field each hiding sort orders by, for the page's "Products without a <field> are hidden under this sort." hint. */
-export const SORT_KEY_LABEL: Readonly<Record<NullKeySort, string>> = {
-  sold: 'monthly sold', listed: 'listing date', reviews: 'review count', price: 'price', bsr: 'BSR', ratio: 'BSR ratio',
+export const SORT_KEY_LABEL: Readonly<Record<NullableKeySort, string>> = {
+  sold: 'monthly sold badge', listed: 'listing date', reviews: 'review count', price: 'price', bsr: 'BSR', ratio: 'BSR ratio',
 };
 /** True when the sort drops rows whose sort key is NULL: every sort but `keywords` (a count is never NULL). */
-export function sortHidesNullKey(sort: ProductFilters['sort']): sort is NullKeySort {
+export function sortHidesNullKey(sort: ProductFilters['sort']): sort is NullableKeySort {
   return sort !== 'keywords';
 }
 
@@ -77,16 +82,18 @@ export function productSearchSql(f: ProductFilters): { rows: SqlStatement; count
   const offset = bind((f.page - 1) * PRODUCT_PAGE_SIZE);
   const rows = keyColumn === null
     // Ordered by the count itself, so it stays single-level: the lateral runs for every candidate row.
-    ? `SELECT ${PAGE_COLUMNS}, kc.keyword_count FROM asin_products a ${keywordCount('a')} WHERE ${whereSql} ORDER BY kc.keyword_count ${dir} NULLS LAST, a.asin LIMIT ${limit} OFFSET ${offset}`
-    // Page first, count second: the subquery is the filtered, ordered page; only its rows get the lateral
-    // count, and the outer ORDER BY restates the order (a join promises none).
-    : `SELECT p.*, COALESCE(kc.keyword_count, 0) AS keyword_count FROM (SELECT ${PAGE_COLUMNS} FROM asin_products a WHERE ${whereSql} ORDER BY a.${keyColumn} ${dir}, a.asin LIMIT ${limit} OFFSET ${offset}) p ${keywordCount('p')} ORDER BY p.${keyColumn} ${dir}, p.asin`;
+    ? `SELECT ${PAGE_COLUMNS}, kc.keyword_count FROM asin_products a ${keywordCount('a')} WHERE ${whereSql} ORDER BY kc.keyword_count ${dir}, a.asin ${dir} LIMIT ${limit} OFFSET ${offset}`
+    // Page first, count second: the subquery is the filtered, ordered page, with the raw sort value as sort_key
+    // (not the ::text date or the masked price); only its rows get the lateral count, and the outer ORDER BY
+    // restates the order.
+    : `SELECT p.*, kc.keyword_count FROM (SELECT ${PAGE_COLUMNS}, a.${keyColumn} AS sort_key FROM asin_products a WHERE ${whereSql} ORDER BY a.${keyColumn} ${dir}, a.asin ${dir} LIMIT ${limit} OFFSET ${offset}) p ${keywordCount('p')} ORDER BY p.sort_key ${dir}, p.asin ${dir}`;
   return {
     rows: { text: rows, values },
     count: { text: `SELECT count(*)::int AS n FROM (SELECT 1 FROM asin_products a WHERE ${whereSql} LIMIT ${PRODUCT_COUNT_CAP}) c`, values: whereValues },
   };
 }
 
+/** A result row. The page-first statement also returns `sort_key` (for its outer re-sort); the mapper does not read it. */
 interface Raw { asin: string; title: string | null; brand: string | null; listed_since: string | null; monthly_sold: number | null; review_count: number | null; average_rating_x10: number | null; current_price_cents: number | null; sales_rank: number | null; rank_ratio_x100: number | null; fba_offer_count: number | null; fbm_offer_count: number | null; amazon_availability: number | null; enrichment_status: 'active' | 'no_price'; keyword_count: number | null }
 
 export async function searchProducts(run: SqlRunner, f: ProductFilters): Promise<ProductSearchResult> {
