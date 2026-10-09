@@ -168,7 +168,12 @@ export default async function KeywordDetailPage({
 
       {current && (
         <Suspense fallback={<TopProductsSkeleton />}>
-          <TopProductsSection id={id} currentWeekEndDate={current.currentWeekEndDate} />
+          <TopProductsSection
+            id={id}
+            currentWeekEndDate={current.currentWeekEndDate}
+            linkProducts={user?.role === 'admin'}
+            keywordId={id}
+          />
         </Suspense>
       )}
 

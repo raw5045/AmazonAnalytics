@@ -10,6 +10,7 @@
  * boundary wraps its <Suspense> — that would de-opt the server streaming that
  * lets the charts paint first.
  */
+import Link from 'next/link';
 import {
   fetchKeywordProducts,
   type EnrichedProduct,
@@ -18,9 +19,15 @@ import {
 export async function TopProductsSection({
   id,
   currentWeekEndDate,
+  linkProducts,
+  keywordId,
 }: {
   id: string;
   currentWeekEndDate: string;
+  /** Admins only (arc 7): the product title links to the ASIN page. */
+  linkProducts: boolean;
+  /** This keyword's id: the ASIN page's `?from=` target for its link back here. */
+  keywordId: string;
 }) {
   let slots: TopProductSlot[];
   let enrichedByAsin: Record<string, EnrichedProduct>;
@@ -52,7 +59,12 @@ export async function TopProductsSection({
   return (
     <section className="mt-6">
       <h2 className="text-sm font-semibold text-gray-700 mb-3">Top clicked products</h2>
-      <TopProductsTable slots={slots} enrichedByAsin={enrichedByAsin} />
+      <TopProductsTable
+        slots={slots}
+        enrichedByAsin={enrichedByAsin}
+        linkProducts={linkProducts}
+        keywordId={keywordId}
+      />
     </section>
   );
 }
@@ -98,9 +110,13 @@ interface TopProductSlot {
 function TopProductsTable({
   slots,
   enrichedByAsin,
+  linkProducts,
+  keywordId,
 }: {
   slots: TopProductSlot[];
   enrichedByAsin: Record<string, EnrichedProduct>;
+  linkProducts: boolean;
+  keywordId: string;
 }) {
   const rows = slots.filter((s): s is TopProductSlot & { asin: string } => !!s.asin);
   return (
@@ -121,12 +137,21 @@ function TopProductsTable({
           {rows.map((s) => {
             const enriched = enrichedByAsin[s.asin];
             const title = enriched?.title ?? s.fallbackTitle ?? null;
+            // Admins: the title opens the ASIN page. Everyone else keeps the plain text.
+            const titleNode =
+              linkProducts && title ? (
+                <Link href={productPageHref(s.asin, keywordId)} className="text-blue-700 hover:underline">
+                  {title}
+                </Link>
+              ) : (
+                (title ?? <span className="text-gray-400">—</span>)
+              );
             return (
               <tr key={`${s.slot}-${s.asin}`} className="align-top">
                 <td className="p-2 font-mono text-gray-600">{s.slot}</td>
                 <td className="p-2 max-w-md">
                   <div className="truncate" title={title ?? undefined}>
-                    {title ?? <span className="text-gray-400">—</span>}
+                    {titleNode}
                   </div>
                   <div className="text-xs text-gray-500 font-mono">
                     <a
@@ -157,6 +182,14 @@ function TopProductsTable({
       </table>
     </div>
   );
+}
+
+/**
+ * The admin-only ASIN page for a top product. `from` is this keyword's page, percent-encoded
+ * because it is itself a path, so the ASIN page can link back here.
+ */
+function productPageHref(asin: string, keywordId: string): string {
+  return `/products/${asin}?from=${encodeURIComponent(`/explorer/keyword/${keywordId}`)}`;
 }
 
 /** "32.50" → "32.5%" — same one-decimal style as the weekly history table. */
