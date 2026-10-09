@@ -4,6 +4,15 @@
  * over a `(text, values) => rows` runner (the page wraps neon's `sql.query`; the tools reuse it).
  * Every predicate rides on a partial index from migration 0051; the base predicate matches those
  * indexes' WHERE clause exactly.
+ *
+ * Two rules keep a page cheap on a multi-million-row catalog:
+ *  - Page first, count second. The filter, the order and the 50-row page are a subquery, and the
+ *    lateral keyword count joins only those rows (spec §5.2). The `keywords` sort is the exception:
+ *    it orders by the count, so its lateral runs for every candidate row.
+ *  - Sorts hide rows whose sort key is NULL (the explorer's rule for its avg sorts). The WHERE gets
+ *    `<key> IS NOT NULL` and the ORDER BY has no NULLS clause, so it matches a forward (ASC) or a
+ *    backward (DESC) scan of the key's ascending partial index and the top-N comes off the index
+ *    instead of sorting every candidate. The page says so with SORT_KEY_LABEL.
  */
 import { PRODUCT_PAGE_SIZE, type ProductFilters } from './filters';
 
@@ -19,41 +28,61 @@ export interface ProductSummaryRow {
 export interface ProductSearchResult { rows: ProductSummaryRow[]; total: number; totalIsCapped: boolean; page: number; pageSize: number }
 
 const BASE = "a.in_scope AND a.enrichment_status IN ('active', 'no_price')";
-const SORT_COLUMN: Record<ProductFilters['sort'], string> = {
-  sold: 'a.monthly_sold', listed: 'a.listed_since', reviews: 'a.review_count', price: 'a.current_price_cents', bsr: 'a.sales_rank', ratio: 'a.rank_ratio_x100', keywords: 'kc.keyword_count',
+
+/** Every sort but `keywords` orders by a nullable catalog column. */
+export type NullKeySort = Exclude<ProductFilters['sort'], 'keywords'>;
+const SORT_COLUMN: Record<NullKeySort, string> = {
+  sold: 'monthly_sold', listed: 'listed_since', reviews: 'review_count', price: 'current_price_cents', bsr: 'sales_rank', ratio: 'rank_ratio_x100',
 };
-const SELECT = `a.asin, a.title, a.brand, a.listed_since::text AS listed_since, a.monthly_sold, a.review_count, a.average_rating_x10,
+/** The field each hiding sort orders by, for the page's "Products without a <field> are hidden under this sort." hint. */
+export const SORT_KEY_LABEL: Readonly<Record<NullKeySort, string>> = {
+  sold: 'monthly sold', listed: 'listing date', reviews: 'review count', price: 'price', bsr: 'BSR', ratio: 'BSR ratio',
+};
+/** True when the sort drops rows whose sort key is NULL: every sort but `keywords` (a count is never NULL). */
+export function sortHidesNullKey(sort: ProductFilters['sort']): sort is NullKeySort {
+  return sort !== 'keywords';
+}
+
+const PAGE_COLUMNS = `a.asin, a.title, a.brand, a.listed_since::text AS listed_since, a.monthly_sold, a.review_count, a.average_rating_x10,
   CASE WHEN a.enrichment_status = 'active' THEN a.current_price_cents END AS current_price_cents,
-  a.sales_rank, a.rank_ratio_x100, a.fba_offer_count, a.fbm_offer_count, a.amazon_availability, a.enrichment_status::text AS enrichment_status, kc.keyword_count`;
-const KEYWORD_COUNT = 'LEFT JOIN LATERAL (SELECT count(*)::int AS keyword_count FROM keyword_top_asins k WHERE k.asin = a.asin) kc ON true';
+  a.sales_rank, a.rank_ratio_x100, a.fba_offer_count, a.fbm_offer_count, a.amazon_availability, a.enrichment_status::text AS enrichment_status`;
+/** The current top-3 keyword count of the rows of `alias` (the catalog itself, or the page subquery). */
+const keywordCount = (alias: 'a' | 'p') => `LEFT JOIN LATERAL (SELECT count(*)::int AS keyword_count FROM keyword_top_asins k WHERE k.asin = ${alias}.asin) kc ON true`;
 
 export function productSearchSql(f: ProductFilters): { rows: SqlStatement; count: SqlStatement } {
   const where: string[] = [BASE];
   const values: unknown[] = [];
-  const p = (v: unknown) => { values.push(v); return `$${values.length}`; };
-  if (f.age !== null) where.push(`a.listed_since >= current_date - ${p(f.age)}::int`);
-  if (f.soldMin !== null) where.push(`a.monthly_sold >= ${p(f.soldMin)}::int`);
-  if (f.reviewsMax !== null) where.push(`a.review_count <= ${p(f.reviewsMax)}::int`);
-  if (f.ratingMin !== null) where.push(`a.average_rating_x10 >= ${p(f.ratingMin)}::int`);
-  if (f.ratingMax !== null) where.push(`a.average_rating_x10 <= ${p(f.ratingMax)}::int`);
-  if (f.priceMinCents !== null) where.push(`a.current_price_cents >= ${p(f.priceMinCents)}::int`);
-  if (f.priceMaxCents !== null) where.push(`a.current_price_cents <= ${p(f.priceMaxCents)}::int`);
-  if (f.bsrMin !== null) where.push(`a.sales_rank >= ${p(f.bsrMin)}::int`);
-  if (f.bsrMax !== null) where.push(`a.sales_rank <= ${p(f.bsrMax)}::int`);
-  if (f.ratioMax !== null) where.push(`a.rank_ratio_x100 <= ${p(f.ratioMax)}::int`);
-  if (f.cat !== null) where.push(`(a.category_path = ${p(f.cat)}::text OR starts_with(a.category_path, ${p(`${f.cat} › `)}::text))`);
+  const bind = (v: unknown) => { values.push(v); return `$${values.length}`; };
+  if (f.age !== null) where.push(`a.listed_since >= current_date - ${bind(f.age)}::int`);
+  if (f.soldMin !== null) where.push(`a.monthly_sold >= ${bind(f.soldMin)}::int`);
+  if (f.reviewsMax !== null) where.push(`a.review_count <= ${bind(f.reviewsMax)}::int`);
+  if (f.ratingMin !== null) where.push(`a.average_rating_x10 >= ${bind(f.ratingMin)}::int`);
+  if (f.ratingMax !== null) where.push(`a.average_rating_x10 <= ${bind(f.ratingMax)}::int`);
+  if (f.priceMinCents !== null) where.push(`a.current_price_cents >= ${bind(f.priceMinCents)}::int`);
+  if (f.priceMaxCents !== null) where.push(`a.current_price_cents <= ${bind(f.priceMaxCents)}::int`);
+  if (f.bsrMin !== null) where.push(`a.sales_rank >= ${bind(f.bsrMin)}::int`);
+  if (f.bsrMax !== null) where.push(`a.sales_rank <= ${bind(f.bsrMax)}::int`);
+  if (f.ratioMax !== null) where.push(`a.rank_ratio_x100 <= ${bind(f.ratioMax)}::int`);
+  if (f.cat !== null) where.push(`(a.category_path = ${bind(f.cat)}::text OR starts_with(a.category_path, ${bind(`${f.cat} › `)}::text))`);
   if (f.fba === 'yes') where.push('a.fba_offer_count > 0');
   if (f.fba === 'no') where.push('a.fba_offer_count = 0');
   if (f.amazon === 'yes') where.push('a.amazon_availability >= 0');
   if (f.amazon === 'no') where.push('(a.amazon_availability IS NULL OR a.amazon_availability = -1)');
+  const keyColumn = sortHidesNullKey(f.sort) ? SORT_COLUMN[f.sort] : null;
+  if (keyColumn !== null) where.push(`a.${keyColumn} IS NOT NULL`);
   const whereSql = where.join(' AND ');
   const dir = f.dir === 'asc' ? 'ASC' : 'DESC';
-  const order = `ORDER BY ${SORT_COLUMN[f.sort]} ${dir} NULLS LAST, a.asin`;
   const whereValues = [...values];
-  const limit = p(PRODUCT_PAGE_SIZE);
-  const offset = p((f.page - 1) * PRODUCT_PAGE_SIZE);
+  const limit = bind(PRODUCT_PAGE_SIZE);
+  const offset = bind((f.page - 1) * PRODUCT_PAGE_SIZE);
+  const rows = keyColumn === null
+    // Ordered by the count itself, so it stays single-level: the lateral runs for every candidate row.
+    ? `SELECT ${PAGE_COLUMNS}, kc.keyword_count FROM asin_products a ${keywordCount('a')} WHERE ${whereSql} ORDER BY kc.keyword_count ${dir} NULLS LAST, a.asin LIMIT ${limit} OFFSET ${offset}`
+    // Page first, count second: the subquery is the filtered, ordered page; only its rows get the lateral
+    // count, and the outer ORDER BY restates the order (a join promises none).
+    : `SELECT p.*, COALESCE(kc.keyword_count, 0) AS keyword_count FROM (SELECT ${PAGE_COLUMNS} FROM asin_products a WHERE ${whereSql} ORDER BY a.${keyColumn} ${dir}, a.asin LIMIT ${limit} OFFSET ${offset}) p ${keywordCount('p')} ORDER BY p.${keyColumn} ${dir}, p.asin`;
   return {
-    rows: { text: `SELECT ${SELECT} FROM asin_products a ${KEYWORD_COUNT} WHERE ${whereSql} ${order} LIMIT ${limit} OFFSET ${offset}`, values },
+    rows: { text: rows, values },
     count: { text: `SELECT count(*)::int AS n FROM (SELECT 1 FROM asin_products a WHERE ${whereSql} LIMIT ${PRODUCT_COUNT_CAP}) c`, values: whereValues },
   };
 }
