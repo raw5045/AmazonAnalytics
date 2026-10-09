@@ -1095,7 +1095,7 @@ Run (owner's go only): `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topA
 
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
-| 0051 applied + ratio backfill | | | |
+| 0051 applied + ratio backfill | 2026-10-10 | OK (85 s) | 13 statements; ALTER 1 s; ratio backfill 508,867 rows updated of 2,603,628 scanned in 70 s; six concurrent indexes 1–2 s each; reverse table + meta; assertions passed; Keepa service kept fetching throughout |
 | Reverse-table backfill (77 weeks) | | | |
 | Integration tests | | | |
 | Push + deploys | | | |
