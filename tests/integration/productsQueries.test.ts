@@ -2,18 +2,25 @@
 /**
  * The Products page's queries against the real database (migration 0051 applied):
  *  - the default landing view and the owner's example search are planned (EXPLAIN) and must be served
- *    by the 0051 partial indexes; the plans are printed as compact JSON for the record;
+ *    by the 0051 partial indexes; a short outline of each plan (node type, index, estimated rows) is
+ *    printed;
  *  - the owner's search runs for real through searchProducts (rows + capped count), timed;
  *  - the ASIN page's loaders (facts, snapshot history, keywords with weeks in top 3) answer for an ASIN
- *    taken from the search; an unknown ASIN has no facts.
+ *    taken from the search; an ASIN the reverse table has but the catalog lacks gets a stub
+ *    (inCatalog false); an unknown ASIN has no facts.
  *
  * Read-only: every case runs inside BEGIN READ ONLY ... ROLLBACK on one dedicated connection (a stray
  * write would error), so nothing persists.
  *
+ * Cancellation and timeouts (every transaction): SET LOCAL client_connection_check_interval = '10s'
+ * makes the server stop a statement whose client has gone (a cancelled or killed run) within ~10 s.
+ * The 300 s statement timeout applies to each statement on its own; a case's 6-minute test timeout
+ * bounds the sum of its statements.
+ *
  * Preconditions (owner-run only, never in CI):
  *  - migration 0051 applied (the six partial indexes built and valid);
- *  - the reverse-table backfill done for the keyword assertions: while keyword_top_asins_meta has no
- *    week they are skipped with a note ("reverse table not built yet");
+ *  - the reverse-table backfill done for the keyword and stub assertions: while keyword_top_asins_meta
+ *    has no week they are skipped with a note ("reverse table not built yet");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
  *
  * Run (owner's go, Git Bash):
@@ -28,7 +35,10 @@ import { loadProductHistory } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
 
 const RUN = !!process.env.RUN_INTEGRATION;
+/** Per statement (see the header). */
 const STATEMENT_TIMEOUT = '300s';
+/** How often the server checks that the client is still there while it runs a statement. */
+const CONNECTION_CHECK_INTERVAL = '10s';
 const TEST_TIMEOUT_MS = 6 * 60_000;
 const HOOK_TIMEOUT_MS = 2 * 60_000;
 
@@ -49,11 +59,18 @@ const OWNER_SEARCH: ProductFilters = { ...PRODUCT_DEFAULTS, age: 180, soldMin: 1
 interface PlanNode {
   'Node Type': string;
   'Plan Rows': number;
+  'Relation Name'?: string;
   'Index Name'?: string;
   'Scan Direction'?: string;
   Plans?: PlanNode[];
 }
 const planNodes = (node: PlanNode): PlanNode[] => [node, ...(node.Plans ?? []).flatMap(planNodes)];
+/** One line per plan node (node type, scan direction, index or relation, estimated rows), indented by depth. */
+function outline(node: PlanNode, depth = 0): string[] {
+  const on = node['Index Name'] ?? node['Relation Name'];
+  const line = [node['Node Type'], node['Scan Direction'], on, `rows=${node['Plan Rows']}`].filter(Boolean).join(' ');
+  return [`${'  '.repeat(depth)}${line}`, ...(node.Plans ?? []).flatMap((child) => outline(child, depth + 1))];
+}
 
 /** What every keyword row must carry, whatever the ASIN. */
 function expectKeywordRows(result: ProductKeywordsResult): void {
@@ -103,6 +120,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     await client.query('BEGIN READ ONLY');
     try {
       await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`);
+      await client.query(`SET LOCAL client_connection_check_interval = '${CONNECTION_CHECK_INTERVAL}'`);
       await fn();
     } finally {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -110,13 +128,13 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   }
 
   /** EXPLAIN (FORMAT JSON) of a page statement with its real parameters (planned, not executed). */
-  async function explain(q: SqlStatement): Promise<{ root: PlanNode; json: string; seconds: number }> {
+  async function explain(q: SqlStatement): Promise<{ root: PlanNode; lines: string[]; seconds: number }> {
     const started = performance.now();
     const res = await client.query<{ 'QUERY PLAN': unknown }>(`EXPLAIN (FORMAT JSON) ${q.text}`, q.values);
     const seconds = (performance.now() - started) / 1000;
     const raw = res.rows[0]['QUERY PLAN'];
     const plan = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Array<{ Plan: PlanNode }>;
-    return { root: plan[0].Plan, json: JSON.stringify(plan), seconds };
+    return { root: plan[0].Plan, lines: outline(plan[0].Plan), seconds };
   }
 
   /** An ASIN for the loader cases: the first row of the owner's search, else of the default view. */
@@ -133,14 +151,12 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     'default landing view: the sold sort comes off asin_products_monthly_sold_idx',
     async () => {
       await inReadOnlyTransaction(async () => {
-        const { root, json, seconds } = await explain(productSearchSql({ ...PRODUCT_DEFAULTS }).rows);
-        const nodes = planNodes(root);
-        const scan = nodes.find((n) => n['Index Name'] === 'asin_products_monthly_sold_idx');
-        console.log(`[productsQueries] default view planned in ${seconds.toFixed(2)}s (${scan ? `${scan['Node Type']}, ${scan['Scan Direction'] ?? 'no direction'}` : 'index not used'}): ${json}`);
+        const { root, lines, seconds } = await explain(productSearchSql({ ...PRODUCT_DEFAULTS }).rows);
+        console.log(`[productsQueries] default view planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
 
-        expect(json, 'the plan of the default view').toContain('asin_products_monthly_sold_idx');
+        expect(lines.join('\n'), 'the plan of the default view').toContain('asin_products_monthly_sold_idx');
         // The top-N must come off the index. Any Sort left in the plan may only re-sort the one page the Limit hands it.
-        const wideSorts = nodes.filter((n) => /Sort$/.test(n['Node Type']) && n['Plan Rows'] > PRODUCT_PAGE_SIZE);
+        const wideSorts = planNodes(root).filter((n) => /Sort$/.test(n['Node Type']) && n['Plan Rows'] > PRODUCT_PAGE_SIZE);
         expect(wideSorts.map((n) => `${n['Node Type']} rows=${n['Plan Rows']}`), `Sort nodes over more than a page (${PRODUCT_PAGE_SIZE} rows)`).toEqual([]);
       });
     },
@@ -151,9 +167,10 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     "the owner's search (age 180, sold >= 1,000, reviews <= 300) uses a 0051 index and returns a page",
     async () => {
       await inReadOnlyTransaction(async () => {
-        const { json, seconds: planSeconds } = await explain(productSearchSql(OWNER_SEARCH).rows);
-        const used = PRODUCT_SEARCH_INDEXES.filter((name) => json.includes(name));
-        console.log(`[productsQueries] owner search planned in ${planSeconds.toFixed(2)}s (indexes: ${used.join(', ') || 'none'}): ${json}`);
+        const { lines, seconds: planSeconds } = await explain(productSearchSql(OWNER_SEARCH).rows);
+        const plan = lines.join('\n');
+        const used = PRODUCT_SEARCH_INDEXES.filter((name) => plan.includes(name));
+        console.log(`[productsQueries] owner search planned in ${planSeconds.toFixed(2)}s (0051 indexes: ${used.join(', ') || 'none'}):\n${plan}`);
         expect(used.length, 'a 0051 partial index in the plan of the owner search').toBeGreaterThanOrEqual(1);
 
         const started = performance.now();
@@ -229,6 +246,35 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         expectKeywordRows(result);
         const ranks = result.rows.map((r) => r.currentRank);
         expect(ranks, 'best keyword rank first').toEqual([...ranks].sort((a, b) => a - b));
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'loadProduct answers a stub (not in the catalog, not fetched) for a reverse-table ASIN the catalog lacks',
+    async (ctx) => {
+      if (metaWeek === null) {
+        console.log('[productsQueries] reverse table not built yet (keyword_top_asins_meta.week_end_date is null): the not-in-catalog case is skipped.');
+        return ctx.skip('reverse table not built yet');
+      }
+      await inReadOnlyTransaction(async () => {
+        // An anti join over the whole catalog's keys: give it the build's memory so the hash stays in one batch.
+        await client.query("SET LOCAL work_mem = '256MB'");
+        const picked = await client.query<{ asin: string }>(
+          'SELECT k.asin FROM keyword_top_asins k WHERE NOT EXISTS (SELECT 1 FROM asin_products a WHERE a.asin = k.asin) LIMIT 1',
+        );
+        const asin = picked.rows[0]?.asin;
+        if (!asin) {
+          console.log('[productsQueries] every ASIN in the reverse table has a catalog row (or the table is empty): the not-in-catalog case is skipped.');
+          return ctx.skip('no reverse-table ASIN lacks a catalog row');
+        }
+        const facts = await loadProduct(run, asin);
+        console.log(`[productsQueries] ${asin} (in the reverse table, no catalog row): ${facts ? `stub with inCatalog ${facts.inCatalog}, fetched ${facts.fetched}` : 'null'}`);
+        expect(facts, `facts of ${asin}`).not.toBeNull();
+        expect(facts?.asin).toBe(asin);
+        expect(facts?.inCatalog, 'an ASIN without a catalog row').toBe(false);
+        expect(facts?.fetched, 'an ASIN without a catalog row has never been fetched').toBe(false);
       });
     },
     TEST_TIMEOUT_MS,

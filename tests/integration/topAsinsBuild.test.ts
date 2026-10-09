@@ -8,19 +8,29 @@
  *    every pair the two share, keeps its streak start, and starts a pair the first lacked at 1;
  *  - the object names the rename swap relies on (what LIKE ... INCLUDING ALL generates, what the live
  *    table is called today), and the swap's _prev statements (statement text only);
- *  - the _prev probe and the advisory lock the build takes.
+ *  - the _prev probe and the advisory-lock statement the build runs.
  *
  * Nothing persists. Every case runs inside BEGIN ... ROLLBACK on one dedicated connection. The two
  * scratch tables are TEMP (private to this session, gone with the rollback). The build's INSERT is the
  * only build statement that runs, aimed at them; its carry only READS the real keyword_top_asins. The
  * real tables, the meta row and the swap are never written.
  *
+ * Locking, cancellation and timeouts (every transaction):
+ *  - the FIRST statement after BEGIN is pg_try_advisory_xact_lock(TOP_ASINS_LOCK_KEY), the build's own
+ *    lock: it must come back true and stays held until the ROLLBACK. A build or backfill that starts
+ *    meanwhile queues at the lock instead of running on to its swap, where it would wait behind this
+ *    transaction's read lock on keyword_top_asins and give up after its 120 s lock_timeout. One that
+ *    already holds the lock fails the case at once;
+ *  - SET LOCAL client_connection_check_interval = '10s': if the run is cancelled or killed, the server
+ *    stops the statement it is executing within ~10 s instead of finishing it for nobody;
+ *  - the 600 s statement timeout applies to each statement on its own; a case's test timeout (30
+ *    minutes for the scratch builds) bounds the sum of its statements.
+ *
  * Preconditions (owner-run only, never in CI):
  *  - migration 0051 applied; the reverse-table backfill done for meaningful numbers (an empty
  *    keyword_top_asins still runs: the checks that need rows assert what they can and log a note);
- *  - no import and no build running or due: the week's partition and the advisory lock must be quiet,
- *    and the scratch builds hold a read lock on keyword_top_asins for their minutes, so a build's swap
- *    arriving meanwhile would wait behind them (and give up after its 120 s lock_timeout);
+ *  - no import running (the week's partition must be quiet). An import that reaches its build phase
+ *    meanwhile waits at the advisory lock until the case ends, so prefer a quiet hour;
  *  - expect minutes on a cold Neon: each INSERT scans the week's partition three times and sorts ~8M
  *    carry rows, and the two scratch tables hold roughly 1-1.5 GB each (the compute's local disk)
  *    until the rollback. The first INSERT's time is printed: that is the build's INSERT on this
@@ -34,8 +44,10 @@ import { Pool, type PoolClient } from 'pg';
 import { buildTopAsinsStatements, kwmPartitionFor, TOP_ASINS_LOCK_KEY } from '@/lib/topAsins/buildWeek';
 
 const RUN = !!process.env.RUN_INTEGRATION;
-/** A hard ceiling per statement; even a cold Neon takes minutes for the scratch builds, not this long. */
+/** Per statement (see the header); even a cold Neon takes minutes for the scratch builds, not this long. */
 const STATEMENT_TIMEOUT = '600s';
+/** How often the server checks that the client is still there while it runs a statement. */
+const CONNECTION_CHECK_INTERVAL = '10s';
 const BUILD_TEST_TIMEOUT_MS = 30 * 60_000;
 const QUICK_TEST_TIMEOUT_MS = 5 * 60_000;
 const HOOK_TIMEOUT_MS = 2 * 60_000;
@@ -46,8 +58,12 @@ const ASIN_PATTERN = '^[A-Z0-9]{10}$';
 const SCRATCH = 'keyword_top_asins_itest';
 const SCRATCH_B = 'keyword_top_asins_itest_b';
 const NAMES_PROBE = 'keyword_top_asins_itest2';
-/** Keywords whose rows are removed from the first scratch table, so the second build has pairs with nothing to carry. */
-const CARRY_GAP_KEYWORDS = 3000;
+/**
+ * Keywords taken out of the first scratch table before the second build: first this many are removed
+ * (the second build has nothing to carry for them), then this many others get a longer, older streak
+ * (so "weeks + 1" and "keeps its streak start" are checked on values the build did not just write).
+ */
+const CARRY_SAMPLE_KEYWORDS = 3000;
 
 /** The names LIKE ... INCLUDING ALL gives a copy called `table`: its primary key and its (asin, search_term_id) index. */
 const generatedNames = (table: string) => ({ pkey: `${table}_pkey`, asinIndex: `${table}_asin_search_term_id_idx` });
@@ -123,11 +139,18 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
     }
   }, HOOK_TIMEOUT_MS);
 
-  /** BEGIN ... ROLLBACK around `fn`: whatever it does, or however it fails, nothing persists. */
+  /**
+   * BEGIN ... ROLLBACK around `fn`: whatever it does, or however it fails, nothing persists. The first
+   * statement takes the build's advisory lock (held to the ROLLBACK), before any read lock on the
+   * real table exists; see the header.
+   */
   async function inRolledBackTransaction(fn: () => Promise<void>): Promise<void> {
     await client.query('BEGIN');
     try {
+      const lock = await client.query<{ got: boolean }>('SELECT pg_try_advisory_xact_lock($1) AS got', [TOP_ASINS_LOCK_KEY]);
+      expect(lock.rows[0]?.got, 'a build or backfill holds the advisory lock right now: let it finish, then run this again').toBe(true);
       await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`);
+      await client.query(`SET LOCAL client_connection_check_interval = '${CONNECTION_CHECK_INTERVAL}'`);
       await fn();
     } finally {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -200,15 +223,17 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
           [currentWeek, ASIN_PATTERN],
         );
         const stats = statsResult.rows[0];
+        // When the live table is already built for this week, this advance counts the week a second time.
+        const countsWeekAgain = metaWeek === currentWeek;
         console.log(
           `[topAsinsBuild] week ${currentWeek}: the advance INSERT put ${firstRows} rows into a TEMP scratch table in ${firstSeconds.toFixed(1)}s ` +
-            `(valid ASINs per slot ${n1}/${n2}/${n3}; ${stats.carried} pairs carried a streak, longest ${stats.max_weeks} weeks)`,
+            `(valid ASINs per slot ${n1}/${n2}/${n3}; ${stats.carried} pairs carried a streak, longest ${stats.max_weeks} weeks` +
+            `${countsWeekAgain ? ', one more than the live table: it already counts this week' : ''})`,
         );
         if (realTableEmpty) console.log('[topAsinsBuild] keyword_top_asins is empty: nothing to carry, so every pair starts at 1.');
 
         expect(firstRows, 'rows inserted into the scratch table').toBeGreaterThanOrEqual(1);
-        expect(firstRows, 'at most three slots per keyword with a slot-1 ASIN').toBeLessThanOrEqual(3 * n1);
-        // The LEFT JOIN carry neither adds nor drops rows, so the count is exactly the three slot counts.
+        // The LEFT JOIN carry neither adds nor drops rows, so the count is exactly the three slot counts (at most three per keyword).
         expect(firstRows, 'one row per well-formed ASIN in each slot of the week').toBe(n1 + n2 + n3);
         expect(stats.n, 'rows in the scratch table').toBe(firstRows);
         expect(stats.bad_weeks, 'rows with weeks_in_top3 < 1').toBe(0);
@@ -219,16 +244,25 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         if (realTableEmpty) {
           expect(stats.carried, 'pairs that carried a streak from an empty table').toBe(0);
           expect(stats.max_weeks, 'longest streak from an empty table').toBe(1);
+        } else {
+          expect(stats.carried, 'pairs that carried a streak from the live table').toBeGreaterThan(0);
         }
 
         // Carry arithmetic, on this database's own data: build again, carrying from the first scratch table.
-        await client.query(`CREATE TEMP TABLE ${SCRATCH_B} (LIKE keyword_top_asins INCLUDING ALL)`);
-        const gap = await client.query(
-          `DELETE FROM ${SCRATCH} WHERE search_term_id IN (SELECT search_term_id FROM ${SCRATCH} LIMIT ${CARRY_GAP_KEYWORDS})`,
-        );
-        const gapRows = gap.rowCount ?? 0;
-        // A fresh TEMP table has no statistics, and the real table is analyzed after every build.
+        // A fresh TEMP table has no statistics (the real one is analyzed after every build).
         await client.query(`ANALYZE ${SCRATCH}`);
+        await client.query(`CREATE TEMP TABLE ${SCRATCH_B} (LIKE keyword_top_asins INCLUDING ALL)`);
+        // Slot-1 rows are one per keyword (primary key (search_term_id, slot)), so this picks KEYWORDS, not rows.
+        // After the DELETE its rows are gone, so the same subquery then picks the next keywords for the UPDATE.
+        const sampleKeywords = `SELECT search_term_id FROM ${SCRATCH} WHERE slot = 1 LIMIT ${CARRY_SAMPLE_KEYWORDS}`;
+        const gap = await client.query(`DELETE FROM ${SCRATCH} WHERE search_term_id IN (${sampleKeywords})`);
+        const gapRows = gap.rowCount ?? 0;
+        const aged = await client.query(
+          `UPDATE ${SCRATCH} SET weeks_in_top3 = weeks_in_top3 + 4, streak_started_week = streak_started_week - 7
+           WHERE search_term_id IN (${sampleKeywords})`,
+        );
+        const agedRows = aged.rowCount ?? 0;
+
         const startedSecond = performance.now();
         const second = await client.query(secondInsert, advance.insert.values);
         const secondSeconds = (performance.now() - startedSecond) / 1000;
@@ -248,16 +282,19 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         );
         const carry = carryResult.rows[0];
         console.log(
-          `[topAsinsBuild] second build (carry from the first scratch table, ${gapRows} rows of ${CARRY_GAP_KEYWORDS} keywords removed from it) in ${secondSeconds.toFixed(1)}s: ` +
-            `${carry.in_both} pairs in both (weeks + 1, same streak), ${carry.only_second} only in the second (start at 1)`,
+          `[topAsinsBuild] second build (carry from the first scratch table: ${gapRows} rows of ${CARRY_SAMPLE_KEYWORDS} keywords removed, ${agedRows} rows of ${CARRY_SAMPLE_KEYWORDS} others given +4 weeks and a streak 7 days older) in ${secondSeconds.toFixed(1)}s: ` +
+            `${carry.in_both} pairs in both, ${carry.only_second} only in the second`,
         );
 
         expect(carry.bad_week, 'second-build rows whose week_end_date is not the build week').toBe(0);
         expect(carry.bad_weeks, 'pairs in both builds: weeks_in_top3 must be the first build\'s + 1').toBe(0);
         expect(carry.bad_streak, 'pairs in both builds: streak_started_week must be the first build\'s').toBe(0);
         expect(carry.bad_new, 'pairs only in the second build: weeks_in_top3 = 1 and streak_started_week = the build week').toBe(0);
-        if (firstRows > gapRows) expect(carry.in_both, 'pairs present in both builds').toBeGreaterThan(0);
-        if (gapRows > 0) expect(carry.only_second, 'pairs only in the second build (their keywords were removed from the first)').toBeGreaterThan(0);
+        // The second build has the first one's pairs, so the pairs it has alone are exactly the removed keywords' rows.
+        expect(carry.only_second, 'pairs only in the second build: exactly the rows removed from the first').toBe(gapRows);
+        expect(carry.in_both, 'pairs present in both builds').toBeGreaterThanOrEqual(firstRows - gapRows);
+        // More slot-1 keywords than the removed ones, so some were left to age (so "keeps its streak start" is checked on values the build did not just write).
+        if (n1 > CARRY_SAMPLE_KEYWORDS) expect(agedRows, 'rows given an older streak').toBeGreaterThan(0);
       });
     },
     BUILD_TEST_TIMEOUT_MS,
@@ -302,7 +339,7 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
   });
 
   it(
-    'the _prev probe runs and the build lock is obtainable inside the transaction',
+    "the _prev probe and the build's own lock statement run inside the transaction",
     async () => {
       await inRolledBackTransaction(async () => {
         // The build's own probe (PREV_PROBE in buildWeek.ts): null or not, it must run.
@@ -310,10 +347,7 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         expect(typeof probe.rows[0]?.present, 'to_regclass probe').toBe('boolean');
         console.log(`[topAsinsBuild] keyword_top_asins_prev ${probe.rows[0].present ? 'exists' : 'does not exist yet (the first build creates it)'}`);
 
-        // try-lock first: a build or backfill in progress fails this case at once instead of hanging it.
-        const tried = await client.query<{ got: boolean }>('SELECT pg_try_advisory_xact_lock($1) AS got', [TOP_ASINS_LOCK_KEY]);
-        expect(tried.rows[0]?.got, 'no build or backfill holds the advisory lock right now').toBe(true);
-        // The statement the build itself runs: re-entrant for this session, so it returns at once. The ROLLBACK releases both.
+        // The statement the build itself runs. This transaction already holds the lock (its first statement), so it returns at once.
         await client.query('SELECT pg_advisory_xact_lock($1)', [TOP_ASINS_LOCK_KEY]);
       });
     },
