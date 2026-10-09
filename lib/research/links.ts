@@ -11,3 +11,13 @@
 export function keywordUrlFor(appUrl: string, searchTermId: string): string {
   return `${appUrl.replace(/\/+$/, '')}/explorer/keyword/${searchTermId}`;
 }
+
+/**
+ * The ASIN page URL for one product (the admin-only Products pages, spec 2026-10-09 §6).
+ * `appUrl` loses its trailing slashes exactly as keywordUrlFor's does; `asin` is inserted
+ * verbatim (the products tools only ever pass a schema-validated ASIN). Shared by
+ * search_products' rows and get_product_details' product (lib/research/products.ts).
+ */
+export function productUrlFor(appUrl: string, asin: string): string {
+  return `${appUrl.replace(/\/+$/, '')}/products/${asin}`;
+}

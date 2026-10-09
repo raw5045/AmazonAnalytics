@@ -13,7 +13,11 @@ vi.mock('@/db/client', () => ({ db: {} }));
 // stub it so building the default service never constructs a real pg.Pool.
 vi.mock('./pool', () => ({ getResearchPool: () => ({}) }));
 
-import { createResearchService, defaultResearchDeps, defaultResearchService, resetResearchServiceForTests, type ResearchActor, type ResearchServiceDeps } from './service';
+import { createResearchService, defaultResearchDeps, defaultResearchService, resetResearchServiceForTests, type ResearchActor, type ResearchService, type ResearchServiceDeps } from './service';
+import type { ProductLoaders } from './products';
+import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
+import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
+import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { buildCategoryCatalog, type CategoryDeps } from './categories';
 import { DEFAULT_LIMITS } from './limits';
 import { signCursor, verifyCursor } from './cursor';
@@ -402,6 +406,23 @@ describe('defaultResearchService', () => {
 
 describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
   const admin: ResearchActor = { ...actor, isAdmin: true };
+  const ASIN = 'B0ABCDEF12';
+  const productRow: ProductSummaryRow = {
+    asin: 'B0AAAAAAA1', title: 'Desk lamp', brand: null, listedSince: null, monthlySold: null, reviewCount: null, averageRatingX10: null, currentPriceCents: null,
+    salesRank: null, rankRatioX100: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null, enrichmentStatus: 'no_price', keywordCount: 1,
+  };
+  /** loadProduct's stub: an ASIN the keyword tables know but the catalog does not, so no history read. */
+  const stubFacts: CatalogProductFacts = {
+    asin: ASIN, title: null, brand: null, imageUrl: null, categoryPath: null, listedSince: null, trackingSince: null,
+    currentPriceCents: null, avg30PriceCents: null, avg90PriceCents: null, avg180PriceCents: null, avg365PriceCents: null,
+    salesRank: null, avg30SalesRank: null, avg90SalesRank: null, rankRatioX100: null, reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
+    monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
+    enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
+  };
+  const keywordRow: ProductKeywordRow = {
+    searchTermId: '22222222-2222-4222-8222-222222222222', searchTermRaw: 'desk lamp', currentRank: 10, estimatedMonthlySearches: null,
+    slot: 1, clickSharePct: null, conversionSharePct: null, weeksInTop3: 1, streakStartedWeek: '2026-10-03',
+  };
   it('meter through the service’s own reserve and record: the page size for a search, one row for details', async () => {
     const deps = makeDeps();
     const svc = createResearchService(deps);
@@ -422,6 +443,42 @@ describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
     await expect(svc.searchProducts(actor, {})).rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
     await expect(svc.productDetails(actor, { asin: 'B0ABCDEF12' })).rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
     for (const fn of [deps.reserve, deps.record, deps.products.search, deps.products.facts, deps.products.history, deps.products.keywords]) expect(fn).not.toHaveBeenCalled();
+  });
+  it('link with the service’s own appUrl (deps.appUrl), as the keyword tools do, whatever products.appUrl holds', async () => {
+    const base = makeDeps();
+    const deps = makeDeps({
+      appUrl: 'https://kq.example/',
+      products: {
+        ...base.products,
+        appUrl: 'https://stale.example',
+        search: vi.fn(async () => ({ rows: [productRow], total: 1, totalIsCapped: false, page: 1, pageSize: 50 })),
+        facts: vi.fn(async () => stubFacts),
+        keywords: vi.fn(async () => ({ rows: [keywordRow], total: 1 })),
+      },
+    });
+    const svc = createResearchService(deps);
+    expect((await svc.searchProducts(admin, {})).products.map((p) => p.url)).toEqual(['https://kq.example/products/B0AAAAAAA1']);
+    const details = await svc.productDetails(admin, { asin: ASIN });
+    expect(details.product.url).toBe(`https://kq.example/products/${ASIN}`);
+    expect(details.keywords.map((k) => k.keywordUrl)).toEqual([`https://kq.example/explorer/keyword/${keywordRow.searchTermId}`]);
+  });
+  it('record nothing when a read fails: the raw error passes through guarded() unchanged, after the reserve', async () => {
+    const boom = new Error('read failed');
+    const fail = vi.fn(async () => { throw boom; });
+    const cases: Array<[string, Partial<ProductLoaders>, (svc: ResearchService) => Promise<unknown>]> = [
+      ['search', { search: fail }, (svc) => svc.searchProducts(admin, {})],
+      ['facts', { facts: fail }, (svc) => svc.productDetails(admin, { asin: ASIN })],
+      ['history', { facts: vi.fn(async () => ({ ...stubFacts, inCatalog: true, fetched: true })), history: fail }, (svc) => svc.productDetails(admin, { asin: ASIN })],
+      ['keywords', { facts: vi.fn(async () => stubFacts), keywords: fail }, (svc) => svc.productDetails(admin, { asin: ASIN })],
+    ];
+    for (const [read, loaders, call] of cases) {
+      const base = makeDeps();
+      const deps = makeDeps({ products: { ...base.products, ...loaders } });
+      await expect(call(createResearchService(deps)), read).rejects.toBe(boom);
+      expect(deps.reserve, read).toHaveBeenCalledTimes(1);
+      expect(deps.record, read).not.toHaveBeenCalled();
+    }
+    expect(fail).toHaveBeenCalledTimes(cases.length);
   });
 });
 

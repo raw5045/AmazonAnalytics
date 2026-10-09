@@ -14,7 +14,7 @@ import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE } from '@/lib/products/filters';
 import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import type { HistoryPoint } from '@/lib/products/loadProductHistory';
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
-import { PRODUCT_COUNT_CAP, type ProductSummaryRow } from '@/lib/products/searchProducts';
+import { PRODUCT_COUNT_CAP, productSearchSql, type ProductSummaryRow } from '@/lib/products/searchProducts';
 import { ResearchError } from './errors';
 import {
   defaultProductsDeps, PRODUCT_TOOL_KEYWORDS_CAP, productDetailsForTool, productUrlFor, searchProductsForTool, type ProductsDeps,
@@ -251,7 +251,11 @@ describe('defaultProductsDeps', () => {
     await expect(d.history(ASIN)).resolves.toEqual([]);
     await expect(d.keywords(ASIN, PRODUCT_TOOL_KEYWORDS_CAP)).resolves.toEqual({ rows: [], total: 0 });
     expect(neonMock.query).toHaveBeenCalledWith(expect.any(String), [ASIN, PRODUCT_TOOL_KEYWORDS_CAP]);
+    const asinReads = neonMock.query.mock.calls.length;
     await expect(d.search({ ...PRODUCT_DEFAULTS })).resolves.toMatchObject({ rows: [], total: 0, totalIsCapped: false, page: 1, pageSize: PRODUCT_PAGE_SIZE });
-    for (const [, values] of neonMock.query.mock.calls.slice(0, -2)) expect(values?.[0]).toBe(ASIN);
+    // facts, history and keywords bind the ASIN first; the search then runs exactly its two statements, rows before count.
+    for (const [, values] of neonMock.query.mock.calls.slice(0, asinReads)) expect(values?.[0]).toBe(ASIN);
+    const search = productSearchSql({ ...PRODUCT_DEFAULTS });
+    expect(neonMock.query.mock.calls.slice(asinReads)).toStrictEqual([[search.rows.text, search.rows.values], [search.count.text, search.count.values]]);
   });
 });

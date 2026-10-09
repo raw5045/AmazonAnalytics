@@ -348,8 +348,17 @@ const ASIN_PATTERN = /^[A-Z0-9]{10}$/;
 /** The search's min/max pairs: a minimum above its maximum is refused, never answered with an empty page. */
 const PRODUCT_RANGE_PAIRS = [['ratingMin', 'ratingMax'], ['priceMin', 'priceMax'], ['bsrMin', 'bsrMax']] as const;
 
-const productStars = z.number().min(0).max(5).multipleOf(0.1);
-const productDollars = z.number().min(0).max(PRODUCT_PRICE_DOLLARS_MAX).multipleOf(0.01);
+/**
+ * At most `places` decimals, as a refine rather than multipleOf: a refine stays out of the published
+ * JSON Schema, where a validator that checks multipleOf by division rejects 19.99 (19.99 / 0.01 is
+ * 1998.9999999999998). The tolerance absorbs that floating-point error, up to the price ceiling.
+ */
+const atMostDecimals = (places: number) => (v: number) => {
+  const scaled = v * 10 ** places;
+  return Math.abs(scaled - Math.round(scaled)) < 1e-6;
+};
+const productStars = z.number().min(0).max(5).refine(atMostDecimals(1), 'at most one decimal');
+const productDollars = z.number().min(0).max(PRODUCT_PRICE_DOLLARS_MAX).refine(atMostDecimals(2), 'at most two decimals');
 const productBsr = z.int().min(1).max(INT4_MAX);
 
 const productSearchFiltersSchema = z

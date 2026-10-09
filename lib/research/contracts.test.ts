@@ -1,4 +1,5 @@
 import { describe, it, expect, expectTypeOf } from 'vitest';
+import { z } from 'zod';
 import {
   parseSearchInput,
   resolveCategoriesInputSchema,
@@ -490,6 +491,21 @@ describe('productSearchInputSchema (the search_products input)', () => {
     expect(filters.ratingMin.description).toContain('stars');
     expect(productSearchInputSchema.shape.page.description).toContain(`${PRODUCT_PAGE_SIZE} products`);
     expect(productSearchInputSchema.shape.sort.description).toContain(PRODUCT_SORTS.join(', '));
+  });
+
+  it('checks decimals with a refine, so the published JSON Schema has no multipleOf (a division-based validator rejects 19.99 / 0.01)', () => {
+    const accepts = (filters: Record<string, unknown>) => productSearchInputSchema.safeParse({ filters }).success;
+    for (const price of [19.99, 0.07, 4.1, 4.55, 1234567.89, PRODUCT_PRICE_DOLLARS_MAX]) expect(accepts({ priceMin: price, priceMax: price }), String(price)).toBe(true);
+    for (const stars of [4.1, 0.7, 2.3, 5]) expect(accepts({ ratingMin: stars, ratingMax: stars }), String(stars)).toBe(true);
+    const issues = (filters: Record<string, unknown>) => {
+      const r = productSearchInputSchema.safeParse({ filters });
+      return r.success ? [] : r.error.issues.map((i) => [i.path.join('.'), i.message]);
+    };
+    expect(issues({ priceMax: 9.999 })).toEqual([['filters.priceMax', 'at most two decimals']]);
+    expect(issues({ ratingMin: 4.55 })).toEqual([['filters.ratingMin', 'at most one decimal']]);
+    const published = JSON.stringify(z.toJSONSchema(productSearchInputSchema));
+    expect(published).not.toContain('multipleOf');
+    expect(published).toContain('"additionalProperties":false');
   });
 });
 

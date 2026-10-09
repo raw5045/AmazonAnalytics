@@ -74,7 +74,7 @@ export interface ResearchServiceDeps {
   meta: () => Promise<Pick<SnapshotMeta, 'currentWeekEndDate'> | null>;
   runSearch: typeof runSearch;
   countMatches: typeof countMatches;
-  /** The Products page loaders behind searchProducts/productDetails; the service adds its own reserve and record (see createResearchService). */
+  /** The Products page loaders behind searchProducts/productDetails; the service supplies its own appUrl, reserve and record over them (see createResearchService). */
   products: ProductLoaders;
   loadDetails?: typeof loadKeywordDetails;
   loadHistory?: typeof loadKeywordHistory;
@@ -199,6 +199,8 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
   const loadHistory = deps.loadHistory ?? loadKeywordHistory;
   const products: ProductsDeps = {
     ...deps.products,
+    // The links use the service's own base URL, as search's Explorer and keyword links do.
+    appUrl: deps.appUrl,
     reserve: (actor, rows) => reserveFor(deps, actor, rows),
     record: (actor, rows) => deps.record(actor.localUserId, rows, actor.channel),
   };
