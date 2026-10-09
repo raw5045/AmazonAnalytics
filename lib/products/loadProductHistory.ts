@@ -52,12 +52,18 @@ interface SnapshotRow {
   enrichment_status: AsinEnrichmentStatus;
 }
 
-/** neon hands back a timestamptz as a Date; a runner that returns text works too. */
-const isoTimestamp = (v: Date | string): string => (v instanceof Date ? v : new Date(v)).toISOString();
+/** neon hands back a timestamptz as a Date; a runner that returns text works too. A value that is not a time reads as null. */
+const isoTimestamp = (v: Date | string): string | null => {
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
 
-function toPoint(r: SnapshotRow): HistoryPoint {
+/** Null for a snapshot whose time cannot be read: it could not be placed on a time axis. */
+function toPoint(r: SnapshotRow): HistoryPoint | null {
+  const fetchedAt = isoTimestamp(r.fetched_at);
+  if (fetchedAt === null) return null;
   return {
-    fetchedAt: isoTimestamp(r.fetched_at),
+    fetchedAt,
     currentPriceCents: r.current_price_cents ?? null,
     salesRank: r.sales_rank ?? null,
     reviewCount: r.review_count ?? null,
@@ -74,5 +80,8 @@ function toPoint(r: SnapshotRow): HistoryPoint {
 export async function loadProductHistory(run: SqlRunner, asin: string): Promise<HistoryPoint[]> {
   const q = productHistorySql(asin, PRODUCT_HISTORY_CAP);
   const rows = (await run(q.text, q.values)) as SnapshotRow[];
-  return rows.map(toPoint).reverse();
+  return rows
+    .map(toPoint)
+    .filter((p): p is HistoryPoint => p !== null)
+    .reverse();
 }

@@ -10,6 +10,10 @@
  * counts, Amazon availability). Title, brand, category, image, reviews, rating and the dates always
  * come through. Deliberately no in_scope or status predicate: a direct link opens out-of-scope and
  * delisted rows too.
+ *
+ * An ASIN can be in the keyword tables without being in the catalog (the enqueue leaves some
+ * categories out). The loader then returns a stub with `inCatalog: false` and no facts, so the page
+ * can say "Not in the Keepa catalog" and still list the keywords. Null means neither table has it.
  */
 import type { AsinEnrichmentStatus } from '@/db/schema';
 import type { SqlRunner, SqlStatement } from './searchProducts';
@@ -51,14 +55,21 @@ export interface ProductFacts {
   amazonAvailability: number | null;
   /** Null until the service has a fetch outcome for the ASIN. */
   enrichmentStatus: AsinEnrichmentStatus | null;
+  /**
+   * False for a stub: an ASIN the keyword tables know but the catalog has no row for (e.g. an
+   * excluded category). Every fact is then null (counts 0, inScope false, tier 0); the page says
+   * "Not in the Keepa catalog".
+   */
+  inCatalog: boolean;
   /** False until the service has fetched the ASIN once (last_fetched_at is null): the facts above are then all null. */
   fetched: boolean;
-  /** ISO timestamp of the last fetch. */
+  /** ISO timestamp of the last fetch; null when never fetched (or the stored value cannot be read as a time). */
   lastFetchedAt: string | null;
   fetchCount: number;
   inScope: boolean;
   /** The best (lowest) keyword rank among the keywords the ASIN was a top-3 clicked product for in the scope week; null when it has none. */
   bestRank: number | null;
+  /** The service's refresh tier, 1 or 2 (1 = refreshed more often); 0 on a stub. */
   tier: number;
 }
 
@@ -78,18 +89,27 @@ export function productFactsSql(asin: string): SqlStatement {
 
 /**
  * A title for an ASIN the catalog has none for, from the keyword side: titles live only on the
- * keyword tables, and keyword_current_summary holds the slot-1 title. Rows without a title are
- * skipped so LIMIT 1 cannot land on one when another keyword has it.
+ * keyword tables, and keyword_current_summary holds the slot-1 title. Two guards:
+ *  - the summary's slot-1 ASIN must be THIS ASIN. The reverse table is built at import time and the
+ *    summary is refreshed hours later, so in between a keyword's summary row can still hold last
+ *    week's slot-1 product, and its title would be some other product's;
+ *  - rows without a title are skipped, so LIMIT 1 cannot land on one when another keyword has it.
  */
 export function productFallbackTitleSql(asin: string): SqlStatement {
   return {
     text: `SELECT kcs.top_clicked_product_1_title_current AS title
 FROM keyword_top_asins k
 JOIN keyword_current_summary kcs ON kcs.search_term_id = k.search_term_id
-WHERE k.asin = $1 AND k.slot = 1 AND kcs.top_clicked_product_1_title_current IS NOT NULL
+WHERE k.asin = $1 AND k.slot = 1 AND kcs.top_clicked_product_1_asin_current = k.asin
+  AND kcs.top_clicked_product_1_title_current IS NOT NULL
 LIMIT 1`,
     values: [asin],
   };
+}
+
+/** Is the ASIN in the reverse table at all? Decides between a stub and a 404 when the catalog has no row. */
+export function productTrackedSql(asin: string): SqlStatement {
+  return { text: 'SELECT 1 FROM keyword_top_asins k WHERE k.asin = $1 LIMIT 1', values: [asin] };
 }
 
 interface FactsRow {
@@ -127,8 +147,11 @@ interface FactsRow {
 }
 
 const nonBlank = (s: string | null | undefined): string | null => (typeof s === 'string' && s.trim() !== '' ? s : null);
-/** neon hands back a timestamptz as a Date; a runner that returns text works too. */
-const isoTimestamp = (v: Date | string): string => (v instanceof Date ? v : new Date(v)).toISOString();
+/** neon hands back a timestamptz as a Date; a runner that returns text works too. A value that is not a time reads as null. */
+const isoTimestamp = (v: Date | string): string | null => {
+  const d = v instanceof Date ? v : new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+};
 
 function toFacts(r: FactsRow, title: string | null): ProductFacts {
   const status = r.enrichment_status ?? null;
@@ -162,6 +185,7 @@ function toFacts(r: FactsRow, title: string | null): ProductFacts {
     fbmOfferCount: unlessDelisted(r.fbm_offer_count),
     amazonAvailability: unlessDelisted(r.amazon_availability),
     enrichmentStatus: status,
+    inCatalog: true,
     fetched: lastFetchedAt !== null,
     lastFetchedAt: lastFetchedAt === null ? null : isoTimestamp(lastFetchedAt),
     fetchCount: r.fetch_count,
@@ -171,19 +195,35 @@ function toFacts(r: FactsRow, title: string | null): ProductFacts {
   };
 }
 
+/** What the page gets for an ASIN the keyword tables know but the catalog does not: no facts at all. */
+function untrackedStub(asin: string, title: string | null): ProductFacts {
+  return {
+    asin, title, brand: null, imageUrl: null, categoryPath: null, listedSince: null, trackingSince: null,
+    currentPriceCents: null, avg30PriceCents: null, avg90PriceCents: null, avg180PriceCents: null, avg365PriceCents: null,
+    salesRank: null, avg30SalesRank: null, avg90SalesRank: null, rankRatioX100: null,
+    reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
+    monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
+    enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
+  };
+}
+
+async function keywordSideTitle(run: SqlRunner, asin: string): Promise<string | null> {
+  const q = productFallbackTitleSql(asin);
+  const found = (await run(q.text, q.values)) as Array<{ title: string | null }>;
+  return nonBlank(found[0]?.title);
+}
+
 /**
- * The facts for one ASIN, or null when the catalog has no row (the page answers 404). One primary-key
- * read; the keyword-side title read happens only when the catalog row has no title.
+ * The facts for one ASIN. One primary-key read for a catalog row (plus the keyword-side title read
+ * only when the row has no title). With no catalog row, a second read checks the reverse table: an
+ * ASIN found there is a stub (`inCatalog: false`); null, which the page answers with a 404, means
+ * neither table has the ASIN.
  */
 export async function loadProduct(run: SqlRunner, asin: string): Promise<ProductFacts | null> {
   const facts = productFactsSql(asin);
   const row = ((await run(facts.text, facts.values)) as FactsRow[])[0];
-  if (!row) return null;
-  let title = nonBlank(row.title);
-  if (title === null) {
-    const fallback = productFallbackTitleSql(asin);
-    const found = (await run(fallback.text, fallback.values)) as Array<{ title: string | null }>;
-    title = nonBlank(found[0]?.title);
-  }
-  return toFacts(row, title);
+  if (row) return toFacts(row, nonBlank(row.title) ?? (await keywordSideTitle(run, asin)));
+  const tracked = productTrackedSql(asin);
+  if (((await run(tracked.text, tracked.values)) as unknown[]).length === 0) return null;
+  return untrackedStub(asin, await keywordSideTitle(run, asin));
 }

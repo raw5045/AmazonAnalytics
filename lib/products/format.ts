@@ -2,8 +2,7 @@
 /**
  * Display formatters shared by the Products page, the ASIN page and the research tools (spec
  * 2026-10-09 §5.2, §6). Pure: no React, no I/O, no clock (listingAge takes `now`). A missing value
- * is a dash. Counts use explicit en-US separators so the server and the browser render the same
- * text; formatVolume is the one deliberate exception, a copy of the keyword page's own formatter.
+ * is a dash. Counts use explicit en-US separators so the server and the browser render the same text.
  */
 const DASH = '—';
 const MINUS = String.fromCodePoint(0x2212); // the real minus sign, not a hyphen
@@ -42,9 +41,13 @@ export function availabilityLabel(code: number | null): string {
 }
 
 /**
- * How long ago a listing started, as of `now`, by UTC calendar day (the same day count the
- * Products page's age filter uses): "100 days" up to a year, then "1.1 years". `date` is a
- * YYYY-MM-DD string; a date after `now` reads as 0 days.
+ * How long ago a listing started, as of `now`: "100 days" up to a year, then "1.1 years". `date`
+ * is a YYYY-MM-DD string; a date after `now` reads as 0 days.
+ *
+ * Days are counted on the UTC calendar. That agrees with the Products page's age filter
+ * (`listed_since >= current_date - N`) on one assumption: `current_date` there is evaluated in the
+ * database session's time zone, which is UTC on Neon. If that ever changed, this count and the
+ * filter would disagree by a day for part of each day.
  */
 export function listingAge(date: string | null, now: Date): string {
   const m = date === null ? null : /^(\d{4})-(\d{2})-(\d{2})/.exec(date);
@@ -72,11 +75,12 @@ export function formatReviewCount(n: number | null): string {
 }
 
 /**
- * Estimated monthly searches: a copy of the keyword page's local formatHeadlineVolume
- * (app/(app)/explorer/keyword/[id]/page.tsx), same output, so a volume reads the same on both
- * pages: the exact count with thousands separators, then " / mo". The caller adds the "~" that
- * marks it an estimate, as the keyword page does. Unlike the original, a missing estimate is a dash.
+ * Estimated monthly searches in the keyword page's headline format (its local formatHeadlineVolume,
+ * app/(app)/explorer/keyword/[id]/page.tsx), so a volume reads the same on both pages: the exact
+ * count with thousands separators, then " / mo". The original formats with the runtime's default
+ * locale (en-US on the server); this one pins en-US so the server and the browser agree. The caller
+ * adds the "~" that marks an estimate, as the keyword page does. A missing estimate is a dash.
  */
 export function formatVolume(n: number | null): string {
-  return finite(n) ? `${n.toLocaleString()} / mo` : DASH;
+  return finite(n) ? `${n.toLocaleString('en-US')} / mo` : DASH;
 }

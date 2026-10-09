@@ -108,14 +108,18 @@ describe('formatReviewCount', () => {
 });
 
 describe('formatVolume', () => {
-  // A copy of the keyword page's local formatHeadlineVolume (same output): the locale-formatted
-  // count and " / mo". The "~" estimate prefix is the caller's, as on the keyword page.
-  it('is the keyword page headline format', () => {
-    expect(formatVolume(4879000)).toBe(`${(4879000).toLocaleString()} / mo`);
-    expect(formatVolume(0)).toBe(`${(0).toLocaleString()} / mo`);
-    expect(formatVolume(1234)).not.toContain('~');
+  // The keyword page's headline format (its local formatHeadlineVolume): the exact count with
+  // thousands separators, then " / mo". Pinned to en-US so the server and the browser agree.
+  const cases: Array<[number | null, string]> = [
+    [4879000, '4,879,000 / mo'],
+    [1234, '1,234 / mo'],
+    [0, '0 / mo'],
+    [null, '—'],
+  ];
+  it.each(cases)('formatVolume(%s) → %s', (input, expected) => {
+    expect(formatVolume(input)).toBe(expected);
   });
-  it('shows a dash for a missing estimate', () => {
-    expect(formatVolume(null)).toBe('—');
+  it('leaves the "~" that marks an estimate to the caller, as the keyword page does', () => {
+    expect(formatVolume(1234)).not.toContain('~');
   });
 });

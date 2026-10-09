@@ -1,40 +1,22 @@
 // lib/products/loadProduct.test.ts
 import { describe, it, expect } from 'vitest';
-import { getTableColumns } from 'drizzle-orm';
 import { asinProducts, asinSnapshots, keywordTopAsins, keywordCurrentSummary } from '@/db/schema';
-import { loadProduct, productFactsSql, productFallbackTitleSql, type ProductFacts } from './loadProduct';
+import { loadProduct, productFactsSql, productFallbackTitleSql, productTrackedSql, type ProductFacts } from './loadProduct';
 import { loadProductHistory, productHistorySql, PRODUCT_HISTORY_CAP, type HistoryPoint } from './loadProductHistory';
+import { aliasCols, dbCols, notIn, recordingRow, recordingRunner, selectNames } from './testHelpers';
 
-const dbCols = (t: Parameters<typeof getTableColumns>[0]) => new Set(Object.values(getTableColumns(t)).map((c) => c.name));
-const aliasCols = (text: string, alias: string) => new Set([...text.matchAll(new RegExp(`\\b${alias}\\.([a-z0-9_]+)`, 'g'))].map((m) => m[1]));
-const notIn = (cols: Iterable<string>, from: Set<string>) => [...cols].filter((c) => !from.has(c));
-/** A statement's output column names: the alias after AS, else the bare column. */
-function selectNames(text: string): Set<string> {
-  const list = text.slice(text.indexOf('SELECT') + 'SELECT'.length, text.search(/\bFROM\b/));
-  return new Set(list.split(',').map((item) => {
-    const s = item.trim();
-    const as = /\sAS\s+(\w+)$/.exec(s);
-    return as ? as[1] : s.replace(/^.*\./, '');
-  }));
-}
-/** A raw row that records which keys the mapper reads, to check the SELECT list against them. */
-function recordingRow(row: Record<string, unknown>) {
-  const read = new Set<string>();
-  return { read, row: new Proxy(row, { get: (target, key) => { if (typeof key === 'string') read.add(key); return Reflect.get(target, key); } }) };
-}
-
-type Call = { text: string; values: unknown[] };
-/** Answers the facts and fallback-title statements from fixed rows; anything else is a bug. */
-function fakeRun(results: { facts?: unknown[]; fallback?: unknown[] }) {
-  const calls: Call[] = [];
-  const run = async (text: string, values: unknown[]): Promise<unknown[]> => {
-    calls.push({ text, values });
+/** Answers the three statements loadProduct can issue from fixed rows; anything else is a bug. */
+function fakeRun(results: { facts?: unknown[]; tracked?: unknown[]; fallback?: unknown[] }) {
+  return recordingRunner((text) => {
     if (text === productFactsSql('x').text) return results.facts ?? [];
+    if (text === productTrackedSql('x').text) return results.tracked ?? [];
     if (text === productFallbackTitleSql('x').text) return results.fallback ?? [];
     throw new Error(`unexpected statement: ${text.slice(0, 60)}`);
-  };
-  return { run, calls };
+  });
 }
+const FACTS_TEXT = productFactsSql('x').text;
+const TRACKED_TEXT = productTrackedSql('x').text;
+const FALLBACK_TEXT = productFallbackTitleSql('x').text;
 
 const FACTS_CARD_COLUMNS = [
   'asin', 'title', 'brand', 'image_url', 'category_path', 'listed_since', 'tracking_since',
@@ -75,11 +57,26 @@ describe('productFallbackTitleSql', () => {
     expect(q.text).toMatch(/LIMIT 1$/);
     expect([...selectNames(q.text)]).toEqual(['title']);
   });
+  it('only takes a title that belongs to this ASIN: the summary is refreshed hours after the reverse table is built, so its slot-1 product can still be last week\'s', () => {
+    expect(q.text).toContain('kcs.top_clicked_product_1_asin_current = k.asin');
+  });
   it('names only real columns', () => {
     expect(aliasCols(q.text, 'k').size).toBeGreaterThan(1);
-    expect(aliasCols(q.text, 'kcs').size).toBeGreaterThan(1);
+    expect(aliasCols(q.text, 'kcs').size).toBeGreaterThan(2);
     expect(notIn(aliasCols(q.text, 'k'), dbCols(keywordTopAsins))).toEqual([]);
     expect(notIn(aliasCols(q.text, 'kcs'), dbCols(keywordCurrentSummary))).toEqual([]);
+  });
+});
+
+describe('productTrackedSql', () => {
+  const q = productTrackedSql('B000000003');
+  it('asks whether the reverse table has the ASIN at all', () => {
+    expect(q.values).toEqual(['B000000003']);
+    expect(q.text).toBe('SELECT 1 FROM keyword_top_asins k WHERE k.asin = $1 LIMIT 1');
+  });
+  it('names only real columns', () => {
+    expect(aliasCols(q.text, 'k').size).toBeGreaterThan(0);
+    expect(notIn(aliasCols(q.text, 'k'), dbCols(keywordTopAsins))).toEqual([]);
   });
 });
 
@@ -102,7 +99,7 @@ const ACTIVE: ProductFacts = {
   salesRank: 1234, avg30SalesRank: 1900, avg90SalesRank: 2100, rankRatioX100: 65,
   reviewCount: 120, averageRatingX10: 44, lastRatingUpdate: '2026-10-01',
   monthlySold: 1000, keepaUpdatedAt: '2026-10-08', newOfferCount: 4, fbaOfferCount: 3, fbmOfferCount: 1, amazonAvailability: -1,
-  enrichmentStatus: 'active', fetched: true, lastFetchedAt: '2026-10-08T14:03:21.123Z', fetchCount: 7, inScope: true, bestRank: 812, tier: 1,
+  enrichmentStatus: 'active', inCatalog: true, fetched: true, lastFetchedAt: '2026-10-08T14:03:21.123Z', fetchCount: 7, inScope: true, bestRank: 812, tier: 1,
 };
 const PRICES = ['currentPriceCents', 'avg30PriceCents', 'avg90PriceCents', 'avg180PriceCents', 'avg365PriceCents'];
 const POINT_IN_TIME = ['salesRank', 'avg30SalesRank', 'avg90SalesRank', 'rankRatioX100', 'monthlySold', 'newOfferCount', 'fbaOfferCount', 'fbmOfferCount', 'amazonAvailability'];
@@ -119,7 +116,17 @@ const NEVER_FETCHED: ProductFacts = {
   salesRank: null, avg30SalesRank: null, avg90SalesRank: null, rankRatioX100: null,
   reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
   monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
-  enrichmentStatus: null, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: true, bestRank: 4321, tier: 2,
+  enrichmentStatus: null, inCatalog: true, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: true, bestRank: 4321, tier: 2,
+};
+
+/** An ASIN only the keyword side knows (the catalog has no row for it, e.g. an excluded category): no facts at all. */
+const UNTRACKED: ProductFacts = {
+  asin: 'B000000003', title: null, brand: null, imageUrl: null, categoryPath: null, listedSince: null, trackingSince: null,
+  currentPriceCents: null, avg30PriceCents: null, avg90PriceCents: null, avg180PriceCents: null, avg365PriceCents: null,
+  salesRank: null, avg30SalesRank: null, avg90SalesRank: null, rankRatioX100: null,
+  reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
+  monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
+  enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
 };
 
 describe('loadProduct', () => {
@@ -133,6 +140,14 @@ describe('loadProduct', () => {
   it('accepts the fetch time as a string too', async () => {
     const { run } = fakeRun({ facts: [rawRow({ last_fetched_at: '2026-10-08T14:03:21.123Z' })] });
     expect((await loadProduct(run, 'B000000001'))?.lastFetchedAt).toBe('2026-10-08T14:03:21.123Z');
+  });
+
+  it.each([
+    ['a string', 'not a time'],
+    ['an Invalid Date', new Date('nope')],
+  ])('reads %s as the fetch time as null instead of throwing, still counting the ASIN as fetched', async (_name, bad) => {
+    const { run } = fakeRun({ facts: [rawRow({ last_fetched_at: bad })] });
+    await expect(loadProduct(run, 'B000000001')).resolves.toEqual({ ...ACTIVE, fetched: true, lastFetchedAt: null });
   });
 
   it('hides every price and the point-in-time facts of a delisted row, keeping the historical ones', async () => {
@@ -152,11 +167,11 @@ describe('loadProduct', () => {
     await expect(loadProduct(run, 'B000000001')).resolves.toEqual({ ...ACTIVE, enrichmentStatus: 'no_price', ...nulled(PRICES) });
   });
 
-  it('reads a never-fetched ASIN: fetched false, no facts, the title from the keyword side', async () => {
+  it('reads a never-fetched catalog row: in the catalog, fetched false, no facts, the title from the keyword side', async () => {
     const { run, calls } = fakeRun({ facts: [NEVER_FETCHED_RAW], fallback: [{ title: 'Keyword Side Title' }] });
     await expect(loadProduct(run, 'B000000002')).resolves.toEqual({ ...NEVER_FETCHED, title: 'Keyword Side Title' });
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, FALLBACK_TEXT]); // a catalog row is never checked against the reverse table
     expect(calls.map((c) => c.values)).toEqual([['B000000002'], ['B000000002']]);
-    expect(calls[1].text).toBe(productFallbackTitleSql('B000000002').text);
   });
 
   it('keeps a null title when the keyword side has none either (the page shows the bare ASIN)', async () => {
@@ -170,10 +185,22 @@ describe('loadProduct', () => {
     expect(calls).toHaveLength(2);
   });
 
-  it('returns null for an ASIN with no catalog row, without reading the keyword side', async () => {
-    const { run, calls } = fakeRun({ facts: [] });
+  it('reads an ASIN the catalog lacks but the reverse table has as a stub: not in the catalog, no facts, the keyword-side title', async () => {
+    const { run, calls } = fakeRun({ facts: [], tracked: [{ '?column?': 1 }], fallback: [{ title: 'Keyword Side Title' }] });
+    await expect(loadProduct(run, 'B000000003')).resolves.toEqual({ ...UNTRACKED, title: 'Keyword Side Title' });
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, TRACKED_TEXT, FALLBACK_TEXT]);
+    expect(calls.map((c) => c.values)).toEqual([['B000000003'], ['B000000003'], ['B000000003']]);
+  });
+
+  it('keeps a null title on the stub when the keyword side has none (the ASIN is only in slots 2 or 3, or its title is empty)', async () => {
+    const { run } = fakeRun({ facts: [], tracked: [{ '?column?': 1 }], fallback: [] });
+    await expect(loadProduct(run, 'B000000003')).resolves.toEqual(UNTRACKED);
+  });
+
+  it('returns null only for an ASIN that is in neither table, without looking for a title', async () => {
+    const { run, calls } = fakeRun({ facts: [], tracked: [] });
     await expect(loadProduct(run, 'B0NOTFOUND')).resolves.toBeNull();
-    expect(calls).toHaveLength(1);
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, TRACKED_TEXT]);
   });
 
   it('reads exactly the columns the facts statement selects', async () => {
@@ -219,8 +246,8 @@ describe('loadProductHistory', () => {
   });
 
   it('caps the read at 400 newest snapshots', async () => {
-    const calls: Call[] = [];
-    await loadProductHistory(async (text, values) => { calls.push({ text, values }); return []; }, 'B000000001');
+    const { run, calls } = recordingRunner(() => []);
+    await loadProductHistory(run, 'B000000001');
     expect(PRODUCT_HISTORY_CAP).toBe(400);
     expect(calls).toEqual([productHistorySql('B000000001', 400)]);
   });
@@ -238,6 +265,17 @@ describe('loadProductHistory', () => {
       point('2026-10-01T14:00:00.000Z', { salesRank: 1500 }),
       point('2026-10-08T14:00:00.000Z'),
     ]);
+  });
+
+  it('drops a snapshot whose time cannot be read instead of throwing (it could not be placed on a time axis)', async () => {
+    const rows = [
+      snap(new Date('2026-10-08T14:00:00.000Z')),
+      snap('not a time'),
+      snap(new Date('nope')),
+      snap(new Date('2026-09-24T14:00:00.000Z')),
+    ];
+    const points = await loadProductHistory(async () => rows, 'B000000001');
+    expect(points.map((p) => p.fetchedAt)).toEqual(['2026-09-24T14:00:00.000Z', '2026-10-08T14:00:00.000Z']);
   });
 
   it('returns an empty list for an ASIN with no snapshots', async () => {

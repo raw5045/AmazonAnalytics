@@ -1,38 +1,12 @@
 // lib/products/loadProductKeywords.test.ts
 import { describe, it, expect } from 'vitest';
-import { getTableColumns, type Table } from 'drizzle-orm';
 import { keywordTopAsins, keywordCurrentSummary, searchTerms } from '@/db/schema';
 import { loadProductKeywords, productKeywordsSql, productKeywordCountSql, PRODUCT_KEYWORDS_CAP, type ProductKeywordRow } from './loadProductKeywords';
-
-const dbCols = (t: Table) => new Set(Object.values(getTableColumns(t)).map((c) => c.name));
-const aliasCols = (text: string, alias: string) => new Set([...text.matchAll(new RegExp(`\\b${alias}\\.([a-z0-9_]+)`, 'g'))].map((m) => m[1]));
-const notIn = (cols: Iterable<string>, from: Set<string>) => [...cols].filter((c) => !from.has(c));
-/** A statement's output column names: the alias after AS, else the bare column. */
-function selectNames(text: string): Set<string> {
-  const list = text.slice(text.indexOf('SELECT') + 'SELECT'.length, text.search(/\bFROM\b/));
-  return new Set(list.split(',').map((item) => {
-    const s = item.trim();
-    const as = /\sAS\s+(\w+)$/.exec(s);
-    return as ? as[1] : s.replace(/^.*\./, '');
-  }));
-}
-/** A raw row that records which keys the mapper reads, to check the SELECT list against them. */
-function recordingRow(row: Record<string, unknown>) {
-  const read = new Set<string>();
-  return { read, row: new Proxy(row, { get: (target, key) => { if (typeof key === 'string') read.add(key); return Reflect.get(target, key); } }) };
-}
+import { aliasCols, dbCols, notIn, recordingRow, recordingRunner, selectNames } from './testHelpers';
 
 /** The capped-count statement (the rows statement never starts with count). */
 const isCount = (text: string) => text.startsWith('SELECT count(*)');
-type Call = { text: string; values: unknown[] };
-function fakeRun(rows: unknown[], total: number) {
-  const calls: Call[] = [];
-  const run = async (text: string, values: unknown[]): Promise<unknown[]> => {
-    calls.push({ text, values });
-    return isCount(text) ? [{ n: total }] : rows;
-  };
-  return { run, calls };
-}
+const fakeRun = (rows: unknown[], total: number) => recordingRunner((text) => (isCount(text) ? [{ n: total }] : rows));
 
 const ID_1 = '0b0f7a52-0c51-4f6e-9a55-1d2f2d9d3c11';
 const ID_2 = '7c1d2e9a-55a0-4a9e-8f37-3b6a6a1b0d22';
@@ -53,9 +27,12 @@ describe('productKeywordsSql', () => {
     expect(q.text).toContain('JOIN keyword_current_summary kcs ON kcs.search_term_id = k.search_term_id');
     expect(q.text).toContain('JOIN search_terms st ON st.id = kcs.search_term_id');
     expect(q.text).toContain('WHERE k.asin = $1');
-    expect(q.text).toContain('ORDER BY kcs.current_rank ASC NULLS LAST');
     expect(q.text).toContain('LIMIT $2');
     expect(productKeywordsSql('B000000001', 100).values).toEqual(['B000000001', 100]);
+  });
+  it('orders by rank with the keyword id as the tie-break, so the 500 kept are the same on every read', () => {
+    expect(q.text).toContain('ORDER BY kcs.current_rank ASC, k.search_term_id');
+    expect(q.text).not.toContain('NULLS LAST'); // current_rank is NOT NULL (migration 0008)
   });
   it('selects the columns the keywords table shows; the bigint, numerics and the date come back as text', () => {
     expect([...selectNames(q.text)]).toEqual([

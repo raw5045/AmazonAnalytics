@@ -33,7 +33,11 @@ export interface ProductKeywordsResult {
   total: number;
 }
 
-/** The bigint, numeric and date columns are cast to text, so the page gets plain strings whatever the driver's type parsers do. */
+/**
+ * The bigint, numeric and date columns are cast to text, so the page gets plain strings whatever
+ * the driver's type parsers do. Best rank first (current_rank is NOT NULL), the keyword id breaking
+ * ties so the rows kept under the cap are the same on every read.
+ */
 export function productKeywordsSql(asin: string, limit: number): SqlStatement {
   return {
     text: `SELECT st.search_term_raw, kcs.search_term_id, kcs.current_rank,
@@ -44,7 +48,7 @@ FROM keyword_top_asins k
 JOIN keyword_current_summary kcs ON kcs.search_term_id = k.search_term_id
 JOIN search_terms st ON st.id = kcs.search_term_id
 WHERE k.asin = $1
-ORDER BY kcs.current_rank ASC NULLS LAST
+ORDER BY kcs.current_rank ASC, k.search_term_id
 LIMIT $2`,
     values: [asin, limit],
   };
