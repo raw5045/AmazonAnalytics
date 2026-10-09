@@ -181,7 +181,7 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     expect(calls.find(isSnapshot)?.values).toEqual(['B1', NOW, 1299, 4321, 87, 45, 200, 7, 3, 4, 'active']);
   });
 
-  it('derives rank_ratio_x100 in SQL from the sales-rank and avg30 parameters, guarded to positive values, with no parameter of its own', async () => {
+  it('derives rank_ratio_x100 in SQL from the sales-rank and avg30 parameters, guarded to positive values and against int4 overflow, with no parameter of its own', async () => {
     const { pool, calls } = fakePool();
     await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map([['B1', full('B1')]]), lane: 'new', tokens: { tokensLeft: 1, refillRate: 250 }, now: NOW });
     const upd = calls.find((c) => c.text.includes('title = $2'))!;
@@ -189,10 +189,13 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     const index = Object.fromEntries([...upd.text.matchAll(/(\w+) = \$(\d+)/g)].map(([, column, n]) => [column, Number(n)]));
     const [rank, avg30] = [index.sales_rank, index.avg30_sales_rank];
     expect([upd.values?.[rank - 1], upd.values?.[avg30 - 1]]).toEqual([4321, 4400]);
-    // Current rank over the 30-day average, times 100; both operands must be > 0 (a null or zero gives NULL). The ::int casts
-    // keep each parameter one type (an uncast operand in arithmetic would be deduced numeric against its integer column).
+    // Current rank over the 30-day average, times 100. NULL, never an error, unless both operands are > 0 and the result fits the
+    // integer column: 21474836 is floor(int4 max / 100), so rank < 21474836 x average keeps 100 x rank / average under the limit.
+    // Past it the ::int cast would raise 22003 and roll back the whole batch. The ::int casts keep each parameter one type
+    // (an uncast operand in arithmetic would be deduced numeric against its integer column).
+    expect(21474836).toBe(Math.floor(2_147_483_647 / 100));
     expect(upd.text).toContain(
-      `rank_ratio_x100 = CASE WHEN $${rank}::int > 0 AND $${avg30}::int > 0 THEN round(100.0 * $${rank}::int / $${avg30}::int)::int ELSE NULL END`,
+      `rank_ratio_x100 = CASE WHEN $${rank}::int > 0 AND $${avg30}::int > 0 AND $${rank}::int < 21474836::bigint * $${avg30}::int THEN round(100.0 * $${rank}::int / $${avg30}::int)::int ELSE NULL END`,
     );
     // No new parameter: the statement still uses exactly $1..$31.
     const used = [...new Set([...upd.text.matchAll(/\$(\d+)/g)].map(([, n]) => Number(n)))].sort((a, b) => a - b);

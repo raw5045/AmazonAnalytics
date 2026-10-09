@@ -1,6 +1,6 @@
 // tests/integration/keepaService.test.ts
 /**
- * Keepa service store against the real tables (migration 0050 applied). Synthetic ASINs
+ * Keepa service store against the real tables (migrations 0050 and 0051 applied). Synthetic ASINs
  * prefixed TESTKS are inserted and removed by this file. The claim test DOES claim real rows for a
  * moment (whatever else is claimable) and releases them in a finally. The status row's heartbeat,
  * batch and token columns are put back as found (the watcher reads them).
@@ -92,19 +92,23 @@ describe.skipIf(!RUN)('Keepa service store (integration)', () => {
 
   it('writeBatch applies the three outcomes and inserts snapshots', async () => {
     const now = new Date();
-    const active: ProductFacts = { ...emptyFacts(A.newTop, 'delisted'), status: 'active', title: 'New title', currentPriceCents: 1999, priceSource: 'amazon', salesRank: 42, reviewCount: 7, monthlySold: 100 };
+    // Rank 42 against a 30-day average of 50: the stored rank_ratio_x100 must come out as 84 (100 x 42 / 50).
+    const active: ProductFacts = { ...emptyFacts(A.newTop, 'delisted'), status: 'active', title: 'New title', currentPriceCents: 1999, priceSource: 'amazon', salesRank: 42, avg30SalesRank: 50, reviewCount: 7, monthlySold: 100 };
     const rows = [
       { asin: A.newTop, tier: 1 as const, lane: 'new' as const, lastFetchedAt: null, consecutiveErrors: 0 },
       { asin: A.due, tier: 1 as const, lane: 'due' as const, lastFetchedAt: new Date(), consecutiveErrors: 0 },
       { asin: A.newDeep, tier: 1 as const, lane: 'new' as const, lastFetchedAt: null, consecutiveErrors: 0 },
     ];
     const facts = new Map<string, ProductFacts>([[A.newTop, active], [A.due, emptyFacts(A.due, 'delisted')], [A.newDeep, emptyFacts(A.newDeep, 'error', 'bad_object')]]);
+    // The due row is about to be delisted. Give it a stored rank ratio first: a delisted write keeps its facts, the ratio included.
+    await pool.query(`UPDATE asin_products SET rank_ratio_x100 = 77 WHERE asin = $1`, [A.due]);
     await store.writeBatch({ rows, facts, lane: 'new', tokens: { tokensLeft: 123, refillRate: 250 }, now });
 
-    const { rows: r } = await pool.query(`SELECT asin, enrichment_status::text AS s, title, monthly_sold, fetch_count, consecutive_errors, error_code, next_due_at, last_fetched_at FROM asin_products WHERE asin = ANY($1) ORDER BY asin`, [[A.newTop, A.due, A.newDeep]]);
+    const { rows: r } = await pool.query(`SELECT asin, enrichment_status::text AS s, title, monthly_sold, rank_ratio_x100, fetch_count, consecutive_errors, error_code, next_due_at, last_fetched_at FROM asin_products WHERE asin = ANY($1) ORDER BY asin`, [[A.newTop, A.due, A.newDeep]]);
     const by = Object.fromEntries(r.map((x) => [x.asin, x]));
-    expect(by[A.newTop]).toMatchObject({ s: 'active', title: 'New title', monthly_sold: 100, fetch_count: 1, consecutive_errors: 0 });
-    expect(by[A.due]).toMatchObject({ s: 'delisted', title: 'old title', fetch_count: 1 });
+    expect(by[A.newTop]).toMatchObject({ s: 'active', title: 'New title', monthly_sold: 100, rank_ratio_x100: 84, fetch_count: 1, consecutive_errors: 0 });
+    // The delisted write kept the seeded ratio (77) along with the title.
+    expect(by[A.due]).toMatchObject({ s: 'delisted', title: 'old title', rank_ratio_x100: 77, fetch_count: 1 });
     expect(by[A.newDeep]).toMatchObject({ s: 'error', error_code: 'bad_object', consecutive_errors: 1, fetch_count: 0, last_fetched_at: null });
     expect(new Date(by[A.newTop].next_due_at).getTime() - now.getTime()).toBeCloseTo(7 * 86_400_000, -4);
 

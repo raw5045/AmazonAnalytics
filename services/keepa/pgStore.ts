@@ -60,9 +60,13 @@ const CLAIM_DUE = `
  * rank_ratio_x100 (spec 2026-10-09 §3.1) is derived in the statement from the same $12 (sales_rank)
  * and $26 (avg30_sales_rank) parameters, so it costs no parameter and cannot disagree with the
  * columns beside it: round(100 × current rank ÷ 30-day average), NULL unless both are positive
- * (below 100 = ranked better than its own 30-day average). The ::int casts pin both operands to the
- * integer columns' type; an uncast parameter used in arithmetic would be deduced numeric, and
- * Postgres rejects one parameter deduced as two types.
+ * (below 100 = ranked better than its own 30-day average). It is also NULL when the ratio would not
+ * fit the integer column: 21474836 is floor(int4 max ÷ 100), so rank < 21474836 × average keeps
+ * 100 × rank ÷ average inside int4 (the bigint keeps that product itself from overflowing). Past it
+ * the ::int cast would raise 22003, roll back the whole batch, and bring the same row back with every
+ * stale-claim release; as in the parser, an implausible value is null, never a failure. The ::int
+ * casts pin both operands to the integer columns' type; an uncast parameter used in arithmetic would
+ * be deduced numeric, and Postgres rejects one parameter deduced as two types.
  */
 const SUCCESS_UPDATE = `
   UPDATE asin_products SET
@@ -71,7 +75,7 @@ const SUCCESS_UPDATE = `
     current_price_cents = $10, price_source = $11, sales_rank = $12, review_count = $13, average_rating_x10 = $14, last_rating_update = $15,
     monthly_sold = $16, keepa_updated_at = $17, new_offer_count = $18, fba_offer_count = $19, fbm_offer_count = $20, amazon_availability = $21,
     avg30_price_cents = $22, avg90_price_cents = $23, avg180_price_cents = $24, avg365_price_cents = $25, avg30_sales_rank = $26, avg90_sales_rank = $27,
-    rank_ratio_x100 = CASE WHEN $12::int > 0 AND $26::int > 0 THEN round(100.0 * $12::int / $26::int)::int ELSE NULL END,
+    rank_ratio_x100 = CASE WHEN $12::int > 0 AND $26::int > 0 AND $12::int < 21474836::bigint * $26::int THEN round(100.0 * $12::int / $26::int)::int ELSE NULL END,
     enrichment_status = $28::asin_enrichment_status, error_code = NULL,
     last_fetched_at = $29, fetch_count = fetch_count + 1, consecutive_errors = 0,
     next_due_at = CASE WHEN tier = 1 THEN $30::timestamptz ELSE $31::timestamptz END, claimed_at = NULL, claimed_by = NULL, updated_at = now()
