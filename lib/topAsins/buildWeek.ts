@@ -4,8 +4,15 @@
  *
  * One INSERT from the week's kwm partition (three slots, well-formed ASINs only) into a fresh
  * keyword_top_asins_next, carrying each (keyword, ASIN) pair's streak from the previous build, then
- * a rename swap and the meta row, all in one transaction. ANALYZE runs after COMMIT on its own: a
- * failure there is reported on the result (analyzeError), never thrown, because the swap is done.
+ * a rename swap (table comments included) and the meta row, all in one transaction. ANALYZE runs
+ * after COMMIT on its own: a failure there is reported on the result (analyzeError), never thrown,
+ * because the swap is done.
+ *
+ * Builds serialize. The transaction takes the exclusive advisory lock TOP_ASINS_LOCK_KEY before it
+ * reads the meta row, so two builds (the import hook and a manual script) queue instead of racing,
+ * and the second one sees what the first committed: the same week twice is a same-week rebuild, not
+ * a double count. The wait is bounded by the 30-minute statement timeout; the backfill takes the
+ * same key. work_mem is raised for the transaction because the carry sorts ~8M rows.
  *
  * Two tables hold builds: keyword_top_asins (the current week; what readers see) and
  * keyword_top_asins_prev (the build the current one replaced; kept so a week can be rebuilt).
@@ -17,9 +24,10 @@
  *    this week, so carrying from it would add the week twice. Carry from _prev (the week before)
  *    instead, or from nothing when _prev is missing (every pair then starts at 1, the only honest
  *    answer), and swap by dropping the stale current table, leaving _prev alone. Idempotent.
- *  - A week older than the meta week is refused unless forced. A forced rewind is built like an
- *    advance, carrying from the current (newer) table: it is NOT idempotent and its streaks mean
- *    nothing, so rebuild forward from that week afterwards.
+ *  - A week older than the meta week is refused unless forced. A forced rewind carries nothing:
+ *    every streak restarts at 1, and the weeks after it must be rebuilt forward. It swaps like an
+ *    advance, so the newer build it replaces is left as _prev: rebuild forward before re-running
+ *    the rewound week itself (its same-week carry would read that newer _prev).
  * The carry joins a de-duplicated copy of the carry table (DISTINCT ON) with a plain LEFT JOIN the
  * planner can hash; a per-row LATERAL ... LIMIT 1 could only run as ~8M index probes.
  *
@@ -43,7 +51,7 @@ export type TopAsinsBuildPlan =
   | { carryFrom: 'prev' | 'none'; sameWeek: true };
 export interface TopAsinsBuildResult {
   rows: number;
-  /** The meta week before this build (null on the first build); equal to the week for a same-week rebuild. */
+  /** The meta week this build found under the lock (null on the first build); equal to the week for a same-week rebuild. */
   previousWeek: string | null;
   carriedFrom: TopAsinsCarryFrom;
   /** Only when the ANALYZE after COMMIT threw: its pg code, else the error name ('unknown' if not an Error). */
@@ -54,10 +62,16 @@ export class TopAsinsBuildError extends Error {
   constructor(public readonly code: TopAsinsBuildErrorCode, message: string) { super(message); this.name = 'TopAsinsBuildError'; }
 }
 
+/** Transaction-scoped advisory lock key that serializes builds (and the backfill). Distinct from the Keepa ENQUEUE_LOCK_KEY. */
+export const TOP_ASINS_LOCK_KEY = 20261009;
+
 const ASIN_RE = "'^[A-Z0-9]{10}$'";
 /** The tables a carry reads (carrying from nothing reads none). */
 const CARRY_TABLE = { current: 'keyword_top_asins', prev: 'keyword_top_asins_prev' } as const;
 const PREV_PROBE = "SELECT to_regclass('keyword_top_asins_prev') IS NOT NULL AS present";
+/** LIKE ... INCLUDING COMMENTS copies no table comment, so the swap sets them (the first is migration 0051's text). */
+const CURRENT_COMMENT = "COMMENT ON TABLE keyword_top_asins IS 'Current week''s top-3 clicked ASINs per keyword with consecutive-week streaks. Rebuilt per import (lib/topAsins/buildWeek.ts); backfilled once by scripts/backfillTopAsins.ts.'";
+const PREV_COMMENT = "COMMENT ON TABLE keyword_top_asins_prev IS 'Previous build of keyword_top_asins: the streak carry source for a same-week rebuild.'";
 const sql = (text: string): SqlStatement => ({ text, values: [] });
 
 export function kwmPartitionFor(week: string): string {
@@ -105,11 +119,13 @@ function insertText(partition: string, carryFrom: TopAsinsCarryFrom): string {
  * The rename swap. LIKE ... INCLUDING ALL names the copy's primary key `<table>_pkey` and its other index
  * `<table>_<columns>_idx`, so _next's are the two literals below; they are renamed to the canonical names
  * (RENAME CONSTRAINT on a primary key renames its index too). An advance first retires the old _prev and
- * renames the current table and its two names to _prev, which frees the canonical names for _next.
+ * renames the current table and its two names to _prev, which frees the canonical names for _next. Each
+ * table gets its comment (a renamed table would otherwise carry the other's).
  */
 function swapStatements(sameWeek: boolean): SqlStatement[] {
   const promoteNext = [
     sql('ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins'),
+    sql(CURRENT_COMMENT),
     sql('ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx'),
     sql('ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey'),
   ];
@@ -119,6 +135,7 @@ function swapStatements(sameWeek: boolean): SqlStatement[] {
     sql('ALTER TABLE keyword_top_asins RENAME TO keyword_top_asins_prev'),
     sql('ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx'),
     sql('ALTER TABLE keyword_top_asins_prev RENAME CONSTRAINT keyword_top_asins_pkey TO keyword_top_asins_prev_pkey'),
+    sql(PREV_COMMENT),
     ...promoteNext,
   ];
 }
@@ -142,37 +159,50 @@ function errorCode(e: unknown): string {
   return typeof (e as { code?: unknown } | null | undefined)?.code === 'string' ? (e as { code: string }).code : e instanceof Error ? e.name : 'unknown';
 }
 
-export async function buildTopAsinsWeek(client: Queryable, week: string, opts: { force?: boolean } = {}): Promise<TopAsinsBuildResult> {
-  if ('totalCount' in client) throw new TopAsinsBuildError('top_asins_bad_client', 'buildTopAsinsWeek needs one dedicated connection, not a Pool');
-  kwmPartitionFor(week); // reject a malformed week before any query
-  const meta = await client.query('SELECT week_end_date::text AS week_end_date FROM keyword_top_asins_meta WHERE singleton');
-  const previousWeek = ((meta.rows[0] as { week_end_date: string | null } | undefined)?.week_end_date) ?? null;
-  if (previousWeek && previousWeek > week && !opts.force) {
-    throw new TopAsinsBuildError('top_asins_older_than_meta', `week ${week} is older than the built week ${previousWeek}`);
-  }
-  let plan: TopAsinsBuildPlan = { carryFrom: 'current', sameWeek: false };
-  if (previousWeek === week) {
-    // The current table already counts this week: carry from the retained build before it, if there is one.
-    const probe = await client.query(PREV_PROBE);
-    const prevPresent = (probe.rows[0] as { present: boolean } | undefined)?.present === true;
-    plan = { carryFrom: prevPresent ? 'prev' : 'none', sameWeek: true };
-  }
-  const s = buildTopAsinsStatements(week, plan);
-  let rows: number;
+/** How this build relates to the committed state. Runs under the lock, inside the transaction. */
+async function choosePlan(client: Queryable, week: string, previousWeek: string | null): Promise<TopAsinsBuildPlan> {
+  if (previousWeek && previousWeek > week) return { carryFrom: 'none', sameWeek: false }; // a forced rewind: every streak restarts at 1
+  if (previousWeek !== week) return { carryFrom: 'current', sameWeek: false }; // an advance
+  // The current table already counts this week: carry from the retained build before it, if there is one.
+  const probe = await client.query(PREV_PROBE);
+  const prevPresent = (probe.rows[0] as { present: boolean } | undefined)?.present === true;
+  return { carryFrom: prevPresent ? 'prev' : 'none', sameWeek: true };
+}
+
+/** BEGIN … COMMIT: lock, read what is committed, pick the plan, build into _next, swap, record. */
+async function buildInTransaction(client: Queryable, week: string, force: boolean): Promise<Omit<TopAsinsBuildResult, 'analyzeError'>> {
   await client.query('BEGIN');
   try {
+    // The pool's settings may not survive the pooler; set them for this transaction (the lock wait is bounded by the timeout).
     await client.query("SET LOCAL statement_timeout = '1800s'");
+    await client.query("SET LOCAL work_mem = '256MB'");
+    // Builds queue here, so the meta row below is the one the build before this one committed.
+    await client.query('SELECT pg_advisory_xact_lock($1)', [TOP_ASINS_LOCK_KEY]);
+    const meta = await client.query('SELECT week_end_date::text AS week_end_date FROM keyword_top_asins_meta WHERE singleton');
+    const previousWeek = ((meta.rows[0] as { week_end_date: string | null } | undefined)?.week_end_date) ?? null;
+    if (previousWeek && previousWeek > week && !force) {
+      throw new TopAsinsBuildError('top_asins_older_than_meta', `week ${week} is older than the built week ${previousWeek}`);
+    }
+    const plan = await choosePlan(client, week, previousWeek);
+    const s = buildTopAsinsStatements(week, plan);
     await client.query(s.createNext.text);
     const ins = await client.query(s.insert.text, s.insert.values);
-    rows = ins.rowCount ?? 0;
+    const rows = ins.rowCount ?? 0;
     if (rows === 0) throw new TopAsinsBuildError('top_asins_no_rows', `week ${week} produced no top-3 rows (not imported?)`);
     for (const st of s.swap) await client.query(st.text);
     await client.query(s.meta.text, [week, rows]);
     await client.query('COMMIT');
+    return { rows, previousWeek, carriedFrom: plan.carryFrom };
   } catch (e) {
     await client.query('ROLLBACK').catch(() => undefined);
     throw e;
   }
+}
+
+export async function buildTopAsinsWeek(client: Queryable, week: string, opts: { force?: boolean } = {}): Promise<TopAsinsBuildResult> {
+  if ('totalCount' in client) throw new TopAsinsBuildError('top_asins_bad_client', 'buildTopAsinsWeek needs one dedicated connection, not a Pool');
+  kwmPartitionFor(week); // reject a malformed week before opening a transaction
+  const built = await buildInTransaction(client, week, opts.force === true);
   let analyzeError: string | undefined;
   try {
     await client.query('ANALYZE keyword_top_asins');
@@ -180,5 +210,5 @@ export async function buildTopAsinsWeek(client: Queryable, week: string, opts: {
     // Best-effort: the swap is committed; autovacuum's analyze covers a miss.
     analyzeError = errorCode(e);
   }
-  return { rows, previousWeek, carriedFrom: plan.carryFrom, ...(analyzeError ? { analyzeError } : {}) };
+  return { ...built, ...(analyzeError ? { analyzeError } : {}) };
 }
