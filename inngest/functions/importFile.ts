@@ -21,6 +21,7 @@ import {
 import { refreshKeywordCurrentSummary } from './refreshSummary';
 import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
 import { enqueueWeek, EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
+import { buildTopAsinsWeek, TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
 import { errFields } from '@/lib/ask/logSafe';
 
 export interface ImportFileInput {
@@ -1045,6 +1046,64 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         },
         // rows_affected = inserted + updated; null marks a failed or skipped enqueue.
         (r) => (r ? r.inserted + r.updated : null),
+      );
+
+      // ----------------------------------------------------------------
+      // Products reverse table (spec 2026-10-09 §4.1): rebuild
+      // keyword_top_asins for this week (each keyword's top-3 clicked ASINs
+      // with consecutive-week streaks) right after the Keepa hand-off and
+      // BEFORE the long summary refresh. Fail-soft, like the hand-off: a
+      // failure here never fails the import — the previous build stays in
+      // place and scripts/buildTopAsinsWeek.ts re-runs it by hand. Same
+      // replay rule: a historical week must not rewrite the live table.
+      // ----------------------------------------------------------------
+      await timePhase(
+        file.id,
+        'top_asins_build',
+        async () => {
+          const topAsinsPool = new Pool({
+            connectionString: env.DATABASE_URL,
+            max: 1,
+            statement_timeout: 1_800_000,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10_000,
+            connectionTimeoutMillis: 20_000,
+          });
+          // Dropped-socket guards, as in the hand-off above.
+          topAsinsPool.on('error', () => undefined);
+          let stage: 'connect' | 'build' = 'connect';
+          try {
+            const client = await topAsinsPool.connect();
+            stage = 'build';
+            try {
+              client.on('error', () => undefined);
+              const r = await buildTopAsinsWeek(client, weekEndDate);
+              console.log(
+                `[top-asins] week ${weekEndDate}: rows=${r.rows} previous=${r.previousWeek ?? 'none'} carried=${r.carriedFrom}${r.analyzeError ? ` analyzeError=${r.analyzeError}` : ''}`,
+              );
+              return r;
+            } finally {
+              client.release();
+            }
+          } catch (e) {
+            if (e instanceof TopAsinsBuildError && e.code === 'top_asins_older_than_meta') {
+              // A late re-import of an older week: the table keeps the newer
+              // build. Expected, not a failure.
+              console.log(`[top-asins] skipped: ${e.code} (week ${weekEndDate})`);
+            } else {
+              const { error, code } = errFields(e);
+              console.error(
+                '[top-asins] failed (import continues)',
+                JSON.stringify({ week: weekEndDate, stage, error, code }),
+              );
+            }
+            return null;
+          } finally {
+            await topAsinsPool.end();
+          }
+        },
+        // rows_affected = rows written; null marks a failed or skipped build.
+        (r) => (r ? r.rows : null),
       );
     }
 

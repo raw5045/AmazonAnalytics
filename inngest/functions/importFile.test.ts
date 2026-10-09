@@ -16,6 +16,7 @@ const {
   mockClientRelease,
   mockClientQuery,
   mockEnqueueWeek,
+  mockBuildTopAsinsWeek,
   mockRefreshSummary,
   mockSendImportEmail,
   mockInngestSend,
@@ -39,6 +40,7 @@ const {
   mockClientRelease: vi.fn(),
   mockClientQuery: vi.fn(),
   mockEnqueueWeek: vi.fn(),
+  mockBuildTopAsinsWeek: vi.fn(),
   mockRefreshSummary: vi.fn(),
   mockSendImportEmail: vi.fn(),
   mockInngestSend: vi.fn(),
@@ -88,6 +90,11 @@ vi.mock('@/lib/keepa/enqueueWeek', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/keepa/enqueueWeek')>()),
   enqueueWeek: mockEnqueueWeek,
 }));
+// Likewise the reverse-table build: the real TopAsinsBuildError stays for the phase's skip check.
+vi.mock('@/lib/topAsins/buildWeek', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/topAsins/buildWeek')>()),
+  buildTopAsinsWeek: mockBuildTopAsinsWeek,
+}));
 vi.mock('@/inngest/functions/refreshSummary', () => ({
   refreshKeywordCurrentSummary: mockRefreshSummary,
 }));
@@ -98,6 +105,7 @@ vi.mock('@/inngest/client', () => ({
 
 import { processFileImport } from './importFile';
 import { EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
+import { TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
 
 function createFakeCopyStream() {
   const lines: string[] = [];
@@ -149,12 +157,14 @@ describe('processFileImport', () => {
 describe('processFileImport — keepa_enqueue hook', () => {
   const fixture = readFileSync(path.join(__dirname, '../../lib/csv/fixtures/valid-sample.csv'));
   const hookClient = { on: vi.fn(), release: vi.fn(), query: vi.fn() };
+  const topAsinsClient = { on: vi.fn(), release: vi.fn(), query: vi.fn() };
   // Every db.insert(...).values(row) lands here; the import_phase_timings rows carry `phase`.
   const insertValues = vi.fn().mockReturnValue({
     onConflictDoNothing: vi.fn().mockResolvedValue(undefined),
     onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
   });
-  // The first connect() is the COPY pool's client; the second is the hook's.
+  // The first connect() is the COPY pool's client; the second is the Keepa hook's, the third the
+  // top-ASINs phase's.
   const copyClient = () => {
     const { stream } = createFakeCopyStream();
     return { query: vi.fn(() => stream), release: vi.fn() };
@@ -177,7 +187,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
     mockPoolConnect
       .mockReset()
       .mockResolvedValueOnce(copyClient())
-      .mockResolvedValueOnce(hookClient);
+      .mockResolvedValueOnce(hookClient)
+      .mockResolvedValueOnce(topAsinsClient);
     mockPoolEnd.mockReset().mockResolvedValue(undefined);
     mockInsert.mockReset().mockReturnValue({ values: insertValues });
     mockRefreshSummary
@@ -186,6 +197,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
     mockSendImportEmail.mockReset().mockResolvedValue(undefined);
     mockInngestSend.mockReset().mockResolvedValue({ ids: [] });
     mockEnqueueWeek.mockReset();
+    // A successful build by default, so the phase after the Keepa hook adds no stray failure line.
+    mockBuildTopAsinsWeek
+      .mockReset()
+      .mockResolvedValue({ rows: 3, previousWeek: null, carriedFrom: 'none' });
   });
 
   afterEach(() => {
@@ -225,10 +240,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
     expect(hookClient.on.mock.invocationCallOrder[0]).toBeLessThan(
       mockEnqueueWeek.mock.invocationCallOrder[0],
     );
-    expect(mockPoolOn).toHaveBeenCalledTimes(2); // the COPY pool's guard + the hook pool's
-    expect(mockPoolOn).toHaveBeenLastCalledWith('error', expect.any(Function));
+    expect(mockPoolOn).toHaveBeenCalledTimes(3); // the COPY pool's guard + the two hook pools'
+    expect(mockPoolOn).toHaveBeenNthCalledWith(2, 'error', expect.any(Function)); // the Keepa hook's
     expect(hookClient.release).toHaveBeenCalledTimes(1);
-    expect(mockPoolEnd).toHaveBeenCalledTimes(2); // the COPY pool + the hook pool
+    expect(mockPoolEnd).toHaveBeenCalledTimes(3); // the COPY pool + the two hook pools
     expect(keepaLines(log)).toEqual([
       '[keepa-enqueue] week 2026-04-11: inserted=5 updated=7 retired=2 vacuumed=false vacuumError=57014',
     ]);
@@ -250,7 +265,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
     ]);
     expect([...log.mock.calls, ...err.mock.calls].flat().join(' ')).not.toContain('SECRET');
     expect(hookClient.release).toHaveBeenCalledTimes(1);
-    expect(mockPoolEnd).toHaveBeenCalledTimes(2);
+    expect(mockPoolEnd).toHaveBeenCalledTimes(3);
     expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
     expect(enqueueTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
   });
@@ -262,7 +277,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
       .mockResolvedValueOnce(copyClient())
       .mockRejectedValueOnce(
         Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }),
-      );
+      )
+      .mockResolvedValueOnce(topAsinsClient);
 
     await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({
       rowsImported: expect.any(Number),
@@ -272,7 +288,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
     expect(keepaLines(err)).toEqual([
       '[keepa-enqueue] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
     ]);
-    expect(mockPoolEnd).toHaveBeenCalledTimes(2);
+    expect(mockPoolEnd).toHaveBeenCalledTimes(3);
     expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
     expect(enqueueTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
   });
@@ -299,5 +315,161 @@ describe('processFileImport — keepa_enqueue hook', () => {
     expect(mockEnqueueWeek).not.toHaveBeenCalled();
     expect(mockPoolConnect).toHaveBeenCalledTimes(1); // the COPY pool only
     expect(enqueueTimings()).toEqual([]);
+  });
+
+  // The phase after keepa_enqueue (spec 2026-10-09 §4.1): its own pool and the same fail-soft
+  // shape, so these tests share this block's setup (three pools: COPY, Keepa hook, this phase).
+  describe('top_asins_build phase', () => {
+    beforeEach(() => {
+      // The Keepa hook succeeds, so the only console.error lines are this phase's.
+      mockEnqueueWeek.mockResolvedValue({ inserted: 0, updated: 0, retired: 0, vacuumed: false });
+    });
+
+    const topAsinsLines = (spy: { mock: { calls: unknown[][] } }) =>
+      spy.mock.calls.map((args) => args.join(' ')).filter((line) => line.includes('[top-asins]'));
+    const topAsinsTimings = () =>
+      insertValues.mock.calls
+        .map(([row]) => row as { phase?: string; rowsAffected?: number | null })
+        .filter((row) => row.phase === 'top_asins_build');
+
+    it('builds the imported week once, after keepa_enqueue and before the summary refresh, and cleans up', async () => {
+      const { log } = spyConsole();
+      mockBuildTopAsinsWeek.mockResolvedValue({
+        rows: 21,
+        previousWeek: '2026-04-04',
+        carriedFrom: 'current',
+        analyzeError: '57014',
+      });
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(mockBuildTopAsinsWeek).toHaveBeenCalledTimes(1);
+      expect(mockBuildTopAsinsWeek).toHaveBeenCalledWith(topAsinsClient, '2026-04-11');
+      expect(mockEnqueueWeek.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBuildTopAsinsWeek.mock.invocationCallOrder[0],
+      );
+      expect(mockBuildTopAsinsWeek.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRefreshSummary.mock.invocationCallOrder[0],
+      );
+      const order = ['keepa_enqueue', 'top_asins_build', 'summary_refresh'];
+      const phaseRows = insertValues.mock.calls
+        .map(([row]) => (row as { phase?: string }).phase)
+        .filter((phase) => phase !== undefined && order.includes(phase));
+      expect(phaseRows).toEqual(order); // one timing row each, in this order
+      expect(topAsinsClient.on).toHaveBeenCalledWith('error', expect.any(Function));
+      expect(topAsinsClient.on.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBuildTopAsinsWeek.mock.invocationCallOrder[0],
+      );
+      expect(mockPoolOn).toHaveBeenCalledTimes(3); // the COPY pool's guard + the two hook pools'
+      expect(mockPoolOn).toHaveBeenLastCalledWith('error', expect.any(Function)); // this phase's
+      expect(topAsinsClient.release).toHaveBeenCalledTimes(1);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(3); // the COPY pool + the two hook pools
+      expect(topAsinsLines(log)).toEqual([
+        '[top-asins] week 2026-04-11: rows=21 previous=2026-04-04 carried=current analyzeError=57014',
+      ]);
+    });
+
+    it('an older week is an expected skip, not an error', async () => {
+      const { log, err } = spyConsole();
+      mockBuildTopAsinsWeek.mockRejectedValue(
+        new TopAsinsBuildError(
+          'top_asins_older_than_meta',
+          'week 2026-04-11 is older than the built week 2026-04-18',
+        ),
+      );
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(topAsinsLines(log)).toEqual([
+        '[top-asins] skipped: top_asins_older_than_meta (week 2026-04-11)',
+      ]);
+      expect(err).not.toHaveBeenCalled();
+      expect(log.mock.calls.flat().join(' ')).not.toContain('2026-04-18'); // the message stays out
+      expect(topAsinsClient.release).toHaveBeenCalledTimes(1);
+      expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+
+    it('a database failure logs only the week, stage, error name and code; the import completes', async () => {
+      const { log, err } = spyConsole();
+      mockBuildTopAsinsWeek.mockRejectedValue(
+        Object.assign(new Error('SECRET failed query params'), { name: 'error', code: '57014' }),
+      );
+
+      await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({
+        rowsImported: expect.any(Number),
+      });
+
+      expect(topAsinsLines(err)).toEqual([
+        '[top-asins] failed (import continues) {"week":"2026-04-11","stage":"build","error":"error","code":"57014"}',
+      ]);
+      expect([...log.mock.calls, ...err.mock.calls].flat().join(' ')).not.toContain('SECRET');
+      expect(topAsinsClient.release).toHaveBeenCalledTimes(1);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(3);
+      expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+
+    it('a build error other than the older-week skip is a failure, logged by its code only', async () => {
+      const { err } = spyConsole();
+      mockBuildTopAsinsWeek.mockRejectedValue(
+        new TopAsinsBuildError('top_asins_no_rows', 'SECRET week 2026-04-11 produced no rows'),
+      );
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(topAsinsLines(err)).toEqual([
+        '[top-asins] failed (import continues) {"week":"2026-04-11","stage":"build","error":"TopAsinsBuildError","code":"top_asins_no_rows"}',
+      ]);
+      expect(err.mock.calls.flat().join(' ')).not.toContain('SECRET');
+      expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+
+    it('a connect failure never fails the import and never reaches buildTopAsinsWeek', async () => {
+      const { err } = spyConsole();
+      mockPoolConnect
+        .mockReset()
+        .mockResolvedValueOnce(copyClient())
+        .mockResolvedValueOnce(hookClient)
+        .mockRejectedValueOnce(
+          Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }),
+        );
+
+      await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({
+        rowsImported: expect.any(Number),
+      });
+
+      expect(mockBuildTopAsinsWeek).not.toHaveBeenCalled();
+      expect(topAsinsLines(err)).toEqual([
+        '[top-asins] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
+      ]);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(3);
+      expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+
+    it('replay runs (skipRefresh) never build', async () => {
+      await processFileImport({ uploadedFileId: 'f1', skipRefresh: true });
+
+      expect(mockBuildTopAsinsWeek).not.toHaveBeenCalled();
+      expect(mockPoolConnect).toHaveBeenCalledTimes(1); // the COPY pool only
+      expect(topAsinsTimings()).toEqual([]);
+    });
+
+    it('records the rows the build wrote as the phase row count', async () => {
+      const { log } = spyConsole();
+      mockBuildTopAsinsWeek.mockResolvedValue({
+        rows: 8_123_456,
+        previousWeek: null,
+        carriedFrom: 'none',
+      });
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: 8_123_456 })]);
+      expect(topAsinsLines(log)).toEqual([
+        '[top-asins] week 2026-04-11: rows=8123456 previous=none carried=none',
+      ]);
+    });
   });
 });
