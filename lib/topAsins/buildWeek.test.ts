@@ -16,8 +16,10 @@ describe('buildTopAsinsStatements', () => {
   const advance = buildTopAsinsStatements(WEEK); // the default plan: carry from the current build, keep it as _prev
   const sameWeekPrev = buildTopAsinsStatements(WEEK, { carryFrom: 'prev', sameWeek: true });
   const sameWeekNone = buildTopAsinsStatements(WEEK, { carryFrom: 'none', sameWeek: true });
-  const everyMode = [advance, sameWeekPrev, sameWeekNone];
+  const rewind = buildTopAsinsStatements(WEEK, { carryFrom: 'none', sameWeek: false, rewind: true });
+  const everyMode = [advance, sameWeekPrev, sameWeekNone, rewind];
   const carrying = [advance, sameWeekPrev];
+  const carryingNothing = [sameWeekNone, rewind];
   const swapOf = (st: { swap: { text: string }[] }) => st.swap.map((x) => x.text);
 
   it('reads the week from its year partition, three slots, well-formed ASINs only', () => {
@@ -47,9 +49,11 @@ describe('buildTopAsinsStatements', () => {
     expect(advance.insert.text).not.toContain('keyword_top_asins_prev');
     expect(sameWeekPrev.insert.text).toMatch(/FROM keyword_top_asins_prev\s+ORDER BY/);
     expect(sameWeekPrev.insert.text).not.toMatch(/FROM keyword_top_asins\s/);
-    // Carrying from nothing: no join, no carry table, every pair starts at 1 on this week.
-    expect(sameWeekNone.insert.text).not.toMatch(/JOIN|DISTINCT|prev|FROM keyword_top_asins/);
-    expect(sameWeekNone.insert.text).toMatch(/p\.conversion_share,\s+1,\s+\$1::date,\s+\$1::date\s+FROM \(/);
+    // Carrying from nothing (a same-week rebuild without _prev, a forced rewind): no join, no carry table, every pair starts at 1 on this week.
+    for (const st of carryingNothing) {
+      expect(st.insert.text).not.toMatch(/JOIN|DISTINCT|prev|FROM keyword_top_asins/);
+      expect(st.insert.text).toMatch(/p\.conversion_share,\s+1,\s+\$1::date,\s+\$1::date\s+FROM \(/);
+    }
   });
   it('builds into _next, shaped like the current table', () => {
     for (const st of everyMode) expect(st.createNext.text).toBe('CREATE TABLE keyword_top_asins_next (LIKE keyword_top_asins INCLUDING ALL)');
@@ -79,8 +83,23 @@ describe('buildTopAsinsStatements', () => {
       expect(swapOf(st).join('\n')).not.toContain('keyword_top_asins_prev');
     }
   });
+  it('forced rewind: drops _prev and the newer current table, promotes _next with its comment, and leaves no _prev', () => {
+    expect(swapOf(rewind)).toEqual([
+      'DROP TABLE IF EXISTS keyword_top_asins_prev',
+      'DROP TABLE keyword_top_asins',
+      'ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins',
+      CURRENT_COMMENT,
+      'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx',
+      'ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey',
+    ]);
+    // The only statement naming _prev drops it: nothing renames to or comments it.
+    expect(swapOf(rewind).filter((t) => t.includes('keyword_top_asins_prev'))).toEqual(['DROP TABLE IF EXISTS keyword_top_asins_prev']);
+  });
   it("the current table's comment is migration 0051's text, so the swap cannot drift from it", () => {
-    const migration = readFileSync('db/migrations/0051_products.sql', 'utf8').replace(/\s+/g, ' ');
+    // Resolved against this file, not the working directory. The base sits in a variable on purpose: Vite rewrites a literal
+    // `new URL('…', import.meta.url)` into an asset URL (http://localhost:3000/… under jsdom), which readFileSync rejects.
+    const here = import.meta.url;
+    const migration = readFileSync(new URL('../../db/migrations/0051_products.sql', here), 'utf8').replace(/\s+/g, ' ');
     expect(migration).toContain(CURRENT_COMMENT);
   });
   it('names only real columns', () => {
@@ -96,12 +115,17 @@ describe('buildTopAsinsStatements', () => {
     const carryCols = ['search_term_id', 'asin', 'weeks_in_top3', 'streak_started_week'];
     expect(advance.insert.text).toContain(`DISTINCT ON (search_term_id, asin) ${carryCols.join(', ')}`);
     expect(carryCols.filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
-    const metaCols = advance.meta.text.slice(advance.meta.text.indexOf('(') + 1, advance.meta.text.indexOf(')')).split(',').map((c) => c.trim());
+    const record = advance.meta(7);
+    const metaCols = record.text.slice(record.text.indexOf('(') + 1, record.text.indexOf(')')).split(',').map((c) => c.trim());
     expect(metaCols).toEqual(['singleton', 'week_end_date', 'built_at', 'row_count']);
     expect(metaCols.filter((c) => !dbCols(keywordTopAsinsMeta).has(c))).toEqual([]);
+    // Bound to the build's row count: no placeholder anywhere.
+    expect(record.values).toEqual([WEEK, 7]);
+    expect(advance.meta(123).values).toEqual([WEEK, 123]);
   });
   it('rejects a malformed week (the partition name is interpolated into SQL)', () => {
-    for (const plan of [undefined, { carryFrom: 'prev', sameWeek: true } as const, { carryFrom: 'none', sameWeek: true } as const]) {
+    const plans = [undefined, { carryFrom: 'prev', sameWeek: true } as const, { carryFrom: 'none', sameWeek: true } as const, { carryFrom: 'none', sameWeek: false, rewind: true } as const];
+    for (const plan of plans) {
       expect(() => buildTopAsinsStatements('2026/10/03', plan)).toThrow(TopAsinsBuildError);
       expect(() => buildTopAsinsStatements("2026-10-03'; DROP TABLE x", plan)).toThrowError(expect.objectContaining({ code: 'top_asins_bad_date' }));
     }
@@ -142,16 +166,18 @@ describe('buildTopAsinsWeek', () => {
   const metaAt = (week: string | null): Answer => ({ rowCount: 1, rows: [{ week_end_date: week }] });
   const prevPresent = (present: boolean): Answer => ({ rowCount: 1, rows: [{ present }] });
   const inserted = (rowCount: number): Answer => ({ rowCount, rows: [] });
-  // Each entry is a statement's first three words. Everything but ANALYZE sits between BEGIN and COMMIT: the settings,
-  // then the advisory lock (builds queue here), then the meta read, so the plan is chosen from what is committed now.
+  // Each entry is a statement's first three words. Everything but ANALYZE sits between BEGIN and COMMIT: the explicit
+  // isolation, the settings, then the advisory lock (builds queue here), then the meta read, so the plan is chosen from
+  // what is committed now. lock_timeout is set right before the first swap statement, after the lock wait.
   const ADVANCE_CALLS = [
-    'BEGIN',
+    'BEGIN ISOLATION LEVEL',
     'SET LOCAL statement_timeout',
     'SET LOCAL work_mem',
-    'SELECT pg_advisory_xact_lock($1)',
+    'SELECT pg_advisory_xact_lock($1)', // builds queue here
     'SELECT week_end_date::text AS', // the meta read, under the lock
     'CREATE TABLE keyword_top_asins_next',
     'INSERT INTO keyword_top_asins_next',
+    'SET LOCAL lock_timeout', // bounds the swap's wait for readers
     'DROP TABLE IF', // the older _prev
     'ALTER TABLE keyword_top_asins', // current -> _prev
     'ALTER INDEX keyword_top_asins_asin_idx',
@@ -166,7 +192,7 @@ describe('buildTopAsinsWeek', () => {
     'ANALYZE keyword_top_asins',
   ];
   const SAME_WEEK_CALLS = [
-    'BEGIN',
+    'BEGIN ISOLATION LEVEL',
     'SET LOCAL statement_timeout',
     'SET LOCAL work_mem',
     'SELECT pg_advisory_xact_lock($1)',
@@ -174,6 +200,7 @@ describe('buildTopAsinsWeek', () => {
     "SELECT to_regclass('keyword_top_asins_prev') IS", // the _prev probe
     'CREATE TABLE keyword_top_asins_next',
     'INSERT INTO keyword_top_asins_next',
+    'SET LOCAL lock_timeout',
     'DROP TABLE keyword_top_asins', // the stale current table; _prev is never named again
     'ALTER TABLE keyword_top_asins_next', // _next -> current
     'COMMENT ON TABLE', // current's
@@ -183,7 +210,26 @@ describe('buildTopAsinsWeek', () => {
     'COMMIT',
     'ANALYZE keyword_top_asins',
   ];
-  const REFUSED_CALLS = ['BEGIN', 'SET LOCAL statement_timeout', 'SET LOCAL work_mem', 'SELECT pg_advisory_xact_lock($1)', 'SELECT week_end_date::text AS', 'ROLLBACK'];
+  const REWIND_CALLS = [
+    'BEGIN ISOLATION LEVEL',
+    'SET LOCAL statement_timeout',
+    'SET LOCAL work_mem',
+    'SELECT pg_advisory_xact_lock($1)',
+    'SELECT week_end_date::text AS',
+    'CREATE TABLE keyword_top_asins_next',
+    'INSERT INTO keyword_top_asins_next',
+    'SET LOCAL lock_timeout',
+    'DROP TABLE IF', // _prev goes too: no build newer than the rewound week survives
+    'DROP TABLE keyword_top_asins', // the newer current table
+    'ALTER TABLE keyword_top_asins_next', // _next -> current
+    'COMMENT ON TABLE', // current's
+    'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx',
+    'ALTER TABLE keyword_top_asins', // its primary key
+    'INSERT INTO keyword_top_asins_meta',
+    'COMMIT',
+    'ANALYZE keyword_top_asins',
+  ];
+  const REFUSED_CALLS = ['BEGIN ISOLATION LEVEL', 'SET LOCAL statement_timeout', 'SET LOCAL work_mem', 'SELECT pg_advisory_xact_lock($1)', 'SELECT week_end_date::text AS', 'ROLLBACK'];
   /** The swap statements the runner executed: from the swap's first call up to the meta insert. */
   const executedSwap = (c: { calls: string[]; texts: string[] }, first: string) =>
     c.texts.slice(c.calls.indexOf(first), c.calls.indexOf('INSERT INTO keyword_top_asins_meta'));
@@ -203,12 +249,12 @@ describe('buildTopAsinsWeek', () => {
     await expect(buildTopAsinsWeek(c, '2026-09-26')).rejects.toMatchObject({ code: 'top_asins_older_than_meta' });
     expect(c.calls).toEqual(REFUSED_CALLS); // nothing built, nothing swapped
   });
-  it('forced older week is a clean rewind: it carries nothing, so every streak restarts at 1', async () => {
+  it('forced older week is a clean rewind: it carries nothing and leaves no _prev, so every streak restarts at 1', async () => {
     const c = fakeClient({ [K.meta]: metaAt('2026-10-03'), [K.insert]: inserted(5) });
     await expect(buildTopAsinsWeek(c, '2026-09-26', { force: true })).resolves.toEqual({ rows: 5, previousWeek: '2026-10-03', carriedFrom: 'none' });
-    expect(c.calls).toEqual(ADVANCE_CALLS); // swaps like an advance: the newer build it replaces ends up as _prev
+    expect(c.calls).toEqual(REWIND_CALLS);
     expect(c.texts[c.calls.indexOf('INSERT INTO keyword_top_asins_next')]).not.toMatch(/JOIN|keyword_top_asins_prev/);
-    expect(executedSwap(c, 'DROP TABLE IF')).toEqual(buildTopAsinsStatements('2026-09-26', { carryFrom: 'none', sameWeek: false }).swap.map((x) => x.text));
+    expect(executedSwap(c, 'DROP TABLE IF')).toEqual(buildTopAsinsStatements('2026-09-26', { carryFrom: 'none', sameWeek: false, rewind: true }).swap.map((x) => x.text));
   });
   it('first build (no meta week yet) advances from the current table', async () => {
     const c = fakeClient({ [K.meta]: metaAt(null), [K.insert]: inserted(3) });
@@ -220,12 +266,15 @@ describe('buildTopAsinsWeek', () => {
     const r = await buildTopAsinsWeek(c, WEEK);
     expect(r).toEqual({ rows: 7, previousWeek: '2026-09-26', carriedFrom: 'current' });
     expect(c.calls).toEqual(ADVANCE_CALLS);
-    // The transaction's settings come first, then the advisory lock with its key.
+    // Explicit isolation first, then the settings, then the advisory lock with its key.
+    expect(c.texts[0]).toBe('BEGIN ISOLATION LEVEL READ COMMITTED');
     expect(c.texts.slice(1, 4)).toEqual(["SET LOCAL statement_timeout = '1800s'", "SET LOCAL work_mem = '256MB'", 'SELECT pg_advisory_xact_lock($1)']);
     expect(c.args[3]).toEqual([TOP_ASINS_LOCK_KEY]);
+    // lock_timeout is set immediately before the first swap statement, after the lock wait.
+    expect(c.texts[c.calls.indexOf('DROP TABLE IF') - 1]).toBe("SET LOCAL lock_timeout = '120s'");
     expect(c.texts[c.calls.indexOf('INSERT INTO keyword_top_asins_next')]).toMatch(/FROM keyword_top_asins ORDER BY/);
     expect(executedSwap(c, 'DROP TABLE IF')).toEqual(buildTopAsinsStatements(WEEK).swap.map((x) => x.text));
-    // The meta row records the week and the inserted row count, not the statement's placeholder count.
+    // The meta row records the week and the inserted row count, not a placeholder.
     expect(c.args[c.calls.indexOf('INSERT INTO keyword_top_asins_meta')]).toEqual([WEEK, 7]);
   });
   it('same-week rebuild: carries from _prev, drops the stale current table, leaves _prev alone', async () => {
@@ -246,7 +295,7 @@ describe('buildTopAsinsWeek', () => {
     expect(c.calls).toEqual(SAME_WEEK_CALLS);
     expect(c.texts[c.calls.indexOf('INSERT INTO keyword_top_asins_next')]).not.toMatch(/JOIN|keyword_top_asins_prev/);
   });
-  it('walks a week sequence consistently: first build, advance, same-week re-runs (idempotent), forced rewind, advance', async () => {
+  it('walks a week sequence consistently: first build, advance, same-week re-runs (idempotent), forced rewind and its re-run, advance', async () => {
     let metaWeek: string | null = null;
     let prevExists = false;
     const client: Queryable = {
@@ -261,28 +310,45 @@ describe('buildTopAsinsWeek', () => {
       },
     };
     const carried: string[] = [];
-    for (const [week, force] of [['2026-09-19', false], ['2026-09-26', false], ['2026-09-26', false], ['2026-09-26', false], ['2026-09-19', true], ['2026-09-26', false]] as const) {
+    const prevAfter: boolean[] = [];
+    for (const [week, force] of [
+      ['2026-09-19', false], // first build
+      ['2026-09-26', false], // advance
+      ['2026-09-26', false], // same-week re-run
+      ['2026-09-26', false], // and again: idempotent
+      ['2026-09-19', true], // forced rewind: drops _prev
+      ['2026-09-19', false], // re-run of the rewound week: no _prev, so nothing to carry
+      ['2026-09-26', false], // advance again
+    ] as const) {
       carried.push((await buildTopAsinsWeek(client, week, { force })).carriedFrom);
+      prevAfter.push(prevExists);
     }
-    expect(carried).toEqual(['current', 'current', 'prev', 'prev', 'none', 'current']);
+    expect(carried).toEqual(['current', 'current', 'prev', 'prev', 'none', 'none', 'current']);
+    expect(prevAfter).toEqual([true, true, true, true, false, false, true]); // a rewind leaves no _prev
   });
-  for (const [label, metaWeek] of [['advance', '2026-09-26'], ['same-week rebuild', WEEK]]) {
+  for (const [label, metaWeek, upToInsert] of [
+    ['advance', '2026-09-26', ADVANCE_CALLS.slice(0, 7)],
+    ['same-week rebuild', WEEK, SAME_WEEK_CALLS.slice(0, 8)],
+  ] as const) {
     it(`${label}: refuses to swap when the insert wrote zero rows, rolling back`, async () => {
       const c = fakeClient({ [K.meta]: metaAt(metaWeek), [K.probe]: prevPresent(true), [K.insert]: inserted(0) });
       await expect(buildTopAsinsWeek(c, WEEK)).rejects.toMatchObject({ code: 'top_asins_no_rows' });
-      expect(c.calls[c.calls.length - 1]).toBe('ROLLBACK');
-      // No swap statement ran (neither the live table nor _prev is touched), and nothing commits.
-      expect(c.calls.filter((x) => /^(ALTER|DROP|COMMENT)/.test(x))).toEqual([]);
-      expect(c.calls).not.toContain('COMMIT');
+      // Up to the insert, then the rollback: no lock_timeout, no swap statement (neither the live table nor _prev is touched), no commit.
+      expect(c.calls).toEqual([...upToInsert, 'ROLLBACK']);
     });
   }
-  it('rolls back and rethrows the original error when a swap statement fails; nothing commits or analyzes', async () => {
-    const boom = Object.assign(new Error('relation already exists'), { code: '42P07' });
-    const c = fakeClient({ [K.meta]: metaAt('2026-09-26'), [K.insert]: inserted(7), 'ALTER INDEX keyword_top_asins_next': { throws: boom } });
-    await expect(buildTopAsinsWeek(c, WEEK)).rejects.toBe(boom);
-    expect(c.calls[c.calls.length - 1]).toBe('ROLLBACK');
-    expect(c.calls.filter((x) => ['COMMIT', 'ANALYZE keyword_top_asins', 'INSERT INTO keyword_top_asins_meta'].includes(x))).toEqual([]);
-  });
+  for (const [label, key, code] of [
+    ['lock_timeout on the first swap statement', 'DROP TABLE IF EXISTS keyword_top_asins_prev', '55P03'],
+    ['a name collision mid-swap', 'ALTER INDEX keyword_top_asins_next', '42P07'],
+  ] as const) {
+    it(`rolls back and rethrows the original error on ${label}; nothing commits or analyzes`, async () => {
+      const boom = Object.assign(new Error('boom'), { code });
+      const c = fakeClient({ [K.meta]: metaAt('2026-09-26'), [K.insert]: inserted(7), [key]: { throws: boom } });
+      await expect(buildTopAsinsWeek(c, WEEK)).rejects.toBe(boom);
+      expect(c.calls[c.calls.length - 1]).toBe('ROLLBACK');
+      expect(c.calls.filter((x) => ['COMMIT', 'ANALYZE keyword_top_asins', 'INSERT INTO keyword_top_asins_meta'].includes(x))).toEqual([]);
+    });
+  }
   for (const [label, thrown, expected] of [
     ['a pg error code', Object.assign(new Error('boom'), { code: '57014' }), '57014'],
     ['an error name', new TypeError('boom'), 'TypeError'],
