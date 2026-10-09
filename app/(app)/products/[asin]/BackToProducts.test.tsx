@@ -26,6 +26,11 @@ describe('resolveProductBack', () => {
     expect(resolveProductBack(KEYWORD_PAGE)).toEqual({ href: KEYWORD_PAGE, label: 'Back to keyword', cameFromPage: true });
   });
 
+  it('the uuid may use upper-case hex digits (the keyword page accepts either case)', () => {
+    const upper = `/explorer/keyword/${KW.toUpperCase()}`;
+    expect(resolveProductBack(upper)).toEqual({ href: upper, label: 'Back to keyword', cameFromPage: true });
+  });
+
   it.each([
     undefined,
     null,
@@ -41,6 +46,9 @@ describe('resolveProductBack', () => {
     '/explorer',
     '/explorer?q=lamp',
     '/explorer/keyword/not-a-uuid',
+    // the path itself is case-sensitive: only the uuid's hex digits may be upper case
+    `/EXPLORER/KEYWORD/${KW}`,
+    `/explorer/Keyword/${KW}`,
     `/explorer/keyword/${KW}/`,
     `/explorer/keyword/${KW}?from=/explorer`,
     `/explorer/keyword/${KW}\n`,

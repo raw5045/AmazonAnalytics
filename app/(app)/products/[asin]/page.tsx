@@ -15,10 +15,10 @@ import { ExternalLink } from 'lucide-react';
 import { env } from '@/lib/env';
 import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { isAsin } from '@/lib/products/asin';
-import { loadProduct } from '@/lib/products/loadProduct';
+import { loadProduct, type ProductFacts as ProductPageFacts } from '@/lib/products/loadProduct';
 import { neonRunner } from '@/lib/products/searchProducts';
 import { BackToProducts } from './BackToProducts';
-import { FactsCard, STATUS_LABEL, type FactsCardFacts } from './FactsCard';
+import { FactsCard, STATUS_LABEL } from './FactsCard';
 import { HistorySkeleton } from './LazyHistoryCharts';
 import { HistorySection, KeywordsSection, KeywordsSkeleton } from './StreamedProductSections';
 
@@ -45,14 +45,12 @@ export default async function ProductPage({
   if (!isAsin(asin)) notFound();
 
   const run = neonRunner(neon(env.DATABASE_URL));
-  const facts: FactsCardFacts | null = await loadProduct(run, asin);
+  const facts = await loadProduct(run, asin);
   if (!facts) notFound();
 
   const sp = searchParams ? await searchParams : {};
   const from = Array.isArray(sp.from) ? sp.from[0] : sp.from;
-  // False only for an ASIN with keyword rows but no catalog row (usually an excluded category).
-  const inCatalog = facts.inCatalog ?? true;
-  const badge = bandBadge(facts, inCatalog);
+  const badge = bandBadge(facts);
 
   return (
     <>
@@ -82,7 +80,8 @@ export default async function ProductPage({
 
       <div className="mx-auto max-w-6xl p-6">
         <FactsCard facts={facts} now={new Date()} />
-        {inCatalog && (
+        {/* A stub (keyword rows, no catalog row: usually an excluded category) has no history to show. */}
+        {facts.inCatalog && (
           <Suspense fallback={<HistorySkeleton />}>
             <HistorySection run={run} asin={asin} fetched={facts.fetched} />
           </Suspense>
@@ -102,8 +101,8 @@ const TONE = {
 } as const;
 
 /** The title band's status chip: only for a state that changes how to read the page (none when active). */
-function bandBadge(facts: FactsCardFacts, inCatalog: boolean): { label: string; tone: string } | null {
-  if (!inCatalog) return { label: 'Not in catalog', tone: TONE.slate };
+function bandBadge(facts: ProductPageFacts): { label: string; tone: string } | null {
+  if (!facts.inCatalog) return { label: 'Not in catalog', tone: TONE.slate };
   if (!facts.fetched) return { label: 'Not fetched yet', tone: TONE.slate };
   switch (facts.enrichmentStatus) {
     case 'delisted':

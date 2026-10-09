@@ -15,12 +15,6 @@ import type { AsinEnrichmentStatus } from '@/db/schema';
 import type { ProductFacts as ProductPageFacts } from '@/lib/products/loadProduct';
 import { availabilityLabel, formatBadge, formatPriceCents, formatRatio, listingAge } from '@/lib/products/format';
 
-/**
- * loadProduct's facts. `inCatalog` is false for an ASIN with keyword rows but no catalog row; it is
- * optional here until the loader carries it, and an absent value reads as in the catalog.
- */
-export type FactsCardFacts = ProductPageFacts & { inCatalog?: boolean };
-
 export const STATUS_LABEL: Readonly<Record<AsinEnrichmentStatus, string>> = {
   active: 'Active',
   no_price: 'No price',
@@ -44,8 +38,8 @@ const finite = (n: number | null): n is number => n !== null && Number.isFinite(
 const count = (n: number | null): string => (finite(n) ? n.toLocaleString('en-US') : DASH);
 const rank = (n: number | null): string => (finite(n) ? `#${n.toLocaleString('en-US')}` : DASH);
 
-export function FactsCard({ facts, now }: { facts: FactsCardFacts; now: Date }) {
-  if (!(facts.inCatalog ?? true)) {
+export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }) {
+  if (!facts.inCatalog) {
     return <p className="card-app px-4 py-3 text-sm text-gray-600">{NOT_IN_CATALOG_LINE}</p>;
   }
 
@@ -78,10 +72,11 @@ export function FactsCard({ facts, now }: { facts: FactsCardFacts; now: Date }) 
         {imageUrl && (
           // One thumbnail from Amazon's image CDN: next/image would need a remotePatterns entry and the
           // optimizer for a single small image, so a plain lazy <img> with fixed dimensions instead.
+          // alt="" because the page's h1 already names the product.
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={imageUrl}
-            alt="Product image"
+            alt=""
             width={112}
             height={112}
             loading="lazy"
@@ -171,7 +166,7 @@ function StatusBadge({ status }: { status: AsinEnrichmentStatus }) {
 }
 
 /** "fetched 2026-10-08 (12 fetches)": the UTC date of the last fetch and the running count. */
-function fetchedLine(facts: FactsCardFacts): string | null {
+function fetchedLine(facts: ProductPageFacts): string | null {
   if (!facts.lastFetchedAt) return null;
   const n = facts.fetchCount;
   return `fetched ${facts.lastFetchedAt.slice(0, 10)} (${n.toLocaleString('en-US')} ${n === 1 ? 'fetch' : 'fetches'})`;

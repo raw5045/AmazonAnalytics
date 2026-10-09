@@ -49,10 +49,23 @@ describe('HistoryCharts', () => {
       />,
     );
     for (const title of CHART_TITLES) expect(screen.getByText(title)).toBeInTheDocument();
+    expect(screen.getByText('lower is better · axis flipped')).toBeInTheDocument(); // beside the BSR title
     expect(surfaces(container)).toHaveLength(4);
     expect(container.querySelectorAll('path.recharts-line-curve')).toHaveLength(4);
     expect(screen.getByText('3 snapshots, 2026-09-20 to 2026-10-04')).toBeInTheDocument();
     expect(screen.queryByText('No history yet')).toBeNull();
+  });
+
+  it('capped: the summary says only the newest snapshots are shown', () => {
+    render(
+      <HistoryCharts
+        points={[point('2026-09-20T06:00:00.000Z'), point('2026-09-27T06:00:00.000Z'), point('2026-10-04T06:00:00.000Z')]}
+        capped
+      />,
+    );
+    expect(
+      screen.getByText('3 snapshots, 2026-09-20 to 2026-10-04 (the newest 3; older ones are not shown)'),
+    ).toBeInTheDocument();
   });
 
   it('zero points: "No history yet" and no chart', () => {

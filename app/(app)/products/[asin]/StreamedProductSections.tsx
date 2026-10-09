@@ -9,9 +9,10 @@
  */
 import type { ReactNode } from 'react';
 import { errFields } from '@/lib/ask/logSafe';
-import { loadProductHistory, type HistoryPoint } from '@/lib/products/loadProductHistory';
+import { loadProductHistory, PRODUCT_HISTORY_CAP, type HistoryPoint } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
 import type { SqlRunner } from '@/lib/products/searchProducts';
+import type { ChartPoint } from './chartMeta';
 import { LazyHistoryCharts } from './LazyHistoryCharts';
 import { ProductKeywordsTable } from './ProductKeywordsTable';
 
@@ -34,15 +35,16 @@ export async function HistorySection({ run, asin, fetched }: { run: SqlRunner; a
   }
   // Nothing to chart: say so here instead of downloading the chart chunk to say it.
   if (points.length === 0) return <HistoryNote>No history yet</HistoryNote>;
-  // Only the four charted fields cross to the client (up to 400 points).
-  const chartPoints = points.map(({ fetchedAt, currentPriceCents, salesRank, reviewCount, monthlySold }) => ({
+  // Only the charted fields cross to the client (up to PRODUCT_HISTORY_CAP points).
+  const chartPoints: ChartPoint[] = points.map(({ fetchedAt, currentPriceCents, salesRank, reviewCount, monthlySold }) => ({
     fetchedAt,
     currentPriceCents,
     salesRank,
     reviewCount,
     monthlySold,
   }));
-  return <LazyHistoryCharts points={chartPoints} />;
+  // A full page from the loader means older snapshots may have been left out; the summary says so.
+  return <LazyHistoryCharts points={chartPoints} capped={points.length >= PRODUCT_HISTORY_CAP} />;
 }
 
 /** The history block's frame with one line in place of the charts (same frame as HistoryCharts). */

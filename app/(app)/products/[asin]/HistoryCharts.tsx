@@ -3,8 +3,8 @@
 import type { ReactNode } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import type { DotItemDotProps, TooltipContentProps } from 'recharts';
-import type { HistoryPoint } from '@/lib/products/loadProductHistory';
 import { formatBadge, formatPriceCents } from '@/lib/products/format';
+import { HISTORY_CHART_HEIGHT, HISTORY_SERIES, type ChartPoint, type HistorySeriesKey } from './chartMeta';
 
 /**
  * The ASIN page's snapshot history (spec 2026-10-09 §6.2): four small line charts, price, BSR,
@@ -14,15 +14,11 @@ import { formatBadge, formatPriceCents } from '@/lib/products/format';
  * - Points sit one per fetch along the x axis (fetches are roughly evenly spaced), labelled by date.
  * - A null (a fetch that could not read the fact: no price, delisted) is a gap in the line; a point
  *   with gaps on both sides, or a lone snapshot, is drawn as a dot so it is not lost.
- * - BSR runs on an inverted axis: lower is better, so better is up.
+ * - BSR runs on a flipped axis: lower is better, so better is up.
  * - A series with no values at all says so instead of drawing empty axes.
+ * - `capped`: the loader returned its maximum number of snapshots, so older ones may be left out;
+ *   the summary line says so.
  */
-
-/** The fields the charts read. The page sends only these, so the client payload stays small. */
-export type ChartPoint = Pick<HistoryPoint, 'fetchedAt' | 'currentPriceCents' | 'salesRank' | 'reviewCount' | 'monthlySold'>;
-
-/** Keep in step with HistorySkeleton (LazyHistoryCharts.tsx), so swapping the charts in causes no layout shift. */
-const CHART_HEIGHT = 160;
 
 interface ChartRow {
   /** ISO timestamp of the fetch: the x category (unique per fetch). */
@@ -33,45 +29,27 @@ interface ChartRow {
   sold: number | null;
 }
 
-type SeriesKey = Exclude<keyof ChartRow, 'at'>;
-
-interface SeriesSpec {
-  key: SeriesKey;
-  title: string;
+interface SeriesFormat {
   /** For "No … data in these snapshots". */
   noun: string;
-  hint?: string;
   color: string;
   reversed?: boolean;
   formatValue: (v: number) => string;
   formatTick: (v: number) => string;
 }
 
-const SERIES: readonly SeriesSpec[] = [
-  { key: 'price', title: 'Price ($)', noun: 'price', color: '#16a34a', formatValue: (v) => formatPriceCents(v), formatTick: formatDollarTick },
-  {
-    key: 'bsr',
-    title: 'BSR',
-    noun: 'BSR',
-    hint: 'lower is better',
-    color: '#2563eb',
-    reversed: true,
-    formatValue: (v) => `#${v.toLocaleString('en-US')}`,
-    formatTick: formatCountTick,
-  },
-  { key: 'reviews', title: 'Reviews', noun: 'review', color: '#d97706', formatValue: (v) => v.toLocaleString('en-US'), formatTick: formatCountTick },
-  {
-    key: 'sold',
-    title: 'Monthly sold',
-    noun: 'monthly sold',
-    hint: 'Amazon’s badge floor',
-    color: '#7c3aed',
-    formatValue: (v) => formatBadge(v),
-    formatTick: formatCountTick,
-  },
-];
+const FORMAT: Readonly<Record<HistorySeriesKey, SeriesFormat>> = {
+  price: { noun: 'price', color: '#16a34a', formatValue: (v) => formatPriceCents(v), formatTick: formatDollarTick },
+  bsr: { noun: 'BSR', color: '#2563eb', reversed: true, formatValue: (v) => `#${v.toLocaleString('en-US')}`, formatTick: formatCountTick },
+  reviews: { noun: 'review', color: '#d97706', formatValue: (v) => v.toLocaleString('en-US'), formatTick: formatCountTick },
+  sold: { noun: 'monthly sold', color: '#7c3aed', formatValue: (v) => formatBadge(v), formatTick: formatCountTick },
+};
 
-export function HistoryCharts({ points }: { points: readonly ChartPoint[] }) {
+type SeriesSpec = (typeof HISTORY_SERIES)[number] & SeriesFormat;
+
+const SERIES: readonly SeriesSpec[] = HISTORY_SERIES.map((meta) => ({ ...meta, ...FORMAT[meta.key] }));
+
+export function HistoryCharts({ points, capped = false }: { points: readonly ChartPoint[]; capped?: boolean }) {
   if (points.length === 0) {
     return (
       <HistoryFrame>
@@ -86,11 +64,8 @@ export function HistoryCharts({ points }: { points: readonly ChartPoint[] }) {
     reviews: p.reviewCount,
     sold: p.monthlySold,
   }));
-  const first = rows[0].at.slice(0, 10);
-  const last = rows[rows.length - 1].at.slice(0, 10);
-  const summary = rows.length === 1 ? `1 snapshot, ${first}` : `${rows.length.toLocaleString('en-US')} snapshots, ${first} to ${last}`;
   return (
-    <HistoryFrame summary={summary}>
+    <HistoryFrame summary={historySummary(rows, capped)}>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {SERIES.map((spec) => (
           <SeriesChart key={spec.key} rows={rows} spec={spec} />
@@ -98,6 +73,15 @@ export function HistoryCharts({ points }: { points: readonly ChartPoint[] }) {
       </div>
     </HistoryFrame>
   );
+}
+
+/** "37 snapshots, 2026-08-01 to 2026-10-08", "1 snapshot, 2026-10-04", plus a note when the cap was hit. */
+function historySummary(rows: ChartRow[], capped: boolean): string {
+  const n = rows.length;
+  const first = rows[0].at.slice(0, 10);
+  const last = rows[n - 1].at.slice(0, 10);
+  const span = n === 1 ? `1 snapshot, ${first}` : `${n.toLocaleString('en-US')} snapshots, ${first} to ${last}`;
+  return capped ? `${span} (the newest ${n.toLocaleString('en-US')}; older ones are not shown)` : span;
 }
 
 function HistoryFrame({ summary, children }: { summary?: string; children: ReactNode }) {
@@ -121,7 +105,7 @@ function SeriesChart({ rows, spec }: { rows: ChartRow[]; spec: SeriesSpec }) {
         {spec.hint && <span className="text-xs text-gray-500">{spec.hint}</span>}
       </div>
       {hasValues ? (
-        <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <ResponsiveContainer width="100%" height={HISTORY_CHART_HEIGHT}>
           <LineChart data={rows} margin={{ top: 6, right: 12, bottom: 0, left: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
             <XAxis dataKey="at" tick={{ fontSize: 10 }} tickFormatter={formatDayTick} minTickGap={24} />
@@ -145,7 +129,7 @@ function SeriesChart({ rows, spec }: { rows: ChartRow[]; spec: SeriesSpec }) {
           </LineChart>
         </ResponsiveContainer>
       ) : (
-        <div className="flex items-center justify-center text-xs text-gray-400" style={{ height: CHART_HEIGHT }}>
+        <div className="flex items-center justify-center text-xs text-gray-400" style={{ height: HISTORY_CHART_HEIGHT }}>
           No {spec.noun} data in these snapshots
         </div>
       )}

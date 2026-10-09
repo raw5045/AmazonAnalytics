@@ -16,7 +16,9 @@ import { useRouter } from 'next/navigation';
  * own, and the href is the accepted value as is.
  */
 
-const KEYWORD_PAGE_RE = /^\/explorer\/keyword\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Case-sensitive path, hex digits of either case in the uuid (the keyword page's own id check is case-insensitive).
+const KEYWORD_PAGE_RE =
+  /^\/explorer\/keyword\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const PRODUCTS_LIST = '/products';
 
 export interface ProductBackTarget {

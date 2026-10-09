@@ -1,12 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { FactsCard, type FactsCardFacts } from './FactsCard';
+import type { ProductFacts as ProductPageFacts } from '@/lib/products/loadProduct';
+import { FactsCard } from './FactsCard';
 
 const MINUS = String.fromCodePoint(0x2212);
 const NOW = new Date('2026-10-09T12:00:00Z');
 const CATEGORY = 'Health & Household › Vitamins, Minerals & Supplements › Minerals › Magnesium';
 
-const FULL: FactsCardFacts = {
+const FULL: ProductPageFacts = {
   asin: 'B0CXYZ1234',
   title: 'Magnesium Glycinate 400 mg, 120 Capsules',
   brand: 'Acme Labs',
@@ -43,7 +44,7 @@ const FULL: FactsCardFacts = {
 };
 
 /** What loadProduct returns for a delisted row: prices (not active) and the point-in-time facts are null. */
-const DELISTED: FactsCardFacts = {
+const DELISTED: ProductPageFacts = {
   ...FULL,
   enrichmentStatus: 'delisted',
   currentPriceCents: null,
@@ -63,7 +64,7 @@ const DELISTED: FactsCardFacts = {
 };
 
 /** A catalog row the service has not fetched yet: every fact null, the title from the keyword side. */
-const NEVER_FETCHED: FactsCardFacts = {
+const NEVER_FETCHED: ProductPageFacts = {
   ...DELISTED,
   title: 'Magnesium Glycinate Capsules',
   brand: null,
@@ -84,7 +85,7 @@ const NEVER_FETCHED: FactsCardFacts = {
 };
 
 /** Keyword rows but no catalog row (usually an excluded category): loadProduct's stub. */
-const NOT_IN_CATALOG: FactsCardFacts = { ...NEVER_FETCHED, inScope: false, inCatalog: false };
+const NOT_IN_CATALOG: ProductPageFacts = { ...NEVER_FETCHED, inScope: false, tier: 0, inCatalog: false };
 
 /** The <dd> beside a fact's <dt> label. */
 function fact(label: string): HTMLElement {
@@ -115,19 +116,30 @@ describe('FactsCard — a full active row', () => {
     expect(fact('Status')).toHaveTextContent('fetched 2026-10-08 (12 fetches)');
   });
 
-  it('shows one lazy thumbnail with a width and height when the image URL is set', () => {
-    render(<FactsCard facts={FULL} now={NOW} />);
-    const imgs = screen.getAllByRole('img');
+  it('shows one lazy thumbnail with a width and height when the image URL is set, decorative (the h1 names the product)', () => {
+    const { container } = render(<FactsCard facts={FULL} now={NOW} />);
+    const imgs = container.querySelectorAll('img');
     expect(imgs).toHaveLength(1);
     expect(imgs[0]).toHaveAttribute('src', FULL.imageUrl);
+    expect(imgs[0]).toHaveAttribute('alt', '');
     expect(imgs[0]).toHaveAttribute('loading', 'lazy');
     expect(imgs[0]).toHaveAttribute('width');
     expect(imgs[0]).toHaveAttribute('height');
   });
 
-  it('no thumbnail without an image URL', () => {
-    render(<FactsCard facts={{ ...FULL, imageUrl: null }} now={NOW} />);
-    expect(screen.queryByRole('img')).toBeNull();
+  // Only an https URL becomes an <img src>; anything else renders no image at all.
+  it.each([
+    null,
+    '',
+    'http://m.media-amazon.com/images/I/71abcdefgh.jpg',
+    'javascript:alert(1)',
+    'data:image/svg+xml,<svg onload="alert(1)"/>',
+    '//m.media-amazon.com/images/I/71abcdefgh.jpg',
+    ' https://m.media-amazon.com/images/I/71abcdefgh.jpg',
+  ])('no thumbnail for the image URL %j', (imageUrl) => {
+    const { container } = render(<FactsCard facts={{ ...FULL, imageUrl }} now={NOW} />);
+    expect(container.querySelector('img')).toBeNull();
+    expect(fact('Brand')).toHaveTextContent('Acme Labs'); // the rest of the card still renders
   });
 
   it('the ratio chip and the averages lines are left out when Keepa has none', () => {
@@ -161,10 +173,10 @@ describe('FactsCard — edge states', () => {
   });
 
   it('a never-fetched row: "Not fetched yet" instead of the fact list', () => {
-    render(<FactsCard facts={NEVER_FETCHED} now={NOW} />);
+    const { container } = render(<FactsCard facts={NEVER_FETCHED} now={NOW} />);
     expect(screen.getByText('Not fetched yet')).toBeInTheDocument();
     expect(screen.queryByText('Brand', { selector: 'dt' })).toBeNull();
-    expect(screen.queryByRole('img')).toBeNull();
+    expect(container.querySelector('img')).toBeNull();
     expect(screen.queryByText(/Not in the Keepa catalog/)).toBeNull();
   });
 

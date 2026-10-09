@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { HISTORY_CHART_HEIGHT, HISTORY_SERIES } from './chartMeta';
 
 /**
  * Client wrapper that lazy-loads the ASIN page's recharts history charts, as the keyword page's
@@ -17,13 +18,9 @@ export const LazyHistoryCharts = dynamic(() => import('./HistoryCharts').then((m
   loading: () => <HistorySkeleton />,
 });
 
-/** The four chart cards' titles and plot height, kept in step with HistoryCharts.tsx. */
-const SKELETON_TITLES = ['Price ($)', 'BSR', 'Reviews', 'Monthly sold'];
-const CHART_HEIGHT = 160;
-
 /**
  * The history block while its data streams in (the page's Suspense fallback) or its chart chunk
- * downloads (the dynamic import's loading state): the same frame and card heights as the charts.
+ * downloads (the dynamic import's loading state): the charts' frame, card headers and plot height.
  */
 export function HistorySkeleton() {
   return (
@@ -39,10 +36,13 @@ export function HistorySkeleton() {
         </span>
       </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {SKELETON_TITLES.map((title) => (
-          <div key={title} className="card-app min-w-0 p-4">
-            <div className="mb-1 text-xs font-semibold text-gray-700">{title}</div>
-            <div className="animate-pulse rounded bg-gray-100" style={{ height: CHART_HEIGHT }} />
+        {HISTORY_SERIES.map(({ key, title, hint }) => (
+          <div key={key} className="card-app min-w-0 p-4">
+            <div className="mb-1 flex items-baseline justify-between gap-2">
+              <div className="text-xs font-semibold text-gray-700">{title}</div>
+              {hint && <span className="text-xs text-gray-500">{hint}</span>}
+            </div>
+            <div className="animate-pulse rounded bg-gray-100" style={{ height: HISTORY_CHART_HEIGHT }} />
           </div>
         ))}
       </div>
