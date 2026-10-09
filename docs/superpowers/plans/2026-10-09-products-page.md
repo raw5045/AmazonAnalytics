@@ -1102,3 +1102,33 @@ Run (owner's go only): `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topA
 | Page smoke | | | |
 | Tools smoke | | | |
 | First weekly build (next import) | | | |
+
+## Landed shape (2026-10-09/10) — what changed between the tasks above and the commits
+
+Spec §14 lists every design-level amendment; this is the task-by-task map.
+
+- **Task 1 (9de3635 + 69fe729 + 5e2519a).** Composite `(key, asin)` indexes; `--> statement-breakpoint` markers; the ratio comment says "point-in-time, hidden for delisted"; a SQL-text test pins the predicate × 6, the index columns, the reverse-table column set, the PK and the comment. The untracked apply script: ALTER under `lock_timeout` 5 s (retried), ratio backfill in 20k-row cursor batches under the enqueue advisory lock (`IS DISTINCT FROM`; re-runnable), plain VACUUM, the six indexes `CONCURRENTLY` on the direct endpoint with a validity rebuild, the reverse table in one transaction, coded assertions, ANALYZE. It logs "13 statements".
+- **Task 2 (3be32ee + fa698aa + ecb8fd0).** SUCCESS_UPDATE only (delisted keeps the ratio; readers hide it); int4 overflow guard; integration assertions (42/50 → 84; a seeded 77 survives a delisted write).
+- **Task 3 (3f5da33 + 1c7376a + 021c11c + 1b110e1).** Retained `_prev`, three plan variants (advance / same-week / rewind), DISTINCT ON carry, advisory lock `TOP_ASINS_LOCK_KEY` inside `BEGIN ISOLATION LEVEL READ COMMITTED`, `work_mem`, `lock_timeout` before the swap, `meta(rows)`, ANALYZE isolated, Pool guard, comments carried; 28 tests with exact call orders.
+- **Task 4 (8161f87 + 3bcfd79 + 8a66f95).** Phase as planned (`stage` connect|build; only `top_asins_older_than_meta` skips); chip labels "Keepa queue" / "Top ASINs"; the script refuses any `TOP_ASINS_FORCE` value but `1` and prints the rewind warning on an older-week refusal; pool options pinned.
+- **Task 5 (0d06956 + 674e26b).** As spec §14, §4.2.
+- **Task 6 (585403d + a1f1af0).** Per-field fallback; `Readonly<ProductFilters>`; `z.literal(PRODUCT_AGES)`; no negative zero; 8-digit prices; page clamp; trimmed category. Task 10 later split the zod-free parts into `filterParams.ts` (filters.ts re-exports them).
+- **Task 7 (2096325 + 6250bb5 + 640df33).** Page-first + lateral count; sorts hide null keys (`sortHidesNullKey`, `SORT_KEY_LABEL` — now in `filterParams.ts`); direction-following tie-break with `sort_key`; 32 tests incl. the 14-pair WHERE equality. The neon driver's `sql.query(text, params)` is the runner.
+- **Task 8 (0a80f1c + 62682d7).** `inCatalog` stub for reverse-table-only ASINs; fallback title bound to the ASIN; en-US `formatVolume` ('1,234 / mo', no tilde — the plan's "~1.2k" was wrong, exact numbers are the house rule); safe timestamps; keyword tie-break on `search_term_id`; shared `testHelpers.ts`; `loadProductKeywords(run, asin, limit = 500)`.
+- **Task 9 (92b6ca6).** As planned (nine actor fixtures touched; `app/api/mcp` tests needed the derived `isAdmin: true`).
+- **Task 10 (3f2186b + d33a090).** Client results table with `useLinkStatus`; pager from the total; `(list)` route group; `(list)/page.test.tsx`; `SORT_FIRST_DIR`; `replace` on header links; new-tab title links with `from`; sold buckets to 100,000; `filterParams.ts` split (chunk evidence: /products 146 → 83 KB gzip).
+- **Task 11 (000a017 + 453c2ef + 64ae466).** `lib/products/asin.ts` (`ASIN_RE`, `isAsin`); back control with both `from` shapes and `canGoBack`; not-in-catalog page; status chips for non-active states; dedicated history skeleton; `chartMeta.ts`; `page.test.tsx` with an async-section resolver; https-only image pinned.
+- **Task 12 (9da46a5 + 88993fc).** Links only for ASIN-shaped ids; `from` built from `id`; plain markup pinned; `focus-visible:underline`.
+- **Task 13 (3142f6e + cb00b3b).** Dollar/star schema with refines; `toProductFilters`; FORBIDDEN before any read; reserve 50 before reading like `search_keywords`; `record` on the deps; `ProductLoaders`/`ProductsDeps` split; `productUrlFor` in `links.ts`.
+- **Task 14 (8ad8bcd + its review-round commit).** Per-request admin-only listing on MCP (AsyncLocalStorage), Ask AI hides, guide section generated from the schema, `GUIDE_VERSION` 3, `productCaps.ts` leaf (tools.ts must never import `@/lib/env`), history cap 60 + `pointsTotal`, ToolActivity labels, the prompt's link rule.
+- **Task 15 (0736203 + e37e789).** TEMP scratch tables inside BEGIN…ROLLBACK with the build lock taken first; a second build proves the carry (gap rows deleted, a sample aged); auto-generated names asserted; `client_connection_check_interval`; the not-in-catalog path; EXPLAIN outlines for the default view and the owner's search.
+
+### Task 16, amended runbook
+
+1. **Apply 0051 + ratio backfill** (`checkActiveJobs` first; quiet hour): expect "13 statements", "alter: committed", ratio batches (scanned/updated), "vacuumed", six `ok (Ns)` index lines, "6 valid indexes", "tables: committed", "assertions passed", "analyzed". Re-run the same command after the Keepa redeploy (step 5b) for the ratio catch-up — idempotent.
+2. **Build integration test FIRST:** `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts` (no import due; minutes; prints the INSERT's seconds — the real build's lower bound). It proves the swap's generated names before the 2–3-hour backfill depends on them.
+3. **Backfill:** `BACKFILL_TOP_ASINS=yes node --env-file=.env.local --import tsx scripts/backfillTopAsins.ts` — "listing weeks…", then `week … (i/77): rows=… in …s` lines, skipped weeks logged, the swap-in, "ANALYZE". Readers can queue up to 120 s behind the final swap. A `top_asins_run_conflict` means another run owns the scratch tables.
+4. **Queries integration test:** `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts` (and the build test again, optional). Never run `tests/integration/ingestion-flow.test.ts` / `replace-week.test.ts` before step 3.
+5. **Push:** `checkActiveJobs` → bare `git push origin main` → the three deploys; the Keepa service redeploys (clean `sigterm` handover expected); no Inngest sync needed. **5b:** re-run the apply script for the ratio catch-up.
+6. **Smoke** as in the task: the example search, an ASIN page (facts, four charts, keywords with weeks in top 3), keyword → ASIN → keyword, a never-fetched and a not-in-catalog ASIN by direct link, non-admin access refused, the Products tab hidden for non-admins; then the tools from Claude (admin) and "tool not found" for a non-admin connector.
+7. **Next import:** `[top-asins] week …: rows=… previous=… carried=current`; weeks in top 3 grow by one for persisting pairs; the chip shows "Top ASINs" during the phase.
