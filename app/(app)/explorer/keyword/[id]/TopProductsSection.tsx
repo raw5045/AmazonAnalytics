@@ -20,14 +20,14 @@ export async function TopProductsSection({
   id,
   currentWeekEndDate,
   linkProducts,
-  keywordId,
 }: {
   id: string;
   currentWeekEndDate: string;
-  /** Admins only (arc 7): the product title links to the ASIN page. */
+  /**
+   * Admins only (arc 7): the product title links to the ASIN page, which links back to this
+   * keyword (`id`) through its `?from=`.
+   */
   linkProducts: boolean;
-  /** This keyword's id: the ASIN page's `?from=` target for its link back here. */
-  keywordId: string;
 }) {
   let slots: TopProductSlot[];
   let enrichedByAsin: Record<string, EnrichedProduct>;
@@ -63,7 +63,7 @@ export async function TopProductsSection({
         slots={slots}
         enrichedByAsin={enrichedByAsin}
         linkProducts={linkProducts}
-        keywordId={keywordId}
+        keywordId={id}
       />
     </section>
   );
@@ -137,15 +137,16 @@ function TopProductsTable({
           {rows.map((s) => {
             const enriched = enrichedByAsin[s.asin];
             const title = enriched?.title ?? s.fallbackTitle ?? null;
-            // Admins: the title opens the ASIN page. Everyone else keeps the plain text.
-            const titleNode =
-              linkProducts && title ? (
-                <Link href={productPageHref(s.asin, keywordId)} className="text-blue-700 hover:underline">
-                  {title}
-                </Link>
-              ) : (
-                (title ?? <span className="text-gray-400">—</span>)
-              );
+            // Admins: the title opens the ASIN page (only for a well-formed ASIN); everyone else keeps
+            // the plain text. focus-visible:underline because the truncate wrapper clips the focus ring.
+            const productHref = linkProducts && title ? productPageHref(s.asin, keywordId) : null;
+            const titleNode = productHref ? (
+              <Link href={productHref} className="text-blue-700 hover:underline focus-visible:underline">
+                {title}
+              </Link>
+            ) : (
+              (title ?? <span className="text-gray-400">—</span>)
+            );
             return (
               <tr key={`${s.slot}-${s.asin}`} className="align-top">
                 <td className="p-2 font-mono text-gray-600">{s.slot}</td>
@@ -184,11 +185,15 @@ function TopProductsTable({
   );
 }
 
+/** What the ASIN page's route accepts. The ASINs here come from raw CSV text, so check before linking. */
+const ASIN_RE = /^[A-Z0-9]{10}$/;
+
 /**
- * The admin-only ASIN page for a top product. `from` is this keyword's page, percent-encoded
- * because it is itself a path, so the ASIN page can link back here.
+ * The admin-only ASIN page for a top product, or null when the ASIN isn't ASIN-shaped. `from` is
+ * this keyword's page, percent-encoded because it is itself a path, so the ASIN page can link back.
  */
-function productPageHref(asin: string, keywordId: string): string {
+function productPageHref(asin: string, keywordId: string): string | null {
+  if (!ASIN_RE.test(asin)) return null;
   return `/products/${asin}?from=${encodeURIComponent(`/explorer/keyword/${keywordId}`)}`;
 }
 

@@ -46,7 +46,7 @@ function mockProducts(over: Partial<KeywordProducts> = {}): void {
 }
 
 async function renderSection(linkProducts: boolean) {
-  return render(await TopProductsSection({ id: KW, currentWeekEndDate: WEEK, linkProducts, keywordId: KW }));
+  return render(await TopProductsSection({ id: KW, currentWeekEndDate: WEEK, linkProducts }));
 }
 
 const fromParam = encodeURIComponent(`/explorer/keyword/${KW}`);
@@ -65,7 +65,10 @@ describe('TopProductsSection title links (admin link-back to the ASIN page)', ()
     await renderSection(true);
     expect(fetchKeywordProducts).toHaveBeenCalledWith(KW, WEEK);
     for (const { asin, title } of TITLES) {
-      expect(screen.getByRole('link', { name: title })).toHaveAttribute('href', `/products/${asin}?from=${fromParam}`);
+      const link = screen.getByRole('link', { name: title });
+      expect(link).toHaveAttribute('href', `/products/${asin}?from=${fromParam}`);
+      // The truncate wrapper clips the focus ring, so keyboard focus needs its own cue.
+      expect(link).toHaveClass('hover:underline', 'focus-visible:underline');
     }
     expect(productHrefs()).toHaveLength(3);
   });
@@ -77,9 +80,11 @@ describe('TopProductsSection title links (admin link-back to the ASIN page)', ()
     expect(new URL(href, 'https://keywordquarry.com').searchParams.get('from')).toBe(`/explorer/keyword/${KW}`);
   });
 
-  it('not linkProducts: titles are plain text, nothing links to /products', async () => {
+  it('not linkProducts: the title wrapper holds exactly the title text, and nothing links to /products', async () => {
     await renderSection(false);
     for (const { title } of TITLES) {
+      const wrapper = screen.getByText(title).closest('div.truncate');
+      expect(wrapper?.innerHTML).toBe(title);
       expect(screen.getByText(title).closest('a')).toBeNull();
     }
     expect(productHrefs()).toHaveLength(0);
@@ -110,4 +115,24 @@ describe('TopProductsSection title links (admin link-back to the ASIN page)', ()
     expect(wrapper?.querySelector('a')).toBeNull();
     expect(productHrefs()).toHaveLength(0);
   });
+
+  // ASINs come from raw CSV text and go into a path, so only ASIN-shaped ones are linked.
+  it.each(['b000000001', 'B00000001', 'B0000000012', 'B0000?#001', 'B000000001\n'])(
+    'a malformed ASIN (%j) keeps a plain title, while a well-formed one beside it is still linked',
+    async (badAsin) => {
+      mockProducts({
+        currentWeekProductSlots: [slot(1, 'B000000001', null), slot(2, badAsin, 'Odd Product')],
+        enrichedProductsByAsin: { B000000001: enriched('B000000001', { title: TITLES[0].title }) },
+      });
+      await renderSection(true);
+      expect(screen.getByRole('link', { name: TITLES[0].title })).toHaveAttribute(
+        'href',
+        `/products/B000000001?from=${fromParam}`,
+      );
+      const odd = screen.getByText('Odd Product');
+      expect(odd.closest('a')).toBeNull();
+      expect(odd.innerHTML).toBe('Odd Product');
+      expect(productHrefs()).toHaveLength(1);
+    },
+  );
 });

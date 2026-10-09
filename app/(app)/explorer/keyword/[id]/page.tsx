@@ -172,7 +172,6 @@ export default async function KeywordDetailPage({
             id={id}
             currentWeekEndDate={current.currentWeekEndDate}
             linkProducts={user?.role === 'admin'}
-            keywordId={id}
           />
         </Suspense>
       )}
