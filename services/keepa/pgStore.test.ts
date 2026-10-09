@@ -181,6 +181,25 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     expect(calls.find(isSnapshot)?.values).toEqual(['B1', NOW, 1299, 4321, 87, 45, 200, 7, 3, 4, 'active']);
   });
 
+  it('derives rank_ratio_x100 in SQL from the sales-rank and avg30 parameters, guarded to positive values, with no parameter of its own', async () => {
+    const { pool, calls } = fakePool();
+    await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map([['B1', full('B1')]]), lane: 'new', tokens: { tokensLeft: 1, refillRate: 250 }, now: NOW });
+    const upd = calls.find((c) => c.text.includes('title = $2'))!;
+    // The operands are the parameters already assigned to sales_rank and avg30_sales_rank (read from the SQL, not hard-coded).
+    const index = Object.fromEntries([...upd.text.matchAll(/(\w+) = \$(\d+)/g)].map(([, column, n]) => [column, Number(n)]));
+    const [rank, avg30] = [index.sales_rank, index.avg30_sales_rank];
+    expect([upd.values?.[rank - 1], upd.values?.[avg30 - 1]]).toEqual([4321, 4400]);
+    // Current rank over the 30-day average, times 100; both operands must be > 0 (a null or zero gives NULL). The ::int casts
+    // keep each parameter one type (an uncast operand in arithmetic would be deduced numeric against its integer column).
+    expect(upd.text).toContain(
+      `rank_ratio_x100 = CASE WHEN $${rank}::int > 0 AND $${avg30}::int > 0 THEN round(100.0 * $${rank}::int / $${avg30}::int)::int ELSE NULL END`,
+    );
+    // No new parameter: the statement still uses exactly $1..$31.
+    const used = [...new Set([...upd.text.matchAll(/\$(\d+)/g)].map(([, n]) => Number(n)))].sort((a, b) => a - b);
+    expect(used).toEqual(Array.from({ length: 31 }, (_, i) => i + 1));
+    expect(upd.values).toHaveLength(31);
+  });
+
   it('an all-error batch records its code as the last error and leaves last_batch_at alone', async () => {
     const { pool, calls } = fakePool();
     await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map([['B1', emptyFacts('B1', 'error', 'no_stats')]]), lane: 'new', tokens: { tokensLeft: 900, refillRate: 250 }, now: NOW, batchErrorCode: 'no_stats' });
@@ -201,11 +220,13 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     expect(upd.values?.slice(29)).toEqual([new Date('2026-10-13T12:00:00Z'), new Date('2026-11-05T12:00:00Z')]);
   });
 
-  it('a delisted product keeps its facts, flips the status, and is rechecked in 30 days', async () => {
+  it('a delisted product keeps its facts, clears the derived rank ratio, flips the status, and is rechecked in 30 days', async () => {
     const { pool, calls } = fakePool();
     await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map([['B1', emptyFacts('B1', 'delisted')]]), lane: 'due', tokens: { tokensLeft: 1, refillRate: 250 }, now: NOW });
     const upd = calls.find((c) => c.text.includes("enrichment_status = 'delisted'"))!;
     expect(upd.text).not.toContain('title =');
+    // The ratio is a point-in-time fact of a listing that is gone: cleared, with no parameter of its own.
+    expect(upd.text).toContain('rank_ratio_x100 = NULL');
     expect(upd.values).toEqual(['B1', NOW, new Date('2026-11-05T12:00:00Z')]);
     expect(calls.find((c) => c.text.includes('INSERT INTO asin_snapshots'))?.values?.[10]).toBe('delisted');
   });
@@ -216,6 +237,8 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     const upd = calls.find((c) => c.text.includes('consecutive_errors = consecutive_errors + 1'))!;
     expect(upd.text).toContain("CASE WHEN last_fetched_at IS NULL THEN 'error'::asin_enrichment_status ELSE enrichment_status END");
     expect(upd.text).not.toContain('last_fetched_at = ');
+    // Facts stay, so the rank ratio derived from them stays too: the error statement never names it.
+    expect(upd.text).not.toContain('rank_ratio_x100');
     expect(upd.values).toEqual(['B1', 'bad_object', new Date('2026-10-10T12:00:00Z')]);
     expect(calls.some(isSnapshot)).toBe(false);
   });
