@@ -11,6 +11,7 @@ import { defaultCategoryDeps, rankCandidates, resolveScope, type CategoryDeps } 
 import {
   invalid, keywordDetailsInputSchema, keywordHistoryInputSchema, parseSearchInput, resolveCategoriesInputSchema,
   type Filters, type GuideResponse, type KeywordDetailsResponse, type KeywordHistoryResponse, type Pagination,
+  type ProductDetailsResponse, type ProductSearchResponse,
   type ResolveCategoriesResponse, type SearchRequest, type SearchResponse, type SearchRow, type Sort, type TotalMatches, type Warning,
 } from './contracts';
 import { cursorSecret, signCursor, verifyCursor, type CursorPayload } from './cursor';
@@ -19,6 +20,7 @@ import { invalidCursorError, poolBusyError, ResearchError } from './errors';
 import { loadKeywordHistory, type HistoryDeps } from './history';
 import { researchLimits, type ResearchLimits } from './limits';
 import { getResearchPool } from './pool';
+import { defaultProductsDeps, productDetailsForTool, searchProductsForTool, type ProductLoaders, type ProductsDeps } from './products';
 import { compileSearch, mapSearchRow, type CompiledSearch } from './query';
 import { countMatches, runSearch } from './search';
 import { loadSnapshotMetaHttp, type SnapshotMeta } from './snapshot';
@@ -32,7 +34,9 @@ import { recordResearchActivity, reserveResearchRequest, type ResearchChannel } 
 export interface ResearchActor { localUserId: string; clerkUserId: string; clientId: string; channel: ResearchChannel; isAdmin: boolean }
 
 /**
- * The five research tools (MCP and the in-app chat), each independently callable. Every method validates its own
+ * The research tools (MCP and the in-app chat), each independently callable: the five keyword
+ * tools, plus the two admin-only products tools (spec 2026-10-09 §9, run in ./products.ts), which
+ * reject a non-admin actor with FORBIDDEN before any read. Every method validates its own
  * `input` (an `unknown` from the wire) and rejects with a `ResearchError` — see `guarded()`
  * below for how a non-`ResearchError` failure (a raw DB/pool error) is classified before it
  * ever reaches a caller.
@@ -43,6 +47,8 @@ export interface ResearchService {
   search(actor: ResearchActor, input: unknown): Promise<SearchResponse>;
   details(actor: ResearchActor, input: unknown): Promise<KeywordDetailsResponse>;
   history(actor: ResearchActor, input: unknown): Promise<KeywordHistoryResponse>;
+  searchProducts(actor: ResearchActor, input: unknown): Promise<ProductSearchResponse>;
+  productDetails(actor: ResearchActor, input: unknown): Promise<ProductDetailsResponse>;
 }
 
 /**
@@ -68,6 +74,8 @@ export interface ResearchServiceDeps {
   meta: () => Promise<Pick<SnapshotMeta, 'currentWeekEndDate'> | null>;
   runSearch: typeof runSearch;
   countMatches: typeof countMatches;
+  /** The Products page loaders behind searchProducts/productDetails; the service adds its own reserve and record (see createResearchService). */
+  products: ProductLoaders;
   loadDetails?: typeof loadKeywordDetails;
   loadHistory?: typeof loadKeywordHistory;
 }
@@ -90,6 +98,7 @@ export function defaultResearchDeps(): ResearchServiceDeps {
     meta: loadSnapshotMetaHttp,
     runSearch,
     countMatches,
+    products: defaultProductsDeps(appUrl),
   };
 }
 
@@ -176,16 +185,23 @@ function buildWarnings(args: { filters: Filters; sort: Sort; meta: SnapshotMeta;
 }
 
 /**
- * M9: builds the five research tools over `deps`. Every tool's order of operations is:
+ * M9: builds the research tools over `deps`. Every keyword tool's order of operations is:
  * validate → cursor verify + owner check (search's continuation path only) → presets → reserve
  * → resolve scope → run → count → bound the payload → sign the cursor → record activity.
  * `record` (the daily-digest counters, Task 17) runs only after every earlier step has already
  * succeeded — never before, and never on a rejected or failed call — so those counters only
- * ever reflect calls that actually returned a result to the caller.
+ * ever reflect calls that actually returned a result to the caller. The two products tools
+ * (./products.ts) keep the same order behind an admin check, on this service's own reserve and
+ * record (bound into `products` below).
  */
 export function createResearchService(deps: ResearchServiceDeps): ResearchService {
   const loadDetails = deps.loadDetails ?? loadKeywordDetails;
   const loadHistory = deps.loadHistory ?? loadKeywordHistory;
+  const products: ProductsDeps = {
+    ...deps.products,
+    reserve: (actor, rows) => reserveFor(deps, actor, rows),
+    record: (actor, rows) => deps.record(actor.localUserId, rows, actor.channel),
+  };
 
   /**
    * M9: order of operations (see createResearchService's docstring above) — validate → cursor
@@ -421,5 +437,7 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
     search: (a, i) => guarded(() => search(a, i)),
     details: (a, i) => guarded(() => details(a, i)),
     history: (a, i) => guarded(() => history(a, i)),
+    searchProducts: (a, i) => guarded(() => searchProductsForTool(products, a, i)),
+    productDetails: (a, i) => guarded(() => productDetailsForTool(products, a, i)),
   };
 }

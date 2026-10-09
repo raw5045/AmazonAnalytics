@@ -13,10 +13,17 @@ import {
   movementSchema,
   categoriesSchema,
   filtersSchema,
+  productSearchInputSchema,
+  productDetailsInputSchema,
+  toProductFilters,
+  PRODUCT_PRICE_DOLLARS_MAX,
   type SearchRequest,
   type Window,
 } from './contracts';
 import { ResearchError } from './errors';
+import {
+  MAX_CATEGORY_PATH_LENGTH, PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, productFiltersSchema,
+} from '@/lib/products/filters';
 
 const base = { schemaVersion: 1 as const };
 const fails = (input: unknown, path: string) => {
@@ -405,5 +412,135 @@ describe('custom selection ids', () => {
     const parsed = filtersSchema.parse({ categories: { selections: [{ kind: 'custom', id: 'ABCDEF12-ABCD-4ABC-8ABC-ABCDEF123456' }] } });
     expect(parsed.categories.selections).toEqual([{ kind: 'custom', id: 'abcdef12-abcd-4abc-8abc-abcdef123456' }]);
     expect(filtersSchema.safeParse({ categories: { selections: [{ kind: 'custom', id: 'not-a-uuid' }] } }).success).toBe(false);
+  });
+});
+
+// Products tools (spec 2026-10-09 §8, §9): the search_products input is the Products page's filter
+// set in a caller's units (dollars, stars), mapped onto ProductFilters by toProductFilters.
+const INT4_MAX = 2_147_483_647;
+const fullProductSearch = {
+  filters: {
+    listedWithinDays: 180, monthlySoldMin: 1000, reviewsMax: 300, ratingMin: 4.2, ratingMax: 4.9, priceMin: 9.99, priceMax: 19.99,
+    bsrMin: 1, bsrMax: 5000, bsrRatioMax: 70, categoryPath: 'Health & Household', fba: 'yes', amazonSelling: 'no',
+  },
+  sort: 'price',
+  dir: 'asc',
+  page: 3,
+} as const;
+
+describe('productSearchInputSchema (the search_products input)', () => {
+  it('accepts an empty input and every documented field, and injects no defaults (the SDK hands the service its parsed output)', () => {
+    expect(productSearchInputSchema.parse({})).toStrictEqual({});
+    expect(productSearchInputSchema.parse({ filters: {} })).toStrictEqual({ filters: {} });
+    expect(productSearchInputSchema.parse(fullProductSearch)).toStrictEqual(fullProductSearch);
+  });
+
+  it('parses idempotently: re-parsing the parsed output changes nothing (the category path is trimmed once)', () => {
+    const once = productSearchInputSchema.parse({ ...fullProductSearch, filters: { ...fullProductSearch.filters, categoryPath: '  Health & Household  ' } });
+    expect(once.filters?.categoryPath).toBe('Health & Household');
+    expect(productSearchInputSchema.parse(once)).toStrictEqual(once);
+  });
+
+  it('is strict at both levels: an unknown key is rejected with unrecognized_keys, never dropped', () => {
+    for (const input of [{ __probe: 1 }, { filters: { __probe: 1 } }, { filters: { priceMinCents: 999 } }, { pageSize: 10 }, { filters: { age: 90 } }]) {
+      const r = productSearchInputSchema.safeParse(input);
+      expect(r.success, JSON.stringify(input)).toBe(false);
+      expect(r.success ? [] : r.error.issues.map((i) => i.code), JSON.stringify(input)).toContain('unrecognized_keys');
+    }
+  });
+
+  it('rejects out-of-range and malformed values, field by field', () => {
+    const badFilters: Array<Record<string, unknown>> = [
+      { listedWithinDays: 30 }, { listedWithinDays: '90' }, { monthlySoldMin: 0 }, { monthlySoldMin: 50.5 }, { monthlySoldMin: INT4_MAX + 1 }, { reviewsMax: -1 },
+      { ratingMin: -0.1 }, { ratingMax: 5.1 }, { ratingMin: 4.55 }, { priceMin: -1 }, { priceMax: 9.999 }, { priceMax: PRODUCT_PRICE_DOLLARS_MAX + 0.01 },
+      { bsrMin: 0 }, { bsrMax: INT4_MAX + 1 }, { bsrRatioMax: 0 }, { bsrRatioMax: 1001 }, { bsrRatioMax: 70.5 },
+      { categoryPath: '' }, { categoryPath: '   ' }, { categoryPath: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH + 1) }, { fba: 'maybe' }, { amazonSelling: true },
+    ];
+    for (const filters of badFilters) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(false);
+    for (const input of [{ sort: 'title' }, { dir: 'up' }, { page: 0 }, { page: PRODUCT_MAX_PAGE + 1 }, { page: 1.5 }, { filters: null }]) {
+      expect(productSearchInputSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
+  });
+
+  it('accepts every bound itself and every page sort', () => {
+    const atBounds: Array<Record<string, unknown>> = [
+      { listedWithinDays: 60 }, { listedWithinDays: 365 }, { monthlySoldMin: 1 }, { reviewsMax: 0 }, { ratingMin: 0, ratingMax: 5 }, { priceMin: 0 },
+      { priceMax: PRODUCT_PRICE_DOLLARS_MAX }, { bsrMin: 1, bsrMax: INT4_MAX }, { bsrRatioMax: 1 }, { bsrRatioMax: 1000 }, { categoryPath: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH) },
+    ];
+    for (const filters of atBounds) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(true);
+    for (const sort of PRODUCT_SORTS) expect(productSearchInputSchema.safeParse({ sort }).success, sort).toBe(true);
+    expect(productSearchInputSchema.safeParse({ page: PRODUCT_MAX_PAGE }).success).toBe(true);
+  });
+
+  it('rejects a minimum above its maximum (no product could match) at the minimum, and accepts equal bounds', () => {
+    const pairs = [['ratingMin', 'ratingMax', 4.5, 4], ['priceMin', 'priceMax', 50, 20], ['bsrMin', 'bsrMax', 500, 100]] as const;
+    for (const [lo, hi, above, below] of pairs) {
+      const r = productSearchInputSchema.safeParse({ filters: { [lo]: above, [hi]: below } });
+      expect(r.success, lo).toBe(false);
+      expect(r.success ? [] : r.error.issues.map((i) => i.path.join('.')), lo).toEqual([`filters.${lo}`]);
+      expect(productSearchInputSchema.safeParse({ filters: { [lo]: below, [hi]: below } }).success, lo).toBe(true);
+    }
+  });
+
+  it('carries the field descriptions the published JSON schema depends on', () => {
+    const filters = productSearchInputSchema.shape.filters.unwrap().shape;
+    expect(filters.bsrRatioMax.description).toContain('30-day average');
+    expect(filters.monthlySoldMin.description).toContain('1,000+');
+    expect(filters.priceMin.description).toContain('dollars');
+    expect(filters.ratingMin.description).toContain('stars');
+    expect(productSearchInputSchema.shape.page.description).toContain(`${PRODUCT_PAGE_SIZE} products`);
+    expect(productSearchInputSchema.shape.sort.description).toContain(PRODUCT_SORTS.join(', '));
+  });
+});
+
+describe('toProductFilters (search_products input to the Products page filters)', () => {
+  it('fills every unset field from PRODUCT_DEFAULTS', () => {
+    expect(toProductFilters(productSearchInputSchema.parse({}))).toStrictEqual({ ...PRODUCT_DEFAULTS });
+    expect(toProductFilters(productSearchInputSchema.parse({ filters: {} }))).toStrictEqual({ ...PRODUCT_DEFAULTS });
+    expect(toProductFilters({ sort: 'bsr' })).toStrictEqual({ ...PRODUCT_DEFAULTS, sort: 'bsr' });
+  });
+
+  it('maps every field: dollars to cents, stars to ×10, the tool names onto the page names', () => {
+    expect(toProductFilters(productSearchInputSchema.parse(fullProductSearch))).toStrictEqual({
+      age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 42, ratingMax: 49, priceMinCents: 999, priceMaxCents: 1999,
+      bsrMin: 1, bsrMax: 5000, ratioMax: 70, cat: 'Health & Household', fba: 'yes', amazon: 'no', sort: 'price', dir: 'asc', page: 3,
+    });
+  });
+
+  it('rounds away floating-point error, and keeps zero as a bound rather than no filter', () => {
+    const cents = (priceMin: number) => toProductFilters({ filters: { priceMin } }).priceMinCents;
+    expect([0, 0.07, 0.29, 1.15, 4.35, 19.99, 1234567.89].map(cents)).toEqual([0, 7, 29, 115, 435, 1999, 123456789]);
+    const x10 = (ratingMin: number) => toProductFilters({ filters: { ratingMin } }).ratingMin;
+    expect([0, 0.7, 2.3, 4.1, 4.9, 5].map(x10)).toEqual([0, 7, 23, 41, 49, 50]);
+    expect(toProductFilters({ filters: { reviewsMax: 0 } }).reviewsMax).toBe(0);
+  });
+
+  it('always yields filters the Products page schema accepts, at the extremes too (the top price still fits the int4 cents column)', () => {
+    const inputs = [
+      {},
+      fullProductSearch,
+      {
+        filters: { priceMin: 0, priceMax: PRODUCT_PRICE_DOLLARS_MAX, ratingMin: 0, ratingMax: 5, reviewsMax: 0, monthlySoldMin: INT4_MAX, bsrMin: INT4_MAX, bsrMax: INT4_MAX, bsrRatioMax: 1000, listedWithinDays: 365 },
+        page: PRODUCT_MAX_PAGE,
+      },
+    ];
+    for (const input of inputs) {
+      expect(productFiltersSchema.safeParse(toProductFilters(productSearchInputSchema.parse(input))).success, JSON.stringify(input)).toBe(true);
+    }
+    expect(toProductFilters({ filters: { priceMax: PRODUCT_PRICE_DOLLARS_MAX } }).priceMaxCents).toBe(INT4_MAX);
+  });
+});
+
+describe('productDetailsInputSchema (the get_product_details input)', () => {
+  it('takes exactly one ASIN: ten capital letters or digits', () => {
+    expect(productDetailsInputSchema.parse({ asin: 'B0ABCDEF12' })).toStrictEqual({ asin: 'B0ABCDEF12' });
+    expect(productDetailsInputSchema.safeParse({ asin: '0123456789' }).success).toBe(true);
+    for (const asin of ['b0abcdef12', 'B0ABCDEF1', 'B0ABCDEF123', 'B0ABC-EF12', ' B0ABCDEF12', '', 1234567890, null]) {
+      expect(productDetailsInputSchema.safeParse({ asin }).success, String(asin)).toBe(false);
+    }
+    expect(productDetailsInputSchema.safeParse({}).success).toBe(false);
+    const extra = productDetailsInputSchema.safeParse({ asin: 'B0ABCDEF12', marketplace: 'US' });
+    expect(extra.success ? [] : extra.error.issues.map((i) => i.code)).toContain('unrecognized_keys');
+    expect(productDetailsInputSchema.shape.asin.description).toContain('ASIN');
   });
 });

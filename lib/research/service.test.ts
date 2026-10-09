@@ -13,7 +13,7 @@ vi.mock('@/db/client', () => ({ db: {} }));
 // stub it so building the default service never constructs a real pg.Pool.
 vi.mock('./pool', () => ({ getResearchPool: () => ({}) }));
 
-import { createResearchService, defaultResearchService, resetResearchServiceForTests, type ResearchActor, type ResearchServiceDeps } from './service';
+import { createResearchService, defaultResearchDeps, defaultResearchService, resetResearchServiceForTests, type ResearchActor, type ResearchServiceDeps } from './service';
 import { buildCategoryCatalog, type CategoryDeps } from './categories';
 import { DEFAULT_LIMITS } from './limits';
 import { signCursor, verifyCursor } from './cursor';
@@ -52,6 +52,13 @@ function makeDeps(over: Partial<ResearchServiceDeps> = {}) {
     meta: async () => META,
     runSearch: vi.fn(async (_pool, _t, compile) => ({ meta: META, rows: Array.from({ length: 51 }, (_, i) => raw(i + 1)), compiled: compile(META) })),
     countMatches: vi.fn(async () => ({ kind: 'exact' as const, value: 137 })),
+    products: {
+      appUrl: 'https://keywordquarry.com',
+      search: vi.fn(async () => ({ rows: [], total: 0, totalIsCapped: false, page: 1, pageSize: 50 })),
+      facts: vi.fn(async () => null),
+      history: vi.fn(async () => []),
+      keywords: vi.fn(async () => ({ rows: [], total: 0 })),
+    },
     ...over,
   };
   return deps;
@@ -385,6 +392,36 @@ describe('defaultResearchService', () => {
     resetResearchServiceForTests();
     const c = defaultResearchService();
     expect(c).not.toBe(a);
+  });
+  it('wires the Products page loaders for the two product tools, with the app URL for their links', () => {
+    const products = defaultResearchDeps().products;
+    expect(Object.keys(products).sort()).toEqual(['appUrl', 'facts', 'history', 'keywords', 'search']);
+    expect(products.appUrl).toBe('https://keywordquarry.com');
+  });
+});
+
+describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
+  const admin: ResearchActor = { ...actor, isAdmin: true };
+  it('meter through the service’s own reserve and record: the page size for a search, one row for details', async () => {
+    const deps = makeDeps();
+    const svc = createResearchService(deps);
+    const res = await svc.searchProducts(admin, { sort: 'bsr' });
+    expect(res).toMatchObject({ schemaVersion: 1, products: [], total: { kind: 'exact', value: 0 }, page: 1, pageSize: 50, adminOnly: true });
+    expect(deps.products.search).toHaveBeenCalledWith(expect.objectContaining({ sort: 'bsr', dir: 'desc', page: 1 }));
+    expect(deps.reserve).toHaveBeenNthCalledWith(1, { userId: 'u1', channel: 'mcp', rows: 50, now: new Date('2026-09-21T12:00:00Z'), limits: deps.limits });
+    expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', 0, 'mcp');
+    // An unknown ASIN passes through guarded() as the NOT_FOUND ResearchError itself, and is never recorded.
+    await expect(svc.productDetails({ ...admin, channel: 'chat' }, { asin: 'B0ABCDEF12' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(deps.reserve).toHaveBeenNthCalledWith(2, expect.objectContaining({ userId: 'u1', channel: 'chat', rows: 1 }));
+    expect(deps.products.facts).toHaveBeenCalledWith('B0ABCDEF12');
+    expect(deps.record).toHaveBeenCalledTimes(1);
+  });
+  it('refuse a non-admin account with FORBIDDEN before any reserve or read', async () => {
+    const deps = makeDeps();
+    const svc = createResearchService(deps);
+    await expect(svc.searchProducts(actor, {})).rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
+    await expect(svc.productDetails(actor, { asin: 'B0ABCDEF12' })).rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
+    for (const fn of [deps.reserve, deps.record, deps.products.search, deps.products.facts, deps.products.history, deps.products.keywords]) expect(fn).not.toHaveBeenCalled();
   });
 });
 

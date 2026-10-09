@@ -1,5 +1,12 @@
 import { z } from 'zod';
 import { MAX_EXCLUDE_TERM_LENGTH, MAX_EXCLUDE_TERMS, MIN_EXCLUDE_TERM_LENGTH } from '@/lib/explorer/parseFilters';
+import {
+  MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters,
+} from '@/lib/products/filters';
+import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
+import type { HistoryPoint as SnapshotHistoryPoint } from '@/lib/products/loadProductHistory';
+import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
+import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { ResearchError, invalidCursorError } from './errors';
 import type { ResearchLimits } from './limits';
 
@@ -326,6 +333,109 @@ export const keywordHistoryInputSchema = z.strictObject({ searchTermId: z.uuid()
 export const emptyInputSchema = z.strictObject({});
 
 // ---------------------------------------------------------------------------
+// Products tools (spec 2026-10-09 §8, §9; admin-only). The search input is the Products page's
+// filter set (lib/products/filters.ts) in a caller's units — US dollars and stars — under names a
+// reader expects; toProductFilters maps it onto ProductFilters (cents, stars × 10, the page's own
+// field names). Nothing is defaulted or transformed beyond a trim: the SDK hands the tool its own
+// parsed output and the service parses that again, so a parse must be idempotent, and the defaults
+// (PRODUCT_DEFAULTS) are the mapper's job.
+// ---------------------------------------------------------------------------
+
+/** The top price bound in dollars: its cents must still fit the int4 current_price_cents column (INT4_MAX above). */
+export const PRODUCT_PRICE_DOLLARS_MAX = INT4_MAX / 100;
+/** An ASIN as the catalog stores it: ten capital letters or digits. */
+const ASIN_PATTERN = /^[A-Z0-9]{10}$/;
+/** The search's min/max pairs: a minimum above its maximum is refused, never answered with an empty page. */
+const PRODUCT_RANGE_PAIRS = [['ratingMin', 'ratingMax'], ['priceMin', 'priceMax'], ['bsrMin', 'bsrMax']] as const;
+
+const productStars = z.number().min(0).max(5).multipleOf(0.1);
+const productDollars = z.number().min(0).max(PRODUCT_PRICE_DOLLARS_MAX).multipleOf(0.01);
+const productBsr = z.int().min(1).max(INT4_MAX);
+
+const productSearchFiltersSchema = z
+  .strictObject({
+    listedWithinDays: z.literal(PRODUCT_AGES).optional().describe(`Listed on Amazon within the last N days: one of ${PRODUCT_AGES.join(', ')}.`),
+    monthlySoldMin: z.int().min(1).max(INT4_MAX).optional().describe(
+      "Monthly sold at least N, from Amazon's 'bought in past month' badge. The badge is a floor: 1000 means 1,000+ (buckets run from 50 to 100000). Products without the badge are excluded.",
+    ),
+    reviewsMax: z.int().min(0).max(INT4_MAX).optional().describe('Review count at most N; products without a review count are excluded.'),
+    ratingMin: productStars.optional().describe('Average rating at least N stars (0 to 5, one decimal: 4.5); unrated products are excluded.'),
+    ratingMax: productStars.optional().describe('Average rating at most N stars (0 to 5, one decimal); unrated products are excluded.'),
+    priceMin: productDollars.optional().describe(
+      'Current price at least N US dollars (up to two decimals: 19.99). Only active listings carry a price, so any price bound leaves the others out.',
+    ),
+    priceMax: productDollars.optional().describe('Current price at most N US dollars (up to two decimals).'),
+    bsrMin: productBsr.optional().describe('Best sellers rank in its main category at least N (1 = the best seller); products without a rank are excluded.'),
+    bsrMax: productBsr.optional().describe('Best sellers rank in its main category at most N; products without a rank are excluded.'),
+    bsrRatioMax: z.int().min(1).max(1000).optional().describe(
+      'Current BSR ÷ its 30-day average BSR × 100, at most N: 70 = ranked at least 30 % better than its 30-day average; under 100 = better than average.',
+    ),
+    categoryPath: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).optional().describe(
+      "A category path with ' › ' between levels (as resolve_categories returns it), or a department alone ('Health & Household'): matches that path and every path under it.",
+    ),
+    fba: z.enum(['yes', 'no']).optional().describe('yes = at least one FBA offer; no = Keepa reported zero FBA offers (a product with no reported count matches neither).'),
+    amazonSelling: z.enum(['yes', 'no']).optional().describe('yes = Amazon itself has an offer (in any availability state); no = no Amazon offer, or none reported.'),
+  })
+  .superRefine((f, ctx) => {
+    for (const [lo, hi] of PRODUCT_RANGE_PAIRS) {
+      const min = f[lo];
+      const max = f[hi];
+      if (min !== undefined && max !== undefined && min > max) ctx.addIssue({ code: 'custom', message: `${lo} is above ${hi}, so no product could match`, path: [lo] });
+    }
+  });
+
+/** search_products' input: every field optional and undefaulted (see the section note above). */
+export const productSearchInputSchema = z.strictObject({
+  filters: productSearchFiltersSchema.optional().describe(
+    'All optional, combined with AND. Every search covers the in-scope catalog products with an active or no-price listing.',
+  ),
+  sort: z.enum(PRODUCT_SORTS).optional().describe(
+    `One of ${PRODUCT_SORTS.join(', ')}; default sold (the monthly sold badge). listed = listing date, bsr = best sellers rank (asc = best first), ratio = BSR against its 30-day average, keywords = current keywords the product is a top-3 clicked product for. Every sort but keywords leaves out products missing that value.`,
+  ),
+  dir: z.enum(['asc', 'desc']).optional().describe('asc or desc; default desc.'),
+  page: z.int().min(1).max(PRODUCT_MAX_PAGE).optional().describe(`1-based page of ${PRODUCT_PAGE_SIZE} products; default 1, at most ${PRODUCT_MAX_PAGE}.`),
+});
+export type ProductSearchInput = z.infer<typeof productSearchInputSchema>;
+
+/** Dollars (two decimals) to whole cents, rounded: 19.99 × 100 is 1998.9999999999998 in floating point. */
+const dollarsToCents = (dollars: number | undefined): number | null => (dollars === undefined ? null : Math.round(dollars * 100));
+/** Stars (one decimal) to the catalog's stars × 10 integer, rounded for the same reason. */
+const starsToX10 = (stars: number | undefined): number | null => (stars === undefined ? null : Math.round(stars * 10));
+
+/**
+ * A parsed search_products input as the Products page's ProductFilters: the page's field names,
+ * cents and stars × 10, and PRODUCT_DEFAULTS for every field left out. The schema's bounds are the
+ * page schema's bounds in the caller's units, so the result always passes productFiltersSchema.
+ */
+export function toProductFilters(input: ProductSearchInput): ProductFilters {
+  const f: NonNullable<ProductSearchInput['filters']> = input.filters ?? {};
+  return {
+    age: f.listedWithinDays ?? PRODUCT_DEFAULTS.age,
+    soldMin: f.monthlySoldMin ?? PRODUCT_DEFAULTS.soldMin,
+    reviewsMax: f.reviewsMax ?? PRODUCT_DEFAULTS.reviewsMax,
+    ratingMin: starsToX10(f.ratingMin) ?? PRODUCT_DEFAULTS.ratingMin,
+    ratingMax: starsToX10(f.ratingMax) ?? PRODUCT_DEFAULTS.ratingMax,
+    priceMinCents: dollarsToCents(f.priceMin) ?? PRODUCT_DEFAULTS.priceMinCents,
+    priceMaxCents: dollarsToCents(f.priceMax) ?? PRODUCT_DEFAULTS.priceMaxCents,
+    bsrMin: f.bsrMin ?? PRODUCT_DEFAULTS.bsrMin,
+    bsrMax: f.bsrMax ?? PRODUCT_DEFAULTS.bsrMax,
+    ratioMax: f.bsrRatioMax ?? PRODUCT_DEFAULTS.ratioMax,
+    cat: f.categoryPath ?? PRODUCT_DEFAULTS.cat,
+    fba: f.fba ?? PRODUCT_DEFAULTS.fba,
+    amazon: f.amazonSelling ?? PRODUCT_DEFAULTS.amazon,
+    sort: input.sort ?? PRODUCT_DEFAULTS.sort,
+    dir: input.dir ?? PRODUCT_DEFAULTS.dir,
+    page: input.page ?? PRODUCT_DEFAULTS.page,
+  };
+}
+
+/** get_product_details' input: one ASIN, exactly as the catalog stores it. */
+export const productDetailsInputSchema = z.strictObject({
+  asin: z.string().regex(ASIN_PATTERN, 'an ASIN is 10 capital letters or digits').describe("The product's 10-character ASIN in capitals (B0…), as search_products returns it."),
+});
+export type ProductDetailsInput = z.infer<typeof productDetailsInputSchema>;
+
+// ---------------------------------------------------------------------------
 // Output shapes (TypeScript only) — the response contracts the MCP research
 // tools (search_keywords, resolve_categories, get_keyword_details,
 // get_keyword_history, get_research_guide) build and return.
@@ -527,4 +637,38 @@ export interface GuideResponse {
     rules: string[];
     caps: { savedViews: number; customCategories: number; watchedKeywords: number; leavesPerCategory: number; writesPerDay: number };
   };
+}
+
+// ---------------------------------------------------------------------------
+// Output shapes of the two admin-only products tools (spec 2026-10-09 §9), search_products and
+// get_product_details, built in ./products.ts. They extend the Products page's own loader shapes
+// (lib/products/*, type-only imports), so the page and the tools never describe a product
+// differently: prices in cents, ratings in stars × 10, dates YYYY-MM-DD, fetch times ISO 8601.
+// ---------------------------------------------------------------------------
+
+/** One search_products row: the Products page's result row plus its ASIN page link. */
+export type ProductSummary = ProductSummaryRow & { url: string };
+export interface ProductSearchResponse {
+  schemaVersion: 1;
+  products: ProductSummary[];
+  /** search_keywords' totalMatches vocabulary: exact up to the page's count cap, then at_least that cap (one count read, so never 'unknown'). */
+  total: { kind: Extract<TotalMatchesKind, 'exact' | 'at_least'>; value: number };
+  page: number;
+  pageSize: number;
+  /** Always true while the products tools are admin-only (spec 2026-10-09 §10). */
+  adminOnly: true;
+}
+/** One Keepa snapshot of the product (lib/products/loadProductHistory.ts), named apart from the keyword HistoryPoint above. */
+export type ProductHistoryPoint = SnapshotHistoryPoint;
+/** One keyword the product is a top-3 clicked product for this week, plus that keyword's Explorer page link. */
+export type ProductKeyword = ProductKeywordRow & { keywordUrl: string };
+export interface ProductDetailsResponse {
+  schemaVersion: 1;
+  /** The ASIN page's facts plus its link. inCatalog false: the keyword tables know the ASIN but the catalog has no row, so every fact is null. */
+  product: CatalogProductFacts & { url: string };
+  /** The loader's newest snapshots (up to 400), oldest first, with the oldest and newest repeated for a then-and-now; no points, first and last null, when there are none (always for inCatalog false). */
+  history: { points: ProductHistoryPoint[]; first: ProductHistoryPoint | null; last: ProductHistoryPoint | null };
+  /** Best keyword rank first, capped at PRODUCT_TOOL_KEYWORDS_CAP (./products.ts); keywordsTotal counts every one. */
+  keywords: ProductKeyword[];
+  keywordsTotal: number;
 }
