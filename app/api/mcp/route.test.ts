@@ -179,14 +179,17 @@ describe('/api/mcp', () => {
     expect((await res.json()).reason).toBe('no_account');
   });
 
-  it('lets an admin connect, lists the six read-only tools, and answers whoami with structured output', async () => {
+  it('lets an admin connect, lists the eight read-only tools, and answers whoami with structured output', async () => {
     const client = await connect();
     try {
       expect(client.getServerVersion()?.name).toBe('keywordquarry');
       expect(client.getInstructions()).toContain('KeywordQuarry');
 
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name).sort()).toEqual(['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami']);
+      // The seven research tools (the two admin-only products tools included: the server is built once per process) and whoami.
+      expect(tools.map((t) => t.name).sort()).toEqual([
+        'get_keyword_details', 'get_keyword_history', 'get_product_details', 'get_research_guide', 'resolve_categories', 'search_keywords', 'search_products', 'whoami',
+      ]);
       expect(tools[0].annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
       expect(client.getInstructions()).not.toContain('Workspace tools');
       expect(mockDefaultWorkspaceService).not.toHaveBeenCalled();
@@ -341,11 +344,11 @@ describe('/api/mcp with MCP_WRITE_ENABLED=1 (spec 2026-09-30 §2)', () => {
     spies.splice(0).forEach((s) => s.mockRestore());
   });
 
-  it('lists the five research tools, whoami and the eleven workspace tools, says so in the instructions, and runs a workspace tool with the gate-supplied actor', async () => {
+  it('lists the seven research tools, whoami and the eleven workspace tools, says so in the instructions, and runs a workspace tool with the gate-supplied actor', async () => {
     const client = await connectFresh('route-test-writes');
     try {
       const { tools } = await client.listTools();
-      expect(tools).toHaveLength(17);
+      expect(tools).toHaveLength(19);
       expect(tools.map((t) => t.name)).toEqual(expect.arrayContaining(['list_saved_views', 'create_saved_view', 'delete_custom_category', 'remove_from_watchlist', 'whoami', 'search_keywords']));
       expect(client.getInstructions()).toContain('Workspace tools');
       const r = await client.callTool({ name: 'list_saved_views', arguments: {} });
@@ -386,11 +389,13 @@ describe('/api/mcp with MCP_WRITE_ENABLED=1 when the workspace service cannot be
     spies.splice(0).forEach((s) => s.mockRestore());
   });
 
-  it('still lists whoami and the five research tools, and logs the failure by its log-safe fields only', async () => {
+  it('still lists whoami and the seven research tools, and logs the failure by its log-safe fields only', async () => {
     const client = await connectFresh('route-test-fail-soft');
     try {
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name).sort()).toEqual(['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami']);
+      expect(tools.map((t) => t.name).sort()).toEqual([
+        'get_keyword_details', 'get_keyword_history', 'get_product_details', 'get_research_guide', 'resolve_categories', 'search_keywords', 'search_products', 'whoami',
+      ]);
       const logged = vi.mocked(console.error).mock.calls.filter((c) => c[0] === '[mcp]').map((c) => JSON.parse(String(c[1])));
       expect(logged).toContainEqual({ outcome: 'workspace_tools_unavailable', error: 'Error', code: '08006', detail: 'boom' });
       for (const line of consoleLines()) expect(line).not.toContain('SECRET-PARAM');

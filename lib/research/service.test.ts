@@ -19,6 +19,7 @@ import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadPro
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
 import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { buildCategoryCatalog, type CategoryDeps } from './categories';
+import { PRODUCT_RULES } from './catalog';
 import { DEFAULT_LIMITS } from './limits';
 import { signCursor, verifyCursor } from './cursor';
 import { ResearchError, searchExpiredError } from './errors';
@@ -81,7 +82,7 @@ describe('search: a new request', () => {
     expect(res.pagination.expiresAt).toBe('2026-09-21T12:15:00.000Z');
     const cursor = verifyCursor(res.pagination.nextCursor!, 'test-secret', 0);
     expect(cursor).toMatchObject({ off: 50, ps: 50, snap: 'snap-a', uid: 'u1', ch: 'mcp', tm: { kind: 'exact', value: 137 } });
-    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 2, queryVersion: 1 });
+    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 3, queryVersion: 1 });
     expect(res.warnings.map((w) => w.code)).toEqual(['ESTIMATED_VOLUME', 'LIVE_PAGINATION']);
     expect(deps.record).toHaveBeenCalledWith('u1', 50, 'mcp');
     const call = (deps.runSearch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -574,5 +575,16 @@ describe('guide: workspace section', () => {
     expect((await on.guide({ ...actor, clientId: 'ask-ai', channel: 'chat' })).workspace).toBeUndefined();
     const off = createResearchService(makeDeps({ workspaceEnabled: () => false }));
     expect((await off.guide(actor)).workspace).toBeUndefined();
+  });
+});
+
+describe('guide: products section (spec 2026-10-09 §9)', () => {
+  it('is present for an admin account on either channel, never for any other account', async () => {
+    const svc = createResearchService(makeDeps());
+    const admin: ResearchActor = { ...actor, isAdmin: true };
+    expect(await svc.guide(admin)).toHaveProperty('products.rules', PRODUCT_RULES);
+    expect(await svc.guide({ ...admin, clientId: 'ask-ai', channel: 'chat' })).toHaveProperty('products.rules', PRODUCT_RULES);
+    expect(await svc.guide(actor)).not.toHaveProperty('products');
+    expect(await svc.guide({ ...actor, clientId: 'ask-ai', channel: 'chat' })).not.toHaveProperty('products');
   });
 });

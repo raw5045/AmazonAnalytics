@@ -5,9 +5,14 @@ import { describe, it, expect, vi } from 'vitest';
 // reaches @/lib/env mocks it the same way (see lib/research/limits.test.ts); this file
 // only needs the static DEFAULT_LIMITS constant, so an empty env is enough.
 vi.mock('@/lib/env', () => ({ env: {} }));
-import { applyPresets, applyPresetDefinitions, PRESETS, buildGuide, CATALOG_VERSION, GUIDE_VERSION, METRIC_DEFINITIONS, WORKSPACE_RULES, type PresetDefinition } from './catalog';
-import { searchRequestSchema, filtersSchema, DEFAULT_SORT, type PresetId } from './contracts';
+import {
+  applyPresets, applyPresetDefinitions, PRESETS, buildGuide, CATALOG_VERSION, GUIDE_VERSION, METRIC_DEFINITIONS, PRODUCT_FILTER_DEFINITIONS, PRODUCT_RULES, WORKSPACE_RULES,
+  type PresetDefinition,
+} from './catalog';
+import { searchRequestSchema, filtersSchema, DEFAULT_SORT, productSearchInputSchema, type PresetId } from './contracts';
 import { DEFAULT_LIMITS } from './limits';
+import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE } from '@/lib/products/filters';
+import { PRODUCT_COUNT_CAP } from '@/lib/products/searchProducts';
 
 const req = (over: Record<string, unknown>) => searchRequestSchema.parse({ schemaVersion: 1, ...over });
 
@@ -219,9 +224,9 @@ describe('buildGuide', () => {
 
 describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
   it('is absent unless asked for, and then carries the rules and the caps', () => {
-    expect(GUIDE_VERSION).toBe(2);
+    expect(GUIDE_VERSION).toBe(3);
     const off = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS });
-    expect(off.guideVersion).toBe(2);
+    expect(off.guideVersion).toBe(3);
     expect(off.workspace).toBeUndefined();
     const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: { ...DEFAULT_LIMITS, writesPerDay: 42 }, workspace: true });
     expect(on.workspace).toEqual({ rules: WORKSPACE_RULES, caps: { savedViews: 5, customCategories: 25, watchedKeywords: 100, leavesPerCategory: 12000, writesPerDay: 42 } });
@@ -230,5 +235,51 @@ describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
     expect(WORKSPACE_RULES.some((r) => r.includes('explorerUrl'))).toBe(true);
     expect(WORKSPACE_RULES.some((r) => r.includes('cannot be exported or refined'))).toBe(true);
     expect(WORKSPACE_RULES.some((r) => r.includes('as they were when it was saved'))).toBe(true);
+  });
+});
+
+describe('buildGuide products section (spec 2026-10-09 §9)', () => {
+  const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS, products: true });
+  const filterShape = productSearchInputSchema.shape.filters.unwrap().shape;
+
+  it('is absent unless asked for (an admin account), and then carries the rules and every search_products filter', () => {
+    expect(buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS }).products).toBeUndefined();
+    expect(buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS, products: false }).products).toBeUndefined();
+    expect(on.guideVersion).toBe(GUIDE_VERSION);
+    expect(on.products?.rules).toEqual(PRODUCT_RULES);
+    // Every filter the tool's schema has, in its order, each with that field's own schema description.
+    expect(on.products?.filters.map((f) => f.name)).toEqual(Object.keys(filterShape));
+    for (const f of on.products?.filters ?? []) {
+      expect(f.definition, f.name).toBe(filterShape[f.name as keyof typeof filterShape].description);
+      expect(f.definition.length, f.name).toBeGreaterThan(20);
+    }
+    // Copies, never the frozen singletons a caller could otherwise mutate for every other request.
+    expect(on.products?.rules).not.toBe(PRODUCT_RULES);
+    expect(on.products?.filters[0]).not.toBe(PRODUCT_FILTER_DEFINITIONS[0]);
+    expect(Object.isFrozen(PRODUCT_RULES)).toBe(true);
+    expect(Object.isFrozen(PRODUCT_FILTER_DEFINITIONS[0])).toBe(true);
+    expect(JSON.stringify(on)).not.toMatch(/@/);
+  });
+
+  it('states the units, the badge, the ratio, weeks in top 3, the not-in-catalog case, the paging numbers and that the tools are admin-only', () => {
+    const rules = on.products?.rules.join('\n') ?? '';
+    expect(rules).toContain('admin accounts only for now; any other account gets FORBIDDEN');
+    expect(rules).toContain('stars (0–5, one decimal)');
+    expect(rules).toContain('US dollars');
+    expect(rules).toContain('averageRatingX10 (stars × 10');
+    expect(rules).toContain('prices in cents');
+    expect(rules).toContain("Amazon's 'bought in past month' floor: 1000 means 1,000+");
+    expect(rules).toContain('current BSR ÷ 30-day average BSR × 100');
+    expect(rules).toContain('70 = at least 30 % better');
+    expect(rules).toContain('consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword');
+    expect(rules).toContain('inCatalog false: the keywords know the ASIN but there are no product facts (usually its category is excluded from enrichment)');
+    expect(rules).toContain(`${PRODUCT_PAGE_SIZE} products, page 1 to ${PRODUCT_MAX_PAGE}`);
+    expect(rules).toContain(`exact below ${PRODUCT_COUNT_CAP.toLocaleString('en-US')}`);
+    const unitsOf = (name: string) => on.products?.filters.find((f) => f.name === name)?.definition ?? '';
+    expect(unitsOf('listedWithinDays')).toContain('days');
+    expect(unitsOf('priceMin')).toContain('US dollars');
+    expect(unitsOf('ratingMin')).toContain('stars');
+    expect(unitsOf('monthlySoldMin')).toContain('1000 means 1,000+');
+    expect(unitsOf('bsrRatioMax')).toContain('30-day average');
   });
 });

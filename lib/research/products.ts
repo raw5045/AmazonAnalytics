@@ -20,11 +20,12 @@ import {
   type ProductDetailsResponse, type ProductHistoryPoint, type ProductSearchResponse,
 } from './contracts';
 import { ResearchError } from './errors';
-import { keywordUrlFor } from './links';
+import { keywordUrlFor, productUrlFor } from './links';
+import { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP } from './productCaps';
 import type { ResearchActor } from './service';
 
-/** get_product_details' keyword list cap: the page shows up to 500, a tool answer stays smaller. keywordsTotal still counts them all. */
-export const PRODUCT_TOOL_KEYWORDS_CAP = 100;
+/** The answer caps live in the import-free ./productCaps.ts (the tool descriptions quote them); re-exported here, where they apply. */
+export { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP };
 /** Usage rows a details call reserves and records: one product, as get_keyword_details counts one keyword. */
 const DETAILS_ROWS = 1;
 
@@ -62,11 +63,6 @@ export function defaultProductsDeps(appUrl: string): ProductLoaders {
     history: (asin) => loadProductHistory(run(), asin),
     keywords: (asin, limit) => loadProductKeywords(run(), asin, limit),
   };
-}
-
-/** The ASIN page for one product; `appUrl` loses its trailing slashes, as keywordUrlFor's does. */
-export function productUrlFor(appUrl: string, asin: string): string {
-  return `${appUrl.replace(/\/+$/, '')}/products/${asin}`;
 }
 
 /** Spec 2026-10-09 §10: the products tools answer admin accounts only for now. Not retryable. */
@@ -107,11 +103,12 @@ export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchA
 
 /**
  * `get_product_details`: the ASIN page's three blocks for one ASIN — the facts (with the ASIN page
- * link), the Keepa snapshots (first and last repeated), and the keywords it is a top-3 clicked
+ * link), the newest PRODUCT_TOOL_HISTORY_POINTS Keepa snapshots (oldest first, with the oldest and
+ * newest of the loader's whole window and its count), and the keywords it is a top-3 clicked
  * product for (best rank first, capped at PRODUCT_TOOL_KEYWORDS_CAP, each with its Explorer link).
  * The facts are read first: null (neither the catalog nor the keyword tables know the ASIN) is
- * NOT_FOUND with no further reads; a stub (`inCatalog: false`) is answered normally without the
- * history read, since a product the catalog never held has no snapshots.
+ * NOT_FOUND with no further reads; a stub (`inCatalog: false`) or a catalog row the service has
+ * never fetched is answered normally without the history read, since neither has any snapshots.
  */
 export async function productDetailsForTool(deps: ProductsDeps, actor: ResearchActor, input: unknown): Promise<ProductDetailsResponse> {
   assertAdmin(actor);
@@ -121,14 +118,20 @@ export async function productDetailsForTool(deps: ProductsDeps, actor: ResearchA
   await deps.reserve(actor, DETAILS_ROWS);
   const facts = await deps.facts(asin);
   if (!facts) throw productNotFoundError();
-  const [points, keywords] = await Promise.all([
-    facts.inCatalog ? deps.history(asin) : Promise.resolve<ProductHistoryPoint[]>([]),
+  const [loaded, keywords] = await Promise.all([
+    facts.inCatalog && facts.fetched ? deps.history(asin) : Promise.resolve<ProductHistoryPoint[]>([]),
     deps.keywords(asin, PRODUCT_TOOL_KEYWORDS_CAP),
   ]);
   const response: ProductDetailsResponse = {
     schemaVersion: SCHEMA_VERSION,
     product: { ...facts, url: productUrlFor(deps.appUrl, asin) },
-    history: { points, first: points[0] ?? null, last: points.at(-1) ?? null },
+    // The loader's window is oldest first, so the newest points are its tail; first, last and the count span the whole window.
+    history: {
+      points: loaded.slice(-PRODUCT_TOOL_HISTORY_POINTS),
+      first: loaded[0] ?? null,
+      last: loaded.at(-1) ?? null,
+      pointsTotal: loaded.length,
+    },
     keywords: keywords.rows.map((row) => ({ ...row, keywordUrl: keywordUrlFor(deps.appUrl, row.searchTermId) })),
     keywordsTotal: keywords.total,
   };

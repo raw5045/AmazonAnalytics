@@ -675,8 +675,13 @@ export interface ProductDetailsResponse {
   schemaVersion: 1;
   /** The ASIN page's facts plus its link. inCatalog false: the keyword tables know the ASIN but the catalog has no row, so every fact is null. */
   product: CatalogProductFacts & { url: string };
-  /** The loader's newest snapshots (up to 400), oldest first, with the oldest and newest repeated for a then-and-now; no points, first and last null, when there are none (always for inCatalog false). */
-  history: { points: ProductHistoryPoint[]; first: ProductHistoryPoint | null; last: ProductHistoryPoint | null };
+  /**
+   * points: the newest PRODUCT_TOOL_HISTORY_POINTS snapshots (./products.ts), oldest first. first and last: the oldest and newest
+   * snapshot of the whole window the loader read (up to PRODUCT_HISTORY_CAP, lib/products/loadProductHistory.ts), for a
+   * then-and-now; pointsTotal counts that window. No points, first and last null and pointsTotal 0 when there are none (always
+   * for inCatalog false or a product never fetched).
+   */
+  history: { points: ProductHistoryPoint[]; first: ProductHistoryPoint | null; last: ProductHistoryPoint | null; pointsTotal: number };
   /** Best keyword rank first, capped at PRODUCT_TOOL_KEYWORDS_CAP (./products.ts); keywordsTotal counts every one. */
   keywords: ProductKeyword[];
   keywordsTotal: number;

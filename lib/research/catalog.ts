@@ -1,15 +1,18 @@
 import { isDeepStrictEqual } from 'node:util';
 import { MAX_CUSTOM_CATEGORIES, MAX_LEAF_PATHS_PER_CATEGORY } from '@/lib/customCategories/validation';
 import { COUNT_CAP } from '@/lib/explorer/buildQuery';
+import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE } from '@/lib/products/filters';
+import { PRODUCT_COUNT_CAP } from '@/lib/products/searchProducts';
 import { MAX_VIEWS_PER_USER } from '@/lib/savedViews/validation';
 import { MAX_WATCHED_KEYWORDS } from '@/lib/watchlist/validation';
 import type { Filters, GuideResponse, PresetApplication, PresetId, SearchRequest, Sort, Window } from './contracts';
-import { DEFAULT_SORT, filtersSchema, SCHEMA_VERSION, SORT_FIELDS, WINDOWS } from './contracts';
+import { DEFAULT_SORT, filtersSchema, productSearchInputSchema, SCHEMA_VERSION, SORT_FIELDS, WINDOWS } from './contracts';
 import { RESEARCH_ERROR_CODES, ResearchError } from './errors';
 import type { ResearchLimits } from './limits';
 
 export const CATALOG_VERSION = 1;
-export const GUIDE_VERSION = 2;
+/** 2: the workspace section (spec 2026-09-30 §9.1); 3: the products section (spec 2026-10-09 §9). */
+export const GUIDE_VERSION = 3;
 export const QUERY_VERSION = 1;
 
 export interface PresetDefinition {
@@ -225,7 +228,45 @@ export const WORKSPACE_RULES: readonly string[] = Object.freeze([
   'Never create, change or delete anything the person did not ask for in this conversation.',
 ]);
 
-export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' | 'all'; limits: ResearchLimits; workspace?: boolean }): GuideResponse {
+/**
+ * Spec 2026-10-09 §9: the products section's rules, for the two admin-only products tools. Only an
+ * admin's guide carries the section (buildGuide's `products`): Ask AI leaves the tools out of every
+ * other account's chat, and the MCP, which lists them to every account (one server per process),
+ * refuses every other account with FORBIDDEN. Same voice as WORKSPACE_RULES; the numbers come from
+ * the Products page's constants.
+ */
+export const PRODUCT_RULES: readonly string[] = Object.freeze([
+  'search_products and get_product_details answer admin accounts only for now; any other account gets FORBIDDEN.',
+  'search_products finds catalog products (Amazon ASINs with Keepa data) by the filters below, combined with AND. It covers in-scope products with an active or no_price listing, so a delisted product never appears there; get_product_details still opens one by its ASIN.',
+  'Units: filters take ratings in stars (0–5, one decimal) and prices in US dollars; answers carry averageRatingX10 (stars × 10: 45 = 4.5 stars) and prices in cents (currentPriceCents and the price averages). Dates are YYYY-MM-DD; fetch times are ISO 8601.',
+  "monthlySold is Amazon's 'bought in past month' floor: 1000 means 1,000+. Report it as a floor, never as an exact count; null is unknown, never zero.",
+  'rankRatioX100 = current BSR ÷ 30-day average BSR × 100: under 100 = ranked better than its own 30-day average, over 100 = worse. bsrRatioMax bounds it: 70 = at least 30 % better.',
+  'weeks in top 3 (weeksInTop3) = consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword, in any slot; streakStartedWeek is the first week of that run. keywordCount on a search row counts the current keywords the product is a top-3 clicked product for.',
+  'product.inCatalog false: the keywords know the ASIN but there are no product facts (usually its category is excluded from enrichment), so every fact is null and history is empty; its keywords still list. product.fetched false: in the catalog but not fetched yet, so its facts are null and its history empty too. NOT_FOUND: neither knows the ASIN.',
+  `Pages hold ${PRODUCT_PAGE_SIZE} products, page 1 to ${PRODUCT_MAX_PAGE}; totals are exact below ${PRODUCT_COUNT_CAP.toLocaleString('en-US')}, and a total that reaches it is at_least. Zero products is a true empty result: report it, do not widen the filters unasked.`,
+  'Each product carries url (its page in the app), and each keyword in get_product_details its keywordUrl.',
+]);
+
+/**
+ * search_products' filters as the guide lists them: each field's own description from
+ * productSearchInputSchema (contracts.ts, units included), so the guide and the schema the tool
+ * publishes can never disagree. Frozen at load like PRESETS; buildGuide hands out copies.
+ */
+export const PRODUCT_FILTER_DEFINITIONS: ReadonlyArray<Readonly<{ name: string; definition: string }>> = deepFreeze(
+  Object.entries(productSearchInputSchema.shape.filters.unwrap().shape).map(([name, field]) => ({ name, definition: field.description ?? '' })),
+);
+
+/** The guide's products section (spec 2026-10-09 §9); see PRODUCT_RULES for who gets it. */
+export interface GuideProductsSection {
+  rules: string[];
+  /** search_products' filters, each with its own schema description (units included). */
+  filters: Array<{ name: string; definition: string }>;
+}
+
+/** What buildGuide returns: the GuideResponse contract plus, for an admin account, the products section. */
+export type ResearchGuide = GuideResponse & { products?: GuideProductsSection };
+
+export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' | 'all'; limits: ResearchLimits; workspace?: boolean; products?: boolean }): ResearchGuide {
   return {
     guideVersion: GUIDE_VERSION,
     schemaVersion: SCHEMA_VERSION,
@@ -297,5 +338,6 @@ export function buildGuide(ctx: { datasetWeek: string | null; audience: 'admin' 
           },
         }
       : {}),
+    ...(ctx.products ? { products: { rules: [...PRODUCT_RULES], filters: PRODUCT_FILTER_DEFINITIONS.map((f) => ({ ...f })) } } : {}),
   };
 }

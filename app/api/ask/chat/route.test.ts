@@ -142,9 +142,12 @@ describe('POST /api/ask/chat', () => {
   it('builds the chat actor with isAdmin from the signed-in user\'s role (the admin-only product tools read it)', async () => {
     await post(newChat);
     expect(toolsMock.buildAskTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ channel: 'chat', isAdmin: false }), expect.anything(), null);
+    // The prompt's guide carries the products section exactly when the chat has the products tools.
+    expect(catalog.buildGuide).toHaveBeenLastCalledWith(expect.objectContaining({ products: false }));
     auth.user = { ...member, role: 'admin' };
     await post(newChat);
     expect(toolsMock.buildAskTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ channel: 'chat', isAdmin: true }), expect.anything(), null);
+    expect(catalog.buildGuide).toHaveBeenLastCalledWith(expect.objectContaining({ products: true }));
   });
   it('a first send at the cap is 409', async () => {
     conv.createConversationWithFirstMessage.mockResolvedValueOnce('cap');

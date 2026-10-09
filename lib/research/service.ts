@@ -425,6 +425,8 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       audience: deps.audience(),
       limits: deps.limits,
       workspace: actor.channel === 'mcp' && deps.workspaceEnabled(),
+      // Spec 2026-10-09 §9: only an admin has the products tools, so only an admin's guide explains them.
+      products: actor.isAdmin,
     });
     // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
     // (the request counter of the actor's channel: mcp_request or ask_tool_call) must count this

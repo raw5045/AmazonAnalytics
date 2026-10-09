@@ -283,8 +283,10 @@ export async function POST(req: Request) {
 
     const meta = await loadSnapshotMetaHttp();
     const limits = researchLimits();
-    // The guide's workspace rules reach the prompt only while writes are on (spec 2026-10-01 §4).
-    const guide = buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: mcpAudience(), limits, workspace: writes !== null });
+    // The guide's workspace rules reach the prompt only while writes are on (spec 2026-10-01 §4); its
+    // products section only for an admin, the one account buildAskTools gives the products tools
+    // (spec 2026-10-09 §9) — the prompt's guide stands in for get_research_guide, so it must match.
+    const guide = buildGuide({ datasetWeek: meta?.currentWeekEndDate ?? null, audience: mcpAudience(), limits, workspace: writes !== null, products: actor.isAdmin });
     const anthropic = createAnthropic({ apiKey });
     // The turn deadline, shortened by what this request already spent (a resume's writes, a slow
     // lock or load), so a deadline abort still leaves onEnd SETTLE_MARGIN_MS before maxDuration.

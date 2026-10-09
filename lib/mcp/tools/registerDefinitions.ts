@@ -20,7 +20,9 @@ export interface RegisterToolsOptions {
  * validates `args` against the tool's own input schema before the callback ever runs,
  * `actorFor` resolves the caller's identity from the gate-supplied auth context (never from
  * `args`), and `runTool` turns the service call into `okResult`/`errorResult`. Shared by
- * registerResearchTools.ts and registerWorkspaceTools.ts (spec 2026-09-30 §4).
+ * registerResearchTools.ts and registerWorkspaceTools.ts (spec 2026-09-30 §4). A definition's
+ * `adminOnly` is deliberately not read here: the server is registered once per process, so an
+ * admin-only tool is listed to every account and its service refuses a non-admin (FORBIDDEN).
  */
 export function registerDefinitions<TService>(
   server: McpServer,

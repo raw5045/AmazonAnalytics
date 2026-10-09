@@ -81,12 +81,14 @@ export async function runWorkspaceTool(workspace: WorkspaceService, actor: Resea
  * comes back as `{ error }` in the tool RESULT (not a throw) — the same `{ error }` payload the MCP
  * adapter returns (which additionally flags isError) — so the model explains or narrows within the
  * loop bound; anything else becomes the safe sentence. With `workspace` (ASK_AI_WRITES_ENABLED,
- * spec 2026-10-01 §3) the eleven workspace tools follow the five research tools; without it the
- * set is exactly today's.
+ * spec 2026-10-01 §3) the eleven workspace tools follow the research tools; without it the set is
+ * exactly today's. An `adminOnly` research tool (the two products tools, spec 2026-10-09 §9) is
+ * bound for an admin actor only: every other account's chat is never offered it.
  */
 export function buildAskTools(service: ResearchService, actor: ResearchActor, limits: ResearchLimits = researchLimits(), workspace: WorkspaceService | null = null): ToolSet {
   const out: ToolSet = {};
   for (const def of RESEARCH_TOOLS) {
+    if (def.adminOnly && !actor.isAdmin) continue;
     out[def.name] = tool({
       description: def.description(limits),
       inputSchema: def.inputSchema,

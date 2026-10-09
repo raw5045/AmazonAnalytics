@@ -17,7 +17,7 @@ import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
 import { PRODUCT_COUNT_CAP, productSearchSql, type ProductSummaryRow } from '@/lib/products/searchProducts';
 import { ResearchError } from './errors';
 import {
-  defaultProductsDeps, PRODUCT_TOOL_KEYWORDS_CAP, productDetailsForTool, productUrlFor, searchProductsForTool, type ProductsDeps,
+  defaultProductsDeps, PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP, productDetailsForTool, searchProductsForTool, type ProductsDeps,
 } from './products';
 import type { ResearchActor } from './service';
 
@@ -162,7 +162,7 @@ describe('productDetailsForTool', () => {
     expect(out).toStrictEqual({
       schemaVersion: 1,
       product: { ...catalogFacts, url: `${APP}/products/${ASIN}` },
-      history: { points, first: points[0], last: points[2] },
+      history: { points, first: points[0], last: points[2], pointsTotal: 3 },
       keywords: [
         { ...keywordRow(1), keywordUrl: `${APP}/explorer/keyword/${keywordRow(1).searchTermId}` },
         { ...keywordRow(2, { slot: 3 }), keywordUrl: `${APP}/explorer/keyword/${keywordRow(2).searchTermId}` },
@@ -184,7 +184,7 @@ describe('productDetailsForTool', () => {
     const out = await productDetailsForTool(deps, admin, { asin: ASIN });
     expect(out.product).toStrictEqual({ ...stubFacts, url: `${APP}/products/${ASIN}` });
     expect(out.product.inCatalog).toBe(false);
-    expect(out.history).toStrictEqual({ points: [], first: null, last: null });
+    expect(out.history).toStrictEqual({ points: [], first: null, last: null, pointsTotal: 0 });
     expect(deps.history).not.toHaveBeenCalled();
     expect(deps.keywords).toHaveBeenCalledWith(ASIN, PRODUCT_TOOL_KEYWORDS_CAP);
     expect(out.keywords.map((k) => k.keywordUrl)).toEqual([1, 2].map((n) => `${APP}/explorer/keyword/${keywordRow(n).searchTermId}`));
@@ -194,9 +194,34 @@ describe('productDetailsForTool', () => {
 
   it('gives a catalog product without snapshots an empty history (first and last null), and one snapshot as both first and last', async () => {
     const none = await productDetailsForTool(makeDeps({ history: vi.fn(async () => []) }), admin, { asin: ASIN });
-    expect(none.history).toStrictEqual({ points: [], first: null, last: null });
+    expect(none.history).toStrictEqual({ points: [], first: null, last: null, pointsTotal: 0 });
     const one = await productDetailsForTool(makeDeps({ history: vi.fn(async () => [points[1]]) }), admin, { asin: ASIN });
-    expect(one.history).toStrictEqual({ points: [points[1]], first: points[1], last: points[1] });
+    expect(one.history).toStrictEqual({ points: [points[1]], first: points[1], last: points[1], pointsTotal: 1 });
+  });
+
+  it('skips the history read for a catalog product the service has never fetched (it has no snapshots)', async () => {
+    const unfetched: CatalogProductFacts = { ...catalogFacts, fetched: false, lastFetchedAt: null, fetchCount: 0 };
+    const deps = makeDeps({ facts: vi.fn(async () => unfetched) });
+    const out = await productDetailsForTool(deps, admin, { asin: ASIN });
+    expect(out.product).toStrictEqual({ ...unfetched, url: `${APP}/products/${ASIN}` });
+    expect(out.history).toStrictEqual({ points: [], first: null, last: null, pointsTotal: 0 });
+    expect(deps.history).not.toHaveBeenCalled();
+    expect(deps.keywords).toHaveBeenCalledWith(ASIN, PRODUCT_TOOL_KEYWORDS_CAP);
+    expect(deps.record).toHaveBeenCalledWith(admin, 1);
+  });
+
+  it('returns only the newest PRODUCT_TOOL_HISTORY_POINTS snapshots, oldest first, while first, last and pointsTotal span the whole loaded window', async () => {
+    expect(PRODUCT_TOOL_HISTORY_POINTS).toBe(60);
+    const weekly = (i: number) => point(new Date(Date.UTC(2025, 0, 6) + i * 7 * 86_400_000).toISOString(), { salesRank: 1000 + i });
+    // The loader's own window: oldest first.
+    const loaded = Array.from({ length: PRODUCT_TOOL_HISTORY_POINTS + 25 }, (_, i) => weekly(i));
+    const capped = await productDetailsForTool(makeDeps({ history: vi.fn(async () => loaded) }), admin, { asin: ASIN });
+    expect(capped.history.points).toHaveLength(PRODUCT_TOOL_HISTORY_POINTS);
+    expect(capped.history).toStrictEqual({ points: loaded.slice(25), first: loaded[0], last: loaded.at(-1), pointsTotal: PRODUCT_TOOL_HISTORY_POINTS + 25 });
+    // At the cap nothing is dropped, and first and last are the points' own ends.
+    const atCap = loaded.slice(0, PRODUCT_TOOL_HISTORY_POINTS);
+    const whole = await productDetailsForTool(makeDeps({ history: vi.fn(async () => atCap) }), admin, { asin: ASIN });
+    expect(whole.history).toStrictEqual({ points: atCap, first: atCap[0], last: atCap.at(-1), pointsTotal: PRODUCT_TOOL_HISTORY_POINTS });
   });
 
   it('answers an ASIN in neither table with NOT_FOUND: no further reads, nothing recorded', async () => {
@@ -222,13 +247,6 @@ describe('productDetailsForTool', () => {
       await expect(productDetailsForTool(deps, admin, input), JSON.stringify(input)).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
     }
     for (const fn of [deps.reserve, deps.facts]) expect(fn).not.toHaveBeenCalled();
-  });
-});
-
-describe('productUrlFor', () => {
-  it('is the ASIN page under the app URL, trailing slashes stripped (as keywordUrlFor does)', () => {
-    expect(productUrlFor(APP, ASIN)).toBe(`${APP}/products/${ASIN}`);
-    expect(productUrlFor(`${APP}///`, ASIN)).toBe(`${APP}/products/${ASIN}`);
   });
 });
 

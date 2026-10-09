@@ -20,9 +20,12 @@ import { PAGE_SIZE_MAX } from '@/lib/research/contracts';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { COUNT_CAP } from '@/lib/explorer/buildQuery';
 import { RESEARCH_TOOLS } from '@/lib/research/tools';
+import { productsForbiddenError } from '@/lib/research/products';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
+const admin: ResearchActor = { ...actor, isAdmin: true };
+const FORBIDDEN = { error: { code: 'FORBIDDEN', message: 'Products tools are admin-only for now.', retryable: false } };
 
 // searchToolInputSchema's `cursor` is `z.string().min(16)...` — the SDK validates tool
 // arguments against inputSchema BEFORE the callback runs, so a continuation cursor used to
@@ -101,6 +104,15 @@ const service: ResearchService = {
     searchTermId: 'id-1', keyword: 'kw', windowStart: 'a', windowEnd: 'b', requestedWeeks: 13,
     points: [], missingWeeks: [], source: 'chart_series' as const, seriesUpdatedAt: null, warnings: [],
   })),
+  // As the real service does (lib/research/products.ts): a non-admin account is refused with FORBIDDEN before anything runs.
+  searchProducts: vi.fn(async (a: ResearchActor) => {
+    if (!a.isAdmin) throw productsForbiddenError();
+    return { schemaVersion: 1 as const, products: [], total: { kind: 'exact' as const, value: 0 }, page: 1, pageSize: 50, adminOnly: true as const };
+  }),
+  productDetails: vi.fn(async (a: ResearchActor) => {
+    if (!a.isAdmin) throw productsForbiddenError();
+    throw new ResearchError('NOT_FOUND', 'No data for that ASIN.');
+  }),
 };
 
 describe('research tools over an in-memory MCP connection', () => {
@@ -117,9 +129,11 @@ describe('research tools over an in-memory MCP connection', () => {
     await server.close();
   });
 
-  it('lists exactly the five research tools, all read-only, with titles and descriptions', async () => {
+  it('lists exactly the seven research tools, all read-only, with titles and descriptions', async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords']);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      'get_keyword_details', 'get_keyword_history', 'get_product_details', 'get_research_guide', 'resolve_categories', 'search_keywords', 'search_products',
+    ]);
     for (const t of tools) {
       expect(t.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
       expect(t.title).toBeTruthy();
@@ -224,6 +238,59 @@ describe('research tools over an in-memory MCP connection', () => {
     const r = await client.callTool({ name: 'search_keywords', arguments: { schemaVersion: 1, page_size: 5 } });
     expect(r.isError).toBe(true);
     expect(service.search).not.toHaveBeenCalled();
+  });
+
+  // Spec 2026-10-09 §9: the server is registered once per process, so the two admin-only products
+  // tools are listed to every account; a non-admin's call reaches the service, which refuses it with
+  // FORBIDDEN, and the adapter maps that ResearchError to an MCP tool error carrying the code.
+  it('lists the admin-only products tools to every account and maps the service\'s FORBIDDEN refusal to a tool error with that code', async () => {
+    const { tools } = await client.listTools();
+    for (const name of ['search_products', 'get_product_details']) {
+      const t = tools.find((x) => x.name === name)!;
+      expect(t.description, name).toContain('Admin accounts only for now.');
+      expect(t.annotations, name).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+      expect(t.inputSchema, name).toMatchObject({ type: 'object', additionalProperties: false });
+    }
+    const filters = { listedWithinDays: 180, monthlySoldMin: 1000, reviewsMax: 300 };
+    const search = await client.callTool({ name: 'search_products', arguments: { filters } });
+    expect(search.isError).toBe(true);
+    expect(JSON.parse((search.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
+    expect(service.searchProducts).toHaveBeenLastCalledWith(actor, { filters });
+    const details = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
+    expect(details.isError).toBe(true);
+    expect(JSON.parse((details.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
+    expect(service.productDetails).toHaveBeenLastCalledWith(actor, { asin: 'B0ABCDEF12' });
+  });
+
+  it('rejects a malformed ASIN via the SDK, before the service ever runs', async () => {
+    vi.mocked(service.productDetails).mockClear();
+    const r = await client.callTool({ name: 'get_product_details', arguments: { asin: 'b0abcdef12' } });
+    expect(r.isError).toBe(true);
+    expect(service.productDetails).not.toHaveBeenCalled();
+  });
+});
+
+describe('the products tools for an admin account', () => {
+  it('pass the admin actor through to the service and return its answer, or its ResearchError with the code', async () => {
+    const adminServer = new McpServer({ name: 'keywordquarry-test-admin', version: '0' });
+    registerResearchTools(adminServer, service, { actorFor: () => admin });
+    const adminClient = new Client({ name: 'test-admin', version: '0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await adminServer.connect(serverTransport);
+    await adminClient.connect(clientTransport);
+    try {
+      const r = await adminClient.callTool({ name: 'search_products', arguments: { sort: 'bsr', dir: 'asc' } });
+      expect(r.isError).toBeFalsy();
+      expect(service.searchProducts).toHaveBeenLastCalledWith(admin, { sort: 'bsr', dir: 'asc' });
+      expect(r.structuredContent).toMatchObject({ adminOnly: true, total: { kind: 'exact', value: 0 }, pageSize: 50 });
+      const d = await adminClient.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
+      expect(d.isError).toBe(true);
+      expect(JSON.parse((d.content[0] as { text: string }).text).error.code).toBe('NOT_FOUND');
+      expect(service.productDetails).toHaveBeenLastCalledWith(admin, { asin: 'B0ABCDEF12' });
+    } finally {
+      await adminClient.close().catch(() => {});
+      await adminServer.close().catch(() => {});
+    }
   });
 });
 
