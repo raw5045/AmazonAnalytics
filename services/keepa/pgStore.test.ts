@@ -220,13 +220,13 @@ describe('writeBatch outcomes (spec §5.2)', () => {
     expect(upd.values?.slice(29)).toEqual([new Date('2026-10-13T12:00:00Z'), new Date('2026-11-05T12:00:00Z')]);
   });
 
-  it('a delisted product keeps its facts, clears the derived rank ratio, flips the status, and is rechecked in 30 days', async () => {
+  it('a delisted product keeps its facts, flips the status, and is rechecked in 30 days', async () => {
     const { pool, calls } = fakePool();
     await new PgKeepaStore(pool).writeBatch({ rows: [row('B1')], facts: new Map([['B1', emptyFacts('B1', 'delisted')]]), lane: 'due', tokens: { tokensLeft: 1, refillRate: 250 }, now: NOW });
     const upd = calls.find((c) => c.text.includes("enrichment_status = 'delisted'"))!;
     expect(upd.text).not.toContain('title =');
-    // The ratio is a point-in-time fact of a listing that is gone: cleared, with no parameter of its own.
-    expect(upd.text).toContain('rank_ratio_x100 = NULL');
+    // Facts stay on a delisted write, the derived rank ratio included (readers hide point-in-time facts): the statement never names it.
+    expect(upd.text).not.toContain('rank_ratio_x100');
     expect(upd.values).toEqual(['B1', NOW, new Date('2026-11-05T12:00:00Z')]);
     expect(calls.find((c) => c.text.includes('INSERT INTO asin_snapshots'))?.values?.[10]).toBe('delisted');
   });

@@ -77,14 +77,9 @@ const SUCCESS_UPDATE = `
     next_due_at = CASE WHEN tier = 1 THEN $30::timestamptz ELSE $31::timestamptz END, claimed_at = NULL, claimed_by = NULL, updated_at = now()
   WHERE asin = $1`;
 
-/**
- * The stored facts stay (spec 2026-10-05 §5.2: the title stays for display, and readers hide a
- * delisted product's point-in-time facts); the derived rank ratio is cleared, since it describes a
- * listing that is gone (spec 2026-10-09 §3.1).
- */
 const DELISTED_UPDATE = `
   UPDATE asin_products SET
-    enrichment_status = 'delisted', error_code = NULL, rank_ratio_x100 = NULL,
+    enrichment_status = 'delisted', error_code = NULL,
     last_fetched_at = $2, fetch_count = fetch_count + 1, consecutive_errors = 0,
     next_due_at = $3, claimed_at = NULL, claimed_by = NULL, updated_at = now()
   WHERE asin = $1`;
