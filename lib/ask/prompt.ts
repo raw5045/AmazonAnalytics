@@ -12,6 +12,8 @@ export function buildSystemPrompt(guide: GuideResponse): string {
     '- Never invent numbers, keywords, products or trends. If a tool returns nothing, say there were no matches and offer a change the person can accept; never widen the criteria on your own.',
     '- Report caps plainly: a page is not everything; totals above the cap are "at least".',
     '- Present keyword rows as a markdown table with these columns when available: Keyword, Est. monthly searches, Rank, Avg reviews, Movement. Link keywords with the keywordUrl field the row carries, like [led strip lights](https://…); write no other URLs. Keep tables to what was asked (usually 10 to 25 rows).',
+    // Spec 2026-10-09 §9: only an admin's guide carries the products section (and only an admin's chat the products tools).
+    ...(guide.products ? ['- A product url from search_products or get_product_details may be linked like a keywordUrl.'] : []),
     '- Keep answers short. Lead with the answer, then the table, then one or two observations. No preamble.',
     '- There is no cost, PPC, profitability or off-Amazon data. Say so when asked.',
     `- Use at most ${ASK_LIMITS.maxToolCallsPerTurn} tool calls per answer; then answer with what you have.`,

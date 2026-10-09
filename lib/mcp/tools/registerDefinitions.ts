@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { McpServer, ServerContext } from '@modelcontextprotocol/server';
 import type { ResearchLimits } from '@/lib/research/limits';
 import type { ResearchActor } from '@/lib/research/service';
-import type { ToolDefinition } from '@/lib/research/tools';
+import { isOfferedTo, type ToolDefinition } from '@/lib/research/tools';
+import { listing } from '../listingContext';
 import { runTool } from './toolResult';
 
 const anyObject = z.looseObject({});
@@ -20,9 +21,10 @@ export interface RegisterToolsOptions {
  * validates `args` against the tool's own input schema before the callback ever runs,
  * `actorFor` resolves the caller's identity from the gate-supplied auth context (never from
  * `args`), and `runTool` turns the service call into `okResult`/`errorResult`. Shared by
- * registerResearchTools.ts and registerWorkspaceTools.ts (spec 2026-09-30 §4). A definition's
- * `adminOnly` is deliberately not read here: the server is registered once per process, so an
- * admin-only tool is listed to every account and its service refuses a non-admin (FORBIDDEN).
+ * registerResearchTools.ts and registerWorkspaceTools.ts (spec 2026-09-30 §4). The server is
+ * built per request, so an `adminOnly` definition is registered (listed) only when the request's
+ * listing context (../listingContext.ts, set by the gate) is an admin's; with no context, never.
+ * Its service still refuses a non-admin call with FORBIDDEN, as a backstop (spec 2026-10-09 §9).
  */
 export function registerDefinitions<TService>(
   server: McpServer,
@@ -31,7 +33,9 @@ export function registerDefinitions<TService>(
   actorFor: (ctx: ServerContext) => ResearchActor,
   limits: ResearchLimits,
 ): void {
+  const isAdmin = listing.getStore()?.isAdmin === true;
   for (const def of defs) {
+    if (!isOfferedTo(def, isAdmin)) continue;
     server.registerTool(
       def.name,
       { title: def.title, description: def.description(limits), inputSchema: def.inputSchema, outputSchema: anyObject, annotations: def.annotations },

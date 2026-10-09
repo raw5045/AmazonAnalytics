@@ -6,6 +6,7 @@ import { defaultResearchService } from '@/lib/research/service';
 import { defaultWorkspaceService } from '@/lib/workspace/service';
 import { MCP_SCOPE, MCP_SERVER_INFO, mcpAllowedClientIds, mcpAudience, mcpResourceUrl, mcpWriteEnabled } from './config';
 import { getMcpConnection, touchMcpConnection, type McpConnectionState } from './connections';
+import { listing } from './listingContext';
 import { registerWhoami } from './tools/whoami';
 import { registerResearchTools } from './tools/registerResearchTools';
 import { registerWorkspaceTools } from './tools/registerWorkspaceTools';
@@ -52,7 +53,7 @@ const mcp = createMcpHandler(
     } catch (e) {
       // A research-deps failure (e.g. the pool cannot be constructed) must not take the whole
       // connection down: whoami stays registered and keeps serving as a diagnostic even when
-      // the five research tools cannot be. Log-safe fields only (lib/ask/logSafe.ts): a
+      // the research tools cannot be. Log-safe fields only (lib/ask/logSafe.ts): a
       // DrizzleQueryError's own message embeds the bound params.
       console.error('[mcp]', JSON.stringify({ outcome: 'research_tools_unavailable', ...errFields(e) }));
     }
@@ -120,7 +121,9 @@ async function gated(req: Request): Promise<Response> {
   logAuth({ outcome: 'admitted', ...ids, localUserId, role: account!.role });
   const enriched: AuthInfo = { ...authInfo, extra: { clerkUserId: extra.clerkUserId, account } };
   req.auth = enriched;
-  return mcp(req);
+  // The server is built per request inside this context, so the admin-only tools are registered
+  // (listed) for an admin account only (./listingContext.ts, spec 2026-10-09 §9).
+  return listing.run({ isAdmin: account!.role === 'admin' }, () => mcp(req));
 }
 
 /**

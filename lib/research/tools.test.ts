@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 vi.mock('@/lib/env', () => ({ env: {} }));
-import { RESEARCH_TOOLS, RESEARCH_TOOL_NAMES, researchToolByName } from './tools';
+import { isOfferedTo, RESEARCH_TOOLS, RESEARCH_TOOL_NAMES, researchToolByName } from './tools';
 import { DEFAULT_LIMITS } from './limits';
 import {
   PAGE_SIZE_MAX, searchToolInputSchema, resolveCategoriesInputSchema, keywordDetailsInputSchema, keywordHistoryInputSchema, emptyInputSchema,
@@ -34,6 +34,16 @@ describe('RESEARCH_TOOLS', () => {
     expect(RESEARCH_TOOLS.filter((t) => t.adminOnly === true).map((t) => t.name)).toEqual(['search_products', 'get_product_details']);
     for (const t of RESEARCH_TOOLS.filter((d) => d.adminOnly !== true)) expect(t.adminOnly, t.name).toBeUndefined();
   });
+  it('isOfferedTo: an adminOnly definition is offered to an admin only, every other one to everyone', () => {
+    for (const isAdmin of [true, false]) {
+      expect(isOfferedTo({}, isAdmin)).toBe(true);
+      expect(isOfferedTo({ adminOnly: false }, isAdmin)).toBe(true);
+    }
+    expect(isOfferedTo({ adminOnly: true }, true)).toBe(true);
+    expect(isOfferedTo({ adminOnly: true }, false)).toBe(false);
+    expect(RESEARCH_TOOLS.filter((t) => isOfferedTo(t, false)).map((t) => t.name)).toEqual(RESEARCH_TOOL_NAMES.slice(0, 5));
+    expect(RESEARCH_TOOLS.filter((t) => isOfferedTo(t, true)).map((t) => t.name)).toEqual([...RESEARCH_TOOL_NAMES]);
+  });
   it('binds each tool to the contracts.ts schema the MCP server has always published', () => {
     expect(researchToolByName('get_research_guide').inputSchema).toBe(emptyInputSchema);
     expect(researchToolByName('resolve_categories').inputSchema).toBe(resolveCategoriesInputSchema);
@@ -54,10 +64,13 @@ describe('RESEARCH_TOOLS', () => {
     expect(search).toContain('current BSR ÷ 30-day average × 100; 70 = at least 30 % better');
     const details = researchToolByName('get_product_details').description(DEFAULT_LIMITS);
     expect(details).toContain(`the newest ${PRODUCT_TOOL_HISTORY_POINTS} snapshots, oldest first`);
-    expect(details).toContain(`up to the newest ${PRODUCT_HISTORY_CAP}`);
+    // pointsTotal stops at the loaded window; keywordsTotal counts everything.
+    expect(details).toContain(`pointsTotal counts that window (at most ${PRODUCT_HISTORY_CAP} snapshots)`);
     expect(details).toContain(`keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}`);
+    expect(details).toContain('keywordsTotal counts every keyword, past the cap too');
     expect(details).toContain('weeks in top 3 = consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword');
-    expect(details).toContain('product.inCatalog false: keywords known, no product facts');
+    expect(details).toContain('product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side');
+    expect(details).not.toContain('every fact is null');
     expect(details).toContain('averageRatingX10 = stars × 10');
     expect(details).toContain('prices are in cents');
     for (const d of [search, details]) expect(d.endsWith('Admin accounts only for now.')).toBe(true);

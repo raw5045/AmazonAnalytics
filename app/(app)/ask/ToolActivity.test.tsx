@@ -39,4 +39,14 @@ describe('ToolActivity', () => {
     render(<ToolActivity streaming={false} parts={Object.keys(labels).map((name) => part(`tool-${name}`, 'output-available'))} />);
     for (const label of Object.values(labels)) expect(screen.getByText(label)).toBeInTheDocument();
   });
+  it('labels the two admin-only products tools, running and finished, never "Working…"', () => {
+    const { unmount } = render(<ToolActivity streaming parts={[part('tool-search_products', 'input-available'), part('tool-get_product_details', 'input-streaming', { asin: 'B0ABCDEF12' })]} />);
+    expect(screen.getByText('Searching products…')).toBeInTheDocument();
+    expect(screen.getByText('Loading product details…')).toBeInTheDocument();
+    expect(screen.queryByText(/Working/)).toBeNull();
+    unmount();
+    render(<ToolActivity streaming={false} parts={[part('tool-search_products', 'output-available'), part('tool-get_product_details', 'output-available', { asin: 'B0ABCDEF12' })]} />);
+    expect(screen.getByText('Searching products')).toBeInTheDocument();
+    expect(screen.getByText('Loading product details')).toBeInTheDocument();
+  });
 });

@@ -186,7 +186,7 @@ describe('/api/mcp', () => {
       expect(client.getInstructions()).toContain('KeywordQuarry');
 
       const { tools } = await client.listTools();
-      // The seven research tools (the two admin-only products tools included: the server is built once per process) and whoami.
+      // An admin's request: the seven research tools (the two admin-only products tools included) and whoami.
       expect(tools.map((t) => t.name).sort()).toEqual([
         'get_keyword_details', 'get_keyword_history', 'get_product_details', 'get_research_guide', 'resolve_categories', 'search_keywords', 'search_products', 'whoami',
       ]);
@@ -232,6 +232,35 @@ describe('/api/mcp', () => {
     try {
       const result = await client.callTool({ name: 'whoami', arguments: {} });
       expect(result.structuredContent).toMatchObject({ ok: true, account: 'm***@example.com' });
+    } finally {
+      await client.close().catch(() => {});
+    }
+  });
+
+  it('lists the admin-only products tools per request, to an admin only: a standard user neither sees nor can call them (spec 2026-10-09 §9)', async () => {
+    envMock.env.MCP_AUDIENCE = 'all';
+    // Sorted: the five keyword tools and whoami, then the same with the two products tools.
+    const EVERYONE = ['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami'];
+    const ADMIN = [...EVERYONE, 'get_product_details', 'search_products'].sort();
+    const toolsFor = async (row: typeof adminRow) => {
+      mockFindFirst.mockResolvedValue(row);
+      const client = await connect();
+      try {
+        return (await client.listTools()).tools.map((t) => t.name).sort();
+      } finally {
+        await client.close().catch(() => {});
+      }
+    };
+    // One process, three requests: the listing follows each request's account, never the first one's.
+    expect(await toolsFor(adminRow)).toEqual(ADMIN);
+    expect(await toolsFor(standardRow)).toEqual(EVERYONE);
+    expect(await toolsFor(adminRow)).toEqual(ADMIN);
+
+    mockFindFirst.mockResolvedValue(standardRow);
+    const client = await connect();
+    try {
+      await expect(client.callTool({ name: 'search_products', arguments: {} })).rejects.toThrow('Tool search_products not found');
+      await expect(client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } })).rejects.toThrow('Tool get_product_details not found');
     } finally {
       await client.close().catch(() => {});
     }

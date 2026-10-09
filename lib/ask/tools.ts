@@ -1,6 +1,6 @@
 import { tool, type ToolSet } from 'ai';
 import type { ResearchErrorInfo } from '@/lib/research/errors';
-import { RESEARCH_TOOLS } from '@/lib/research/tools';
+import { isOfferedTo, RESEARCH_TOOLS } from '@/lib/research/tools';
 import { classifyToolError } from '@/lib/research/toolErrors';
 import { researchLimits, type ResearchLimits } from '@/lib/research/limits';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
@@ -51,8 +51,9 @@ async function settle<T>(toolName: string, run: () => Promise<T>): Promise<T | {
  * one of RESEARCH_ERROR_CODES; a fresh object per call (as classifyToolError returns) so a caller
  * that mutates one cannot corrupt the next.
  */
-function refused(toolName: WorkspaceToolName | 'unknown', reason: 'not_a_write' | 'invalid_input'): { error: ResearchErrorInfo } {
+function refused(toolName: WorkspaceToolName | 'unknown', reason: 'not_a_write' | 'invalid_input' | 'admin_only'): { error: ResearchErrorInfo } {
   console.warn('[ask tool]', JSON.stringify({ outcome: 'resume_refused', tool: toolName, reason }));
+  if (reason === 'admin_only') return { error: { code: 'FORBIDDEN', message: 'The approved action could not be run: it is for admin accounts only.', retryable: false } };
   return { error: { code: 'INVALID_FILTERS', message: 'The approved action could not be run: its details were invalid.', retryable: false } };
 }
 
@@ -69,6 +70,8 @@ function refused(toolName: WorkspaceToolName | 'unknown', reason: 'not_a_write' 
 export async function runWorkspaceTool(workspace: WorkspaceService, actor: ResearchActor, name: string, input: unknown): Promise<unknown> {
   const def = WORKSPACE_BY_NAME.get(name);
   if (!def || writeKind(def.name) === null) return refused(def ? def.name : 'unknown', 'not_a_write');
+  // As buildAskTools below never offers an adminOnly tool to anyone else, the resume path never runs one for them.
+  if (!isOfferedTo(def, actor.isAdmin)) return refused(def.name, 'admin_only');
   return settle(def.name, async () => {
     const parsed = def.inputSchema.safeParse(input);
     if (!parsed.success) return refused(def.name, 'invalid_input');
@@ -82,13 +85,13 @@ export async function runWorkspaceTool(workspace: WorkspaceService, actor: Resea
  * adapter returns (which additionally flags isError) — so the model explains or narrows within the
  * loop bound; anything else becomes the safe sentence. With `workspace` (ASK_AI_WRITES_ENABLED,
  * spec 2026-10-01 §3) the eleven workspace tools follow the research tools; without it the set is
- * exactly today's. An `adminOnly` research tool (the two products tools, spec 2026-10-09 §9) is
- * bound for an admin actor only: every other account's chat is never offered it.
+ * exactly today's. An `adminOnly` definition, in either list (today the two products tools, spec
+ * 2026-10-09 §9), is bound for an admin actor only: every other account's chat is never offered it.
  */
 export function buildAskTools(service: ResearchService, actor: ResearchActor, limits: ResearchLimits = researchLimits(), workspace: WorkspaceService | null = null): ToolSet {
   const out: ToolSet = {};
   for (const def of RESEARCH_TOOLS) {
-    if (def.adminOnly && !actor.isAdmin) continue;
+    if (!isOfferedTo(def, actor.isAdmin)) continue;
     out[def.name] = tool({
       description: def.description(limits),
       inputSchema: def.inputSchema,
@@ -97,6 +100,7 @@ export function buildAskTools(service: ResearchService, actor: ResearchActor, li
   }
   if (workspace) {
     for (const def of WORKSPACE_TOOLS) {
+      if (!isOfferedTo(def, actor.isAdmin)) continue;
       out[def.name] = tool({
         description: def.description(limits),
         inputSchema: def.inputSchema,

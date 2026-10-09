@@ -27,6 +27,22 @@ describe('buildSystemPrompt', () => {
   it('says "unknown" when there is no dataset week', () => {
     expect(buildSystemPrompt({ ...guide, datasetWeek: null })).toContain('Dataset week: unknown');
   });
+  it('lets product urls be linked only when the guide carries the products section (an admin chat, spec 2026-10-09 §9)', () => {
+    const PRODUCT_LINKS = '- A product url from search_products or get_product_details may be linked like a keywordUrl.';
+    const TABLE_RULE_END = 'write no other URLs. Keep tables to what was asked (usually 10 to 25 rows).';
+    // A member's prompt: nothing between the table rule and the next one.
+    expect(prompt).not.toContain('product url');
+    expect(prompt).toContain(`${TABLE_RULE_END}\n- Keep answers short.`);
+    // buildGuide's own products section (what the chat route builds for an admin), so the fixture cannot drift from the real shape.
+    const adminGuide = buildGuide({ datasetWeek: '2026-09-19', audience: 'all', limits: DEFAULT_LIMITS, products: true });
+    const forAdmin = buildSystemPrompt(adminGuide);
+    expect(forAdmin).toContain(`${TABLE_RULE_END}\n${PRODUCT_LINKS}\n- Keep answers short.`);
+    // Line for line the member's prompt otherwise; only the embedded guide object (the last line) differs.
+    const rulesOf = (p: string) => p.split('\n').slice(0, -1);
+    expect(rulesOf(forAdmin).filter((line) => line !== PRODUCT_LINKS)).toEqual(rulesOf(prompt));
+    expect(forAdmin.split('\n').at(-1)).toBe(JSON.stringify(adminGuide));
+    expect(prompt.split('\n').at(-1)).toBe(JSON.stringify(guide));
+  });
   it('adds the writes block only when the guide carries a workspace section (spec 2026-10-01 §4)', () => {
     const plain = buildSystemPrompt(guide);
     expect(plain).not.toContain('Writes:');

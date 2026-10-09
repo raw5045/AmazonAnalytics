@@ -11,7 +11,9 @@ import {
 } from './catalog';
 import { searchRequestSchema, filtersSchema, DEFAULT_SORT, productSearchInputSchema, type PresetId } from './contracts';
 import { DEFAULT_LIMITS } from './limits';
+import { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP } from './productCaps';
 import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE } from '@/lib/products/filters';
+import { PRODUCT_HISTORY_CAP } from '@/lib/products/loadProductHistory';
 import { PRODUCT_COUNT_CAP } from '@/lib/products/searchProducts';
 
 const req = (over: Record<string, unknown>) => searchRequestSchema.parse({ schemaVersion: 1, ...over });
@@ -261,9 +263,9 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(JSON.stringify(on)).not.toMatch(/@/);
   });
 
-  it('states the units, the badge, the ratio, weeks in top 3, the not-in-catalog case, the paging numbers and that the tools are admin-only', () => {
+  it('states the units, the badge, the ratio, weeks in top 3, the not-in-catalog case, the paging numbers, the details caps and that the tools are admin-only', () => {
     const rules = on.products?.rules.join('\n') ?? '';
-    expect(rules).toContain('admin accounts only for now; any other account gets FORBIDDEN');
+    expect(rules).toContain('for admin accounts only for now: no other account is offered them, and a call from one is refused with FORBIDDEN');
     expect(rules).toContain('stars (0–5, one decimal)');
     expect(rules).toContain('US dollars');
     expect(rules).toContain('averageRatingX10 (stars × 10');
@@ -272,9 +274,13 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(rules).toContain('current BSR ÷ 30-day average BSR × 100');
     expect(rules).toContain('70 = at least 30 % better');
     expect(rules).toContain('consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword');
-    expect(rules).toContain('inCatalog false: the keywords know the ASIN but there are no product facts (usually its category is excluded from enrichment)');
+    expect(rules).toContain('inCatalog false: the keywords know the ASIN but there are no product facts (the title may still come from the keyword side; usually the category is excluded from enrichment)');
+    expect(rules).not.toContain('every fact is null');
     expect(rules).toContain(`${PRODUCT_PAGE_SIZE} products, page 1 to ${PRODUCT_MAX_PAGE}`);
     expect(rules).toContain(`exact below ${PRODUCT_COUNT_CAP.toLocaleString('en-US')}`);
+    // pointsTotal stops at the loaded window; keywordsTotal counts everything.
+    expect(rules).toContain(`up to ${PRODUCT_TOOL_KEYWORDS_CAP} keywords, best rank first, and keywordsTotal counts every one`);
+    expect(rules).toContain(`the newest ${PRODUCT_TOOL_HISTORY_POINTS} snapshots, while first, last and pointsTotal describe the loaded window (at most ${PRODUCT_HISTORY_CAP} snapshots`);
     const unitsOf = (name: string) => on.products?.filters.find((f) => f.name === name)?.definition ?? '';
     expect(unitsOf('listedWithinDays')).toContain('days');
     expect(unitsOf('priceMin')).toContain('US dollars');

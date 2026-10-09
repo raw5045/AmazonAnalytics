@@ -99,6 +99,30 @@ describe('buildAskTools', () => {
       await expect(exec(forAdmin, 'get_product_details', { asin: 'B0ABCDEF12' })).resolves.toEqual({ product: { asin: 'B0ABCDEF12' } });
       expect(service.productDetails).toHaveBeenCalledExactlyOnceWith(admin, { asin: 'B0ABCDEF12' });
     });
+    it('honours adminOnly on a workspace definition too: the workspace loop and the approval resume path offer it to an admin only', async () => {
+      // No workspace tool is adminOnly today, so flag one in a fresh module graph.
+      vi.resetModules();
+      vi.doMock('@/lib/workspace/tools', async (importOriginal) => {
+        const real = await importOriginal<typeof import('@/lib/workspace/tools')>();
+        return { ...real, WORKSPACE_TOOLS: real.WORKSPACE_TOOLS.map((d) => (d.name === 'add_to_watchlist' ? { ...d, adminOnly: true } : d)) };
+      });
+      try {
+        const fresh = await import('./tools');
+        expect(fresh.buildAskTools(service, actor, DEFAULT_LIMITS, workspace).add_to_watchlist).toBeUndefined();
+        expect(fresh.buildAskTools(service, admin, DEFAULT_LIMITS, workspace).add_to_watchlist).toBeDefined();
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        await expect(fresh.runWorkspaceTool(workspace, actor, 'add_to_watchlist', { keywords: ['desk lamp'] })).resolves.toEqual({
+          error: { code: 'FORBIDDEN', message: 'The approved action could not be run: it is for admin accounts only.', retryable: false },
+        });
+        expect(workspace.addToWatchlist).not.toHaveBeenCalled();
+        expect(warn.mock.calls).toEqual([['[ask tool]', JSON.stringify({ outcome: 'resume_refused', tool: 'add_to_watchlist', reason: 'admin_only' })]]);
+        await expect(fresh.runWorkspaceTool(workspace, admin, 'add_to_watchlist', { keywords: ['desk lamp'] })).resolves.toMatchObject({ added: 1 });
+        expect(workspace.addToWatchlist).toHaveBeenCalledExactlyOnceWith(admin, { keywords: ['desk lamp'], searchTermIds: [] });
+      } finally {
+        vi.doUnmock('@/lib/workspace/tools');
+        vi.resetModules();
+      }
+    });
   });
 
   describe('with a workspace service (the flag on)', () => {

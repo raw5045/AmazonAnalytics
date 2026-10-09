@@ -21,11 +21,15 @@ import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { COUNT_CAP } from '@/lib/explorer/buildQuery';
 import { RESEARCH_TOOLS } from '@/lib/research/tools';
 import { productsForbiddenError } from '@/lib/research/products';
+import type { ResearchLimits } from '@/lib/research/limits';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
+import { listing } from '../listingContext';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
 const admin: ResearchActor = { ...actor, isAdmin: true };
 const FORBIDDEN = { error: { code: 'FORBIDDEN', message: 'Products tools are admin-only for now.', retryable: false } };
+const KEYWORD_TOOLS = ['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords'];
+const PRODUCT_TOOLS = ['get_product_details', 'search_products'];
 
 // searchToolInputSchema's `cursor` is `z.string().min(16)...` — the SDK validates tool
 // arguments against inputSchema BEFORE the callback runs, so a continuation cursor used to
@@ -115,11 +119,34 @@ const service: ResearchService = {
   }),
 };
 
-describe('research tools over an in-memory MCP connection', () => {
+/**
+ * A client on a fresh server whose tools were registered the way the gate (lib/mcp/handler.ts)
+ * does it per request: inside `listing.run({ isAdmin })`, or with `isAdmin` undefined outside any
+ * listing context.
+ */
+async function connectListed(isAdmin: boolean | undefined, actorFor: () => ResearchActor, limits?: ResearchLimits) {
+  const server = new McpServer({ name: 'keywordquarry-test-listing', version: '0' });
+  const register = () => registerResearchTools(server, service, { actorFor, ...(limits ? { limits } : {}) });
+  if (isAdmin === undefined) register();
+  else listing.run({ isAdmin }, register);
+  const client = new Client({ name: 'test-listing', version: '0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return {
+    client,
+    close: async () => {
+      await client.close().catch(() => {});
+      await server.close().catch(() => {});
+    },
+  };
+}
+
+describe('research tools over an in-memory MCP connection (a non-admin request)', () => {
   const client = new Client({ name: 'test', version: '0' });
   const server = new McpServer({ name: 'keywordquarry-test', version: '0' });
   beforeAll(async () => {
-    registerResearchTools(server, service, { actorFor: () => actor });
+    listing.run({ isAdmin: false }, () => registerResearchTools(server, service, { actorFor: () => actor }));
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     await client.connect(clientTransport);
@@ -129,11 +156,9 @@ describe('research tools over an in-memory MCP connection', () => {
     await server.close();
   });
 
-  it('lists exactly the seven research tools, all read-only, with titles and descriptions', async () => {
+  it('lists exactly the five keyword tools, all read-only, with titles and descriptions', async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual([
-      'get_keyword_details', 'get_keyword_history', 'get_product_details', 'get_research_guide', 'resolve_categories', 'search_keywords', 'search_products',
-    ]);
+    expect(tools.map((t) => t.name).sort()).toEqual(KEYWORD_TOOLS);
     for (const t of tools) {
       expect(t.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
       expect(t.title).toBeTruthy();
@@ -240,56 +265,76 @@ describe('research tools over an in-memory MCP connection', () => {
     expect(service.search).not.toHaveBeenCalled();
   });
 
-  // Spec 2026-10-09 §9: the server is registered once per process, so the two admin-only products
-  // tools are listed to every account; a non-admin's call reaches the service, which refuses it with
-  // FORBIDDEN, and the adapter maps that ResearchError to an MCP tool error carrying the code.
-  it('lists the admin-only products tools to every account and maps the service\'s FORBIDDEN refusal to a tool error with that code', async () => {
-    const { tools } = await client.listTools();
-    for (const name of ['search_products', 'get_product_details']) {
-      const t = tools.find((x) => x.name === name)!;
-      expect(t.description, name).toContain('Admin accounts only for now.');
-      expect(t.annotations, name).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
-      expect(t.inputSchema, name).toMatchObject({ type: 'object', additionalProperties: false });
-    }
-    const filters = { listedWithinDays: 180, monthlySoldMin: 1000, reviewsMax: 300 };
-    const search = await client.callTool({ name: 'search_products', arguments: { filters } });
-    expect(search.isError).toBe(true);
-    expect(JSON.parse((search.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
-    expect(service.searchProducts).toHaveBeenLastCalledWith(actor, { filters });
-    const details = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
-    expect(details.isError).toBe(true);
-    expect(JSON.parse((details.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
-    expect(service.productDetails).toHaveBeenLastCalledWith(actor, { asin: 'B0ABCDEF12' });
-  });
-
-  it('rejects a malformed ASIN via the SDK, before the service ever runs', async () => {
+  // Spec 2026-10-09 §9: the server is built per request, so a non-admin request never registers the
+  // two admin-only products tools; a direct call is the SDK's own unknown-tool error, and the service
+  // never runs.
+  it('does not offer the products tools: they are not listed, and a direct call gets the SDK\'s not-found error before any service call', async () => {
+    vi.mocked(service.searchProducts).mockClear();
     vi.mocked(service.productDetails).mockClear();
-    const r = await client.callTool({ name: 'get_product_details', arguments: { asin: 'b0abcdef12' } });
-    expect(r.isError).toBe(true);
+    const { tools } = await client.listTools();
+    for (const name of PRODUCT_TOOLS) expect(tools.map((t) => t.name)).not.toContain(name);
+    await expect(client.callTool({ name: 'search_products', arguments: { filters: { listedWithinDays: 180 } } })).rejects.toThrow('Tool search_products not found');
+    await expect(client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } })).rejects.toThrow('Tool get_product_details not found');
+    expect(service.searchProducts).not.toHaveBeenCalled();
     expect(service.productDetails).not.toHaveBeenCalled();
   });
 });
 
-describe('the products tools for an admin account', () => {
-  it('pass the admin actor through to the service and return its answer, or its ResearchError with the code', async () => {
-    const adminServer = new McpServer({ name: 'keywordquarry-test-admin', version: '0' });
-    registerResearchTools(adminServer, service, { actorFor: () => admin });
-    const adminClient = new Client({ name: 'test-admin', version: '0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await adminServer.connect(serverTransport);
-    await adminClient.connect(clientTransport);
+describe('who is offered the admin-only products tools', () => {
+  it('outside any listing context (a caller other than the gate), nobody: the five keyword tools only', async () => {
+    const { client, close } = await connectListed(undefined, () => admin);
     try {
-      const r = await adminClient.callTool({ name: 'search_products', arguments: { sort: 'bsr', dir: 'asc' } });
+      expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(KEYWORD_TOOLS);
+    } finally {
+      await close();
+    }
+  });
+
+  it('an admin request lists all seven, the two products tools read-only and strict, and runs them with the admin actor', async () => {
+    const { client, close } = await connectListed(true, () => admin);
+    try {
+      const { tools } = await client.listTools();
+      expect(tools.map((t) => t.name).sort()).toEqual([...KEYWORD_TOOLS, ...PRODUCT_TOOLS].sort());
+      for (const name of PRODUCT_TOOLS) {
+        const t = tools.find((x) => x.name === name)!;
+        expect(t.description, name).toContain('Admin accounts only for now.');
+        expect(t.annotations, name).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+        expect(t.inputSchema, name).toMatchObject({ type: 'object', additionalProperties: false });
+      }
+      const r = await client.callTool({ name: 'search_products', arguments: { sort: 'bsr', dir: 'asc' } });
       expect(r.isError).toBeFalsy();
       expect(service.searchProducts).toHaveBeenLastCalledWith(admin, { sort: 'bsr', dir: 'asc' });
       expect(r.structuredContent).toMatchObject({ adminOnly: true, total: { kind: 'exact', value: 0 }, pageSize: 50 });
-      const d = await adminClient.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
+      const d = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
       expect(d.isError).toBe(true);
       expect(JSON.parse((d.content[0] as { text: string }).text).error.code).toBe('NOT_FOUND');
       expect(service.productDetails).toHaveBeenLastCalledWith(admin, { asin: 'B0ABCDEF12' });
+      // A malformed ASIN never reaches the service: the SDK validates against the strict schema first.
+      vi.mocked(service.productDetails).mockClear();
+      const bad = await client.callTool({ name: 'get_product_details', arguments: { asin: 'b0abcdef12' } });
+      expect(bad.isError).toBe(true);
+      expect(service.productDetails).not.toHaveBeenCalled();
     } finally {
-      await adminClient.close().catch(() => {});
-      await adminServer.close().catch(() => {});
+      await close();
+    }
+  });
+
+  // The backstop: should the listing ever say admin while the actor is not (e.g. a role change in
+  // between), the service refuses with FORBIDDEN and the adapter maps it to a tool error with that code.
+  it('keeps the service\'s FORBIDDEN as a backstop, mapped to an MCP tool error carrying the code', async () => {
+    const { client, close } = await connectListed(true, () => actor);
+    try {
+      const filters = { listedWithinDays: 180, monthlySoldMin: 1000, reviewsMax: 300 };
+      const search = await client.callTool({ name: 'search_products', arguments: { filters } });
+      expect(search.isError).toBe(true);
+      expect(JSON.parse((search.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
+      expect(service.searchProducts).toHaveBeenLastCalledWith(actor, { filters });
+      const details = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
+      expect(details.isError).toBe(true);
+      expect(JSON.parse((details.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
+      expect(service.productDetails).toHaveBeenLastCalledWith(actor, { asin: 'B0ABCDEF12' });
+    } finally {
+      await close();
     }
   });
 });
@@ -314,22 +359,17 @@ describe('the limits option', () => {
 });
 
 describe('parity with lib/research/tools.ts', () => {
-  it('exposes exactly the shared module\'s names, titles, descriptions and annotations (spec §4 parity)', async () => {
+  it('exposes exactly the shared module\'s names, titles, descriptions and annotations (spec §4 parity): all of them to an admin, the non-adminOnly ones to anyone else', async () => {
     const limits = DEFAULT_LIMITS;
-    const parityServer = new McpServer({ name: 'keywordquarry-test-parity', version: '0' });
-    registerResearchTools(parityServer, service, { actorFor: () => actor, limits });
-    const parityClient = new Client({ name: 'test-parity', version: '0' });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    await parityServer.connect(serverTransport);
-    await parityClient.connect(clientTransport);
-    try {
-      const { tools } = await parityClient.listTools();
-      expect(tools.map((t) => [t.name, t.title, t.description, t.annotations])).toEqual(
-        RESEARCH_TOOLS.map((d) => [d.name, d.title, d.description(limits), d.annotations]),
-      );
-    } finally {
-      await parityClient.close().catch(() => {});
-      await parityServer.close().catch(() => {});
+    const shared = (defs: typeof RESEARCH_TOOLS) => defs.map((d) => [d.name, d.title, d.description(limits), d.annotations]);
+    for (const [isAdmin, expected] of [[true, RESEARCH_TOOLS], [false, RESEARCH_TOOLS.filter((d) => !d.adminOnly)]] as const) {
+      const { client, close } = await connectListed(isAdmin, () => (isAdmin ? admin : actor), limits);
+      try {
+        const { tools } = await client.listTools();
+        expect(tools.map((t) => [t.name, t.title, t.description, t.annotations]), String(isAdmin)).toEqual(shared(expected));
+      } finally {
+        await close();
+      }
     }
   });
 });

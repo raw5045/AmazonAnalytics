@@ -6,6 +6,9 @@ const LABELS: Record<string, string> = {
   'tool-search_keywords': 'Searching keywords',
   'tool-get_keyword_details': 'Loading keyword details',
   'tool-get_keyword_history': 'Loading history',
+  // The admin-only products tools (spec 2026-10-09 §9).
+  'tool-search_products': 'Searching products',
+  'tool-get_product_details': 'Loading product details',
   // The workspace tools (arc 4, spec 2026-10-01 §3).
   'tool-list_saved_views': 'Listing saved views',
   'tool-create_saved_view': 'Saving a view',

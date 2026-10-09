@@ -646,6 +646,12 @@ export interface GuideResponse {
     rules: string[];
     caps: { savedViews: number; customCategories: number; watchedKeywords: number; leavesPerCategory: number; writesPerDay: number };
   };
+  /** Present only for an admin account, the only one offered the two products tools, search_products and get_product_details (spec 2026-10-09 §9). */
+  products?: {
+    rules: string[];
+    /** search_products' filters, each with its own schema description (units included). */
+    filters: Array<{ name: string; definition: string }>;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -673,16 +679,20 @@ export type ProductHistoryPoint = SnapshotHistoryPoint;
 export type ProductKeyword = ProductKeywordRow & { keywordUrl: string };
 export interface ProductDetailsResponse {
   schemaVersion: 1;
-  /** The ASIN page's facts plus its link. inCatalog false: the keyword tables know the ASIN but the catalog has no row, so every fact is null. */
+  /**
+   * The ASIN page's facts plus its link. inCatalog false: the keyword tables know the ASIN but the catalog has no row, so there
+   * are no product facts (the title may still come from the keyword side).
+   */
   product: CatalogProductFacts & { url: string };
   /**
-   * points: the newest PRODUCT_TOOL_HISTORY_POINTS snapshots (./products.ts), oldest first. first and last: the oldest and newest
-   * snapshot of the whole window the loader read (up to PRODUCT_HISTORY_CAP, lib/products/loadProductHistory.ts), for a
-   * then-and-now; pointsTotal counts that window. No points, first and last null and pointsTotal 0 when there are none (always
-   * for inCatalog false or a product never fetched).
+   * points: the newest PRODUCT_TOOL_HISTORY_POINTS snapshots (./productCaps.ts), oldest first. first and last: the oldest and
+   * newest snapshot of the window the loader read, for a then-and-now; pointsTotal counts that window, which holds at most
+   * PRODUCT_HISTORY_CAP (400, lib/products/loadProductHistory.ts) snapshots, not necessarily every one ever taken. No points,
+   * first and last null and pointsTotal 0 when there are none (always for inCatalog false or a product never fetched).
    */
   history: { points: ProductHistoryPoint[]; first: ProductHistoryPoint | null; last: ProductHistoryPoint | null; pointsTotal: number };
-  /** Best keyword rank first, capped at PRODUCT_TOOL_KEYWORDS_CAP (./products.ts); keywordsTotal counts every one. */
+  /** Best keyword rank first, capped at PRODUCT_TOOL_KEYWORDS_CAP (./productCaps.ts). */
   keywords: ProductKeyword[];
+  /** Every keyword the product is a top-3 clicked product for, past the cap too (unlike pointsTotal, which stops at the loaded window). */
   keywordsTotal: number;
 }

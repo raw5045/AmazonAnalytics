@@ -61,12 +61,18 @@ export interface ToolDefinition<TService, TName extends string = string> {
   readonly requiresConfirmation: boolean;
   /**
    * True for a tool only admin accounts may use (spec 2026-10-09 §9, §10: the two products tools);
-   * absent means false. Ask AI builds its tool map per request and leaves such a tool out for a
-   * non-admin actor (lib/ask/tools.ts). The MCP server is built once per process, so it lists the
-   * tool to every account (registerDefinitions does not read this flag) and the service itself
-   * refuses a non-admin call with FORBIDDEN.
+   * absent means false. Every consumer offers such a tool to an admin only (`isOfferedTo` below):
+   * Ask AI builds its tool map per request (lib/ask/tools.ts), and the MCP builds a server per
+   * request, registering it for an admin request only (lib/mcp/tools/registerDefinitions.ts,
+   * lib/mcp/listingContext.ts). The service itself also refuses a non-admin call with FORBIDDEN,
+   * as a backstop.
    */
   readonly adminOnly?: boolean;
+}
+
+/** Whether a definition is offered to an account: an `adminOnly` one to an admin only, every other one to everyone. */
+export function isOfferedTo(def: { readonly adminOnly?: boolean }, isAdmin: boolean): boolean {
+  return def.adminOnly !== true || isAdmin;
 }
 
 /**
@@ -130,10 +136,10 @@ function productDetailsDescription(): string {
   return [
     "One product by its ASIN (from search_products, or a keyword's top clicked products): the catalog facts, its Keepa snapshot history and the current keywords it is a top-3 clicked product for.",
     "Units: averageRatingX10 = stars × 10 (45 = 4.5 stars); prices are in cents; monthlySold is Amazon's 'bought in past month' floor: 1000 means 1,000+; rankRatioX100 = current BSR ÷ 30-day average × 100 (under 100 = better than its 30-day average).",
-    `history.points holds the newest ${PRODUCT_TOOL_HISTORY_POINTS} snapshots, oldest first; first, last and pointsTotal cover up to the newest ${PRODUCT_HISTORY_CAP}, for a then-and-now.`,
-    `keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}, best keyword rank first, each with its slot, click and conversion share percentages, weeksInTop3 and keywordUrl; keywordsTotal counts them all.`,
+    `history.points holds the newest ${PRODUCT_TOOL_HISTORY_POINTS} snapshots, oldest first; first and last are the oldest and newest of the loaded window, for a then-and-now, and pointsTotal counts that window (at most ${PRODUCT_HISTORY_CAP} snapshots).`,
+    `keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}, best keyword rank first, each with its slot, click and conversion share percentages, weeksInTop3 and keywordUrl; keywordsTotal counts every keyword, past the cap too.`,
     'weeks in top 3 = consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword (any slot); streakStartedWeek is the first week of that run.',
-    'product.inCatalog false: keywords known, no product facts (usually its category is excluded from enrichment), so every fact is null and history is empty; product.fetched false: not fetched yet, so its facts are null too. NOT_FOUND: no data for that ASIN.',
+    'product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side; usually the category is excluded from enrichment) and no history. product.fetched false: in the catalog but not fetched yet, so no product facts or history yet either. NOT_FOUND: no data for that ASIN.',
     'Admin accounts only for now.',
   ].join(' ');
 }
