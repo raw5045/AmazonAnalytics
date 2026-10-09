@@ -41,13 +41,24 @@ export function resolveProductBack(from: string | null | undefined): ProductBack
 }
 
 /**
+ * Whether a history entry sits behind the current one. The Navigation API's `canGoBack` knows the
+ * current entry's position: a page opened in a new tab (the Products list's links do that), then a
+ * same-tab hop to a keyword page and the browser's Back, is at the first entry with
+ * `history.length` 2, where router.back() would do nothing. Where the API is missing (it is not in
+ * TypeScript's DOM types yet, hence the structural parameter), `history.length > 1` is the guess.
+ */
+export function canGoBack(win: { navigation?: { canGoBack?: boolean }; history: { length: number } }): boolean {
+  return win.navigation?.canGoBack ?? win.history.length > 1;
+}
+
+/**
  * Restore the previous page with router.back() (instant, from the client cache, like the browser's
  * back button) instead of a fresh navigation that re-runs its server query, but only when we came
- * from an accepted page and a history entry sits behind us (a direct entry or a new tab has none, so
- * back() would leave the app).
+ * from an accepted page and a history entry sits behind us (a direct entry or a new tab has none,
+ * so back() would leave the app or do nothing); otherwise the plain link navigates.
  */
-export function shouldRestoreViaBack(cameFromPage: boolean, historyLength: number): boolean {
-  return cameFromPage && historyLength > 1;
+export function shouldRestoreViaBack(cameFromPage: boolean, hasEntryBehind: boolean): boolean {
+  return cameFromPage && hasEntryBehind;
 }
 
 /**
@@ -61,7 +72,7 @@ export function BackToProducts({ from }: { from?: string }) {
   function handleClick(e: React.MouseEvent<HTMLAnchorElement>) {
     // Leave modified and non-primary clicks (new tab, download, …) to the browser.
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    if (shouldRestoreViaBack(target.cameFromPage, window.history.length)) {
+    if (shouldRestoreViaBack(target.cameFromPage, canGoBack(window))) {
       e.preventDefault();
       router.back();
     }

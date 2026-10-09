@@ -4,13 +4,16 @@ import { render, screen, fireEvent } from '@testing-library/react';
 const back = vi.hoisted(() => vi.fn());
 vi.mock('next/navigation', () => ({ useRouter: () => ({ back }) }));
 
-import { BackToProducts, resolveProductBack, shouldRestoreViaBack } from './BackToProducts';
+import { BackToProducts, canGoBack, resolveProductBack, shouldRestoreViaBack } from './BackToProducts';
 
 const KW = '3f2a9c1e-5b7d-4e8a-9c3b-1a2b3c4d5e6f';
 const KEYWORD_PAGE = `/explorer/keyword/${KW}`;
 
-/** jsdom has no navigation: stop the anchor's default action after React has seen the click. */
+/** Per click: whether our handler had already prevented the link's own navigation. */
+const prevented: boolean[] = [];
+/** jsdom cannot navigate: note whether the click was prevented, then stop the anchor's default action. */
 function swallowNavigation(e: Event) {
+  prevented.push(e.defaultPrevented);
   e.preventDefault();
 }
 
@@ -61,22 +64,38 @@ describe('resolveProductBack', () => {
 });
 
 describe('shouldRestoreViaBack', () => {
-  it('only when we came from an accepted page and there is a history entry behind us', () => {
-    expect(shouldRestoreViaBack(true, 2)).toBe(true);
-    expect(shouldRestoreViaBack(true, 1)).toBe(false); // direct entry / new tab: back() would leave the app
-    expect(shouldRestoreViaBack(false, 5)).toBe(false);
+  it('only when we came from an accepted page and a history entry sits behind us', () => {
+    expect(shouldRestoreViaBack(true, true)).toBe(true);
+    expect(shouldRestoreViaBack(true, false)).toBe(false); // direct entry / new tab: back() would leave the app or do nothing
+    expect(shouldRestoreViaBack(false, true)).toBe(false);
+  });
+});
+
+describe('canGoBack', () => {
+  it("trusts the Navigation API's canGoBack when there is one, whatever history.length says", () => {
+    // New tab, same-tab hop to a keyword page, then the browser's Back: the first entry, one entry ahead.
+    expect(canGoBack({ navigation: { canGoBack: false }, history: { length: 2 } })).toBe(false);
+    expect(canGoBack({ navigation: { canGoBack: true }, history: { length: 1 } })).toBe(true);
+  });
+
+  it('without it, guesses from history.length', () => {
+    expect(canGoBack({ history: { length: 2 } })).toBe(true);
+    expect(canGoBack({ history: { length: 1 } })).toBe(false);
+    expect(canGoBack({ navigation: {}, history: { length: 2 } })).toBe(true);
   });
 });
 
 describe('BackToProducts', () => {
   beforeEach(() => {
     back.mockReset();
+    prevented.length = 0;
     vi.spyOn(History.prototype, 'length', 'get').mockReturnValue(3);
     document.addEventListener('click', swallowNavigation);
   });
   afterEach(() => {
     vi.restoreAllMocks();
     document.removeEventListener('click', swallowNavigation);
+    delete (window as { navigation?: unknown }).navigation;
   });
 
   it('from the keyword page: "Back to keyword" links to it, and a plain click restores it with router.back()', () => {
@@ -84,6 +103,26 @@ describe('BackToProducts', () => {
     const link = screen.getByRole('link', { name: '← Back to keyword' });
     expect(link).toHaveAttribute('href', KEYWORD_PAGE);
     fireEvent.click(link);
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(prevented).toEqual([true]); // the link's own navigation is replaced by back()
+  });
+
+  it('at the first history entry (Navigation API canGoBack false), the link navigates even with entries ahead', () => {
+    // Opened from the list in a new tab, then keyword page and browser Back: history.length is 3 here.
+    Object.defineProperty(window, 'navigation', { configurable: true, value: { canGoBack: false } });
+    const from = '/products?age=180&soldMin=1000';
+    render(<BackToProducts from={from} />);
+    const link = screen.getByRole('link', { name: '← Back to products' });
+    expect(link).toHaveAttribute('href', from);
+    fireEvent.click(link);
+    expect(back).not.toHaveBeenCalled();
+    expect(prevented).toEqual([false]); // left to the link: it opens the filtered list
+  });
+
+  it('with the Navigation API saying it can go back, router.back() is used', () => {
+    Object.defineProperty(window, 'navigation', { configurable: true, value: { canGoBack: true } });
+    render(<BackToProducts from={KEYWORD_PAGE} />);
+    fireEvent.click(screen.getByRole('link', { name: '← Back to keyword' }));
     expect(back).toHaveBeenCalledTimes(1);
   });
 
@@ -102,11 +141,12 @@ describe('BackToProducts', () => {
     expect(back).not.toHaveBeenCalled();
   });
 
-  it('no history behind us (direct entry): the link navigates instead of calling back()', () => {
+  it('no history behind us (direct entry, no Navigation API): the link navigates instead of calling back()', () => {
     vi.spyOn(History.prototype, 'length', 'get').mockReturnValue(1);
     render(<BackToProducts from={KEYWORD_PAGE} />);
     fireEvent.click(screen.getByRole('link', { name: '← Back to keyword' }));
     expect(back).not.toHaveBeenCalled();
+    expect(prevented).toEqual([false]);
   });
 
   it.each([undefined, 'https://evil.example/', '/explorer'])(
