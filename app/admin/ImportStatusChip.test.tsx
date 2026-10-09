@@ -17,4 +17,28 @@ describe('ImportStatusChip', () => {
     render(<ImportStatusChip />);
     expect((await screen.findAllByText(/started 12 min ago/)).length).toBeGreaterThan(0);
   });
+
+  // The in-progress chip ends with the phase: a mapped phase reads as words, any other shows raw.
+  it.each([
+    ['keepa_enqueue', 'Keepa queue'],
+    ['top_asins_build', 'Top ASINs'],
+    ['some_future_phase', 'some_future_phase'],
+  ])('shows the %s phase as "%s"', async (phase, shown) => {
+    const active = {
+      fileId: 'f1',
+      batchId: 'b1',
+      filename: 'week.csv',
+      phase,
+      startedAt: null,
+      heartbeatAt: null,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: true, json: async () => ({ active: [active], recent: [] }) })),
+    );
+    render(<ImportStatusChip />);
+    expect(
+      await screen.findByText(`Import in progress: week.csv \u00b7 ${shown}`),
+    ).toBeInTheDocument();
+  });
 });

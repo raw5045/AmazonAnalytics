@@ -181,6 +181,10 @@ function humanPhase(phase: string): string {
       return 'inserting rows';
     case 'mark_imported':
       return 'finalizing';
+    case 'keepa_enqueue':
+      return 'Keepa queue';
+    case 'top_asins_build':
+      return 'Top ASINs';
     case 'summary_refresh':
       return 'rebuilding summary';
     default:
