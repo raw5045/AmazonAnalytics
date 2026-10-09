@@ -1097,7 +1097,7 @@ Run (owner's go only): `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topA
 |---|---|---|---|
 | 0051 applied + ratio backfill | 2026-10-10 | OK (85 s) | 13 statements; ALTER 1 s; ratio backfill 508,867 rows updated of 2,603,628 scanned in 70 s; six concurrent indexes 1–2 s each; reverse table + meta; assertions passed; Keepa service kept fetching throughout |
 | Reverse-table backfill (77 weeks) | 2026-10-10 | OK: 77 weeks, 0 skipped, 104 min (19:51–21:35 UTC) | 50–137 s per week (7–10M rows each); finalized week 2026-10-03 = 8,310,634 rows, _prev = 2026-09-26; scratch tables dropped; streaks: 4.38M pairs at 1 week, 2.63M at 2–7, 822k at 8–25, 235k at 26–51, 246k at 52+; meta week == explorer week (pre-push gate OK) |
-| Integration tests | 2026-10-10 | keepaService 5/5 (4 s); topAsinsBuild 5/5 (10 min 24 s, 19:39–19:50 UTC) | build test run BEFORE the backfill (names + carry proven); productsQueries after the backfill |
+| Integration tests | 2026-10-10 | keepaService 5/5 (4 s); topAsinsBuild 5/5 (10 min 24 s, 19:39–19:50 UTC); productsQueries 7/7 (27 s, 21:53 UTC, after the backfill) | build test run BEFORE the backfill (names + carry proven); the default view and the owner's search use the 0051 indexes |
 | Push + deploys | | | |
 | Page smoke | | | |
 | Tools smoke | | | |
