@@ -43,9 +43,11 @@ describe('migration 0051 SQL text', () => {
     }
   });
 
-  it('builds the six catalog indexes on the Products-page predicate', () => {
+  it('builds the six catalog indexes as (key, asin) on the Products-page predicate', () => {
     expect(flat.split(PREDICATE).length - 1).toBe(6);
     const catalogColumns = mirror(getTableColumns(asinProducts));
+    // The search orders by "<key> <dir>, asin <dir>", so each index leads with its key and ends in the asin tie-break.
+    expect(catalogColumns).toContain('asin');
     const indexes: Array<[string, string]> = [
       ['asin_products_listed_since_idx', 'listed_since'],
       ['asin_products_monthly_sold_idx', 'monthly_sold'],
@@ -56,7 +58,7 @@ describe('migration 0051 SQL text', () => {
     ];
     for (const [name, column] of indexes) {
       expect(catalogColumns).toContain(column);
-      expect(flat).toContain(`CREATE INDEX IF NOT EXISTS ${name} ON asin_products (${column}) ${PREDICATE}`);
+      expect(flat).toContain(`CREATE INDEX IF NOT EXISTS ${name} ON asin_products (${column}, asin) ${PREDICATE}`);
     }
   });
 

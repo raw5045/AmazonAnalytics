@@ -12,22 +12,23 @@ COMMENT ON COLUMN asin_products.rank_ratio_x100 IS
 
 -- Product-search filters (spec §3.1): one partial index per selective column over the rows the
 -- Products page can show. Postgres combines them (bitmap AND) for mixed filters.
-CREATE INDEX IF NOT EXISTS asin_products_listed_since_idx ON asin_products (listed_since)
+-- Each is (key, asin): the search sorts by "<key> <dir>, asin <dir>" (deterministic tie-break), so a scan needs no sort.
+CREATE INDEX IF NOT EXISTS asin_products_listed_since_idx ON asin_products (listed_since, asin)
   WHERE in_scope AND enrichment_status IN ('active', 'no_price');
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS asin_products_monthly_sold_idx ON asin_products (monthly_sold)
+CREATE INDEX IF NOT EXISTS asin_products_monthly_sold_idx ON asin_products (monthly_sold, asin)
   WHERE in_scope AND enrichment_status IN ('active', 'no_price');
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS asin_products_review_count_idx ON asin_products (review_count)
+CREATE INDEX IF NOT EXISTS asin_products_review_count_idx ON asin_products (review_count, asin)
   WHERE in_scope AND enrichment_status IN ('active', 'no_price');
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS asin_products_sales_rank_idx ON asin_products (sales_rank)
+CREATE INDEX IF NOT EXISTS asin_products_sales_rank_idx ON asin_products (sales_rank, asin)
   WHERE in_scope AND enrichment_status IN ('active', 'no_price');
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS asin_products_price_idx ON asin_products (current_price_cents)
+CREATE INDEX IF NOT EXISTS asin_products_price_idx ON asin_products (current_price_cents, asin)
   WHERE in_scope AND enrichment_status IN ('active', 'no_price');
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS asin_products_rank_ratio_idx ON asin_products (rank_ratio_x100)
+CREATE INDEX IF NOT EXISTS asin_products_rank_ratio_idx ON asin_products (rank_ratio_x100, asin)
   WHERE in_scope AND enrichment_status IN ('active', 'no_price');
 --> statement-breakpoint
 
