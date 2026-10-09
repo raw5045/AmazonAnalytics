@@ -78,8 +78,8 @@ describe('backfillSetupStatements', () => {
     expect(setup).toEqual([
       'DROP TABLE IF EXISTS keyword_top_asins_bf',
       'DROP TABLE IF EXISTS keyword_top_asins_bf_prev',
-      'CREATE TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)',
-      'CREATE TABLE keyword_top_asins_bf_prev (LIKE keyword_top_asins INCLUDING DEFAULTS)',
+      'CREATE UNLOGGED TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)',
+      'CREATE UNLOGGED TABLE keyword_top_asins_bf_prev (LIKE keyword_top_asins INCLUDING DEFAULTS)',
       'CREATE INDEX keyword_top_asins_bf_prev_pair_idx ON keyword_top_asins_bf_prev (search_term_id, asin)',
       `COMMENT ON TABLE keyword_top_asins_bf IS 'backfill run ${TOKEN}'`,
     ]);
@@ -152,7 +152,7 @@ describe('rotateStatements', () => {
       'ALTER TABLE keyword_top_asins_bf RENAME TO keyword_top_asins_bf_prev',
       'CREATE INDEX keyword_top_asins_bf_prev_pair_idx ON keyword_top_asins_bf_prev (search_term_id, asin)',
       'ANALYZE keyword_top_asins_bf_prev',
-      'CREATE TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)',
+      'CREATE UNLOGGED TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)',
       `COMMENT ON TABLE keyword_top_asins_bf IS 'backfill run ${TOKEN}'`,
     ]);
   });
@@ -165,6 +165,29 @@ describe('rotateStatements', () => {
   });
   it('never touches the live table', () => {
     for (const st of rotateStatements(TOKEN)) expect(norm(st.text).replace('LIKE keyword_top_asins ', '')).not.toMatch(LIVE);
+  });
+});
+
+describe('no WAL for the walk: UNLOGGED scratch tables', () => {
+  const creates = (sts: { text: string }[]) => sts.map((s) => norm(s.text)).filter((t) => /^CREATE (?:UNLOGGED )?TABLE/.test(t));
+  it('setup creates both scratch tables UNLOGGED, and the rotate creates the fresh _bf UNLOGGED again (the rename keeps _bf_prev unlogged)', () => {
+    expect(creates(backfillSetupStatements(TOKEN))).toEqual([
+      'CREATE UNLOGGED TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)',
+      'CREATE UNLOGGED TABLE keyword_top_asins_bf_prev (LIKE keyword_top_asins INCLUDING DEFAULTS)',
+    ]);
+    expect(creates(rotateStatements(TOKEN))).toEqual(['CREATE UNLOGGED TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)']);
+    expect(rotateStatements(TOKEN).map((s) => norm(s.text))).toContain('ALTER TABLE keyword_top_asins_bf RENAME TO keyword_top_asins_bf_prev');
+  });
+  it('the replacement, keyword_top_asins_prev and everything else the swap-in makes are ordinary logged tables: they become the live data', () => {
+    const f = finalizeStatements(WEEK);
+    expect(creates([...f.prev, f.createNext])).toEqual([
+      'CREATE TABLE keyword_top_asins_prev AS SELECT * FROM keyword_top_asins_bf_prev',
+      'CREATE TABLE keyword_top_asins_next (LIKE keyword_top_asins INCLUDING ALL)',
+    ]);
+    for (const st of [...f.prev, f.createNext, f.fillNext, f.meta(7), ...f.cleanup, ...f.swap, f.analyze]) expect(st.text).not.toMatch(/UNLOGGED/i);
+  });
+  it('the week INSERT writes the unlogged _bf without a CREATE of its own', () => {
+    expect(backfillWeekStatements(WEEK).insert.text).not.toMatch(/UNLOGGED|CREATE/);
   });
 });
 
@@ -322,12 +345,13 @@ const tokenOf = (texts: string[]): string => {
 };
 
 /** A statement's first three words (the weeks query, the meta read and the stamp read get names). */
-const tag = (t: string) => (t === WEEKS_QUERY ? 'WEEKS' : t === META_QUERY ? 'META_READ' : t === STAMP_READ ? 'STAMP_READ' : t.split(' ').slice(0, 3).join(' '));
-const SETUP_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', LOCK, 'DROP TABLE IF', 'DROP TABLE IF', 'CREATE TABLE keyword_top_asins_bf', 'CREATE TABLE keyword_top_asins_bf_prev', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'COMMENT ON TABLE', 'COMMIT'];
+const tag = (t: string) =>
+  t === WEEKS_QUERY ? 'WEEKS' : t === META_QUERY ? 'META_READ' : t === STAMP_READ ? 'STAMP_READ' : t.split(' ').slice(0, t.startsWith('CREATE UNLOGGED') ? 4 : 3).join(' ');
+const SETUP_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', LOCK, 'DROP TABLE IF', 'DROP TABLE IF', 'CREATE UNLOGGED TABLE keyword_top_asins_bf', 'CREATE UNLOGGED TABLE keyword_top_asins_bf_prev', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'COMMENT ON TABLE', 'COMMIT'];
 const INSERT_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'SET LOCAL work_mem', LOCK, 'STAMP_READ', 'INSERT INTO keyword_top_asins_bf', 'COMMIT'];
 /** A week with no rows: the same transaction, rolled back. */
 const EMPTY_WEEK_TX_TAGS = [...INSERT_TX_TAGS.slice(0, -1), 'ROLLBACK'];
-const ROTATE_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'SET LOCAL maintenance_work_mem', LOCK, 'STAMP_READ', 'DROP TABLE IF', 'ALTER TABLE keyword_top_asins_bf', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'ANALYZE keyword_top_asins_bf_prev', 'CREATE TABLE keyword_top_asins_bf', 'COMMENT ON TABLE', 'COMMIT'];
+const ROTATE_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'SET LOCAL maintenance_work_mem', LOCK, 'STAMP_READ', 'DROP TABLE IF', 'ALTER TABLE keyword_top_asins_bf', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'ANALYZE keyword_top_asins_bf_prev', 'CREATE UNLOGGED TABLE keyword_top_asins_bf', 'COMMENT ON TABLE', 'COMMIT'];
 const FINALIZE_TX_TAGS = [
   BEGIN_TAG,
   'SET LOCAL statement_timeout',
@@ -434,7 +458,8 @@ describe('runBackfill', () => {
       expect.stringMatching(/^week 2026-09-26 \(2\/3\): rows=6 in \d+\.\ds$/),
       expect.stringMatching(/^week 2026-10-03 \(3\/3\): rows=7 in \d+\.\ds$/),
       'finalizing: building keyword_top_asins_next from week 2026-10-03, then swapping it in (a few minutes)',
-      expect.stringMatching(/^finalized: keyword_top_asins = week 2026-10-03 \(7 rows\), keyword_top_asins_prev = week 2026-09-26 in \d+\.\ds$/),
+      'finalized: week 2026-10-03 rows=7 prev=2026-09-26',
+      expect.stringMatching(/^backfilled 3 weeks \(0 skipped\) in \d+ min$/),
     ]);
   });
 
@@ -463,7 +488,12 @@ describe('runBackfill', () => {
     await expect(runBackfill(c, { log: (l) => logs.push(l) })).resolves.toEqual({ weeks: 3, lastWeek: WEEK, rows: 7, analyzeError: '57014' });
     expect(c.texts.slice(-2)).toEqual(['COMMIT', 'ANALYZE keyword_top_asins']);
     expect(c.texts).not.toContain('ROLLBACK');
-    expect(logs[logs.length - 1]).toBe('analyze failed after COMMIT (the replacement is committed; autovacuum covers it): code=57014');
+    // The failure is reported between the swap-in's line and the summary, which still comes last: the run did finish.
+    expect(logs.slice(-3)).toEqual([
+      'finalized: week 2026-10-03 rows=7 prev=2026-09-26',
+      'analyze failed after COMMIT (the replacement is committed; autovacuum covers it): code=57014',
+      expect.stringMatching(/^backfilled 3 weeks \(0 skipped\) in \d+ min$/),
+    ]);
     expect(logs.join('\n')).not.toContain('SECRET-PAYLOAD');
   });
 });
@@ -488,8 +518,8 @@ describe('runBackfill: weeks with no top-3 rows', () => {
     ]);
     expect(logs).toContain('week 2026-09-19: no top-3 rows, skipped (streaks carry across it)');
     expect(logs.filter((l) => l.startsWith('week 2026-09-19'))).toHaveLength(1); // no progress line for it
-    // _prev ends as the previous week walked (2026-09-26), not the week before the last in the list.
-    expect(logs[logs.length - 1]).toMatch(/keyword_top_asins_prev = week 2026-09-26 in /);
+    // prev is the previous week walked (2026-09-26), and the summary counts the skip.
+    expect(logs.slice(-2)).toEqual(['finalized: week 2026-10-03 rows=7 prev=2026-09-26', expect.stringMatching(/^backfilled 4 weeks \(1 skipped\) in \d+ min$/)]);
   });
 
   it('skips several, and the first week too', async () => {
@@ -569,6 +599,9 @@ describe('runBackfill: where each week ends up', () => {
       ['keyword_top_asins_prev', 'older'],
     ]);
     const comments = new Map<string, string>();
+    type Persistence = 'unlogged' | 'logged';
+    const persistence = new Map<string, Persistence>([['keyword_top_asins', 'logged'], ['keyword_top_asins_prev', 'logged']]);
+    const created: { name: string; persistence: Persistence }[] = []; // every table the run made, as it made it
     const carries: (string | null)[] = []; // what keyword_top_asins_bf_prev held at each walked week's insert
     let metaWeek: string | null = null;
     const held = (name: string): string | null => {
@@ -581,9 +614,16 @@ describe('runBackfill: where each week ends up', () => {
     const drop = (name: string) => {
       tables.delete(name);
       comments.delete(name);
+      persistence.delete(name);
+    };
+    const make = (name: string, how: Persistence) => {
+      taken(name);
+      persistence.set(name, how);
+      created.push({ name, persistence: how });
     };
     const rules: [RegExp, (m: RegExpMatchArray, values: unknown[]) => Answer | undefined][] = [
-      [/^CREATE TABLE (\w+) \(LIKE keyword_top_asins INCLUDING (?:DEFAULTS|ALL)\)$/, (m) => { taken(m[1]); tables.set(m[1], null); return undefined; }],
+      // LIKE copies the columns, never the persistence: only the UNLOGGED keyword makes an unlogged table.
+      [/^CREATE (UNLOGGED )?TABLE (\w+) \(LIKE keyword_top_asins INCLUDING (?:DEFAULTS|ALL)\)$/, (m) => { make(m[2], m[1] ? 'unlogged' : 'logged'); tables.set(m[2], null); return undefined; }],
       [/^CREATE INDEX \w+ ON (\w+) /, (m) => { held(m[1]); return undefined; }],
       [/^DROP TABLE IF EXISTS (\w+)$/, (m) => { drop(m[1]); return undefined; }],
       [/^DROP TABLE (\w+)$/, (m) => { held(m[1]); drop(m[1]); return undefined; }],
@@ -592,8 +632,10 @@ describe('runBackfill: where each week ends up', () => {
         const label = held(m[1]);
         taken(m[2]);
         const comment = comments.get(m[1]);
+        const kept = persistence.get(m[1]) ?? 'logged'; // a rename keeps a table's persistence
         drop(m[1]);
         tables.set(m[2], label);
+        persistence.set(m[2], kept);
         if (comment !== undefined) comments.set(m[2], comment);
         return undefined;
       }],
@@ -602,15 +644,20 @@ describe('runBackfill: where each week ends up', () => {
       [/^COMMENT ON TABLE (\w+) IS '(.*)'$/, (m) => { held(m[1]); comments.set(m[1], m[2]); return undefined; }],
       [/^INSERT INTO keyword_top_asins_bf \(/, (_m, v) => {
         const rows = rowsByWeek[String(v[0])] ?? 1;
+        // No WAL for the walk: both scratch tables are unlogged at every week, however many rotations came before.
+        for (const name of ['keyword_top_asins_bf', 'keyword_top_asins_bf_prev']) {
+          held(name);
+          if (persistence.get(name) !== 'unlogged') throw new Error(`${name} is not unlogged`);
+        }
         if (rows > 0) {
           carries.push(held('keyword_top_asins_bf_prev'));
-          held('keyword_top_asins_bf');
           tables.set('keyword_top_asins_bf', String(v[0]));
         }
         return answer(rows);
       }],
       [/^INSERT INTO (\w+) SELECT \* FROM (\w+)$/, (m) => { held(m[1]); tables.set(m[1], held(m[2])); return answer(1); }],
-      [/^CREATE TABLE (\w+) AS SELECT \* FROM (\w+)$/, (m) => { taken(m[1]); tables.set(m[1], held(m[2])); return undefined; }],
+      // CREATE TABLE ... AS makes an ordinary logged table, even from an unlogged source.
+      [/^CREATE TABLE (\w+) AS SELECT \* FROM (\w+)$/, (m) => { const label = held(m[2]); make(m[1], 'logged'); tables.set(m[1], label); return undefined; }],
       [/^INSERT INTO keyword_top_asins_meta /, (_m, v) => { metaWeek = String(v[0]); return undefined; }],
     ];
     const control = (t: string) => t === BEGIN || t === 'COMMIT' || t === 'ROLLBACK' || t.startsWith('SET LOCAL ') || t === LOCK;
@@ -625,7 +672,7 @@ describe('runBackfill: where each week ends up', () => {
       }
       throw new Error(`the table model does not know: ${text.slice(0, 90)}`);
     };
-    return { tables, comments, carries, respond, metaWeek: () => metaWeek };
+    return { tables, comments, persistence, created, carries, respond, metaWeek: () => metaWeek };
   }
   /** n consecutive Saturdays from 2025-04-19; n = 77 ends on 2026-10-03, across both partitions. */
   const saturdays = (n: number) => Array.from({ length: n }, (_, i) => new Date(Date.UTC(2025, 3, 19 + 7 * i)).toISOString().slice(0, 10));
@@ -646,6 +693,16 @@ describe('runBackfill: where each week ends up', () => {
       expect([...m.comments.keys()].sort()).toEqual(['keyword_top_asins', 'keyword_top_asins_prev']); // the swap's table comments only ...
       expect([...m.comments.values()].filter((c) => c.startsWith('backfill run'))).toEqual([]); // ... the run stamps went with the scratch tables
       expect(m.metaWeek()).toBe(weeks[n - 1]);
+      // No WAL for the walk: every scratch table the run made (setup's two, one fresh _bf per rotate) is UNLOGGED, and each week's
+      // INSERT found both unlogged (the model throws otherwise); the replacement and _prev, which become the live data, are logged.
+      const scratch = m.created.filter((c) => c.name.startsWith('keyword_top_asins_bf'));
+      expect(scratch).toHaveLength(2 + (n - 1));
+      expect(scratch.every((c) => c.persistence === 'unlogged')).toBe(true);
+      expect(m.created.filter((c) => !c.name.startsWith('keyword_top_asins_bf'))).toEqual([
+        { name: 'keyword_top_asins_prev', persistence: 'logged' },
+        { name: 'keyword_top_asins_next', persistence: 'logged' },
+      ]);
+      expect([...m.persistence.entries()].sort()).toEqual([['keyword_top_asins', 'logged'], ['keyword_top_asins_prev', 'logged']]);
     });
   }
 
@@ -676,7 +733,7 @@ describe('runBackfill: where each week ends up', () => {
     expect(m.carries).toEqual([null]);
     expect(m.tables.get('keyword_top_asins')).toBe(weeks[2]);
     expect(m.tables.get('keyword_top_asins_prev')).toBeNull();
-    expect(logs[logs.length - 1]).toMatch(/keyword_top_asins_prev = empty \(no earlier week walked\) in /);
+    expect(logs.slice(-2)).toEqual([`finalized: week ${weeks[2]} rows=1 prev=none`, expect.stringMatching(/^backfilled 3 weeks \(2 skipped\) in \d+ min$/)]);
   });
 
   it('a single week never rotates', async () => {
@@ -706,7 +763,7 @@ describe('runBackfill: failures (coded log lines, original error rethrown, scrat
   });
 
   it('a failing setup rolls back and fails at stage=setup', async () => {
-    const { c, logs, outcome } = await run(failWhen(healthy(WEEKS), (t) => t.startsWith('CREATE TABLE keyword_top_asins_bf_prev'), boom));
+    const { c, logs, outcome } = await run(failWhen(healthy(WEEKS), (t) => t.startsWith('CREATE UNLOGGED TABLE keyword_top_asins_bf_prev'), boom));
     expect(outcome).toBe(boom);
     expect(c.texts[c.texts.length - 1]).toBe('ROLLBACK');
     expect(logs).toEqual(['listing weeks...', 'backfill: 3 weeks, 2026-09-19 .. 2026-10-03', 'backfill failed: stage=setup code=57014']);

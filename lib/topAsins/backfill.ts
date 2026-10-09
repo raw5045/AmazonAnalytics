@@ -15,6 +15,14 @@
  * the walk ends with _bf = the last week and _bf_prev = the week before it, which is exactly what the swap-in reads:
  * no third scratch table.
  *
+ * No WAL for the walk. Both scratch tables are UNLOGGED (and so are their indexes): a logged 77-week walk would write
+ * tens of GB of WAL, which Neon keeps as history storage and may answer with write backpressure. The rename keeps
+ * _bf_prev unlogged, the fresh _bf is created unlogged again. The replacement (_next) and keyword_top_asins_prev are
+ * ordinary logged tables, because they become the live data. The price: a crash or restart of the database empties
+ * unlogged tables. A restart also kills the transaction in flight, so the run fails, and a failed run starts over
+ * from the first week anyway (setup recreates both tables): nothing but time is lost. The scratch data lives on the
+ * database server's local disk, a few GB at its peak, sort files included.
+ *
  * A week that inserts no rows is skipped, not fatal, unless it is the last week (the live build refuses to swap zero
  * rows, and the table must end on a real week). It is not rotated, so the next week carries from the previous week
  * walked, exactly as the live build carries across a gap (spec §3.3).
@@ -38,9 +46,15 @@
  *
  * Failure and restart. The live table is untouched until the swap-in, which is atomic: it commits whole or leaves
  * nothing behind (no _next, no half swap). Any other failure leaves the scratch tables for inspection, and a re-run
- * starts over (setup drops and recreates them), so a run is safe to repeat. After top_asins_run_conflict the tables
- * are another run's, still in use: the log says to let it finish, not to re-run. Errors are logged by code only (a pg
- * error's code, else its name), never by message, and the original error is rethrown.
+ * starts over (setup drops and recreates them), so a run is safe to repeat. A failed run that is not repeated leaves
+ * the two scratch tables behind: DROP TABLE IF EXISTS keyword_top_asins_bf, keyword_top_asins_bf_prev (the script
+ * header says so). After top_asins_run_conflict the tables are another run's, still in use: the log says to let it
+ * finish, not to re-run. Errors are logged by code only (a pg error's code, else its name), never by message, and the
+ * original error is rethrown.
+ *
+ * The runbook lines. A finished run logs `finalized: week <last> rows=<n> prev=<previous week walked>` once the
+ * swap-in has committed, and ends with `backfilled <n> weeks (<skipped> skipped) in <m> min`: no such last line, no
+ * finished run.
  *
  * `client` must be ONE dedicated connection (never a Pool, never inside a transaction). Builds (the import hook,
  * scripts/buildTopAsinsWeek.ts) take the same advisory lock, so one that starts mid-run queues between two
@@ -119,20 +133,22 @@ export function stampReadSql(): SqlStatement {
 
 // ---- the walk ----
 
-const CREATE_BF = 'CREATE TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)';
+// UNLOGGED: no WAL for the walk (see the header). LIKE copies the columns, never the persistence.
+const CREATE_BF = 'CREATE UNLOGGED TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)';
+const CREATE_BF_PREV = 'CREATE UNLOGGED TABLE keyword_top_asins_bf_prev (LIKE keyword_top_asins INCLUDING DEFAULTS)';
 const CARRY_INDEX = 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx ON keyword_top_asins_bf_prev (search_term_id, asin)';
 
 /**
- * Drop and recreate the two scratch tables: the live table's columns and defaults, no primary key and no CHECKs (a
- * week's rows are unique by construction, and the swap-in's copy runs through the real constraints), the carry index
- * on _bf_prev, and the run's stamp on _bf.
+ * Drop and recreate the two scratch tables, UNLOGGED: the live table's columns and defaults, no primary key and no
+ * CHECKs (a week's rows are unique by construction, and the swap-in's copy runs through the real constraints), the
+ * carry index on _bf_prev (unlogged with its table), and the run's stamp on _bf.
  */
 export function backfillSetupStatements(token: string): SqlStatement[] {
   return [
     sql('DROP TABLE IF EXISTS keyword_top_asins_bf'),
     sql('DROP TABLE IF EXISTS keyword_top_asins_bf_prev'),
     sql(CREATE_BF),
-    sql('CREATE TABLE keyword_top_asins_bf_prev (LIKE keyword_top_asins INCLUDING DEFAULTS)'),
+    sql(CREATE_BF_PREV),
     sql(CARRY_INDEX),
     stampSql(token),
   ];
@@ -170,7 +186,8 @@ export function backfillWeekStatements(week: string): BackfillWeekStatements {
  * Between two weeks, by rename (no copy of ~8M rows): the old carry source is dropped (its index with it), the week
  * just built becomes the carry source, gets the carry index (a bulk build) and fresh statistics (a never-analyzed
  * table is estimated from defaults, and the carry's join order depends on its size), and a fresh empty _bf is
- * created and stamped again (the renamed table takes its comment, the stamp, along).
+ * created (UNLOGGED again; the renamed table stays unlogged, and so does its index) and stamped again (the renamed
+ * table takes its comment, the stamp, along).
  */
 export function rotateStatements(token: string): SqlStatement[] {
   return [
@@ -281,6 +298,7 @@ export async function runBackfill(client: Queryable, opts: BackfillOptions = {})
   if ('totalCount' in client) throw new TopAsinsBuildError('top_asins_bad_client', 'runBackfill needs one dedicated connection, not a Pool');
   const log = opts.log ?? (() => undefined);
   const token = newRunToken();
+  const runStarted = Date.now();
   let stage: Stage = 'weeks';
   let at = ''; // " week=<w> (<i>/<n>)" while a week is in flight
   try {
@@ -347,7 +365,6 @@ export async function runBackfill(client: Queryable, opts: BackfillOptions = {})
     stage = 'finalize';
     at = '';
     log(`finalizing: building keyword_top_asins_next from week ${lastWeek}, then swapping it in (a few minutes)`);
-    const started = Date.now();
     const f = finalizeStatements(lastWeek);
     const rows = await inTransaction(client, async () => {
       await client.query(SET_TIMEOUT);
@@ -371,7 +388,8 @@ export async function runBackfill(client: Queryable, opts: BackfillOptions = {})
       for (const st of f.swap) await client.query(st.text); // the live table is locked from here to COMMIT
       return copied;
     });
-    log(`finalized: keyword_top_asins = week ${lastWeek} (${rows} rows), keyword_top_asins_prev = ${carried ? `week ${carried}` : 'empty (no earlier week walked)'} in ${seconds(started)}s`);
+    // The swap-in has committed. prev is the previous week walked, which a skipped week can make older than the one before the last.
+    log(`finalized: week ${lastWeek} rows=${rows} prev=${carried ?? 'none'}`);
 
     let analyzeError: string | undefined;
     try {
@@ -381,6 +399,7 @@ export async function runBackfill(client: Queryable, opts: BackfillOptions = {})
       analyzeError = errorCode(e);
       log(`analyze failed after COMMIT (the replacement is committed; autovacuum covers it): code=${analyzeError}`);
     }
+    log(`backfilled ${n} weeks (${skipped.length} skipped) in ${Math.round((Date.now() - runStarted) / 60000)} min`);
     return { weeks: n, lastWeek, rows, ...(skipped.length ? { skipped } : {}), ...(analyzeError ? { analyzeError } : {}) };
   } catch (e) {
     const code = errorCode(e);

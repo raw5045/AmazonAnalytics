@@ -15,17 +15,29 @@
  *  - 77 weeks take roughly 2-3 hours, with one progress line per week. A week in the middle of the walk with no top-3
  *    rows is skipped with a log line, and its neighbours' streaks carry across it (as the live build carries across a
  *    gap); an empty LAST week stops the run (top_asins_no_rows).
+ *  - The two scratch tables (keyword_top_asins_bf, keyword_top_asins_bf_prev) are UNLOGGED, so the walk writes no WAL (a
+ *    logged walk would write tens of GB, which Neon keeps as history storage and may answer with write backpressure).
+ *    A crash or restart of the database empties unlogged tables; it also kills the run, and a failed run starts over
+ *    anyway, so nothing but time is lost. They live on the database server's local disk, a few GB at the peak. The
+ *    replacement table and keyword_top_asins_prev are ordinary logged tables: they become the live data.
  *  - Readers of the reverse table (the ASIN page's keyword list) keep working throughout. Nothing live is touched
  *    until the last step, and that step builds the replacement beside the live table and swaps it in by rename in ONE
  *    transaction, exactly as a build does: readers never see a partial table, and during the final swap they can queue
  *    for up to 120 s behind it (lock_timeout; if it fires the swap-in rolls back and the run fails with code 55P03).
  *  - One run at a time. Each run stamps its scratch tables, so starting a second run stops the first one with
- *    top_asins_run_conflict instead of letting both write.
- *  - Idempotent. A failed or interrupted run leaves its scratch tables (keyword_top_asins_bf, keyword_top_asins_bf_prev)
- *    for inspection; the next run drops and recreates them and starts over from the first week. The live table is
- *    untouched by a failure, so nothing needs cleaning up by hand. A completed run drops the scratch tables itself.
+ *    top_asins_run_conflict instead of letting both write. After that code the tables belong to the other run: let it
+ *    finish.
+ *  - Idempotent. A failed or interrupted run leaves its scratch tables for inspection; the next run drops and recreates
+ *    them and starts over from the first week. The live table is untouched by a failure, so nothing else needs
+ *    cleaning up. A completed run drops the scratch tables itself. If you ABANDON a failed or interrupted run instead of
+ *    re-running it, drop the leftovers by hand (they hold local disk until you do):
+ *      DROP TABLE IF EXISTS keyword_top_asins_bf, keyword_top_asins_bf_prev;
  *  - Run it before the push that ships the build phase, so the next import finds a previous build. If an import
  *    lands first, its week-1 streaks are replaced when this backfill runs afterwards.
+ *  - The end of a finished run reads, in this order:
+ *      finalized: week <last> rows=<n> prev=<previous week walked>       (the swap-in has committed)
+ *      backfilled <n> weeks (<skipped> skipped) in <m> min               (always the last line)
+ *    If the last line never appears the run did not finish: read the "backfill failed" line above it.
  * A failure prints the error's name and pg code only, never its message.
  */
 import { Pool } from 'pg';
@@ -55,10 +67,7 @@ if (!process.env.DATABASE_URL) {
   const client = await pool.connect();
   try {
     client.on('error', () => undefined);
-    const r = await runBackfill(client, { log: (line) => console.log(line) });
-    const skipped = r.skipped ? `; skipped ${r.skipped.length} empty week${r.skipped.length === 1 ? '' : 's'} (${r.skipped.join(', ')})` : '';
-    const analyze = r.analyzeError ? `; ANALYZE failed (${r.analyzeError}), autovacuum covers it` : '';
-    console.log(`backfilled ${r.weeks} weeks: keyword_top_asins = week ${r.lastWeek} (${r.rows} rows)${skipped}${analyze}`);
+    await runBackfill(client, { log: (line) => console.log(line) }); // its last line is the summary
   } finally {
     client.release();
     await pool.end();
