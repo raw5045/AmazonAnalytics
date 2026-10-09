@@ -42,6 +42,8 @@ export const asinProducts = pgTable(
     avg365PriceCents: integer('avg365_price_cents'),
     avg30SalesRank: integer('avg30_sales_rank'),
     avg90SalesRank: integer('avg90_sales_rank'),
+    /** round(100 × sales_rank ÷ avg30_sales_rank); null unless both > 0. < 100 = better than its 30-day average (migration 0051). */
+    rankRatioX100: integer('rank_ratio_x100'),
     /** NULL until the first fetch outcome ('error' after a failed first fetch). Never fetched = lastFetchedAt IS NULL. */
     enrichmentStatus: asinEnrichmentStatusEnum('enrichment_status'),
     errorCode: text('error_code'),

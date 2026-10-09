@@ -36,3 +36,4 @@ export * from './askAi';
 export * from './asinProducts';
 export * from './asinSnapshots';
 export * from './keepaServiceStatus';
+export * from './keywordTopAsins';
