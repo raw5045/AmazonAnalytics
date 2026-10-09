@@ -2,15 +2,18 @@
 import { describe, it, expect } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
 import { keywordTopAsins, keywordWeeklyMetrics } from '@/db/schema';
-import { buildTopAsinsStatements, TOP_ASINS_LOCK_KEY, TopAsinsBuildError, type Queryable } from './buildWeek';
+import { buildTopAsinsStatements, buildTopAsinsWeek, TOP_ASINS_LOCK_KEY, TopAsinsBuildError, type Queryable } from './buildWeek';
 import {
-  KWM_PARTITIONS,
   assertBackfillWeeks,
   backfillSetupStatements,
   backfillWeekStatements,
   finalizeStatements,
+  newRunToken,
   rotateStatements,
   runBackfill,
+  stampReadSql,
+  stampSql,
+  stampText,
   weeksSql,
 } from './backfill';
 
@@ -19,36 +22,69 @@ const dbCols = (t: Parameters<typeof getTableColumns>[0]) => new Set(Object.valu
 const norm = (s: string) => s.trim().replace(/\s+/g, ' ');
 const WEEK = '2026-10-03';
 const WEEKS = ['2026-09-19', '2026-09-26', '2026-10-03'];
-const CARRY_COLS = ['search_term_id', 'asin', 'weeks_in_top3', 'streak_started_week'];
+const TOKEN = '2026-10-09T17:05:03.123Z-0a1b2c3d';
 /** The live table's bare name (not _next, _prev, _bf or _meta). */
 const LIVE = /\bkeyword_top_asins\b/;
+/** Anything that reaches the live side: the live table, _prev, _next or the meta row (the scratch pair is _bf and _bf_prev). */
+const touchesLiveSide = (t: string) => LIVE.test(t.replace('LIKE keyword_top_asins ', '')) || /keyword_top_asins_(?:prev|next|meta)\b/.test(t);
+
+// The statements the runner wraps around the builders. They are the build's own: 'the statements shared with the build' pins them.
+const BEGIN = 'BEGIN ISOLATION LEVEL READ COMMITTED';
+const BEGIN_TAG = 'BEGIN ISOLATION LEVEL'; // its first three words
+const SET_TIMEOUT = "SET LOCAL statement_timeout = '1800s'";
+const SET_WORK_MEM = "SET LOCAL work_mem = '256MB'";
+const SET_LOCK_TIMEOUT = "SET LOCAL lock_timeout = '120s'";
+const LOCK = 'SELECT pg_advisory_xact_lock($1)';
+const META_QUERY = 'SELECT week_end_date::text AS week_end_date FROM keyword_top_asins_meta WHERE singleton';
+const STAMP_READ = "SELECT obj_description(to_regclass('keyword_top_asins_bf'), 'pg_class') AS stamp";
+const WEEKS_QUERY = norm(weeksSql());
 
 /** The build's own swap statements for a plan (the backfill's swap and comments must stay in step with them). */
 const buildSwapOf = (plan: Parameters<typeof buildTopAsinsStatements>[1]) => buildTopAsinsStatements(WEEK, plan).swap.map((s) => norm(s.text));
 
 describe('weeksSql', () => {
-  it('lists the distinct weeks of every listed kwm partition, as ISO text, ascending', () => {
-    expect(KWM_PARTITIONS).toEqual(['keyword_weekly_metrics_2025', 'keyword_weekly_metrics_2026']);
+  it('is a loose index scan on the parent table: one min() probe per week, not a DISTINCT over the partitions', () => {
     expect(norm(weeksSql())).toBe(
-      'SELECT week_end_date::text AS week FROM ( SELECT DISTINCT week_end_date FROM keyword_weekly_metrics_2025 UNION SELECT DISTINCT week_end_date FROM keyword_weekly_metrics_2026 ) w ORDER BY 1',
+      'WITH RECURSIVE w AS ( SELECT min(week_end_date) AS d FROM keyword_weekly_metrics UNION ALL SELECT (SELECT min(week_end_date) FROM keyword_weekly_metrics WHERE week_end_date > w.d) FROM w WHERE w.d IS NOT NULL ) SELECT d::text AS week FROM w WHERE d IS NOT NULL ORDER BY d',
     );
+    expect(weeksSql()).not.toMatch(/keyword_weekly_metrics_\d{4}|DISTINCT/); // the parent table: every partition, including later years
     expect(dbCols(keywordWeeklyMetrics).has('week_end_date')).toBe(true);
   });
 });
 
+describe('the run token', () => {
+  it('newRunToken is an ISO timestamp and a random suffix, different on every call', () => {
+    const a = newRunToken();
+    expect(a).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z-[0-9a-f]{8}$/);
+    expect(newRunToken()).not.toBe(a);
+  });
+  it('is stamped on keyword_top_asins_bf as a table comment, and read back with to_regclass so a missing table reads as NULL', () => {
+    expect(stampText(TOKEN)).toBe(`backfill run ${TOKEN}`);
+    expect(norm(stampSql(TOKEN).text)).toBe(`COMMENT ON TABLE keyword_top_asins_bf IS 'backfill run ${TOKEN}'`);
+    expect(norm(stampReadSql().text)).toBe(STAMP_READ);
+  });
+  it('refuses a token that is not a plain literal (COMMENT takes no parameters, so it is interpolated)', () => {
+    for (const bad of ["x'; DROP TABLE y; --", '', 'short', 'has space in it', 'a'.repeat(65), "abc'defghi"]) {
+      expect(() => stampText(bad)).toThrow(TypeError);
+      expect(() => stampSql(bad)).toThrow(TypeError);
+    }
+  });
+});
+
 describe('backfillSetupStatements', () => {
-  const setup = backfillSetupStatements().map((s) => norm(s.text));
-  it('drops, then recreates, the two scratch tables shaped like the live table (defaults only: no key, no checks), and indexes the carry source', () => {
+  const setup = backfillSetupStatements(TOKEN).map((s) => norm(s.text));
+  it('drops, then recreates, the two scratch tables shaped like the live table (defaults only: no key, no checks), indexes the carry source and stamps _bf with the run', () => {
     expect(setup).toEqual([
       'DROP TABLE IF EXISTS keyword_top_asins_bf',
       'DROP TABLE IF EXISTS keyword_top_asins_bf_prev',
       'CREATE TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)',
       'CREATE TABLE keyword_top_asins_bf_prev (LIKE keyword_top_asins INCLUDING DEFAULTS)',
       'CREATE INDEX keyword_top_asins_bf_prev_pair_idx ON keyword_top_asins_bf_prev (search_term_id, asin)',
+      `COMMENT ON TABLE keyword_top_asins_bf IS 'backfill run ${TOKEN}'`,
     ]);
   });
   it('never writes the live table (it is only the LIKE source) and binds no values', () => {
-    for (const st of backfillSetupStatements()) {
+    for (const st of backfillSetupStatements(TOKEN)) {
       expect(st.values).toEqual([]);
       expect(norm(st.text).replace('LIKE keyword_top_asins ', '')).not.toMatch(LIVE);
     }
@@ -79,6 +115,7 @@ describe('backfillWeekStatements', () => {
     expect(dec).toContain('FROM keyword_weekly_metrics_2025');
     expect(dec).not.toContain('keyword_weekly_metrics_2026');
     expect(backfillWeekStatements('2026-01-03').insert.text).toContain('FROM keyword_weekly_metrics_2026');
+    expect(backfillWeekStatements('2027-01-02').insert.text).toContain('FROM keyword_weekly_metrics_2027');
   });
   it('carries through DISTINCT ON + a plain LEFT JOIN (hash-joinable), prev + 1 else 1 starting this week', () => {
     expect(insert.text).toMatch(/LEFT JOIN \(\s*SELECT DISTINCT ON \(search_term_id, asin\) search_term_id, asin, weeks_in_top3, streak_started_week\s+FROM keyword_top_asins_bf_prev\s+ORDER BY search_term_id, asin, weeks_in_top3 DESC/);
@@ -107,38 +144,47 @@ describe('backfillWeekStatements', () => {
 });
 
 describe('rotateStatements', () => {
-  it('moves the built week into _bf_prev (then refreshes its statistics for the next carry), and empties _bf', () => {
-    expect(rotateStatements().map((s) => norm(s.text))).toEqual([
-      'TRUNCATE keyword_top_asins_bf_prev',
-      'INSERT INTO keyword_top_asins_bf_prev SELECT * FROM keyword_top_asins_bf',
+  const rotate = rotateStatements(TOKEN).map((s) => norm(s.text));
+  it('rotates by rename, not by copy: drop the old carry source, rename _bf to _bf_prev, index and analyze it, create a fresh _bf and stamp it again', () => {
+    expect(rotate).toEqual([
+      'DROP TABLE IF EXISTS keyword_top_asins_bf_prev',
+      'ALTER TABLE keyword_top_asins_bf RENAME TO keyword_top_asins_bf_prev',
+      'CREATE INDEX keyword_top_asins_bf_prev_pair_idx ON keyword_top_asins_bf_prev (search_term_id, asin)',
       'ANALYZE keyword_top_asins_bf_prev',
-      'TRUNCATE keyword_top_asins_bf',
+      'CREATE TABLE keyword_top_asins_bf (LIKE keyword_top_asins INCLUDING DEFAULTS)',
+      `COMMENT ON TABLE keyword_top_asins_bf IS 'backfill run ${TOKEN}'`,
     ]);
   });
+  it('copies no rows, and builds the same carry index and empty _bf that setup does', () => {
+    expect(rotate.filter((t) => /^(INSERT|TRUNCATE)/.test(t))).toEqual([]);
+    const setup = backfillSetupStatements(TOKEN).map((s) => norm(s.text));
+    expect(rotate[2]).toBe(setup[4]);
+    expect(rotate[4]).toBe(setup[2]);
+    expect(rotate[5]).toBe(setup[5]);
+  });
   it('never touches the live table', () => {
-    for (const st of rotateStatements()) expect(st.text).not.toMatch(LIVE);
+    for (const st of rotateStatements(TOKEN)) expect(norm(st.text).replace('LIKE keyword_top_asins ', '')).not.toMatch(LIVE);
   });
 });
 
 describe('finalizeStatements', () => {
   const f = finalizeStatements(WEEK);
   it('reads the meta week with the same statement a build uses', () => {
-    expect(f.metaWeek.text).toBe('SELECT week_end_date::text AS week_end_date FROM keyword_top_asins_meta WHERE singleton');
+    expect(f.metaWeek.text).toBe(META_QUERY);
   });
   it('builds the replacement beside the live table, like a build, and fills it from the LAST week (still in _bf: the last week is never rotated)', () => {
     expect(norm(f.createNext.text)).toBe(norm(buildTopAsinsStatements(WEEK).createNext.text));
     expect(norm(f.createNext.text)).toBe('CREATE TABLE keyword_top_asins_next (LIKE keyword_top_asins INCLUDING ALL)');
     expect(norm(f.fillNext.text)).toBe('INSERT INTO keyword_top_asins_next SELECT * FROM keyword_top_asins_bf');
   });
-  it("keeps the week before it as keyword_top_asins_prev: the old one dropped, the new one made from _bf_prev's four carry columns, with the comment a build gives it", () => {
+  it('keeps the previous week walked as keyword_top_asins_prev: the old one dropped, the new one SELECT * from _bf_prev (all eight columns, like a build-made _prev), with the comment a build gives it', () => {
     const buildComment = buildSwapOf(undefined).find((t) => t.startsWith('COMMENT ON TABLE keyword_top_asins_prev'));
     expect(buildComment).toBeDefined();
     expect(f.prev.map((s) => norm(s.text))).toEqual([
       'DROP TABLE IF EXISTS keyword_top_asins_prev',
-      `CREATE TABLE keyword_top_asins_prev AS SELECT ${CARRY_COLS.join(', ')} FROM keyword_top_asins_bf_prev`,
+      'CREATE TABLE keyword_top_asins_prev AS SELECT * FROM keyword_top_asins_bf_prev',
       buildComment,
     ]);
-    expect(CARRY_COLS.filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
   });
   it("swaps like a build's same-week rebuild: drop the live table, promote _next under the canonical names, with the table comment", () => {
     expect(f.swap.map((s) => norm(s.text))).toEqual(buildSwapOf({ carryFrom: 'none', sameWeek: true }));
@@ -168,9 +214,13 @@ describe('finalizeStatements', () => {
 });
 
 describe('assertBackfillWeeks', () => {
-  it('accepts ascending distinct weeks across both listed partitions', () => {
+  it('accepts ascending distinct weeks in any year that has a partition (no partition list to extend)', () => {
     expect(() => assertBackfillWeeks(['2025-04-19', '2025-12-27', '2026-01-03', '2026-10-03'])).not.toThrow();
+    expect(() => assertBackfillWeeks(['2026-12-26', '2027-01-02'])).not.toThrow();
     expect(() => assertBackfillWeeks([WEEK])).not.toThrow();
+  });
+  it('accepts weeks that are not consecutive (a missing import week is a gap, not an error)', () => {
+    expect(() => assertBackfillWeeks(['2025-04-19', '2025-06-14', '2026-01-03'])).not.toThrow();
   });
   it('refuses an empty list with top_asins_no_rows', () => {
     expect(() => assertBackfillWeeks([])).toThrowError(expect.objectContaining({ code: 'top_asins_no_rows' }));
@@ -180,10 +230,6 @@ describe('assertBackfillWeeks', () => {
       expect(() => assertBackfillWeeks(bad)).toThrowError(expect.objectContaining({ code: 'top_asins_bad_date' }));
     }
     expect(() => assertBackfillWeeks([null as unknown as string])).toThrowError(expect.objectContaining({ code: 'top_asins_bad_date' }));
-  });
-  it('refuses a week outside the listed partitions (extend KWM_PARTITIONS when a later year has weeks)', () => {
-    expect(() => assertBackfillWeeks(['2026-12-26', '2027-01-02'])).toThrowError(expect.objectContaining({ code: 'top_asins_bad_date' }));
-    expect(() => assertBackfillWeeks(['2024-12-28'])).toThrow(TopAsinsBuildError);
   });
 });
 
@@ -211,42 +257,84 @@ function fakeClient(respond: Responder): Queryable & { texts: string[]; args: un
   };
 }
 
-const ROWS: Record<string, number> = { '2026-09-19': 5, '2026-09-26': 6, '2026-10-03': 7 };
-const WEEKS_QUERY = norm(weeksSql());
-const META_QUERY = 'SELECT week_end_date::text AS week_end_date FROM keyword_top_asins_meta WHERE singleton';
-const SET_TIMEOUT = "SET LOCAL statement_timeout = '1800s'";
-const SET_WORK_MEM = "SET LOCAL work_mem = '256MB'";
-const SET_LOCK_TIMEOUT = "SET LOCAL lock_timeout = '120s'";
-const BEGIN = 'BEGIN ISOLATION LEVEL READ COMMITTED';
-const BEGIN_TAG = 'BEGIN ISOLATION LEVEL'; // its first three words
-const LOCK = 'SELECT pg_advisory_xact_lock($1)';
+describe('the statements shared with the build are the build\'s', () => {
+  /** Runs the real build against a recording client (an advance of the week) and returns what it executed. */
+  async function recordedBuild() {
+    const texts: string[] = [];
+    const args: unknown[][] = [];
+    const client: Queryable = {
+      async query(text: string, values?: unknown[]) {
+        const t = norm(text);
+        texts.push(t);
+        args.push(values ?? []);
+        if (t === META_QUERY) return { rowCount: 1, rows: [{ week_end_date: '2026-09-26' }] };
+        if (t.startsWith('INSERT INTO keyword_top_asins_next')) return { rowCount: 5, rows: [] };
+        return { rowCount: 0, rows: [] };
+      },
+    };
+    await buildTopAsinsWeek(client, WEEK);
+    return { texts, args };
+  }
+  it('the isolation level, the settings, the advisory lock (and its key), the lock_timeout and the meta-week read are the ones a build runs', async () => {
+    const { texts, args } = await recordedBuild();
+    for (const shared of [BEGIN, SET_TIMEOUT, SET_WORK_MEM, LOCK, SET_LOCK_TIMEOUT, META_QUERY]) expect(texts).toContain(shared);
+    expect(args[texts.indexOf(LOCK)]).toEqual([TOP_ASINS_LOCK_KEY]);
+    expect(texts).toContain(norm(finalizeStatements(WEEK).metaWeek.text));
+  });
+});
 
-/** A database that answers every statement sensibly: the weeks, the meta week, each week's insert row count, the replacement's. */
-function healthy(weeks: string[], rowsByWeek: Record<string, number> = ROWS, metaWeek: string | null = null): Responder {
+const ROWS: Record<string, number> = { '2026-09-19': 5, '2026-09-26': 6, '2026-10-03': 7 };
+
+interface World {
+  /** Rows each week's INSERT reports; a week absent from the map reports one row. */
+  rows?: Record<string, number>;
+  metaWeek?: string | null;
+  /** From the Nth read of the run stamp on, another run owns the scratch tables (`stamp`: its stamp, or null for no table). */
+  takeover?: { at: number; stamp: string | null };
+}
+/** A database that answers every statement sensibly, keeping the run stamp that setup and rotate write. */
+function healthy(weeks: string[], world: World = {}): Responder {
+  const rowsByWeek = world.rows ?? ROWS;
+  let stamp: string | null = null;
+  let stampReads = 0;
   return (text, values) => {
     if (text === WEEKS_QUERY) return answer(weeks.length, weeks.map((week) => ({ week })));
-    if (text === META_QUERY) return answer(1, [{ week_end_date: metaWeek }]);
-    if (text.startsWith('INSERT INTO keyword_top_asins_bf (')) return answer(rowsByWeek[String(values[0])] ?? 0);
-    if (text.startsWith('INSERT INTO keyword_top_asins_next SELECT')) return answer(rowsByWeek[weeks[weeks.length - 1]] ?? 0);
+    if (text === META_QUERY) return answer(1, [{ week_end_date: world.metaWeek ?? null }]);
+    const comment = text.match(/^COMMENT ON TABLE keyword_top_asins_bf IS '(.*)'$/);
+    if (comment) stamp = comment[1];
+    if (text === STAMP_READ) {
+      stampReads += 1;
+      return answer(1, [{ stamp: world.takeover && stampReads >= world.takeover.at ? world.takeover.stamp : stamp }]);
+    }
+    if (text.startsWith('INSERT INTO keyword_top_asins_bf (')) return answer(rowsByWeek[String(values[0])] ?? 1);
+    if (text.startsWith('INSERT INTO keyword_top_asins_next SELECT')) return answer(rowsByWeek[weeks[weeks.length - 1]] ?? 1);
     return undefined;
   };
 }
 const failWhen = (base: Responder, pred: (text: string, values: unknown[]) => boolean, error: unknown): Responder =>
   (text, values) => (pred(text, values) ? { throws: error } : base(text, values));
+/** The run's token, read from the stamp the recorded setup wrote. */
+const tokenOf = (texts: string[]): string => {
+  const m = texts.map((t) => t.match(/^COMMENT ON TABLE keyword_top_asins_bf IS 'backfill run (.+)'$/)).find((x) => x);
+  if (!m) throw new Error('no stamp among the recorded statements');
+  return m[1];
+};
 
-/** A statement's first three words. */
-const tag = (t: string) => t.split(' ').slice(0, 3).join(' ');
-const META_TAG = 'SELECT week_end_date::text AS'; // the weeks query and the meta-week read start alike
-const SETUP_TAGS = [BEGIN_TAG, 'DROP TABLE IF', 'DROP TABLE IF', 'CREATE TABLE keyword_top_asins_bf', 'CREATE TABLE keyword_top_asins_bf_prev', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'COMMIT'];
-const INSERT_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'SET LOCAL work_mem', LOCK, 'INSERT INTO keyword_top_asins_bf', 'COMMIT'];
-const ROTATE_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'TRUNCATE keyword_top_asins_bf_prev', 'INSERT INTO keyword_top_asins_bf_prev', 'ANALYZE keyword_top_asins_bf_prev', 'TRUNCATE keyword_top_asins_bf', 'COMMIT'];
+/** A statement's first three words (the weeks query, the meta read and the stamp read get names). */
+const tag = (t: string) => (t === WEEKS_QUERY ? 'WEEKS' : t === META_QUERY ? 'META_READ' : t === STAMP_READ ? 'STAMP_READ' : t.split(' ').slice(0, 3).join(' '));
+const SETUP_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', LOCK, 'DROP TABLE IF', 'DROP TABLE IF', 'CREATE TABLE keyword_top_asins_bf', 'CREATE TABLE keyword_top_asins_bf_prev', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'COMMENT ON TABLE', 'COMMIT'];
+const INSERT_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'SET LOCAL work_mem', LOCK, 'STAMP_READ', 'INSERT INTO keyword_top_asins_bf', 'COMMIT'];
+/** A week with no rows: the same transaction, rolled back. */
+const EMPTY_WEEK_TX_TAGS = [...INSERT_TX_TAGS.slice(0, -1), 'ROLLBACK'];
+const ROTATE_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', LOCK, 'STAMP_READ', 'DROP TABLE IF', 'ALTER TABLE keyword_top_asins_bf', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'ANALYZE keyword_top_asins_bf_prev', 'CREATE TABLE keyword_top_asins_bf', 'COMMENT ON TABLE', 'COMMIT'];
 const FINALIZE_TX_TAGS = [
   BEGIN_TAG,
   'SET LOCAL statement_timeout',
   LOCK, // a running build finishes first
-  META_TAG, // the meta week, read under the lock
+  'STAMP_READ', // the scratch tables must still be this run's
+  'META_READ', // the meta week, read under the lock
   'DROP TABLE IF', // the old _prev
-  'CREATE TABLE keyword_top_asins_prev', // from the week before the last
+  'CREATE TABLE keyword_top_asins_prev', // from the previous week walked
   'COMMENT ON TABLE',
   'CREATE TABLE keyword_top_asins_next', // the replacement, beside the live table
   'INSERT INTO keyword_top_asins_next',
@@ -281,15 +369,15 @@ describe('runBackfill', () => {
     expect(c.texts).toEqual([WEEKS_QUERY]);
   });
 
-  it('walks three weeks: setup, per week one locked insert transaction then one rotate transaction (none after the last week), then the locked swap-in', async () => {
+  it('walks three weeks: locked, stamped setup; per week one locked insert transaction then one locked rotate (none after the last week); then the locked swap-in', async () => {
     const c = fakeClient(healthy(WEEKS));
     const logs: string[] = [];
     const result = await runBackfill(c, { log: (l) => logs.push(l) });
     expect(result).toEqual({ weeks: 3, lastWeek: WEEK, rows: 7 });
 
     expect(c.texts.map(tag)).toEqual([
-      META_TAG, // the weeks
-      ...SETUP_TAGS,
+      'WEEKS',
+      ...SETUP_TX_TAGS,
       ...INSERT_TX_TAGS, ...ROTATE_TX_TAGS, // 2026-09-19
       ...INSERT_TX_TAGS, ...ROTATE_TX_TAGS, // 2026-09-26
       ...INSERT_TX_TAGS, // 2026-10-03: the last week stays in keyword_top_asins_bf
@@ -297,17 +385,19 @@ describe('runBackfill', () => {
       'ANALYZE keyword_top_asins',
     ]);
 
-    // The exact statements are the builders': the runner adds only transaction control and settings.
+    // The exact statements are the builders': the runner adds only transaction control, settings, the lock and the run check.
+    const token = tokenOf(c.texts);
+    expect(token).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z-[0-9a-f]{8}$/);
     const f = finalizeStatements(WEEK);
-    const insertTx = (w: string) => [BEGIN, SET_TIMEOUT, SET_WORK_MEM, LOCK, norm(backfillWeekStatements(w).insert.text), 'COMMIT'];
-    const rotateTx = [BEGIN, SET_TIMEOUT, ...rotateStatements().map((s) => norm(s.text)), 'COMMIT'];
+    const insertTx = (w: string) => [BEGIN, SET_TIMEOUT, SET_WORK_MEM, LOCK, STAMP_READ, norm(backfillWeekStatements(w).insert.text), 'COMMIT'];
+    const rotateTx = [BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, ...rotateStatements(token).map((s) => norm(s.text)), 'COMMIT'];
     expect(c.texts).toEqual([
       WEEKS_QUERY,
-      BEGIN, ...backfillSetupStatements().map((s) => norm(s.text)), 'COMMIT',
+      BEGIN, SET_TIMEOUT, LOCK, ...backfillSetupStatements(token).map((s) => norm(s.text)), 'COMMIT',
       ...insertTx(WEEKS[0]), ...rotateTx,
       ...insertTx(WEEKS[1]), ...rotateTx,
       ...insertTx(WEEKS[2]),
-      BEGIN, SET_TIMEOUT, LOCK, META_QUERY,
+      BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, META_QUERY,
       ...[...f.prev, f.createNext, f.fillNext, f.meta(7), ...f.cleanup].map((s) => norm(s.text)),
       SET_LOCK_TIMEOUT,
       ...f.swap.map((s) => norm(s.text)),
@@ -315,18 +405,17 @@ describe('runBackfill', () => {
       norm(f.analyze.text),
     ]);
 
-    // Bound values: the lock key on every locked transaction (three weeks + the swap-in), [week] on each insert, the meta row [last week, copied rows].
+    // Bound values: the lock key on every locked transaction (setup, three weeks, two rotates, the swap-in), [week] on each insert, the meta row [last week, copied rows].
     const at = (pred: (t: string) => boolean) => c.texts.flatMap((t, i) => (pred(t) ? [i] : []));
     const locks = at((t) => t === LOCK);
-    expect(locks).toHaveLength(4);
+    expect(locks).toHaveLength(7);
     for (const i of locks) expect(c.args[i]).toEqual([TOP_ASINS_LOCK_KEY]);
     expect(at((t) => t.startsWith('INSERT INTO keyword_top_asins_bf (')).map((i) => c.args[i])).toEqual(WEEKS.map((w) => [w]));
     expect(c.args[at((t) => t.startsWith('INSERT INTO keyword_top_asins_meta'))[0]]).toEqual([WEEK, 7]);
 
     // Nothing live is touched before the swap-in transaction (the live table stays as it was for the whole walk) ...
     const finalizeBegin = c.texts.lastIndexOf(BEGIN);
-    const beforeFinalize = c.texts.slice(0, finalizeBegin).map((t) => t.replace('LIKE keyword_top_asins ', ''));
-    expect(beforeFinalize.filter((t) => LIVE.test(t) || t.includes('keyword_top_asins_next') || t.includes('keyword_top_asins_prev'))).toEqual([]);
+    expect(c.texts.slice(0, finalizeBegin).filter(touchesLiveSide)).toEqual([]);
     // ... and inside it the live table is named only by the swap, the last statements before COMMIT (the exclusive lock lasts that long),
     // with lock_timeout set right before them and nowhere earlier (it must not bound the copy or the wait behind a build).
     const finalizeTx = c.texts.slice(finalizeBegin, c.texts.lastIndexOf('COMMIT') + 1);
@@ -338,6 +427,7 @@ describe('runBackfill', () => {
     expect(finalizeTx.indexOf(LOCK)).toBeLessThan(dropAt); // the advisory lock is taken before any of it
 
     expect(logs).toEqual([
+      'listing weeks...',
       'backfill: 3 weeks, 2026-09-19 .. 2026-10-03',
       expect.stringMatching(/^week 2026-09-19 \(1\/3\): rows=5 in \d+\.\ds$/),
       expect.stringMatching(/^week 2026-09-26 \(2\/3\): rows=6 in \d+\.\ds$/),
@@ -347,13 +437,21 @@ describe('runBackfill', () => {
     ]);
   });
 
+  it('each run stamps its own token', async () => {
+    const a = fakeClient(healthy(WEEKS));
+    const b = fakeClient(healthy(WEEKS));
+    await runBackfill(a);
+    await runBackfill(b);
+    expect(tokenOf(a.texts)).not.toBe(tokenOf(b.texts));
+  });
+
   it('works without a log callback', async () => {
     await expect(runBackfill(fakeClient(healthy(WEEKS)))).resolves.toMatchObject({ weeks: 3, rows: 7 });
   });
 
   for (const meta of [null, '2026-09-26', WEEK]) {
     it(`swaps in over a live build that is not newer than the last week (meta week ${meta ?? 'none'})`, async () => {
-      await expect(runBackfill(fakeClient(healthy(WEEKS, ROWS, meta)))).resolves.toMatchObject({ weeks: 3, lastWeek: WEEK });
+      await expect(runBackfill(fakeClient(healthy(WEEKS, { metaWeek: meta })))).resolves.toMatchObject({ weeks: 3, lastWeek: WEEK });
     });
   }
 
@@ -369,58 +467,164 @@ describe('runBackfill', () => {
   });
 });
 
+describe('runBackfill: weeks with no top-3 rows', () => {
+  const W4 = ['2026-09-12', '2026-09-19', '2026-09-26', '2026-10-03'];
+
+  it('a mid-walk week with no rows is skipped, not fatal: no rotate, the log says so, the next week carries across it', async () => {
+    const c = fakeClient(healthy(W4, { rows: { '2026-09-12': 4, '2026-09-19': 0, '2026-09-26': 6, '2026-10-03': 7 } }));
+    const logs: string[] = [];
+    const result = await runBackfill(c, { log: (l) => logs.push(l) });
+    expect(result).toEqual({ weeks: 4, lastWeek: '2026-10-03', rows: 7, skipped: ['2026-09-19'] });
+    expect(c.texts.map(tag)).toEqual([
+      'WEEKS',
+      ...SETUP_TX_TAGS,
+      ...INSERT_TX_TAGS, ...ROTATE_TX_TAGS, // 2026-09-12
+      ...EMPTY_WEEK_TX_TAGS, // 2026-09-19: rolled back, and no rotate after it
+      ...INSERT_TX_TAGS, ...ROTATE_TX_TAGS, // 2026-09-26 carries from 2026-09-12
+      ...INSERT_TX_TAGS, // 2026-10-03
+      ...FINALIZE_TX_TAGS,
+      'ANALYZE keyword_top_asins',
+    ]);
+    expect(logs).toContain('week 2026-09-19: no top-3 rows, skipped (streaks carry across it)');
+    expect(logs.filter((l) => l.startsWith('week 2026-09-19'))).toHaveLength(1); // no progress line for it
+    // _prev ends as the previous week walked (2026-09-26), not the week before the last in the list.
+    expect(logs[logs.length - 1]).toMatch(/keyword_top_asins_prev = week 2026-09-26 in /);
+  });
+
+  it('skips several, and the first week too', async () => {
+    const c = fakeClient(healthy(W4, { rows: { '2026-09-12': 0, '2026-09-19': 0, '2026-09-26': 6, '2026-10-03': 7 } }));
+    const logs: string[] = [];
+    await expect(runBackfill(c, { log: (l) => logs.push(l) })).resolves.toEqual({ weeks: 4, lastWeek: '2026-10-03', rows: 7, skipped: ['2026-09-12', '2026-09-19'] });
+    expect(logs).toContain('week 2026-09-12: no top-3 rows, skipped (streaks carry across it)');
+    expect(logs).toContain('week 2026-09-19: no top-3 rows, skipped (streaks carry across it)');
+    expect(c.texts.filter((t) => t.startsWith('ALTER TABLE keyword_top_asins_bf RENAME'))).toHaveLength(1); // only 2026-09-26 rotates
+  });
+
+  it('the LAST week with no rows is still a hard stop (top_asins_no_rows): rolled back, nothing swapped in', async () => {
+    const c = fakeClient(healthy(W4, { rows: { '2026-09-12': 4, '2026-09-19': 5, '2026-09-26': 6, '2026-10-03': 0 } }));
+    const logs: string[] = [];
+    await expect(runBackfill(c, { log: (l) => logs.push(l) })).rejects.toMatchObject({ code: 'top_asins_no_rows' });
+    expect(c.texts[c.texts.length - 1]).toBe('ROLLBACK');
+    expect(c.texts.slice(c.texts.indexOf('COMMIT') + 1).filter(touchesLiveSide)).toEqual([]);
+    expect(logs[logs.length - 1]).toBe('backfill failed: stage=insert week=2026-10-03 (4/4) code=top_asins_no_rows; scratch tables kept (a re-run starts over)');
+    expect(logs.filter((l) => l.includes('skipped'))).toEqual([]);
+  });
+
+  it('a single week with no rows is the last week: a hard stop', async () => {
+    const c = fakeClient(healthy([WEEK], { rows: { [WEEK]: 0 } }));
+    await expect(runBackfill(c)).rejects.toMatchObject({ code: 'top_asins_no_rows' });
+  });
+});
+
+describe('runBackfill: another run on the same scratch tables', () => {
+  const OTHER = 'backfill run 2026-10-09T18:00:00.000Z-feedbeef';
+  async function run(world: World) {
+    const c = fakeClient(healthy(WEEKS, world));
+    const logs: string[] = [];
+    const outcome = await runBackfill(c, { log: (l) => logs.push(l) }).then(() => null, (e: unknown) => e);
+    return { c, logs, outcome };
+  }
+  const KEPT = '; scratch tables kept (a re-run starts over)';
+
+  // Stamp reads in a three-week run: insert 1, rotate 1, insert 2, rotate 2, insert 3, swap-in.
+  it('stops at the first insert when the stamp is not its own: nothing is written', async () => {
+    const { c, logs, outcome } = await run({ takeover: { at: 1, stamp: OTHER } });
+    expect(outcome).toMatchObject({ code: 'top_asins_run_conflict' });
+    expect(outcome).toBeInstanceOf(TopAsinsBuildError);
+    expect(c.texts.slice(c.texts.lastIndexOf(BEGIN))).toEqual([BEGIN, SET_TIMEOUT, SET_WORK_MEM, LOCK, STAMP_READ, 'ROLLBACK']);
+    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=insert week=2026-09-19 (1/3) code=top_asins_run_conflict${KEPT}`);
+  });
+
+  it('stops at a rotate before it renames anything (it would shuffle the other run\'s tables)', async () => {
+    const { c, logs, outcome } = await run({ takeover: { at: 2, stamp: OTHER } });
+    expect(outcome).toMatchObject({ code: 'top_asins_run_conflict' });
+    expect(c.texts.slice(c.texts.lastIndexOf(BEGIN))).toEqual([BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, 'ROLLBACK']);
+    expect(c.texts.filter((t) => t.startsWith('ALTER TABLE'))).toEqual([]);
+    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=rotate week=2026-09-19 (1/3) code=top_asins_run_conflict${KEPT}`);
+  });
+
+  it('stops at the swap-in before it reads the meta row or touches the live side (it would install the other run\'s streaks)', async () => {
+    const { c, logs, outcome } = await run({ takeover: { at: 6, stamp: OTHER } });
+    expect(outcome).toMatchObject({ code: 'top_asins_run_conflict' });
+    expect(c.texts.slice(c.texts.lastIndexOf(BEGIN))).toEqual([BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, 'ROLLBACK']);
+    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=finalize code=top_asins_run_conflict${KEPT}`);
+  });
+
+  it('a dropped _bf (no table, so no stamp) reads as a conflict too, not as an error of its own', async () => {
+    const { outcome } = await run({ takeover: { at: 3, stamp: null } });
+    expect(outcome).toMatchObject({ code: 'top_asins_run_conflict' });
+  });
+});
+
 describe('runBackfill: where each week ends up', () => {
   /**
-   * Tracks which week each table holds by parsing the runner's statements. A statement on a table that does not
-   * exist throws like the database would, so a dropped or never-created table fails the run.
+   * Tracks which week each table holds, and each table's comment, by parsing the runner's statements. A statement on a
+   * table that does not exist throws like the database would, a renamed table takes its comment along, and a statement
+   * the model does not know fails the test, so a dropped, missing or unexpected statement cannot pass quietly.
    */
-  function tableModel() {
+  function tableModel(rowsByWeek: Record<string, number> = {}) {
     const tables = new Map<string, string | null>([
       ['keyword_top_asins', 'before-backfill'],
       ['keyword_top_asins_prev', 'older'],
     ]);
-    const carries: (string | null)[] = []; // what keyword_top_asins_bf_prev held at each week's insert
+    const comments = new Map<string, string>();
+    const carries: (string | null)[] = []; // what keyword_top_asins_bf_prev held at each walked week's insert
     let metaWeek: string | null = null;
     const held = (name: string): string | null => {
       if (!tables.has(name)) throw Object.assign(new Error(`relation "${name}" does not exist`), { code: '42P01' });
       return tables.get(name) ?? null;
     };
+    const taken = (name: string) => {
+      if (tables.has(name)) throw Object.assign(new Error(`relation "${name}" already exists`), { code: '42P07' });
+    };
+    const drop = (name: string) => {
+      tables.delete(name);
+      comments.delete(name);
+    };
     const rules: [RegExp, (m: RegExpMatchArray, values: unknown[]) => Answer | undefined][] = [
-      [/^CREATE TABLE (\w+) \(LIKE keyword_top_asins INCLUDING (?:DEFAULTS|ALL)\)$/, (m) => { if (tables.has(m[1])) throw new Error(`relation "${m[1]}" already exists`); tables.set(m[1], null); return undefined; }],
+      [/^CREATE TABLE (\w+) \(LIKE keyword_top_asins INCLUDING (?:DEFAULTS|ALL)\)$/, (m) => { taken(m[1]); tables.set(m[1], null); return undefined; }],
       [/^CREATE INDEX \w+ ON (\w+) /, (m) => { held(m[1]); return undefined; }],
-      [/^DROP TABLE IF EXISTS (\w+)$/, (m) => { tables.delete(m[1]); return undefined; }],
-      [/^DROP TABLE (\w+)$/, (m) => { held(m[1]); tables.delete(m[1]); return undefined; }],
-      [/^TRUNCATE (\w+)$/, (m) => { held(m[1]); tables.set(m[1], null); return undefined; }],
+      [/^DROP TABLE IF EXISTS (\w+)$/, (m) => { drop(m[1]); return undefined; }],
+      [/^DROP TABLE (\w+)$/, (m) => { held(m[1]); drop(m[1]); return undefined; }],
       [/^ANALYZE (\w+)$/, (m) => { held(m[1]); return undefined; }],
       [/^ALTER TABLE (\w+) RENAME TO (\w+)$/, (m) => {
         const label = held(m[1]);
-        if (tables.has(m[2])) throw new Error(`relation "${m[2]}" already exists`);
-        tables.delete(m[1]);
+        taken(m[2]);
+        const comment = comments.get(m[1]);
+        drop(m[1]);
         tables.set(m[2], label);
+        if (comment !== undefined) comments.set(m[2], comment);
         return undefined;
       }],
       [/^ALTER TABLE (\w+) RENAME CONSTRAINT /, (m) => { held(m[1]); return undefined; }],
-      [/^COMMENT ON TABLE (\w+) IS /, (m) => { held(m[1]); return undefined; }],
+      [/^ALTER INDEX \w+ RENAME TO \w+$/, () => undefined],
+      [/^COMMENT ON TABLE (\w+) IS '(.*)'$/, (m) => { held(m[1]); comments.set(m[1], m[2]); return undefined; }],
       [/^INSERT INTO keyword_top_asins_bf \(/, (_m, v) => {
-        carries.push(held('keyword_top_asins_bf_prev'));
-        held('keyword_top_asins_bf');
-        tables.set('keyword_top_asins_bf', String(v[0]));
-        return answer(1);
+        const rows = rowsByWeek[String(v[0])] ?? 1;
+        if (rows > 0) {
+          carries.push(held('keyword_top_asins_bf_prev'));
+          held('keyword_top_asins_bf');
+          tables.set('keyword_top_asins_bf', String(v[0]));
+        }
+        return answer(rows);
       }],
       [/^INSERT INTO (\w+) SELECT \* FROM (\w+)$/, (m) => { held(m[1]); tables.set(m[1], held(m[2])); return answer(1); }],
-      [/^CREATE TABLE (\w+) AS SELECT .+ FROM (\w+)$/, (m) => { tables.set(m[1], held(m[2])); return undefined; }],
+      [/^CREATE TABLE (\w+) AS SELECT \* FROM (\w+)$/, (m) => { taken(m[1]); tables.set(m[1], held(m[2])); return undefined; }],
       [/^INSERT INTO keyword_top_asins_meta /, (_m, v) => { metaWeek = String(v[0]); return undefined; }],
     ];
+    const control = (t: string) => t === BEGIN || t === 'COMMIT' || t === 'ROLLBACK' || t.startsWith('SET LOCAL ') || t === LOCK;
     const respond = (weeks: string[]): Responder => (text, values) => {
       if (text === WEEKS_QUERY) return answer(weeks.length, weeks.map((week) => ({ week })));
       if (text === META_QUERY) return answer(1, [{ week_end_date: null }]);
+      if (text === STAMP_READ) return answer(1, [{ stamp: tables.has('keyword_top_asins_bf') ? comments.get('keyword_top_asins_bf') ?? null : null }]);
+      if (control(text)) return undefined;
       for (const [re, apply] of rules) {
         const m = text.match(re);
         if (m) return apply(m, values);
       }
-      return undefined;
+      throw new Error(`the table model does not know: ${text.slice(0, 90)}`);
     };
-    return { tables, carries, respond, metaWeek: () => metaWeek };
+    return { tables, comments, carries, respond, metaWeek: () => metaWeek };
   }
   /** n consecutive Saturdays from 2025-04-19; n = 77 ends on 2026-10-03, across both partitions. */
   const saturdays = (n: number) => Array.from({ length: n }, (_, i) => new Date(Date.UTC(2025, 3, 19 + 7 * i)).toISOString().slice(0, 10));
@@ -438,14 +642,46 @@ describe('runBackfill: where each week ends up', () => {
       expect(m.tables.get('keyword_top_asins')).toBe(weeks[n - 1]);
       expect(m.tables.get('keyword_top_asins_prev')).toBe(n > 1 ? weeks[n - 2] : null);
       expect([...m.tables.keys()].sort()).toEqual(['keyword_top_asins', 'keyword_top_asins_prev']);
+      expect([...m.comments.keys()].sort()).toEqual(['keyword_top_asins', 'keyword_top_asins_prev']); // the swap's table comments only ...
+      expect([...m.comments.values()].filter((c) => c.startsWith('backfill run'))).toEqual([]); // ... the run stamps went with the scratch tables
       expect(m.metaWeek()).toBe(weeks[n - 1]);
     });
   }
 
+  it('weeks that are not consecutive (a missing import week) carry from the previous week walked, whatever the gap', async () => {
+    const weeks = ['2025-04-19', '2025-06-14', '2025-12-27', '2026-01-17', '2026-10-03'];
+    const m = tableModel();
+    await expect(runBackfill(fakeClient(m.respond(weeks)))).resolves.toMatchObject({ weeks: 5, lastWeek: '2026-10-03' });
+    expect(m.carries).toEqual([null, '2025-04-19', '2025-06-14', '2025-12-27', '2026-01-17']);
+    expect(m.tables.get('keyword_top_asins')).toBe('2026-10-03');
+    expect(m.tables.get('keyword_top_asins_prev')).toBe('2026-01-17');
+  });
+
+  it('a skipped mid-walk week: the weeks after it carry from the last week walked, and _prev is that week', async () => {
+    const weeks = saturdays(5);
+    const m = tableModel({ [weeks[1]]: 0, [weeks[3]]: 0 });
+    await expect(runBackfill(fakeClient(m.respond(weeks)))).resolves.toEqual({ weeks: 5, lastWeek: weeks[4], rows: 1, skipped: [weeks[1], weeks[3]] });
+    expect(m.carries).toEqual([null, weeks[0], weeks[2]]); // weeks[0] walked, [1] skipped, [2] carries from [0], [3] skipped, [4] carries from [2]
+    expect(m.tables.get('keyword_top_asins')).toBe(weeks[4]);
+    expect(m.tables.get('keyword_top_asins_prev')).toBe(weeks[2]);
+    expect([...m.tables.keys()].sort()).toEqual(['keyword_top_asins', 'keyword_top_asins_prev']);
+  });
+
+  it('when every week before the last is empty, the last week carries from nothing and _prev is empty', async () => {
+    const weeks = saturdays(3);
+    const m = tableModel({ [weeks[0]]: 0, [weeks[1]]: 0 });
+    const logs: string[] = [];
+    await expect(runBackfill(fakeClient(m.respond(weeks)), { log: (l) => logs.push(l) })).resolves.toMatchObject({ weeks: 3, skipped: [weeks[0], weeks[1]] });
+    expect(m.carries).toEqual([null]);
+    expect(m.tables.get('keyword_top_asins')).toBe(weeks[2]);
+    expect(m.tables.get('keyword_top_asins_prev')).toBeNull();
+    expect(logs[logs.length - 1]).toMatch(/keyword_top_asins_prev = empty \(no earlier week walked\) in /);
+  });
+
   it('a single week never rotates', async () => {
-    const c = fakeClient(healthy([WEEK], ROWS));
+    const c = fakeClient(healthy([WEEK], { rows: ROWS }));
     await runBackfill(c);
-    expect(c.texts.filter((t) => t.startsWith('TRUNCATE'))).toEqual([]);
+    expect(c.texts.filter((t) => t.startsWith('ALTER TABLE keyword_top_asins_bf RENAME') || t.startsWith('TRUNCATE'))).toEqual([]);
   });
 });
 
@@ -458,8 +694,6 @@ describe('runBackfill: failures (coded log lines, original error rethrown, scrat
     return { c, logs, outcome };
   }
   const afterSetup = (texts: string[]) => texts.slice(texts.indexOf('COMMIT') + 1);
-  /** Statements only the swap-in transaction may run. */
-  const swapInOnly = /^(DROP|ALTER|COMMENT|CREATE TABLE keyword_top_asins_(?:prev|next)|INSERT INTO keyword_top_asins_(?:next|meta))/;
   const KEPT = '; scratch tables kept (a re-run starts over)';
   const lastTx = (texts: string[]) => texts.slice(texts.lastIndexOf(BEGIN));
 
@@ -467,14 +701,14 @@ describe('runBackfill: failures (coded log lines, original error rethrown, scrat
     const { c, logs, outcome } = await run(failWhen(healthy(WEEKS), (t) => t === WEEKS_QUERY, boom));
     expect(outcome).toBe(boom);
     expect(c.texts).toEqual([WEEKS_QUERY]);
-    expect(logs).toEqual(['backfill failed: stage=weeks code=57014']);
+    expect(logs).toEqual(['listing weeks...', 'backfill failed: stage=weeks code=57014']);
   });
 
   it('a failing setup rolls back and fails at stage=setup', async () => {
     const { c, logs, outcome } = await run(failWhen(healthy(WEEKS), (t) => t.startsWith('CREATE TABLE keyword_top_asins_bf_prev'), boom));
     expect(outcome).toBe(boom);
     expect(c.texts[c.texts.length - 1]).toBe('ROLLBACK');
-    expect(logs).toEqual(['backfill: 3 weeks, 2026-09-19 .. 2026-10-03', 'backfill failed: stage=setup code=57014']);
+    expect(logs).toEqual(['listing weeks...', 'backfill: 3 weeks, 2026-09-19 .. 2026-10-03', 'backfill failed: stage=setup code=57014']);
   });
 
   it('a failing insert (week 2) rolls back, rethrows the original error, and logs only its code', async () => {
@@ -482,32 +716,23 @@ describe('runBackfill: failures (coded log lines, original error rethrown, scrat
     expect(outcome).toBe(boom);
     expect(c.texts[c.texts.length - 1]).toBe('ROLLBACK');
     expect(c.texts.filter((t) => t === 'COMMIT')).toHaveLength(3); // setup, week 1's insert, week 1's rotate
-    expect(afterSetup(c.texts).filter((t) => swapInOnly.test(t))).toEqual([]);
+    expect(afterSetup(c.texts).filter(touchesLiveSide)).toEqual([]);
     expect(logs[logs.length - 1]).toBe(`backfill failed: stage=insert week=2026-09-26 (2/3) code=57014${KEPT}`);
     expect(logs.join('\n')).not.toMatch(/SECRET|secret_table/);
   });
 
-  it('a week that inserts zero rows stops the run (top_asins_no_rows): its transaction rolls back and the walk never reaches the live table', async () => {
-    const { c, logs, outcome } = await run(healthy(WEEKS, { ...ROWS, '2026-09-26': 0 }));
-    expect(outcome).toMatchObject({ code: 'top_asins_no_rows' });
-    expect(outcome).toBeInstanceOf(TopAsinsBuildError);
-    expect(c.texts[c.texts.length - 1]).toBe('ROLLBACK');
-    expect(afterSetup(c.texts).filter((t) => swapInOnly.test(t))).toEqual([]);
-    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=insert week=2026-09-26 (2/3) code=top_asins_no_rows${KEPT}`);
-  });
-
   it('a failing rotate (week 1) rolls back and fails at stage=rotate', async () => {
-    const { c, logs, outcome } = await run(failWhen(healthy(WEEKS), (t) => t === 'TRUNCATE keyword_top_asins_bf_prev', boom));
+    const { c, logs, outcome } = await run(failWhen(healthy(WEEKS), (t) => t.startsWith('ALTER TABLE keyword_top_asins_bf RENAME'), boom));
     expect(outcome).toBe(boom);
     expect(c.texts[c.texts.length - 1]).toBe('ROLLBACK');
-    expect(afterSetup(c.texts).filter((t) => swapInOnly.test(t))).toEqual([]);
+    expect(afterSetup(c.texts).filter(touchesLiveSide)).toEqual([]);
     expect(logs[logs.length - 1]).toBe(`backfill failed: stage=rotate week=2026-09-19 (1/3) code=57014${KEPT}`);
   });
 
   it('the swap-in refuses to replace a NEWER build (an import landed during the run): nothing built, rolled back, scratch kept, top_asins_older_than_meta', async () => {
-    const { c, logs, outcome } = await run(healthy(WEEKS, ROWS, '2026-10-10'));
+    const { c, logs, outcome } = await run(healthy(WEEKS, { metaWeek: '2026-10-10' }));
     expect(outcome).toMatchObject({ code: 'top_asins_older_than_meta' });
-    expect(lastTx(c.texts)).toEqual([BEGIN, SET_TIMEOUT, LOCK, META_QUERY, 'ROLLBACK']);
+    expect(lastTx(c.texts)).toEqual([BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, META_QUERY, 'ROLLBACK']);
     expect(logs[logs.length - 1]).toBe(`backfill failed: stage=finalize code=top_asins_older_than_meta${KEPT}`);
   });
 

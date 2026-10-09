@@ -72,7 +72,8 @@ export interface TopAsinsBuildResult {
   /** Only when the ANALYZE after COMMIT threw: its pg code, else the error name ('unknown' if not an Error). */
   analyzeError?: string;
 }
-export type TopAsinsBuildErrorCode = 'top_asins_bad_date' | 'top_asins_bad_client' | 'top_asins_older_than_meta' | 'top_asins_no_rows';
+/** `top_asins_run_conflict` is the backfill's (lib/topAsins/backfill.ts): another run replaced its scratch tables. */
+export type TopAsinsBuildErrorCode = 'top_asins_bad_date' | 'top_asins_bad_client' | 'top_asins_older_than_meta' | 'top_asins_no_rows' | 'top_asins_run_conflict';
 export class TopAsinsBuildError extends Error {
   constructor(public readonly code: TopAsinsBuildErrorCode, message: string) { super(message); this.name = 'TopAsinsBuildError'; }
 }
