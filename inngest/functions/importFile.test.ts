@@ -13,6 +13,7 @@ const {
   mockPoolConnect,
   mockPoolEnd,
   mockPoolOn,
+  mockPoolCtor,
   mockClientRelease,
   mockClientQuery,
   mockEnqueueWeek,
@@ -37,6 +38,7 @@ const {
   mockPoolConnect: vi.fn(),
   mockPoolEnd: vi.fn().mockResolvedValue(undefined),
   mockPoolOn: vi.fn(),
+  mockPoolCtor: vi.fn(),
   mockClientRelease: vi.fn(),
   mockClientQuery: vi.fn(),
   mockEnqueueWeek: vi.fn(),
@@ -57,6 +59,9 @@ vi.mock('pg', () => ({
     connect = mockPoolConnect;
     end = mockPoolEnd;
     on = mockPoolOn;
+    constructor(options: unknown) {
+      mockPoolCtor(options); // every new Pool(options), in order
+    }
   },
 }));
 
@@ -470,6 +475,21 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(topAsinsLines(log)).toEqual([
         '[top-asins] week 2026-04-11: rows=8123456 previous=none carried=none',
       ]);
+    });
+
+    it('opens its own pool: one connection, 30-minute statement timeout, keepalive, 20 s connect timeout', async () => {
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      // Pools are built in order: the COPY pool, the Keepa hook's, this phase's.
+      expect(mockPoolCtor).toHaveBeenCalledTimes(3);
+      expect(mockPoolCtor.mock.calls[2][0]).toMatchObject({
+        connectionString: 'postgres://test:test@localhost:5432/test',
+        max: 1,
+        statement_timeout: 1_800_000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10_000,
+        connectionTimeoutMillis: 20_000,
+      });
     });
   });
 });
