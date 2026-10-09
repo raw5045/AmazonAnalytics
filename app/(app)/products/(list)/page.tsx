@@ -7,6 +7,10 @@
  *   3. Render ProductFilterPanel + ProductResultsTable + ProductPagination
  * Soft filter / sort / page changes run inside transitions, so the old results stay mounted
  * (with the loading overlay) and the skeleton only shows on initial loads.
+ *
+ * The (list) route group (no URL segment) scopes this folder's loading.tsx to the list: a
+ * loading.tsx directly in products/ would also wrap /products/[asin] and flash the list skeleton
+ * before the ASIN page's own. The panel, table and pager live one level up, in products/.
  */
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
@@ -17,9 +21,9 @@ import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
 import { parseProductFilters, productFiltersToSearchParams, type ProductFilters, type SearchParamsLike } from '@/lib/products/filters';
 import { searchProducts, neonRunner } from '@/lib/products/searchProducts';
 import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
-import { ProductFilterPanel } from './ProductFilterPanel';
-import { ProductResultsTable } from './ProductResultsTable';
-import { ProductPagination } from './ProductPagination';
+import { ProductFilterPanel } from '../ProductFilterPanel';
+import { ProductResultsTable } from '../ProductResultsTable';
+import { ProductPagination } from '../ProductPagination';
 import { ProductsSkeleton } from './loading';
 
 export const metadata: Metadata = { title: 'Products' };
@@ -43,8 +47,9 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
 }
 
 /**
- * The page's reads, in parallel, and the time of the read (each listing's age is counted to it).
- * A plain function, not a component, so the clock read is not a render-time side effect.
+ * The page's two reads, in parallel, and the moment they finished. The clock is read once, here on
+ * the server, and passed to the (client) table as a prop: every row's listing age counts to the
+ * same instant, and hydration reuses that value instead of reading the browser's clock.
  */
 async function loadProductsPage(filters: ProductFilters) {
   const sql = neon(env.DATABASE_URL);

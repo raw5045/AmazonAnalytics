@@ -1,9 +1,32 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
 import { PRODUCT_DEFAULTS, parseProductFilters, type ProductFilters } from '@/lib/products/filters';
 import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { ProductResultsTable } from './ProductResultsTable';
 import { resolveProductBack } from './[asin]/BackToProducts';
+
+// next/link as a plain anchor that shows the navigation props it was given, so the tests can see
+// which links replace the history entry, keep the scroll position or skip the prefetch.
+vi.mock('next/link', async () => {
+  const { createElement } = await import('react');
+  type Props = { href: string; replace?: boolean; scroll?: boolean; prefetch?: boolean | null; children?: ReactNode } & Record<string, unknown>;
+  return {
+    default: ({ href, replace, scroll, prefetch, children, ...rest }: Props) =>
+      createElement(
+        'a',
+        {
+          href,
+          'data-replace': replace === undefined ? undefined : String(replace),
+          'data-scroll': scroll === undefined ? undefined : String(scroll),
+          'data-prefetch': prefetch === undefined ? undefined : String(prefetch),
+          ...rest,
+        },
+        children,
+      ),
+    useLinkStatus: () => ({ pending: false }),
+  };
+});
 
 const NOW = new Date('2026-10-09T15:00:00Z');
 
@@ -35,6 +58,8 @@ describe('ProductResultsTable rows', () => {
     // The ASIN page's back link returns to this exact list (its `from`, percent-encoded).
     expect(title).toHaveAttribute('href', '/products/B000000001?from=%2Fproducts%3Fage%3D180');
     expect(title).toHaveAttribute('target', '_blank');
+    expect(title).toHaveAttribute('data-prefetch', 'false');
+    expect(title).not.toHaveAttribute('data-replace');
     expect(within(cells[0]).getByText('Acme')).toBeInTheDocument();
     const amazon = within(cells[0]).getByRole('link', { name: 'B000000001' });
     expect(amazon).toHaveAttribute('href', 'https://www.amazon.com/dp/B000000001');
@@ -137,6 +162,7 @@ describe('ProductResultsTable count line, hint and empty state', () => {
     renderTable({ rows: [], total: 120, filters: { ...PRODUCT_DEFAULTS, age: 180, page: 9 } });
     expect(screen.getByText(/past the last page/)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Go to page 1' })).toHaveAttribute('href', '/products?age=180');
+    expect(screen.getByRole('link', { name: 'Go to page 1' })).toHaveAttribute('data-replace', 'true');
   });
 });
 
@@ -160,6 +186,16 @@ describe('ProductResultsTable sortable headers', () => {
     renderTable();
     expect(hrefOf('Monthly sold')).toBe('/products?sort=sold&dir=asc');
     expect(screen.getByRole('columnheader', { name: /Monthly sold/ })).toHaveAttribute('aria-sort', 'descending');
+  });
+
+  it('header links replace the history entry and keep the scroll position, like Apply and the pager', () => {
+    renderTable({ filters: { ...PRODUCT_DEFAULTS, sort: 'price', dir: 'asc' } });
+    for (const name of ['Listed', 'Monthly sold', 'Reviews', 'Price', 'BSR', 'vs 30d avg', 'Keywords']) {
+      const link = screen.getByRole('link', { name });
+      expect(link, name).toHaveAttribute('data-replace', 'true');
+      expect(link, name).toHaveAttribute('data-scroll', 'false');
+      expect(link, name).toHaveAttribute('data-prefetch', 'false');
+    }
   });
 
   it('the header links describe the order they switch to', () => {

@@ -30,6 +30,12 @@ describe('ProductPagination', () => {
     expect(screen.getByRole('button', { name: 'Next ›' })).toBeDisabled();
   });
 
+  it('renders nothing past the last page (the results area links back to page 1)', () => {
+    nav.params = new URLSearchParams('age=180&page=9');
+    const { container } = render(<ProductPagination page={9} total={120} totalIsCapped={false} pageSize={50} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
   it('renders nothing for a single page of results', () => {
     nav.params = new URLSearchParams();
     const { container } = render(<ProductPagination page={1} total={50} totalIsCapped={false} pageSize={50} />);

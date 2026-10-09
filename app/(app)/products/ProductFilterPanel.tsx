@@ -2,26 +2,37 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, useTransition, type FormEvent, type ReactNode } from 'react';
+// Product-filter imports come from filterParams only: ./filters carries the zod schema, which must
+// stay out of the browser bundle.
 import {
   PRODUCT_AGES,
   PRODUCT_DEFAULTS,
   PRODUCT_SORTS,
+  SORT_KEY_LABEL,
   productFiltersToSearchParams,
+  sortHidesNullKey,
   type ProductFilters,
   type ProductSort,
-} from '@/lib/products/filters';
-import { SORT_KEY_LABEL, sortHidesNullKey } from '@/lib/products/searchProducts';
+} from '@/lib/products/filterParams';
 import { formatBadge } from '@/lib/products/format';
 import { LeafCategoryTypeahead } from '@/app/(app)/explorer/LeafCategoryTypeahead';
 import { LoadingOverlay } from '@/app/(app)/explorer/LoadingOverlay';
 
-/** "Bought in past month" badge floors offered as the monthly-sold minimum. */
-export const SOLD_BUCKETS: readonly number[] = [50, 100, 200, 300, 400, 500, 1000, 2000, 5000, 10000];
+/** "Bought in past month" badge floors offered as the monthly-sold minimum (spec §5.1: 50 … 100,000). */
+const SOLD_BUCKETS: readonly number[] = [50, 100, 200, 300, 400, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000];
 /** rank_ratio_x100 caps offered for "BSR vs 30-day avg": 90 = ranked at least 10% better than its 30-day average. */
 const RATIO_PRESETS: readonly number[] = [90, 70, 50];
 
-export const SORT_LABEL: Readonly<Record<ProductSort, string>> = {
+const SORT_LABEL: Readonly<Record<ProductSort, string>> = {
   sold: 'Monthly sold', listed: 'Listing date', reviews: 'Review count', price: 'Price', bsr: 'BSR', ratio: 'BSR vs 30-day avg', keywords: 'Top-3 keywords',
+};
+
+/**
+ * The direction a sort opens in, from the sort select or a column header: the end it is usually
+ * read from (most sold, newest, fewest reviews, cheapest, best rank, most improved, most keywords).
+ */
+export const SORT_FIRST_DIR: Readonly<Record<ProductSort, ProductFilters['dir']>> = {
+  sold: 'desc', listed: 'desc', reviews: 'asc', price: 'asc', bsr: 'asc', ratio: 'asc', keywords: 'desc',
 };
 
 /** How each sort reads in each direction: the direction select's options, and the table headers' link titles. */
@@ -200,7 +211,16 @@ export function ProductFilterPanel({ filters, leafCategories }: { filters: Produ
             </div>
 
             <Field label="Sort" htmlFor="pf-sort">
-              <select id="pf-sort" value={pending.sort} onChange={(e) => set('sort', e.target.value as ProductSort)} className={INPUT}>
+              <select
+                id="pf-sort"
+                value={pending.sort}
+                onChange={(e) => {
+                  const sort = e.target.value as ProductSort;
+                  // A new sort opens at its first direction (BSR on the best rank), as its column header does.
+                  setPending((p) => ({ ...p, sort, dir: SORT_FIRST_DIR[sort] }));
+                }}
+                className={INPUT}
+              >
                 {PRODUCT_SORTS.map((s) => (
                   <option key={s} value={s}>
                     {SORT_LABEL[s]}

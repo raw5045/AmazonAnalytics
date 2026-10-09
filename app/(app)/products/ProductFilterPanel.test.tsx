@@ -1,8 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { PRODUCT_DEFAULTS, PRODUCT_SORTS, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filters';
-import { sortHidesNullKey } from '@/lib/products/searchProducts';
-import { ProductFilterPanel, filtersToPending, pendingToFilters, sortHint } from './ProductFilterPanel';
+import { PRODUCT_DEFAULTS, PRODUCT_SORTS, productFiltersToSearchParams, sortHidesNullKey, type ProductFilters } from '@/lib/products/filterParams';
+import { ProductFilterPanel, SORT_DIR_LABEL, SORT_FIRST_DIR, filtersToPending, pendingToFilters, sortHint } from './ProductFilterPanel';
 
 const { replace } = vi.hoisted(() => ({ replace: vi.fn() }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace }) }));
@@ -46,7 +45,9 @@ describe('ProductFilterPanel controls', () => {
     expect(control('Listing age')).toHaveDisplayValue('Any');
     expect(optionTexts('Listing age')).toEqual(['Any', 'Listed within 60 days', 'Listed within 90 days', 'Listed within 180 days', 'Listed within 365 days']);
     expect(control('Monthly sold (at least)')).toHaveDisplayValue('Any');
-    expect(optionTexts('Monthly sold (at least)')).toEqual(['Any', '50+', '100+', '200+', '300+', '400+', '500+', '1,000+', '2,000+', '5,000+', '10,000+']);
+    expect(optionTexts('Monthly sold (at least)')).toEqual([
+      'Any', '50+', '100+', '200+', '300+', '400+', '500+', '1,000+', '2,000+', '5,000+', '10,000+', '20,000+', '50,000+', '100,000+',
+    ]);
     for (const label of ['Reviews (at most)', 'Minimum rating', 'Maximum rating', 'Minimum price', 'Maximum price', 'Minimum BSR', 'Maximum BSR']) {
       expect(control(label), label).toHaveValue(null);
     }
@@ -102,6 +103,27 @@ describe('ProductFilterPanel controls', () => {
     expect(optionTexts('Sort direction')).toEqual(['Worst rank first', 'Best rank first']);
     change('Sort', 'price');
     expect(optionTexts('Sort direction')).toEqual(['Highest price first', 'Lowest price first']);
+  });
+
+  it("picking a sort opens it at that sort's first direction (BSR on the best rank, as its header does)", () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, sort: 'price', dir: 'desc' });
+    change('Sort', 'bsr');
+    expect(control('Sort direction')).toHaveDisplayValue('Best rank first');
+    for (const sort of PRODUCT_SORTS) {
+      change('Sort', sort);
+      expect(control('Sort direction'), sort).toHaveDisplayValue(SORT_DIR_LABEL[sort][SORT_FIRST_DIR[sort]]);
+    }
+    expect(SORT_FIRST_DIR).toEqual({ sold: 'desc', listed: 'desc', reviews: 'asc', price: 'asc', bsr: 'asc', ratio: 'asc', keywords: 'desc' });
+  });
+
+  it('a direction picked after the sort is kept, and Apply sends both', () => {
+    renderPanel();
+    change('Sort', 'bsr');
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith('/products?sort=bsr&dir=asc', { scroll: false });
+    change('Sort direction', 'desc');
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith('/products?sort=bsr', { scroll: false });
   });
 });
 

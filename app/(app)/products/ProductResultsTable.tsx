@@ -2,20 +2,17 @@
 
 import Link, { useLinkStatus } from 'next/link';
 import type { ReactNode } from 'react';
-import { productFiltersToSearchParams, type ProductFilters, type ProductSort } from '@/lib/products/filters';
+// Product-filter imports come from filterParams only (./filters carries zod); the row type is a
+// type-only import, erased from the bundle.
+import { productFiltersToSearchParams, type ProductFilters, type ProductSort } from '@/lib/products/filterParams';
 import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { isAsin } from '@/lib/products/asin';
 import { availabilityLabel, formatBadge, formatPriceCents, formatRatio, formatReviewCount, listingAge } from '@/lib/products/format';
 import { LoadingOverlay } from '@/app/(app)/explorer/LoadingOverlay';
-import { SORT_DIR_LABEL, sortHint } from './ProductFilterPanel';
+import { SORT_DIR_LABEL, SORT_FIRST_DIR, sortHint } from './ProductFilterPanel';
 
 type Dir = ProductFilters['dir'];
 const DASH = '—';
-
-/** The direction each column sorts in on its first click: the end it is usually read from. */
-const FIRST_DIR: Readonly<Record<ProductSort, Dir>> = {
-  sold: 'desc', listed: 'desc', reviews: 'asc', price: 'asc', bsr: 'asc', ratio: 'asc', keywords: 'desc',
-};
 
 /** The list URL for these filters: the ASIN page's `from`, and the past-the-end "Go to page 1" link. */
 function listHref(filters: ProductFilters): string {
@@ -90,7 +87,7 @@ export function ProductResultsTable({
           {filters.page > 1 && total > 0 ? (
             <>
               You&apos;re past the last page of results.{' '}
-              <Link href={listHref({ ...filters, page: 1 })} className="text-blue-700 underline">
+              <Link href={listHref({ ...filters, page: 1 })} replace className="text-blue-700 underline">
                 Go to page 1
               </Link>
             </>
@@ -270,11 +267,12 @@ function SortHeader({
 
 /**
  * A sortable header as a <Link>: the active column toggles its direction, any other opens at its
- * first-click direction. The arrow sits on the label's outer side so numbers stay aligned.
+ * first direction (SORT_FIRST_DIR, as the panel's sort select does). It replaces the history entry
+ * like Apply and the pager. The arrow sits on the label's outer side so numbers stay aligned.
  */
 function SortLink({ filters, sort, label, align }: { filters: ProductFilters; sort: ProductSort; label: string; align: 'left' | 'right' }) {
   const active = filters.sort === sort;
-  const next: Dir = active ? (filters.dir === 'desc' ? 'asc' : 'desc') : FIRST_DIR[sort];
+  const next: Dir = active ? (filters.dir === 'desc' ? 'asc' : 'desc') : SORT_FIRST_DIR[sort];
   const arrow = (
     <span aria-hidden="true" className={active ? 'font-bold text-blue-700' : 'text-gray-300'}>
       {active ? (filters.dir === 'asc' ? '↑' : '↓') : '↕'}
@@ -283,6 +281,7 @@ function SortLink({ filters, sort, label, align }: { filters: ProductFilters; so
   return (
     <Link
       href={sortHref(filters, sort, next)}
+      replace
       scroll={false}
       prefetch={false}
       title={`Sort: ${SORT_DIR_LABEL[sort][next]}`}

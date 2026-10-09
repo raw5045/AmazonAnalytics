@@ -18,7 +18,10 @@
  *    candidate. The tie-breaker stays: without a total order, rows could repeat or skip across
  *    pages when updates move rows inside a tie. The page says so with SORT_KEY_LABEL.
  */
-import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, type ProductFilters } from './filters';
+import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, sortHidesNullKey, type NullableKeySort, type ProductFilters } from './filterParams';
+
+// The sort-key rule lives in ./filterParams (zod-free, for the page's client components); re-exported for existing imports.
+export { SORT_KEY_LABEL, sortHidesNullKey, type NullableKeySort } from './filterParams';
 
 /** Exact up to the pager's last reachable row (200 pages of 50), then "10,000+". */
 export const PRODUCT_COUNT_CAP = PRODUCT_MAX_PAGE * PRODUCT_PAGE_SIZE;
@@ -34,19 +37,10 @@ export interface ProductSearchResult { rows: ProductSummaryRow[]; total: number;
 
 const BASE = "a.in_scope AND a.enrichment_status IN ('active', 'no_price')";
 
-/** Every sort but `keywords` orders by a nullable catalog column. */
-export type NullableKeySort = Exclude<ProductFilters['sort'], 'keywords'>;
+/** The catalog column each nullable-key sort orders by (and hides the NULLs of). */
 const SORT_COLUMN: Record<NullableKeySort, string> = {
   sold: 'monthly_sold', listed: 'listed_since', reviews: 'review_count', price: 'current_price_cents', bsr: 'sales_rank', ratio: 'rank_ratio_x100',
 };
-/** The field each hiding sort orders by, for the page's "Products without a <field> are hidden under this sort." hint. */
-export const SORT_KEY_LABEL: Readonly<Record<NullableKeySort, string>> = {
-  sold: 'monthly sold badge', listed: 'listing date', reviews: 'review count', price: 'price', bsr: 'BSR', ratio: 'BSR ratio',
-};
-/** True when the sort drops rows whose sort key is NULL: every sort but `keywords` (a count is never NULL). */
-export function sortHidesNullKey(sort: ProductFilters['sort']): sort is NullableKeySort {
-  return sort !== 'keywords';
-}
 
 const PAGE_COLUMNS = `a.asin, a.title, a.brand, a.listed_since::text AS listed_since, a.monthly_sold, a.review_count, a.average_rating_x10,
   CASE WHEN a.enrichment_status = 'active' THEN a.current_price_cents END AS current_price_cents,

@@ -1,5 +1,8 @@
 // lib/products/filters.test.ts
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
+import type { z } from 'zod';
+import * as filterParams from './filterParams';
+import * as filters from './filters';
 import {
   PRODUCT_AGES,
   PRODUCT_DEFAULTS,
@@ -105,5 +108,22 @@ describe('parseProductFilters', () => {
   it('schema: sorts are the fixed set', () => {
     expect(PRODUCT_SORTS).toEqual(['sold', 'listed', 'reviews', 'price', 'bsr', 'ratio', 'keywords']);
     expect(productFiltersSchema.safeParse({ ...PRODUCT_DEFAULTS, sort: 'x' }).success).toBe(false);
+  });
+});
+
+describe('the zod-free half (./filterParams)', () => {
+  it('the schema infers exactly the explicit ProductFilters type', () => {
+    expectTypeOf<z.infer<typeof productFiltersSchema>>().toEqualTypeOf<filterParams.ProductFilters>();
+    expectTypeOf<z.infer<typeof productFiltersSchema>>().toEqualTypeOf<ProductFilters>();
+  });
+
+  it('PRODUCT_DEFAULTS satisfies the schema', () => {
+    expect(productFiltersSchema.safeParse(PRODUCT_DEFAULTS).success).toBe(true);
+  });
+
+  it('this module re-exports every value of ./filterParams as the same object', () => {
+    for (const [name, value] of Object.entries(filterParams)) {
+      expect(filters[name as keyof typeof filters], name).toBe(value);
+    }
   });
 });
