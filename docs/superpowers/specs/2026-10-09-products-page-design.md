@@ -99,7 +99,7 @@ Expected duration: a few minutes (one partition scan for the week plus an 8M × 
 
 ### 4.2 One-time backfill — `scripts/backfillTopAsins.ts` (owner-gated, `BACKFILL_TOP_ASINS=yes`)
 
-Walks every imported week in date order (about 40 weeks, from the `source_files` rows with status imported or imported_partial), running the same insert logic week by week into a temporary pair of tables, so the final table carries correct streaks and `streak_started_week` values. Each week is its own transaction; progress lines per week; idempotent (re-run restarts from the first week). Estimated 30–60 minutes; run in a quiet hour before the push, so the next import's phase 4.1 finds a previous build. If the import lands first, the phase builds week 1 streaks and the backfill, run afterwards, replaces them.
+Walks every week present in `keyword_weekly_metrics` in date order (77 weeks, 2025-04-19 to 2026-10-03 as of writing; the distinct `week_end_date` values of the partitions, not the upload batches, which cover only the last 40), running the same insert logic week by week into a temporary pair of tables, so the final table carries correct streaks and `streak_started_week` values. Each week is its own transaction; progress lines per week; idempotent (re-run restarts from the first week). Estimated 1–2 hours (about a minute per week); run in a quiet hour before the push, so the next import's phase 4.1 finds a previous build. If the import lands first, the phase builds week 1 streaks and the backfill, run afterwards, replaces them.
 
 ## 5. Products page — `app/(app)/products/page.tsx` (admin only)
 
@@ -174,7 +174,7 @@ A new `adminOnly: true` flag on the definition is honoured by both registries (t
 ## 12. Ship steps (owner-gated, in order)
 
 1. Apply 0051 + ratio backfill (`APPLY_0051=yes …applyMigration0051.ts`; quiet hour; indexes on 2.6M rows take a few minutes each).
-2. Backfill the reverse table (`BACKFILL_TOP_ASINS=yes …backfillTopAsins.ts`, 30–60 min).
+2. Backfill the reverse table (`BACKFILL_TOP_ASINS=yes …backfillTopAsins.ts`, 1–2 h over 77 weeks).
 3. Integration tests.
 4. Push (checkActiveJobs first; the worker restarts and the Keepa service redeploys for the `pgStore.ts` change). Inngest: no new function, no sync needed. Verify the next import's `[top-asins] week … rows=… in …s` line.
 5. Smoke, then the tools' tasks.
