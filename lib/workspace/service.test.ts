@@ -17,7 +17,7 @@ import type { ExplorerFilters } from '@/lib/explorer/types';
 import { consoleLines } from '@/tests/unit/consoleLines';
 import { explorerUrlFor, NOTE_VIEW_TOO_WIDE, NOTE_WORD_COUNT_SORT } from './explorerFilters';
 
-const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
 const VIEW_ID = '11111111-1111-4111-8111-111111111111';
 const CAT_ID = '22222222-2222-4222-8222-222222222222';
 const CUSTOM_ID = '33333333-3333-4333-8333-333333333333';

@@ -9,7 +9,7 @@ import type { ResearchActor, ResearchService } from '@/lib/research/service';
 import { WORKSPACE_TOOL_NAMES, type WorkspaceService } from '@/lib/workspace/contracts';
 import { WORKSPACE_TOOLS } from '@/lib/workspace/tools';
 
-const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat' };
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat', isAdmin: false };
 const service = {
   guide: vi.fn(async () => ({ guideVersion: 1 })),
   resolveCategories: vi.fn(async () => ({ candidates: [] })),

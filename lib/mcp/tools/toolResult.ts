@@ -16,7 +16,13 @@ export function actorFromContext(ctx: ToolContext): ResearchActor {
     console.error('[mcp tool]', JSON.stringify({ outcome: 'actor_missing' }));
     throw new ResearchError('DATA_UNAVAILABLE', 'No verified KeywordQuarry account is attached to this request.', { retryable: true });
   }
-  return { localUserId: extra.account.localUserId, clerkUserId: extra.clerkUserId, clientId: info.clientId, channel: 'mcp' };
+  return {
+    localUserId: extra.account.localUserId,
+    clerkUserId: extra.clerkUserId,
+    clientId: info.clientId,
+    channel: 'mcp',
+    isAdmin: extra.account.role === 'admin',
+  };
 }
 
 /**

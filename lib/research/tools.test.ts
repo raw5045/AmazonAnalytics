@@ -6,7 +6,7 @@ import { DEFAULT_LIMITS } from './limits';
 import { PAGE_SIZE_MAX, searchToolInputSchema, resolveCategoriesInputSchema, keywordDetailsInputSchema, keywordHistoryInputSchema, emptyInputSchema } from './contracts';
 import type { ResearchActor, ResearchService } from './service';
 
-const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat' };
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat', isAdmin: false };
 
 describe('RESEARCH_TOOLS', () => {
   it('lists the five tools in the MCP order, read-only, none needing confirmation', () => {

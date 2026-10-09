@@ -22,8 +22,10 @@ function settled(count: number): Promise<number> {
   return Object.assign(Promise.resolve(count), { status: 'fulfilled' as const, value: count });
 }
 
-function tabNav(showConnectAi = false, showAskAi = false) {
-  return <TabNav watchlistCountPromise={settled(0)} showConnectAi={showConnectAi} showAskAi={showAskAi} />;
+function tabNav(showConnectAi = false, showAskAi = false, showProducts = false) {
+  return (
+    <TabNav watchlistCountPromise={settled(0)} showConnectAi={showConnectAi} showAskAi={showAskAi} showProducts={showProducts} />
+  );
 }
 
 function explorerLink() {
@@ -59,6 +61,42 @@ describe('TabNav', () => {
   it('hides the Ask AI tab when not eligible', () => {
     render(tabNav(true, false));
     expect(screen.queryByRole('link', { name: 'Ask AI' })).toBeNull();
+  });
+
+  describe('the Products tab (admins only)', () => {
+    const productsLink = () => screen.getByRole('link', { name: 'Products' });
+    // Active = the white label with the amber underline; an inactive tab only has hover:text-white.
+    const expectActive = (link: HTMLElement) => expect(link).toHaveClass('text-white', 'after:bg-amber-300');
+    const expectInactive = (link: HTMLElement) => {
+      expect(link).not.toHaveClass('text-white');
+      expect(link).not.toHaveClass('after:bg-amber-300');
+    };
+
+    it('shows between Explorer and Watchlist when showProducts is true', () => {
+      render(tabNav(true, true, true));
+      const names = screen.getAllByRole('link').map((l) => l.textContent?.trim());
+      expect(names).toEqual(['Explorer', 'Products', 'Watchlist', 'Category Builder', 'Ask AI', 'Connect AI', 'Tutorials']);
+      expect(productsLink()).toHaveAttribute('href', '/products');
+    });
+
+    it('is absent when showProducts is false', () => {
+      render(tabNav(true, true, false));
+      expect(screen.queryByRole('link', { name: 'Products' })).toBeNull();
+      expect(document.querySelector('a[href="/products"]')).toBeNull();
+    });
+
+    it.each(['/products', '/products/B000000001'])('is the active tab on %s, and Explorer is not', (path) => {
+      nav.pathname = path;
+      render(tabNav(false, false, true));
+      expectActive(productsLink());
+      expectInactive(explorerLink());
+    });
+
+    it.each(['/explorer', '/watchlist', '/productsearch'])('is not active on %s', (path) => {
+      nav.pathname = path;
+      render(tabNav(false, false, true));
+      expectInactive(productsLink());
+    });
   });
 
   describe('remembering the last /explorer URL', () => {

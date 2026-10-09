@@ -13,7 +13,7 @@ import {
 } from './contracts';
 import { ADDITIVE_ANNOTATIONS, CREATE_ANNOTATIONS, DESTRUCTIVE_ANNOTATIONS, WORKSPACE_TOOLS, workspaceToolByName } from './tools';
 
-const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
 const ID = '11111111-1111-4111-8111-111111111111';
 // Has hex letters, unlike ID (all digits, so uppercasing it changes nothing): for the id-lowercasing test.
 const HEX_ID = 'abcdef12-abcd-4abc-8abc-abcdef123456';

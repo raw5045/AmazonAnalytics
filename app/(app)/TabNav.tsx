@@ -5,8 +5,9 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { Suspense, use, useEffect, useSyncExternalStore } from 'react';
 
 /**
- * Top-level navigation: Explorer | Watchlist (N) | Category Builder |
- * Ask AI (only when showAskAi is true) | Connect AI (only when showConnectAi is true) | Tutorials.
+ * Top-level navigation: Explorer | Products (only when showProducts is true) |
+ * Watchlist (N) | Category Builder | Ask AI (only when showAskAi is true) |
+ * Connect AI (only when showConnectAi is true) | Tutorials.
  *
  * Server-rendered text but client-side for usePathname() so the active
  * tab gets styled correctly without a full page reload after navigation.
@@ -48,14 +49,17 @@ export function TabNav({
   watchlistCountPromise,
   showConnectAi,
   showAskAi,
+  showProducts,
 }: {
   watchlistCountPromise: Promise<number>;
   showConnectAi: boolean;
   showAskAi: boolean;
+  showProducts: boolean;
 }) {
   const pathname = usePathname() ?? '';
   const searchParams = useSearchParams();
   const isExplorer = pathname === '/explorer' || pathname.startsWith('/explorer/');
+  const isProducts = pathname === '/products' || pathname.startsWith('/products/');
   const isWatchlist = pathname === '/watchlist' || pathname.startsWith('/watchlist/');
   const isCategoryBuilder = pathname === '/category-builder' || pathname.startsWith('/category-builder/');
   const isAskAi = pathname === '/ask' || pathname.startsWith('/ask/');
@@ -92,6 +96,11 @@ export function TabNav({
       <Link href={explorerHref} className={tabClass(isExplorer)}>
         Explorer
       </Link>
+      {showProducts && (
+        <Link href="/products" className={tabClass(isProducts)}>
+          Products
+        </Link>
+      )}
       <Link href="/watchlist" className={tabClass(isWatchlist)}>
         Watchlist{' '}
         <Suspense fallback={null}>

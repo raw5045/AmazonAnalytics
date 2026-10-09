@@ -18,7 +18,7 @@ import type { ResearchActor } from '@/lib/research/service';
 import { WORKSPACE_TOOLS } from '@/lib/workspace/tools';
 import { WORKSPACE_TOOL_NAMES, type WorkspaceService } from '@/lib/workspace/contracts';
 
-const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
 const service = {
   listSavedViews: vi.fn(async () => ({ views: [], count: 0, limit: 5 })),
   listCustomCategories: vi.fn(async () => ({ categories: [], count: 0, limit: 25 })),

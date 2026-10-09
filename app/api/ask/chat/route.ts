@@ -226,7 +226,7 @@ export async function POST(req: Request) {
     req.signal.addEventListener('abort', () => controller.abort(req.signal.reason), { once: true });
     if (req.signal.aborted) controller.abort(req.signal.reason);
 
-    const actor: ResearchActor = { localUserId: user.id, clerkUserId: user.clerkUserId, clientId: 'ask-ai', channel: 'chat' };
+    const actor: ResearchActor = { localUserId: user.id, clerkUserId: user.clerkUserId, clientId: 'ask-ai', channel: 'chat', isAdmin: user.role === 'admin' };
     let conversationId: string;
     let model: AskModelId;
     let history: AskUIMessage[] = [];

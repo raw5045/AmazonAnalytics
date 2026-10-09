@@ -213,7 +213,7 @@ describe('/api/mcp', () => {
       const r = await client.callTool({ name: 'search_keywords', arguments: { schemaVersion: 1 } });
       expect(r.isError).toBeFalsy();
       expect(fakeService.search).toHaveBeenCalledWith(
-        { localUserId: 'uuid-admin', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp' },
+        { localUserId: 'uuid-admin', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp', isAdmin: true },
         { schemaVersion: 1 },
       );
       expect(client.getInstructions()).toContain('get_research_guide');
@@ -350,7 +350,7 @@ describe('/api/mcp with MCP_WRITE_ENABLED=1 (spec 2026-09-30 §2)', () => {
       expect(client.getInstructions()).toContain('Workspace tools');
       const r = await client.callTool({ name: 'list_saved_views', arguments: {} });
       expect(r.isError).toBeFalsy();
-      expect(fakeWorkspace.listSavedViews).toHaveBeenCalledWith({ localUserId: 'uuid-admin', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp' }, {});
+      expect(fakeWorkspace.listSavedViews).toHaveBeenCalledWith({ localUserId: 'uuid-admin', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp', isAdmin: true }, {});
       expect(r.structuredContent).toEqual({ views: [], count: 0, limit: 5 });
     } finally {
       await client.close().catch(() => {});

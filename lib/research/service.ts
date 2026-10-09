@@ -24,8 +24,12 @@ import { countMatches, runSearch } from './search';
 import { loadSnapshotMetaHttp, type SnapshotMeta } from './snapshot';
 import { recordResearchActivity, reserveResearchRequest, type ResearchChannel } from './usage';
 
-/** Identity comes from a trusted adapter — the MCP gate, or the Ask AI route (a session-derived `chat` actor) — never from tool arguments. */
-export interface ResearchActor { localUserId: string; clerkUserId: string; clientId: string; channel: ResearchChannel }
+/**
+ * Identity comes from a trusted adapter — the MCP gate, or the Ask AI route (a session-derived `chat` actor) — never from tool arguments.
+ * `isAdmin` is whether that account's role is `admin`, decided by the same adapter; the admin-only tools read it. It is required so every
+ * place that builds an actor has to decide it.
+ */
+export interface ResearchActor { localUserId: string; clerkUserId: string; clientId: string; channel: ResearchChannel; isAdmin: boolean }
 
 /**
  * The five research tools (MCP and the in-app chat), each independently callable. Every method validates its own

@@ -17,10 +17,11 @@ import { BrandMark } from '@/app/BrandMark';
 import { AccountProblem } from '@/app/AccountProblem';
 
 /**
- * Layout shared by /explorer/*, /watchlist/*, /category-builder, /ask and
- * /connect-ai.
+ * Layout shared by /explorer/*, /products/*, /watchlist/*, /category-builder,
+ * /ask and /connect-ai.
  *
- * Owns: auth gate, top tab nav (Explorer | Watchlist | Category Builder |
+ * Owns: auth gate, top tab nav (Explorer | Products, shown only to admins |
+ * Watchlist | Category Builder |
  * Ask AI, shown only when askAiEnabled and askAiEligible admit this account |
  * Connect AI, shown only when connectAiEligible admits this account |
  * Tutorials), user info.
@@ -70,6 +71,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             watchlistCountPromise={watchlistCountPromise}
             showConnectAi={connectAiEligible(user.role, mcpAudience())}
             showAskAi={showAskAi}
+            showProducts={user.role === 'admin'}
           />
         </div>
         <div className="flex items-center gap-4 whitespace-nowrap text-sm text-slate-300">

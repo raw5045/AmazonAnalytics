@@ -22,7 +22,7 @@ import { COUNT_CAP } from '@/lib/explorer/buildQuery';
 import { RESEARCH_TOOLS } from '@/lib/research/tools';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
 
-const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
 
 // searchToolInputSchema's `cursor` is `z.string().min(16)...` — the SDK validates tool
 // arguments against inputSchema BEFORE the callback runs, so a continuation cursor used to

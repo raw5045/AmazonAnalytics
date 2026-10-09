@@ -139,6 +139,13 @@ describe('POST /api/ask/chat', () => {
     expect(activity.bumpUserActivity).toHaveBeenCalledTimes(1);
     expect(activity.bumpUserActivity).toHaveBeenCalledWith('u1', 'ask_question');
   });
+  it('builds the chat actor with isAdmin from the signed-in user\'s role (the admin-only product tools read it)', async () => {
+    await post(newChat);
+    expect(toolsMock.buildAskTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ channel: 'chat', isAdmin: false }), expect.anything(), null);
+    auth.user = { ...member, role: 'admin' };
+    await post(newChat);
+    expect(toolsMock.buildAskTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ channel: 'chat', isAdmin: true }), expect.anything(), null);
+  });
   it('a first send at the cap is 409', async () => {
     conv.createConversationWithFirstMessage.mockResolvedValueOnce('cap');
     const res = await post(newChat);
@@ -476,7 +483,7 @@ describe('POST /api/ask/chat', () => {
     const deleteCard = { ...pendingAssistant.parts[1], type: 'tool-delete_saved_view', toolCallId: 'call_2', input: { id: 'abcdef12-abcd-4abc-8abc-abcdef123456' }, approval: { id: 'ap_2' } };
     /** What toolApprovalFor returns here: the turn must carry this very object (toBe), not just any object. */
     const approvalMap = { create_saved_view: 'user-approval' };
-    const actorOfMember = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat' };
+    const actorOfMember = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'ask-ai', channel: 'chat', isAdmin: false };
     beforeEach(() => {
       envMock.env.ASK_AI_WRITES_ENABLED = '1';
       conv.loadConversation.mockResolvedValue(loaded());

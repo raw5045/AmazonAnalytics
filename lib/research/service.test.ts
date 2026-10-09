@@ -23,7 +23,7 @@ import { EXPLORER_DEFAULTS, parseExplorerFilters } from '@/lib/explorer/parseFil
 import { searchParamsToLike } from '@/lib/explorer/export/query';
 import { NOTE_DELTA, NOTE_LINK_TOO_LONG, NOTE_LINK_TOO_LONG_READONLY } from '@/lib/workspace/explorerFilters';
 
-const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp' };
+const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
 const META = { currentWeekEndDate: '2026-09-12', snapshotVersion: 'snap-a', refreshedAt: '2026-09-13T06:00:00.000Z', volumeFitRunId: null, calibrationMonthEndDate: null, isExtrapolated: false };
 // C1: buildCategoryCatalog's first argument is now { snapshotVersion, datasetWeek } (lib/research/categories.ts), not a bare snapshot string.
 const catalog = buildCategoryCatalog({ snapshotVersion: 'snap-a', datasetWeek: '2026-09-12' }, [{ categoryPath: 'A › B', allCount: 10 }, { categoryPath: 'A › C', allCount: 5 }]);

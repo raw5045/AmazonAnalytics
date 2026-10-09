@@ -29,7 +29,19 @@ describe('actorFromContext', () => {
       clerkUserId: 'user_1',
       clientId: 'client_claude',
       channel: 'mcp',
+      isAdmin: true,
     });
+  });
+
+  it('sets isAdmin from the account role: admin is true, standard_user is false', () => {
+    const asRole = (role: 'admin' | 'standard_user'): AuthInfo => ({
+      token: 't',
+      clientId: 'client_claude',
+      scopes: [],
+      extra: { clerkUserId: 'user_1', account: { ...account, role } },
+    });
+    expect(actorFromContext(ctxWith(asRole('admin'))).isAdmin).toBe(true);
+    expect(actorFromContext(ctxWith(asRole('standard_user'))).isAdmin).toBe(false);
   });
 
   it('fails closed with a retryable DATA_UNAVAILABLE error when the gate has not attached an account, logging outcome: actor_missing', () => {
