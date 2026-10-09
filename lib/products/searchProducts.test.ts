@@ -1,6 +1,6 @@
 // lib/products/searchProducts.test.ts
 import { describe, it, expect } from 'vitest';
-import { neon, neonConfig } from '@neondatabase/serverless';
+import { neon, neonConfig, type NeonQueryFunction } from '@neondatabase/serverless';
 import { asinProducts, keywordTopAsins } from '@/db/schema';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
 import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
@@ -20,6 +20,25 @@ const NULLABLE_KEY_SORTS: Array<[sort: Sort, column: string]> = [
 const KEY_COLUMN = new Map<Sort, string>(NULLABLE_KEY_SORTS);
 /** All 14 sort × direction pairs. */
 const SORT_DIR_PAIRS: Array<[sort: Sort, dir: Dir]> = PRODUCT_SORTS.flatMap((sort): Array<[Sort, Dir]> => [[sort, 'asc'], [sort, 'desc']]);
+
+/** The real neon driver's wire shapes, for the tests that run it against a replaced fetch. */
+type Batch = { queries: Array<{ query: string; params: unknown[] }> };
+type FakeResponse = { ok: boolean; status: number; json: () => Promise<unknown> };
+const okResults = (...results: unknown[]): FakeResponse => ({ ok: true, status: 200, json: async () => ({ results }) });
+/** The result of a batch's leading SET LOCAL: no rows. */
+const SET_RESULT = { command: 'SET', rowCount: null, rows: [], fields: [], rowAsArray: true };
+/** What the neon HTTP endpoint answers when a statement fails: HTTP 400 and the error's fields as JSON. */
+const sqlError = (code: string, message: string): FakeResponse => ({ ok: false, status: 400, json: async () => ({ message, code, severity: 'ERROR' }) });
+/** Runs `fn` with a real neon client whose fetch is replaced by `respond`: nothing reaches a network or a database (the host cannot resolve either). */
+async function withNeonFetch(respond: (url: string, batch: Batch) => FakeResponse, fn: (sql: NeonQueryFunction<false, false>) => Promise<void>): Promise<void> {
+  const original = neonConfig.fetchFunction;
+  neonConfig.fetchFunction = async (url: string, init: { body: string }) => respond(url, JSON.parse(init.body) as Batch);
+  try {
+    await fn(neon('postgresql://user:pw@db.invalid/app', { disableWarningInBrowsers: true }));
+  } finally {
+    neonConfig.fetchFunction = original;
+  }
+}
 
 describe('productSearchSql', () => {
   it('applies the base predicate, hides null sort keys, and pages before counting keywords', () => {
@@ -147,6 +166,7 @@ describe('searchProducts', () => {
     const r = await searchProducts(fake, PRODUCT_DEFAULTS);
     expect(r.total).toBe(3);
     expect(r.totalIsCapped).toBe(false);
+    expect(r).not.toHaveProperty('countTimedOut');
     expect(r.rows[0]).toMatchObject({ asin: 'B000000001', monthlySold: 1000, rankRatioX100: 65, keywordCount: 7, amazonAvailability: -1 });
     // sort_key only carries the outer re-sort; it is not part of the mapped row.
     expect(r.rows[0]).not.toHaveProperty('sort_key');
@@ -164,6 +184,60 @@ describe('searchProducts', () => {
     expect(r.rows[0].keywordCount).toBe(0);
     expect(r.page).toBe(2);
     expect(r.pageSize).toBe(50);
+  });
+
+  describe('the count is best-effort under the statement timeout', () => {
+    const timeout = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+
+    it('turns a count that hits the statement timeout (57014) into a capped total and keeps the rows', async () => {
+      const events: string[] = [];
+      const fake = async (text: string) => {
+        if (isCountStatement(text)) {
+          events.push('count:start');
+          throw timeout();
+        }
+        events.push('rows:start');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        events.push('rows:end');
+        return [{ asin: 'B000000003', keyword_count: 2 }];
+      };
+      const r = await searchProducts(fake, PRODUCT_DEFAULTS);
+      expect(r).toMatchObject({ total: PRODUCT_COUNT_CAP, totalIsCapped: true, countTimedOut: true, page: 1, pageSize: PRODUCT_PAGE_SIZE });
+      expect(r.rows).toHaveLength(1);
+      expect(r.rows[0]).toMatchObject({ asin: 'B000000003', keywordCount: 2 });
+      // Rows and count run in parallel: the count starts before the rows finish.
+      expect(events).toEqual(['rows:start', 'count:start', 'rows:end']);
+    });
+    it('rejects when the count fails for any other reason', async () => {
+      for (const error of [Object.assign(new Error('too many connections'), { code: '53300' }), new Error('Error connecting to database')]) {
+        const fake = async (text: string) => {
+          if (isCountStatement(text)) throw error;
+          return [];
+        };
+        await expect(searchProducts(fake, PRODUCT_DEFAULTS)).rejects.toBe(error);
+      }
+    });
+    it('rejects when the rows statement times out: only the count is best-effort', async () => {
+      const error = timeout();
+      const fake = async (text: string) => {
+        if (!isCountStatement(text)) throw error;
+        return [{ n: 3 }];
+      };
+      await expect(searchProducts(fake, PRODUCT_DEFAULTS)).rejects.toBe(error);
+    });
+    it('with the real neon driver: a 57014 on the count is a capped total, any other server error still rejects', async () => {
+      const rowsResult = { command: 'SELECT', rowCount: 1, rows: [['B000000001']], fields: [{ name: 'asin', dataTypeID: 25 }], rowAsArray: true };
+      // Each statement is its own batch (SET LOCAL, then the statement): fail the count's, answer the rows'.
+      const serve = (onCount: FakeResponse) => (_url: string, batch: Batch) => (batch.queries[1].query.startsWith('SELECT count(*)') ? onCount : okResults(SET_RESULT, rowsResult));
+      await withNeonFetch(serve(sqlError('57014', 'canceling statement due to statement timeout')), async (sql) => {
+        const r = await searchProducts(neonRunner(sql), PRODUCT_DEFAULTS);
+        expect(r).toMatchObject({ total: PRODUCT_COUNT_CAP, totalIsCapped: true, countTimedOut: true });
+        expect(r.rows.map((row) => row.asin)).toEqual(['B000000001']);
+      });
+      await withNeonFetch(serve(sqlError('53200', 'out of memory')), async (sql) => {
+        await expect(searchProducts(neonRunner(sql), PRODUCT_DEFAULTS)).rejects.toMatchObject({ name: 'NeonDbError', code: '53200' });
+      });
+    });
   });
 });
 
@@ -202,29 +276,16 @@ describe('neonRunner', () => {
     await expect(neonRunner(sql)('SELECT 1', [])).rejects.toMatchObject({ code: '57014' });
   });
   it('works with the real neon client: one batched request carries SET LOCAL then the query, and the rows come back last', async () => {
-    // The real driver, with its fetch replaced (and a host that can never resolve): nothing reaches a network or a database.
-    type Batch = { queries: Array<{ query: string; params: unknown[] }> };
     const requests: Array<{ url: string; batch: Batch }> = [];
-    const original = neonConfig.fetchFunction;
-    neonConfig.fetchFunction = async (url: string, init: { body: string }) => {
-      requests.push({ url, batch: JSON.parse(init.body) as Batch });
-      return {
-        ok: true,
-        status: 200,
-        json: async () => ({
-          results: [
-            { command: 'SET', rowCount: null, rows: [], fields: [], rowAsArray: true },
-            { command: 'SELECT', rowCount: 1, rows: [['1']], fields: [{ name: 'n', dataTypeID: 23 }], rowAsArray: true },
-          ],
-        }),
-      };
-    };
-    try {
-      const run = neonRunner(neon('postgresql://user:pw@db.invalid/app', { disableWarningInBrowsers: true }));
-      await expect(run('SELECT $1::int AS n', [1])).resolves.toEqual([{ n: 1 }]);
-    } finally {
-      neonConfig.fetchFunction = original;
-    }
+    await withNeonFetch(
+      (url, batch) => {
+        requests.push({ url, batch });
+        return okResults(SET_RESULT, { command: 'SELECT', rowCount: 1, rows: [['1']], fields: [{ name: 'n', dataTypeID: 23 }], rowAsArray: true });
+      },
+      async (sql) => {
+        await expect(neonRunner(sql)('SELECT $1::int AS n', [1])).resolves.toEqual([{ n: 1 }]);
+      },
+    );
     expect(requests).toHaveLength(1);
     expect(requests[0].url).toMatch(/^https:\/\/[^/]+\.invalid\/sql$/);
     expect(requests[0].batch.queries).toEqual([
