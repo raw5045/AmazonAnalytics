@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { canGoBack } from '@/lib/nav/canGoBack';
 
 /**
  * The ASIN page's back control: BackToExplorer's mechanics (app/(app)/explorer/keyword/[id]/
@@ -38,17 +39,6 @@ export function resolveProductBack(from: string | null | undefined): ProductBack
     return { href: from, label: 'Back to products', cameFromPage: true };
   }
   return FALLBACK;
-}
-
-/**
- * Whether a history entry sits behind the current one. The Navigation API's `canGoBack` knows the
- * current entry's position: a page opened in a new tab (the Products list's links do that), then a
- * same-tab hop to a keyword page and the browser's Back, is at the first entry with
- * `history.length` 2, where router.back() would do nothing. Where the API is missing (it is not in
- * TypeScript's DOM types yet, hence the structural parameter), `history.length > 1` is the guess.
- */
-export function canGoBack(win: { navigation?: { canGoBack?: boolean }; history: { length: number } }): boolean {
-  return win.navigation?.canGoBack ?? win.history.length > 1;
 }
 
 /**

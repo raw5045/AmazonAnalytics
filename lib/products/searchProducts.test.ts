@@ -1,16 +1,14 @@
 // lib/products/searchProducts.test.ts
 import { describe, it, expect, expectTypeOf } from 'vitest';
-import { getTableColumns } from 'drizzle-orm';
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { asinProducts, keywordTopAsins } from '@/db/schema';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
 import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP } from './searchProducts';
+import { aliasCols, dbCols } from './testHelpers';
 
 type Sort = ProductFilters['sort'];
 type Dir = ProductFilters['dir'];
 
-const dbCols = (t: Parameters<typeof getTableColumns>[0]) => new Set(Object.values(getTableColumns(t)).map((c) => c.name));
-const aliasCols = (text: string, alias: string) => new Set([...text.matchAll(new RegExp(`\\b${alias}\\.([a-z0-9_]+)`, 'g'))].map((m) => m[1]));
 /** The capped-count statement (the rows statement also contains `count(*)`, in its keyword-count lateral). */
 const isCountStatement = (text: string) => text.startsWith('SELECT count(*)');
 /** A statement's predicate text: from the base predicate up to the clause that follows it. */

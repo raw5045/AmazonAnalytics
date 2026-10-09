@@ -33,6 +33,7 @@ const BEGIN = 'BEGIN ISOLATION LEVEL READ COMMITTED';
 const BEGIN_TAG = 'BEGIN ISOLATION LEVEL'; // its first three words
 const SET_TIMEOUT = "SET LOCAL statement_timeout = '1800s'";
 const SET_WORK_MEM = "SET LOCAL work_mem = '256MB'";
+const SET_MAINTENANCE_WORK_MEM = "SET LOCAL maintenance_work_mem = '256MB'";
 const SET_LOCK_TIMEOUT = "SET LOCAL lock_timeout = '120s'";
 const LOCK = 'SELECT pg_advisory_xact_lock($1)';
 const META_QUERY = 'SELECT week_end_date::text AS week_end_date FROM keyword_top_asins_meta WHERE singleton';
@@ -326,7 +327,7 @@ const SETUP_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', LOCK, 'DROP TAB
 const INSERT_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'SET LOCAL work_mem', LOCK, 'STAMP_READ', 'INSERT INTO keyword_top_asins_bf', 'COMMIT'];
 /** A week with no rows: the same transaction, rolled back. */
 const EMPTY_WEEK_TX_TAGS = [...INSERT_TX_TAGS.slice(0, -1), 'ROLLBACK'];
-const ROTATE_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', LOCK, 'STAMP_READ', 'DROP TABLE IF', 'ALTER TABLE keyword_top_asins_bf', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'ANALYZE keyword_top_asins_bf_prev', 'CREATE TABLE keyword_top_asins_bf', 'COMMENT ON TABLE', 'COMMIT'];
+const ROTATE_TX_TAGS = [BEGIN_TAG, 'SET LOCAL statement_timeout', 'SET LOCAL maintenance_work_mem', LOCK, 'STAMP_READ', 'DROP TABLE IF', 'ALTER TABLE keyword_top_asins_bf', 'CREATE INDEX keyword_top_asins_bf_prev_pair_idx', 'ANALYZE keyword_top_asins_bf_prev', 'CREATE TABLE keyword_top_asins_bf', 'COMMENT ON TABLE', 'COMMIT'];
 const FINALIZE_TX_TAGS = [
   BEGIN_TAG,
   'SET LOCAL statement_timeout',
@@ -390,7 +391,7 @@ describe('runBackfill', () => {
     expect(token).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z-[0-9a-f]{8}$/);
     const f = finalizeStatements(WEEK);
     const insertTx = (w: string) => [BEGIN, SET_TIMEOUT, SET_WORK_MEM, LOCK, STAMP_READ, norm(backfillWeekStatements(w).insert.text), 'COMMIT'];
-    const rotateTx = [BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, ...rotateStatements(token).map((s) => norm(s.text)), 'COMMIT'];
+    const rotateTx = [BEGIN, SET_TIMEOUT, SET_MAINTENANCE_WORK_MEM, LOCK, STAMP_READ, ...rotateStatements(token).map((s) => norm(s.text)), 'COMMIT'];
     expect(c.texts).toEqual([
       WEEKS_QUERY,
       BEGIN, SET_TIMEOUT, LOCK, ...backfillSetupStatements(token).map((s) => norm(s.text)), 'COMMIT',
@@ -524,7 +525,7 @@ describe('runBackfill: another run on the same scratch tables', () => {
     const outcome = await runBackfill(c, { log: (l) => logs.push(l) }).then(() => null, (e: unknown) => e);
     return { c, logs, outcome };
   }
-  const KEPT = '; scratch tables kept (a re-run starts over)';
+  const OWNED = '; another run owns the scratch tables; let it finish';
 
   // Stamp reads in a three-week run: insert 1, rotate 1, insert 2, rotate 2, insert 3, swap-in.
   it('stops at the first insert when the stamp is not its own: nothing is written', async () => {
@@ -532,22 +533,22 @@ describe('runBackfill: another run on the same scratch tables', () => {
     expect(outcome).toMatchObject({ code: 'top_asins_run_conflict' });
     expect(outcome).toBeInstanceOf(TopAsinsBuildError);
     expect(c.texts.slice(c.texts.lastIndexOf(BEGIN))).toEqual([BEGIN, SET_TIMEOUT, SET_WORK_MEM, LOCK, STAMP_READ, 'ROLLBACK']);
-    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=insert week=2026-09-19 (1/3) code=top_asins_run_conflict${KEPT}`);
+    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=insert week=2026-09-19 (1/3) code=top_asins_run_conflict${OWNED}`);
   });
 
   it('stops at a rotate before it renames anything (it would shuffle the other run\'s tables)', async () => {
     const { c, logs, outcome } = await run({ takeover: { at: 2, stamp: OTHER } });
     expect(outcome).toMatchObject({ code: 'top_asins_run_conflict' });
-    expect(c.texts.slice(c.texts.lastIndexOf(BEGIN))).toEqual([BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, 'ROLLBACK']);
+    expect(c.texts.slice(c.texts.lastIndexOf(BEGIN))).toEqual([BEGIN, SET_TIMEOUT, SET_MAINTENANCE_WORK_MEM, LOCK, STAMP_READ, 'ROLLBACK']);
     expect(c.texts.filter((t) => t.startsWith('ALTER TABLE'))).toEqual([]);
-    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=rotate week=2026-09-19 (1/3) code=top_asins_run_conflict${KEPT}`);
+    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=rotate week=2026-09-19 (1/3) code=top_asins_run_conflict${OWNED}`);
   });
 
   it('stops at the swap-in before it reads the meta row or touches the live side (it would install the other run\'s streaks)', async () => {
     const { c, logs, outcome } = await run({ takeover: { at: 6, stamp: OTHER } });
     expect(outcome).toMatchObject({ code: 'top_asins_run_conflict' });
     expect(c.texts.slice(c.texts.lastIndexOf(BEGIN))).toEqual([BEGIN, SET_TIMEOUT, LOCK, STAMP_READ, 'ROLLBACK']);
-    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=finalize code=top_asins_run_conflict${KEPT}`);
+    expect(logs[logs.length - 1]).toBe(`backfill failed: stage=finalize code=top_asins_run_conflict${OWNED}`);
   });
 
   it('a dropped _bf (no table, so no stamp) reads as a conflict too, not as an error of its own', async () => {

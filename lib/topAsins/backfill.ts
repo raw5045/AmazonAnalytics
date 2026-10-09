@@ -38,7 +38,8 @@
  *
  * Failure and restart. The live table is untouched until the swap-in, which is atomic: it commits whole or leaves
  * nothing behind (no _next, no half swap). Any other failure leaves the scratch tables for inspection, and a re-run
- * starts over (setup drops and recreates them), so a run is safe to repeat. Errors are logged by code only (a pg
+ * starts over (setup drops and recreates them), so a run is safe to repeat. After top_asins_run_conflict the tables
+ * are another run's, still in use: the log says to let it finish, not to re-run. Errors are logged by code only (a pg
  * error's code, else its name), never by message, and the original error is rethrown.
  *
  * `client` must be ONE dedicated connection (never a Pool, never inside a transaction). Builds (the import hook,
@@ -53,6 +54,8 @@ const sql = (text: string): SqlStatement => ({ text, values: [] });
 // Each transaction sets its own limits (the pool's session settings may not survive a pooler); the values a build uses.
 const SET_TIMEOUT = "SET LOCAL statement_timeout = '1800s'";
 const SET_WORK_MEM = "SET LOCAL work_mem = '256MB'";
+/** The rotate's CREATE INDEX (the carry index over the week just walked, ~8M rows) sorts in maintenance_work_mem, which work_mem does not govern. */
+const SET_MAINTENANCE_WORK_MEM = "SET LOCAL maintenance_work_mem = '256MB'";
 /** Table-lock waits in the swap-in: the live table's DROP waits behind in-flight readers, and new readers queue behind it. */
 const SET_LOCK_TIMEOUT = "SET LOCAL lock_timeout = '120s'";
 const TAKE_LOCK = 'SELECT pg_advisory_xact_lock($1)';
@@ -331,6 +334,7 @@ export async function runBackfill(client: Queryable, opts: BackfillOptions = {})
         stage = 'rotate';
         await inTransaction(client, async () => {
           await client.query(SET_TIMEOUT);
+          await client.query(SET_MAINTENANCE_WORK_MEM);
           await client.query(TAKE_LOCK, [TOP_ASINS_LOCK_KEY]);
           await assertOwnRun(client, token);
           for (const st of rotateStatements(token)) await client.query(st.text);
@@ -379,8 +383,11 @@ export async function runBackfill(client: Queryable, opts: BackfillOptions = {})
     }
     return { weeks: n, lastWeek, rows, ...(skipped.length ? { skipped } : {}), ...(analyzeError ? { analyzeError } : {}) };
   } catch (e) {
-    const kept = stage === 'insert' || stage === 'rotate' || stage === 'finalize' ? '; scratch tables kept (a re-run starts over)' : '';
-    log(`backfill failed: stage=${stage}${at} code=${errorCode(e)}${kept}`);
+    const code = errorCode(e);
+    const hasScratch = stage === 'insert' || stage === 'rotate' || stage === 'finalize';
+    // On a run conflict the scratch tables are another run's, still in use: a re-run would wipe them under it.
+    const kept = !hasScratch ? '' : code === 'top_asins_run_conflict' ? '; another run owns the scratch tables; let it finish' : '; scratch tables kept (a re-run starts over)';
+    log(`backfill failed: stage=${stage}${at} code=${code}${kept}`);
     throw e;
   }
 }

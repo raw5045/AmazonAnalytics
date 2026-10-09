@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_EXCLUDE_TERM_LENGTH, MAX_EXCLUDE_TERMS, MIN_EXCLUDE_TERM_LENGTH } from '@/lib/explorer/parseFilters';
+import { ASIN_RE } from '@/lib/products/asin';
 import {
   MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters,
 } from '@/lib/products/filters';
@@ -343,8 +344,6 @@ export const emptyInputSchema = z.strictObject({});
 
 /** The top price bound in dollars: its cents must still fit the int4 current_price_cents column (INT4_MAX above). */
 export const PRODUCT_PRICE_DOLLARS_MAX = INT4_MAX / 100;
-/** An ASIN as the catalog stores it: ten capital letters or digits. */
-const ASIN_PATTERN = /^[A-Z0-9]{10}$/;
 /** The search's min/max pairs: a minimum above its maximum is refused, never answered with an empty page. */
 const PRODUCT_RANGE_PAIRS = [['ratingMin', 'ratingMax'], ['priceMin', 'priceMax'], ['bsrMin', 'bsrMax']] as const;
 
@@ -440,7 +439,7 @@ export function toProductFilters(input: ProductSearchInput): ProductFilters {
 
 /** get_product_details' input: one ASIN, exactly as the catalog stores it. */
 export const productDetailsInputSchema = z.strictObject({
-  asin: z.string().regex(ASIN_PATTERN, 'an ASIN is 10 capital letters or digits').describe("The product's 10-character ASIN in capitals (B0…), as search_products returns it."),
+  asin: z.string().regex(ASIN_RE, 'an ASIN is 10 capital letters or digits').describe("The product's 10-character ASIN in capitals (B0…), as search_products returns it."),
 });
 export type ProductDetailsInput = z.infer<typeof productDetailsInputSchema>;
 

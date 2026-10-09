@@ -13,9 +13,11 @@
  * write would error), so nothing persists.
  *
  * Cancellation and timeouts (every transaction): SET LOCAL client_connection_check_interval = '10s'
- * makes the server stop a statement whose client has gone (a cancelled or killed run) within ~10 s.
- * The 300 s statement timeout applies to each statement on its own; a case's 6-minute test timeout
- * bounds the sum of its statements.
+ * makes the server stop a statement whose client process has died (Ctrl-C, kill) within ~10 s. A
+ * vitest timeout does NOT trigger it: the test fails, but the process and its connection live on, so
+ * the server keeps running the statement until it finishes or the statement timeout hits. The 300 s
+ * statement timeout applies to each statement on its own; a case's 6-minute test timeout bounds the
+ * sum of its statements as the test sees them, and stops nothing on the server.
  *
  * Preconditions (owner-run only, never in CI):
  *  - migration 0051 applied (the six partial indexes built and valid);

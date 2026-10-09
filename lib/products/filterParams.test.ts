@@ -1,6 +1,6 @@
 // lib/products/filterParams.test.ts
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { PRODUCT_SORTS, SORT_KEY_LABEL, sortHidesNullKey } from './filterParams';
 import * as searchProducts from './searchProducts';
@@ -11,12 +11,14 @@ const source = (file: string) => readFileSync(path.join(process.cwd(), file), 'u
 const productValueImports = (file: string) =>
   [...source(file).matchAll(/^import\s+(?!type\b)[^;]*?\sfrom\s+'@\/lib\/products\/([^']+)'/gm)].map((m) => m[1]);
 
-/** The Products page's client components (they ship to the browser). */
-const CLIENT_COMPONENTS = [
-  'app/(app)/products/ProductFilterPanel.tsx',
-  'app/(app)/products/ProductResultsTable.tsx',
-  'app/(app)/products/ProductPagination.tsx',
-];
+/** Every .ts/.tsx file under `dir` (repo-relative, forward slashes), route-group and dynamic-segment folders included. */
+const filesUnder = (dir: string): string[] =>
+  readdirSync(path.join(process.cwd(), dir), { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? filesUnder(`${dir}/${entry.name}`) : /\.tsx?$/.test(entry.name) ? [`${dir}/${entry.name}`] : [],
+  );
+
+/** The Products page's client components (they ship to the browser): every file under the route whose first line is the 'use client' directive. */
+const CLIENT_COMPONENTS = filesUnder('app/(app)/products').filter((file) => /^['"]use client['"];?\s*$/.test(source(file).split(/\r?\n/, 1)[0]));
 
 describe('filterParams (the zod-free half of the product filters)', () => {
   it('has no runtime imports, so it can never pull zod (or anything else) into a client bundle', () => {
@@ -24,8 +26,9 @@ describe('filterParams (the zod-free half of the product filters)', () => {
   });
 
   it("the client components import lib/products values only from filterParams, format and asin (never filters' zod)", () => {
-    // The pattern does see the panel's imports (so an empty list below means none, not a miss).
-    expect(productValueImports(CLIENT_COMPONENTS[0])).toEqual(expect.arrayContaining(['filterParams', 'format']));
+    // The glob finds the page's client components and the pattern sees the panel's imports (so an empty list below means none, not a miss).
+    expect(CLIENT_COMPONENTS).toEqual(expect.arrayContaining(['app/(app)/products/ProductFilterPanel.tsx', 'app/(app)/products/ProductResultsTable.tsx']));
+    expect(productValueImports('app/(app)/products/ProductFilterPanel.tsx')).toEqual(expect.arrayContaining(['filterParams', 'format']));
     for (const file of CLIENT_COMPONENTS) {
       expect(productValueImports(file).filter((m) => !['filterParams', 'format', 'asin'].includes(m)), file).toEqual([]);
     }

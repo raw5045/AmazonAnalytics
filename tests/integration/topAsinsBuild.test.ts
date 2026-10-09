@@ -21,10 +21,13 @@
  *    meanwhile queues at the lock instead of running on to its swap, where it would wait behind this
  *    transaction's read lock on keyword_top_asins and give up after its 120 s lock_timeout. One that
  *    already holds the lock fails the case at once;
- *  - SET LOCAL client_connection_check_interval = '10s': if the run is cancelled or killed, the server
- *    stops the statement it is executing within ~10 s instead of finishing it for nobody;
- *  - the 600 s statement timeout applies to each statement on its own; a case's test timeout (30
- *    minutes for the scratch builds) bounds the sum of its statements.
+ *  - SET LOCAL client_connection_check_interval = '10s': if the client process dies (Ctrl-C, kill), the
+ *    server stops the statement it is executing within ~10 s instead of finishing it for nobody. A
+ *    vitest timeout does NOT trigger this: the test fails, but the process and its connection live on,
+ *    so the server keeps running the statement until it finishes or the statement timeout hits;
+ *  - the 600 s statement timeout applies to each statement on its own (it is what bounds a statement
+ *    that outlives its test); a case's test timeout (30 minutes for the scratch builds) bounds the sum
+ *    of its statements as the test sees them, and stops nothing on the server.
  *
  * Preconditions (owner-run only, never in CI):
  *  - migration 0051 applied; the reverse-table backfill done for meaningful numbers (an empty

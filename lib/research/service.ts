@@ -98,7 +98,7 @@ export function defaultResearchDeps(): ResearchServiceDeps {
     meta: loadSnapshotMetaHttp,
     runSearch,
     countMatches,
-    products: defaultProductsDeps(appUrl),
+    products: defaultProductsDeps(),
   };
 }
 

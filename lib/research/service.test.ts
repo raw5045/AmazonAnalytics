@@ -58,7 +58,6 @@ function makeDeps(over: Partial<ResearchServiceDeps> = {}) {
     runSearch: vi.fn(async (_pool, _t, compile) => ({ meta: META, rows: Array.from({ length: 51 }, (_, i) => raw(i + 1)), compiled: compile(META) })),
     countMatches: vi.fn(async () => ({ kind: 'exact' as const, value: 137 })),
     products: {
-      appUrl: 'https://keywordquarry.com',
       search: vi.fn(async () => ({ rows: [], total: 0, totalIsCapped: false, page: 1, pageSize: 50 })),
       facts: vi.fn(async () => null),
       history: vi.fn(async () => []),
@@ -398,10 +397,10 @@ describe('defaultResearchService', () => {
     const c = defaultResearchService();
     expect(c).not.toBe(a);
   });
-  it('wires the Products page loaders for the two product tools, with the app URL for their links', () => {
-    const products = defaultResearchDeps().products;
-    expect(Object.keys(products).sort()).toEqual(['appUrl', 'facts', 'history', 'keywords', 'search']);
-    expect(products.appUrl).toBe('https://keywordquarry.com');
+  it('wires the Products page loaders for the two product tools; their links take the base URL from the service deps, not from the loaders', () => {
+    const deps = defaultResearchDeps();
+    expect(Object.keys(deps.products).sort()).toEqual(['facts', 'history', 'keywords', 'search']);
+    expect(deps.appUrl).toBe('https://keywordquarry.com');
   });
 });
 
@@ -445,13 +444,12 @@ describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
     await expect(svc.productDetails(actor, { asin: 'B0ABCDEF12' })).rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
     for (const fn of [deps.reserve, deps.record, deps.products.search, deps.products.facts, deps.products.history, deps.products.keywords]) expect(fn).not.toHaveBeenCalled();
   });
-  it('link with the service’s own appUrl (deps.appUrl), as the keyword tools do, whatever products.appUrl holds', async () => {
+  it('link with the service’s own appUrl (deps.appUrl), as the keyword tools do', async () => {
     const base = makeDeps();
     const deps = makeDeps({
       appUrl: 'https://kq.example/',
       products: {
         ...base.products,
-        appUrl: 'https://stale.example',
         search: vi.fn(async () => ({ rows: [productRow], total: 1, totalIsCapped: false, page: 1, pageSize: 50 })),
         facts: vi.fn(async () => stubFacts),
         keywords: vi.fn(async () => ({ rows: [keywordRow], total: 1 })),

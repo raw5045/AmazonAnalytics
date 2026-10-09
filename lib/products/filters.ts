@@ -37,6 +37,16 @@ export const productFiltersSchema = z.strictObject({
   page: z.int().min(1).max(PRODUCT_MAX_PAGE),
 });
 
+/**
+ * Type-only pin, checked by `next build` (the build ignores type errors in test files, so filters.test.ts
+ * alone would not stop a drift from shipping): the schema infers exactly the hand-written ProductFilters of
+ * ./filterParams, which the client components use in the schema's place. A field added to or changed in one
+ * and not the other is a type error on the last line below.
+ */
+type Equals<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type AssertTrue<T extends true> = T;
+export type ProductFiltersSchemaMatchesType = AssertTrue<Equals<z.infer<typeof productFiltersSchema>, ProductFilters>>;
+
 export type SearchParamsLike = Record<string, string | string[] | undefined>;
 const one = (v: string | string[] | undefined): string | undefined => (Array.isArray(v) ? v[0] : v);
 /** Unsigned integer text (no sign, no decimals), else null; the schema's own bounds do the rest. */

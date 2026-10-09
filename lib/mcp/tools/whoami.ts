@@ -5,7 +5,7 @@ import { currentDatasetWeek } from '../datasetWeek';
 import { mcpAuthExtra } from '../verifyMcpToken';
 
 /**
- * `whoami` — the connection diagnostic tool (arc 1 adds the five research tools next to it).
+ * `whoami` — the connection diagnostic tool (arc 1 adds the research tools next to it).
  * Proves the whole path from an external client: OAuth token → verifier → account → a
  * database read (the current dataset week) → structured output.
  */

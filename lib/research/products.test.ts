@@ -251,11 +251,10 @@ describe('productDetailsForTool', () => {
 });
 
 describe('defaultProductsDeps', () => {
-  it('has the app URL and the four loaders, and opens no client while wiring', () => {
+  it('has the four loaders (no app URL: the service supplies its own), and opens no client while wiring', () => {
     neonMock.neon.mockClear();
-    const d = defaultProductsDeps('https://x/');
-    expect(Object.keys(d).sort()).toEqual(['appUrl', 'facts', 'history', 'keywords', 'search']);
-    expect(d.appUrl).toBe('https://x/');
+    const d = defaultProductsDeps();
+    expect(Object.keys(d).sort()).toEqual(['facts', 'history', 'keywords', 'search']);
     for (const k of ['search', 'facts', 'history', 'keywords'] as const) expect(typeof d[k]).toBe('function');
     expect(neonMock.neon).not.toHaveBeenCalled();
   });
@@ -263,7 +262,7 @@ describe('defaultProductsDeps', () => {
   it('runs each loader through neon() on DATABASE_URL (mocked here), passing the ASIN and the keyword limit through', async () => {
     neonMock.neon.mockClear();
     neonMock.query.mockClear();
-    const d = defaultProductsDeps(APP);
+    const d = defaultProductsDeps();
     await expect(d.facts(ASIN)).resolves.toBeNull();
     expect(neonMock.neon).toHaveBeenCalledWith('postgres://test');
     await expect(d.history(ASIN)).resolves.toEqual([]);

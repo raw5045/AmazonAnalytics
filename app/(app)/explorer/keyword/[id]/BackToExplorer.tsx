@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { canGoBack } from '@/lib/nav/canGoBack';
 
 /**
  * Should "Back to explorer" restore the previous page from the browser's
@@ -12,14 +13,16 @@ import { useRouter } from 'next/navigation';
  * slow on a cold cache (the same cost the browser back button avoids by
  * restoring the cached page). So we prefer `router.back()` — but ONLY when:
  *  - we actually arrived from the explorer (so `back()` lands there), and
- *  - there's a history entry behind us (not a direct entry / fresh tab, where
- *    `back()` would leave the app entirely).
+ *  - there's a history entry behind us (`canGoBack`: not a direct entry / fresh
+ *    tab, where `back()` would leave the app entirely, and not the first entry
+ *    of the new tab the explorer opened this page in, where `history.length`
+ *    can still say 2).
  */
 export function shouldRestoreViaBack(
   cameFromExplorer: boolean,
-  historyLength: number,
+  hasEntryBehind: boolean,
 ): boolean {
-  return cameFromExplorer && historyLength > 1;
+  return cameFromExplorer && hasEntryBehind;
 }
 
 /**
@@ -55,7 +58,7 @@ export function BackToExplorer({
     ) {
       return;
     }
-    if (shouldRestoreViaBack(cameFromExplorer, window.history.length)) {
+    if (shouldRestoreViaBack(cameFromExplorer, canGoBack(window))) {
       e.preventDefault();
       router.back();
     }

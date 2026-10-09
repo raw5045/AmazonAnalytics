@@ -30,11 +30,10 @@ export { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP };
 const DETAILS_ROWS = 1;
 
 /**
- * The data side of the products tools: the app's base URL (for the links) and the four Products
- * page loaders. `defaultProductsDeps` wires production; tests inject stubs.
+ * The data side of the products tools: the four Products page loaders. `defaultProductsDeps` wires
+ * production; tests inject stubs.
  */
 export interface ProductLoaders {
-  appUrl: string;
   search: (filters: ProductFilters) => Promise<ProductSearchResult>;
   /** The facts, a stub (`inCatalog: false`) for an ASIN only the keyword tables know, or null when neither has it. */
   facts: (asin: string) => Promise<CatalogProductFacts | null>;
@@ -42,8 +41,10 @@ export interface ProductLoaders {
   keywords: (asin: string, limit: number) => Promise<ProductKeywordsResult>;
 }
 
-/** What the two tool functions run on: the loaders plus the service's usage hooks, bound to its own reserve and digest counters. */
+/** What the two tool functions run on: the loaders plus the app's base URL and the service's usage hooks, bound to its own reserve and digest counters. */
 export interface ProductsDeps extends ProductLoaders {
+  /** The base URL of the links (ASIN pages, Explorer): the service's own `appUrl`, as the keyword tools use. The loaders carry none. */
+  appUrl: string;
   /** The per-minute rate limit, before any read: rows asked for up front (resolves, or rejects with RATE_LIMITED). */
   reserve: (actor: ResearchActor, rows: number) => Promise<unknown>;
   /** The daily-digest counters, after a successful call only: rows delivered. */
@@ -54,10 +55,9 @@ export interface ProductsDeps extends ProductLoaders {
  * Production loaders over Neon's HTTP driver: each call creates its own neon() client lazily (as
  * details.ts's loaders do), so building the default service never touches DATABASE_URL.
  */
-export function defaultProductsDeps(appUrl: string): ProductLoaders {
+export function defaultProductsDeps(): ProductLoaders {
   const run = () => neonRunner(neon(env.DATABASE_URL));
   return {
-    appUrl,
     search: (filters) => searchProducts(run(), filters),
     facts: (asin) => loadProduct(run(), asin),
     history: (asin) => loadProductHistory(run(), asin),

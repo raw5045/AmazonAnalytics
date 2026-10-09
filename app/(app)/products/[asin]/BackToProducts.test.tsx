@@ -4,7 +4,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 const back = vi.hoisted(() => vi.fn());
 vi.mock('next/navigation', () => ({ useRouter: () => ({ back }) }));
 
-import { BackToProducts, canGoBack, resolveProductBack, shouldRestoreViaBack } from './BackToProducts';
+import { BackToProducts, resolveProductBack, shouldRestoreViaBack } from './BackToProducts';
 
 const KW = '3f2a9c1e-5b7d-4e8a-9c3b-1a2b3c4d5e6f';
 const KEYWORD_PAGE = `/explorer/keyword/${KW}`;
@@ -71,20 +71,7 @@ describe('shouldRestoreViaBack', () => {
   });
 });
 
-describe('canGoBack', () => {
-  it("trusts the Navigation API's canGoBack when there is one, whatever history.length says", () => {
-    // New tab, same-tab hop to a keyword page, then the browser's Back: the first entry, one entry ahead.
-    expect(canGoBack({ navigation: { canGoBack: false }, history: { length: 2 } })).toBe(false);
-    expect(canGoBack({ navigation: { canGoBack: true }, history: { length: 1 } })).toBe(true);
-  });
-
-  it('without it, guesses from history.length', () => {
-    expect(canGoBack({ history: { length: 2 } })).toBe(true);
-    expect(canGoBack({ history: { length: 1 } })).toBe(false);
-    expect(canGoBack({ navigation: {}, history: { length: 2 } })).toBe(true);
-  });
-});
-
+// canGoBack itself is pinned in lib/nav/canGoBack.test.ts; the cases below check this component wires it in.
 describe('BackToProducts', () => {
   beforeEach(() => {
     back.mockReset();

@@ -15,6 +15,7 @@ import {
   fetchKeywordProducts,
   type EnrichedProduct,
 } from '@/lib/explorer/fetchKeywordDetail';
+import { ASIN_RE } from '@/lib/products/asin';
 
 export async function TopProductsSection({
   id,
@@ -185,11 +186,9 @@ function TopProductsTable({
   );
 }
 
-/** What the ASIN page's route accepts. The ASINs here come from raw CSV text, so check before linking. */
-const ASIN_RE = /^[A-Z0-9]{10}$/;
-
 /**
- * The admin-only ASIN page for a top product, or null when the ASIN isn't ASIN-shaped. `from` is
+ * The admin-only ASIN page for a top product, or null when the ASIN isn't ASIN-shaped (what the ASIN
+ * page's route accepts; the ASINs here come from raw CSV text, so check before linking). `from` is
  * this keyword's page, percent-encoded because it is itself a path, so the ASIN page can link back.
  */
 function productPageHref(asin: string, keywordId: string): string | null {
