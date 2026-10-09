@@ -1,7 +1,7 @@
 // lib/products/searchProducts.ts
 /**
  * Product search over the live catalog (spec 2026-10-09 §5). Pure statement builder + a loader
- * over a `(text, values) => rows` runner (the page wraps neon's `sql.query`; the tools reuse it).
+ * over a `(text, values) => rows` runner (the page wraps neon's client in `neonRunner`; the tools reuse it).
  * Every predicate rides on a partial index from migration 0051; the base predicate matches those
  * indexes' WHERE clause exactly.
  *
@@ -18,6 +18,7 @@
  *    candidate. The tie-breaker stays: without a total order, rows could repeat or skip across
  *    pages when updates move rows inside a tie. The page says so with SORT_KEY_LABEL.
  */
+import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, sortHidesNullKey, type NullableKeySort, type ProductFilters } from './filterParams';
 
 // The sort-key rule lives in ./filterParams (zod-free, for the page's client components); re-exported for existing imports.
@@ -25,6 +26,8 @@ export { SORT_KEY_LABEL, sortHidesNullKey, type NullableKeySort } from './filter
 
 /** Exact up to the pager's last reachable row (200 pages of 50), then "10,000+". */
 export const PRODUCT_COUNT_CAP = PRODUCT_MAX_PAGE * PRODUCT_PAGE_SIZE;
+/** Server-side cap, in milliseconds, on every product read that goes through `neonRunner`. */
+export const PRODUCT_READ_TIMEOUT_MS = 30_000;
 export interface SqlStatement { text: string; values: unknown[] }
 export type SqlRunner = (text: string, values: unknown[]) => Promise<unknown[]>;
 
@@ -104,12 +107,22 @@ export async function searchProducts(run: SqlRunner, f: ProductFilters): Promise
   };
 }
 
+/** The slice of a `neon()` client the runner uses: lazy positional-parameter queries and the batch transaction. */
+export type NeonRunnerSql = Pick<NeonQueryFunction<false, false>, 'query' | 'transaction'>;
+
 /**
- * The page's runner: neon's query form (positional parameters), one statement per call.
- * `@neondatabase/serverless` 1.x exposes `sql.query(text, params)` on the `neon()` client
- * (verified against the installed 1.0.2 typings); with the default `fullResults: false` it
- * resolves to the row array.
+ * The page's runner: neon's query form (positional parameters), one statement per call, run as its
+ * own HTTP transaction behind `SET LOCAL statement_timeout` so a slow read is cancelled server-side
+ * after PRODUCT_READ_TIMEOUT_MS. That matters most for `sort=keywords` on broad filters, which counts
+ * keywords for the whole catalog while holding a read lock on keyword_top_asins; an import's table
+ * swap waits on that lock (120 s, then the build fails soft and the reverse table stays a week
+ * behind). `@neondatabase/serverless` 1.x (checked against 1.0.2): `sql.query()` only builds a lazy
+ * query, and `sql.transaction([...])` submits the batch as one transaction and resolves to one row
+ * array per statement under the default options, so the query's rows are the last element.
  */
-export function neonRunner(sql: { query: (text: string, values?: unknown[]) => Promise<unknown> }): SqlRunner {
-  return async (text, values) => (await sql.query(text, values)) as unknown[];
+export function neonRunner(sql: NeonRunnerSql): SqlRunner {
+  return async (text, values) => {
+    const results = await sql.transaction([sql.query(`SET LOCAL statement_timeout = ${PRODUCT_READ_TIMEOUT_MS}`), sql.query(text, values)]);
+    return results[results.length - 1];
+  };
 }

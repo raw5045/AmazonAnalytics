@@ -6,7 +6,7 @@ import type { ProductSearchResult, SqlRunner } from '@/lib/products/searchProduc
 
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
 // The page builds its runner from neon(); the search is mocked, so no statement ever runs.
-const neonMock = vi.hoisted(() => ({ neon: vi.fn(), query: vi.fn() }));
+const neonMock = vi.hoisted(() => ({ neon: vi.fn(), query: vi.fn(), transaction: vi.fn() }));
 vi.mock('@neondatabase/serverless', () => ({ neon: neonMock.neon }));
 vi.mock('next/navigation', () => ({
   redirect: (url: string) => {
@@ -76,8 +76,9 @@ describe('ProductsPage (/products)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     auth.state = 'admin';
-    neonMock.neon.mockReturnValue({ query: neonMock.query });
+    neonMock.neon.mockReturnValue({ query: neonMock.query, transaction: neonMock.transaction });
     neonMock.query.mockResolvedValue([]);
+    neonMock.transaction.mockResolvedValue([[], []]);
     data.search.mockResolvedValue(RESULT);
     data.leaves.mockResolvedValue(['Home & Kitchen › Lighting › Desk Lamps']);
   });
@@ -112,6 +113,8 @@ describe('ProductsPage (/products)', () => {
     expect(neonMock.neon).toHaveBeenCalledWith('postgres://test');
     await runner('SELECT 1', []);
     expect(neonMock.query).toHaveBeenCalledWith('SELECT 1', []);
+    // One transaction per statement (the statement timeout itself is pinned in searchProducts.test.ts).
+    expect(neonMock.transaction).toHaveBeenCalledTimes(1);
     expect(data.leaves).toHaveBeenCalledTimes(1);
   });
 });

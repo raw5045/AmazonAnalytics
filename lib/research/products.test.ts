@@ -5,8 +5,11 @@ import { describe, it, expect, vi } from 'vitest';
 // mocked, so no test here can reach a database: the fake neon client answers every query with [].
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
 const neonMock = vi.hoisted(() => {
-  const query = vi.fn<(text: string, values?: unknown[]) => Promise<unknown[]>>(async () => []);
-  return { query, neon: vi.fn(() => ({ query })) };
+  // neonRunner submits each read as a transaction of lazy query handles: query() hands back its own
+  // statement, and transaction() answers every statement in the batch with no rows.
+  const query = vi.fn<(text: string, values?: unknown[]) => { text: string; values?: unknown[] }>((text, values) => ({ text, values }));
+  const transaction = vi.fn(async (statements: unknown[]) => statements.map(() => [] as unknown[]));
+  return { query, transaction, neon: vi.fn(() => ({ query, transaction })) };
 });
 vi.mock('@neondatabase/serverless', () => ({ neon: neonMock.neon }));
 
@@ -262,17 +265,21 @@ describe('defaultProductsDeps', () => {
   it('runs each loader through neon() on DATABASE_URL (mocked here), passing the ASIN and the keyword limit through', async () => {
     neonMock.neon.mockClear();
     neonMock.query.mockClear();
+    neonMock.transaction.mockClear();
+    // Every read goes out as its own transaction behind SET LOCAL statement_timeout; `reads` are the statements themselves.
+    const reads = () => neonMock.query.mock.calls.filter(([text]) => !text.startsWith('SET LOCAL'));
     const d = defaultProductsDeps();
     await expect(d.facts(ASIN)).resolves.toBeNull();
     expect(neonMock.neon).toHaveBeenCalledWith('postgres://test');
     await expect(d.history(ASIN)).resolves.toEqual([]);
     await expect(d.keywords(ASIN, PRODUCT_TOOL_KEYWORDS_CAP)).resolves.toEqual({ rows: [], total: 0 });
     expect(neonMock.query).toHaveBeenCalledWith(expect.any(String), [ASIN, PRODUCT_TOOL_KEYWORDS_CAP]);
-    const asinReads = neonMock.query.mock.calls.length;
+    const asinReads = reads().length;
     await expect(d.search({ ...PRODUCT_DEFAULTS })).resolves.toMatchObject({ rows: [], total: 0, totalIsCapped: false, page: 1, pageSize: PRODUCT_PAGE_SIZE });
     // facts, history and keywords bind the ASIN first; the search then runs exactly its two statements, rows before count.
-    for (const [, values] of neonMock.query.mock.calls.slice(0, asinReads)) expect(values?.[0]).toBe(ASIN);
+    for (const [, values] of reads().slice(0, asinReads)) expect(values?.[0]).toBe(ASIN);
     const search = productSearchSql({ ...PRODUCT_DEFAULTS });
-    expect(neonMock.query.mock.calls.slice(asinReads)).toStrictEqual([[search.rows.text, search.rows.values], [search.count.text, search.count.values]]);
+    expect(reads().slice(asinReads)).toStrictEqual([[search.rows.text, search.rows.values], [search.count.text, search.count.values]]);
+    expect(neonMock.transaction).toHaveBeenCalledTimes(reads().length);
   });
 });

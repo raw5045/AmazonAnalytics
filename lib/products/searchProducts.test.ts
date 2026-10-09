@@ -1,9 +1,9 @@
 // lib/products/searchProducts.test.ts
-import { describe, it, expect, expectTypeOf } from 'vitest';
-import type { NeonQueryFunction } from '@neondatabase/serverless';
+import { describe, it, expect } from 'vitest';
+import { neon, neonConfig } from '@neondatabase/serverless';
 import { asinProducts, keywordTopAsins } from '@/db/schema';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
-import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP } from './searchProducts';
+import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
 import { aliasCols, dbCols } from './testHelpers';
 
 type Sort = ProductFilters['sort'];
@@ -168,13 +168,68 @@ describe('searchProducts', () => {
 });
 
 describe('neonRunner', () => {
-  it('passes the text and positional values to sql.query and returns the rows', async () => {
-    const calls: Array<[string, unknown[] | undefined]> = [];
-    const run = neonRunner({ query: async (text, values) => { calls.push([text, values]); return [{ n: 1 }]; } });
-    await expect(run('SELECT $1::int AS n', [1])).resolves.toEqual([{ n: 1 }]);
-    expect(calls).toEqual([['SELECT $1::int AS n', [1]]]);
+  type Recorded = { text: string; values?: unknown[] };
+  /** A neon stand-in: `query` returns a lazy handle (here just the statement); `transaction` records the batch it is given. */
+  const fakeNeon = (respond: (statements: Recorded[]) => unknown[]) => {
+    const transactions: Recorded[][] = [];
+    const sql = {
+      query: (text: string, values?: unknown[]): Recorded => ({ text, values }),
+      transaction: async (statements: Recorded[]) => { transactions.push(statements); return respond(statements); },
+    };
+    return { sql: sql as never, transactions };
+  };
+
+  it('runs each statement in one transaction behind SET LOCAL statement_timeout and returns the last result set', async () => {
+    const { sql, transactions } = fakeNeon(() => [[], [{ n: 1 }]]);
+    await expect(neonRunner(sql)('SELECT $1::int AS n', [1])).resolves.toEqual([{ n: 1 }]);
+    expect(PRODUCT_READ_TIMEOUT_MS).toBe(30_000);
+    expect(transactions).toEqual([[{ text: 'SET LOCAL statement_timeout = 30000' }, { text: 'SELECT $1::int AS n', values: [1] }]]);
   });
-  it('accepts the real neon client (@neondatabase/serverless 1.x exposes sql.query(text, params))', () => {
-    expectTypeOf<NeonQueryFunction<false, false>>().toExtend<Parameters<typeof neonRunner>[0]>();
+  it("caps both of a search's statements, each in its own transaction", async () => {
+    const { sql, transactions } = fakeNeon((statements) => [[], isCountStatement(statements[1].text) ? [{ n: 3 }] : [{ asin: 'B000000001', keyword_count: 7 }]]);
+    const r = await searchProducts(neonRunner(sql), PRODUCT_DEFAULTS);
+    expect(r.total).toBe(3);
+    expect(r.rows).toHaveLength(1);
+    expect(r.rows[0]).toMatchObject({ asin: 'B000000001', keywordCount: 7 });
+    expect(transactions).toHaveLength(2);
+    for (const statements of transactions) {
+      expect(statements).toHaveLength(2);
+      expect(statements[0].text).toBe(`SET LOCAL statement_timeout = ${PRODUCT_READ_TIMEOUT_MS}`);
+    }
+  });
+  it('lets a timeout (a rejected transaction) reach the caller', async () => {
+    const { sql } = fakeNeon(() => { throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }); });
+    await expect(neonRunner(sql)('SELECT 1', [])).rejects.toMatchObject({ code: '57014' });
+  });
+  it('works with the real neon client: one batched request carries SET LOCAL then the query, and the rows come back last', async () => {
+    // The real driver, with its fetch replaced (and a host that can never resolve): nothing reaches a network or a database.
+    type Batch = { queries: Array<{ query: string; params: unknown[] }> };
+    const requests: Array<{ url: string; batch: Batch }> = [];
+    const original = neonConfig.fetchFunction;
+    neonConfig.fetchFunction = async (url: string, init: { body: string }) => {
+      requests.push({ url, batch: JSON.parse(init.body) as Batch });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [
+            { command: 'SET', rowCount: null, rows: [], fields: [], rowAsArray: true },
+            { command: 'SELECT', rowCount: 1, rows: [['1']], fields: [{ name: 'n', dataTypeID: 23 }], rowAsArray: true },
+          ],
+        }),
+      };
+    };
+    try {
+      const run = neonRunner(neon('postgresql://user:pw@db.invalid/app', { disableWarningInBrowsers: true }));
+      await expect(run('SELECT $1::int AS n', [1])).resolves.toEqual([{ n: 1 }]);
+    } finally {
+      neonConfig.fetchFunction = original;
+    }
+    expect(requests).toHaveLength(1);
+    expect(requests[0].url).toMatch(/^https:\/\/[^/]+\.invalid\/sql$/);
+    expect(requests[0].batch.queries).toEqual([
+      { query: `SET LOCAL statement_timeout = ${PRODUCT_READ_TIMEOUT_MS}`, params: [] },
+      { query: 'SELECT $1::int AS n', params: ['1'] },
+    ]);
   });
 });
