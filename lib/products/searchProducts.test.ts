@@ -88,7 +88,7 @@ describe('productSearchSql', () => {
     expect(q.rows.text).not.toContain('category_path =');
     expect(q.rows.values).toEqual([50, 0]);
   });
-  it('broadCategory is a semi-join on the pair table: EXISTS over keyword_top_asins by ASIN and code, through keyword_top_asins_broad_category_idx (spec 2026-10-12 broad category §5)', () => {
+  it('broadCategory is a semi-join on the pair table: EXISTS over keyword_top_asins by ASIN and code, the semi-join keyword_top_asins_broad_category_idx is built for (spec 2026-10-12 broad category §5)', () => {
     const q = productSearchSql({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' }, EMPTY_CATEGORY_SCOPE);
     expect(q.rows.text).toContain('EXISTS (SELECT 1 FROM keyword_top_asins k WHERE k.asin = a.asin AND k.broad_category = $1::text) AND a.monthly_sold IS NOT NULL');
     expect(q.rows.values).toEqual(['Home', 50, 0]);
@@ -106,6 +106,7 @@ describe('productSearchSql', () => {
   });
   it('no predicate and no bind for a null broad category', () => {
     expect(productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE).rows.text).not.toContain('broad_category');
+    expect(productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE).rows.values).toEqual([50, 0]);
   });
   it('a scoped selection with no paths matches nothing, in the rows and the count', () => {
     const q = productSearchSql(PRODUCT_DEFAULTS, { ...EMPTY_CATEGORY_SCOPE, scoped: true });
@@ -122,7 +123,7 @@ describe('productSearchSql', () => {
   });
   it.each(SORT_DIR_PAIRS)('%s %s: the rows and count WHEREs match, and the tie-break follows the direction', (sort, dir) => {
     const D = dir.toUpperCase();
-    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 100, reviewsMax: 300, priceMaxCents: 5000, ratioMax: 80, fba: 'yes', amazon: 'no', sort, dir, page: 2 }, { ...EMPTY_CATEGORY_SCOPE, dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true });
+    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 100, reviewsMax: 300, priceMaxCents: 5000, ratioMax: 80, broadCategory: 'Home', fba: 'yes', amazon: 'no', sort, dir, page: 2 }, { ...EMPTY_CATEGORY_SCOPE, dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true });
     const rowsWhere = whereText(q.rows.text, ' ORDER BY ');
     const countWhere = whereText(q.count.text, ' LIMIT ');
     // The total counts exactly what the pager can reach: the same predicate, the same bound values.
@@ -160,7 +161,7 @@ describe('productSearchSql', () => {
   });
   it.each(PRODUCT_SORTS)('%s: names only real columns', (sort) => {
     const scope: ProductCategoryScope = { dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true };
-    const t = productSearchSql({ ...PRODUCT_DEFAULTS, sort, age: 60, fba: 'yes', amazon: 'yes', ratioMax: 50 }, scope).rows.text;
+    const t = productSearchSql({ ...PRODUCT_DEFAULTS, sort, age: 60, fba: 'yes', amazon: 'yes', ratioMax: 50, broadCategory: 'Home' }, scope).rows.text;
     const a = aliasCols(t, 'a');
     expect([...a].filter((c) => !dbCols(asinProducts).has(c))).toEqual([]);
     expect([...aliasCols(t, 'k')].filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
