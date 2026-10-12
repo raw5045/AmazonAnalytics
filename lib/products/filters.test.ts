@@ -99,6 +99,13 @@ describe('parseProductFilters', () => {
     const input = Array.from({ length: 2001 }, (_, i) => `p${i}`);
     expect(parseProductFilters({ leaf: input }).leafPaths).toEqual(input.slice(0, 2000));
   });
+  it('drops repeated leaf paths (compared after trimming), before the cap', () => {
+    expect(parseProductFilters({ leaf: ['A › B', 'A › B', 'A › C'] }).leafPaths).toEqual(['A › B', 'A › C']);
+    expect(parseProductFilters({ leaf: [' A › B', 'A › B '] }).leafPaths).toEqual(['A › B']);
+    // A repeat ahead of 2,000 distinct paths still leaves all 2,000: the cap counts distinct paths.
+    const distinct = Array.from({ length: 2000 }, (_, i) => `p${i}`);
+    expect(parseProductFilters({ leaf: ['p0', ...distinct] }).leafPaths).toEqual(distinct);
+  });
   it('custom keeps well-formed uuids only, lower-cased and deduplicated, at most 50', () => {
     // The last entry is ID1 one hex digit short.
     expect(parseProductFilters({ custom: `${ID1},nope,${ID1.toUpperCase()},${ID1.slice(0, -1)},` }).customCategoryIds).toEqual([ID1]);

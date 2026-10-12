@@ -62,6 +62,7 @@ describe('ProductFilterPanel controls', () => {
     expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS]);
     expect(screen.getByRole('button', { name: 'Leaf' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(screen.getByRole('group', { name: 'Leaf categories' })).getByLabelText('Add leaf category')).toBeInTheDocument();
     expect(screen.getByText(/3 categories — type to search/)).toBeInTheDocument();
     expect(control('Add leaf category')).toHaveValue('');
     expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
@@ -279,6 +280,98 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
     expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(2);
     expect(applyButton()).toBeDisabled();
   });
+
+  it('Custom mode with no box checked applies neither leaf picks nor custom ids', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies', leafPaths: [LEAVES[0]] });
+    fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
+    expect(applyButton()).toBeEnabled();
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith('/products?dept=Pet+Supplies', { scroll: false });
+  });
+
+  it('unchecking a box drops that custom id and keeps the others', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id, CUSTOM[1].id] });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Lamps (2)' }));
+    expect(screen.getByRole('checkbox', { name: 'Lamps (2)' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Puzzles & lamps (2)' })).toBeChecked();
+    expect(screen.getByText('1 selected → 2 leaves')).toBeInTheDocument();
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith(`/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[1].id] })}`, { scroll: false });
+  });
+
+  it('Leaf → Custom → Leaf without Apply keeps the chips and is no change', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, leafPaths: [LEAVES[0], LEAVES[2]] });
+    fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
+    expect(applyButton()).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Leaf' }));
+    expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(2);
+    expect(applyButton()).toBeDisabled();
+  });
+
+  it('Reset from Custom mode returns to Leaf mode', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id] });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(screen.getByRole('button', { name: 'Leaf' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('the dirty check ignores the order of the custom ids: unchecking and re-checking a box is no change', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id, CUSTOM[1].id] });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Lamps (2)' }));
+    expect(applyButton()).toBeEnabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Lamps (2)' }));
+    expect(applyButton()).toBeDisabled();
+  });
+
+  it('the dirty check ignores the order of the leaf picks, while Apply keeps the order they were picked in', () => {
+    const applied: ProductFilters = { ...PRODUCT_DEFAULTS, leafPaths: [LEAVES[0], LEAVES[1]] };
+    renderPanel(applied);
+    fireEvent.click(screen.getByRole('button', { name: `Remove ${LEAVES[0]}` }));
+    expect(applyButton()).toBeEnabled();
+    pickCategory('Desk Lamps');
+    expect(applyButton()).toBeDisabled();
+    change('Listing age', '90');
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith(`/products?${productFiltersToSearchParams({ ...applied, age: 90, leafPaths: [LEAVES[1], LEAVES[0]] })}`, { scroll: false });
+  });
+});
+
+describe('ProductFilterPanel custom ids with no custom category behind them', () => {
+  beforeEach(() => replace.mockClear());
+  /** Not one of CUSTOM's ids: deleted since, or never this user's. */
+  const MISSING = ['33333333-3333-4333-8333-000000000003', '44444444-4444-4444-8444-000000000004'];
+
+  it('are called out under the list, and Clear drops them, so Apply would too', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [MISSING[0]] });
+    expect(screen.getByText('1 selected custom category no longer exists and matches nothing.')).toBeInTheDocument();
+    expect(applyButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear missing custom categories' }));
+    expect(screen.queryByText(/no longer exist/)).not.toBeInTheDocument();
+    expect(applyButton()).toBeEnabled();
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith('/products', { scroll: false });
+  });
+
+  it('are called out under the empty state too, when the account has no custom categories at all', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [MISSING[0]] }, []);
+    expect(screen.getByText(/No custom categories yet — build one in the Category Builder tab/)).toBeInTheDocument();
+    expect(screen.getByText('1 selected custom category no longer exists and matches nothing.')).toBeInTheDocument();
+    expect(applyButton()).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear missing custom categories' }));
+    expect(screen.queryByText(/no longer exist/)).not.toBeInTheDocument();
+    expect(screen.getByText(/No custom categories yet/)).toBeInTheDocument();
+    expect(applyButton()).toBeEnabled();
+  });
+
+  it('are counted in the plural, and Clear keeps the selected ones that still exist', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id, ...MISSING] });
+    expect(screen.getByText('2 selected custom categories no longer exist and match nothing.')).toBeInTheDocument();
+    expect(screen.getByText('1 selected → 2 leaves')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear missing custom categories' }));
+    expect(screen.getByRole('checkbox', { name: 'Lamps (2)' })).toBeChecked();
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith(`/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id] })}`, { scroll: false });
+  });
 });
 
 describe('sort hint (sorts that hide products without the sort key)', () => {
@@ -318,7 +411,9 @@ describe('filtersToPending / pendingToFilters', () => {
     const hybrid = { ...PRODUCT_DEFAULTS, leafPaths: [LEAVES[0]], customCategoryIds: [CUSTOM[0].id] };
     expect(pendingToFilters(filtersToPending(hybrid))).toEqual({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id] });
     expect(pendingToFilters({ ...filtersToPending(hybrid), leafMode: 'leaf' })).toEqual({ ...PRODUCT_DEFAULTS, leafPaths: [LEAVES[0]] });
-    expect(pendingToFilters({ ...filtersToPending(PRODUCT_DEFAULTS), dept: '' }).dept).toBeNull();
+    const tools = filtersToPending({ ...PRODUCT_DEFAULTS, dept: 'Tools' });
+    expect(pendingToFilters(tools).dept).toBe('Tools');
+    expect(pendingToFilters({ ...tools, dept: '' }).dept).toBeNull();
   });
 
   // PRODUCT_DEFAULTS' arrays are shared (Object.freeze is shallow); the pending state must never alias them.

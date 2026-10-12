@@ -62,6 +62,13 @@ function ratioLabel(ratioMax: number): string {
   return `At most ${ratioMax - 100}% worse`;
 }
 
+/** The Custom side's note for selected ids with no custom category behind them (deleted since, or never this user's). */
+function missingCustomText(n: number): string {
+  return n === 1
+    ? '1 selected custom category no longer exists and matches nothing.'
+    : `${n} selected custom categories no longer exist and match nothing.`;
+}
+
 /** The panel's editable state: inputs as typed (stars, dollars), selects as their option values ('' = Any). */
 export interface PendingProductFilters {
   age: string;
@@ -130,9 +137,11 @@ function toScaled(s: string, factor: number): number | null {
 }
 
 /**
- * The ProductFilters the pending state stands for, on page 1. It converts and validates nothing:
- * the URL it becomes goes through parseProductFilters on the server, where a value outside a
- * field's bounds falls back to that field's default and every other filter is kept.
+ * The ProductFilters the pending state stands for, on page 1. Of the two category selections it
+ * applies only the active mode's (Leaf: the picks; Custom: the custom ids) and clears the other.
+ * It converts and validates nothing: the URL it becomes goes through parseProductFilters on the
+ * server, where a value outside a field's bounds falls back to that field's default and every
+ * other filter is kept.
  */
 export function pendingToFilters(p: PendingProductFilters): ProductFilters {
   return {
@@ -163,11 +172,23 @@ function withCurrent(presets: readonly number[], current: string, order: (a: num
   return n === null || presets.includes(n) ? [...presets] : [...presets, n].sort(order);
 }
 
+/**
+ * The query the dirty check compares: page 1, with the leaf picks and custom ids sorted, so a pick
+ * removed and re-added (it comes back last) or a box unchecked and re-checked is no change. Apply
+ * still navigates with the order the user built.
+ */
+function canonicalQuery(f: ProductFilters): string {
+  return productFiltersToSearchParams({ ...f, page: 1, leafPaths: [...f.leafPaths].sort(), customCategoryIds: [...f.customCategoryIds].sort() }).toString();
+}
+
 /** Same look as the explorer sidebar's .filter-input; red while the browser reads the value as invalid. */
 const INPUT =
   'w-full min-w-0 rounded-lg border border-slate-300 bg-white px-[9px] py-[5px] text-[13px] focus:outline-2 focus:-outline-offset-1 focus:outline-blue-500 invalid:border-rose-400';
 const LABEL = 'mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500';
 const HINT = 'mt-1 text-xs text-gray-500';
+/** The Leaf | Custom toggle's halves; the focus outline sits inside, since the toggle's rounded wrapper clips anything outside. */
+const MODE_BUTTON = 'flex-1 px-2 py-1 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-blue-500';
+const modeClass = (on: boolean): string => `${MODE_BUTTON} ${on ? 'bg-[#0B1E3A] text-white' : 'bg-white text-gray-700 hover:bg-slate-50'}`;
 
 /** One of the user's custom categories, as the panel's Custom list shows it. */
 export interface PanelCustomCategory { id: string; name: string; leafPaths: string[] }
@@ -200,10 +221,11 @@ export function ProductFilterPanel({
     setPending((p) => ({ ...p, [key]: value }));
   };
 
-  // Dirty = the URL Apply would produce differs from the applied one (so "4" vs "4.0" is no change).
-  const appliedQuery = productFiltersToSearchParams({ ...filters, page: 1 }).toString();
-  const nextQuery = productFiltersToSearchParams(pendingToFilters(pending)).toString();
-  const dirty = nextQuery !== appliedQuery;
+  // Dirty = the URL Apply would produce differs from the applied one, ignoring the order of the leaf
+  // picks and custom ids (so "4" vs "4.0", or a pick removed and re-added, is no change).
+  const nextFilters = pendingToFilters(pending);
+  const nextQuery = productFiltersToSearchParams(nextFilters).toString();
+  const dirty = canonicalQuery(nextFilters) !== canonicalQuery(filters);
 
   const apply = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -229,8 +251,24 @@ export function ProductFilterPanel({
     set('customCategoryIds', pending.customCategoryIds.includes(id) ? pending.customCategoryIds.filter((x) => x !== id) : [...pending.customCategoryIds, id]);
   const selectedCustom = customCategories.filter((c) => pending.customCategoryIds.includes(c.id));
   const uniqueLeaves = new Set(selectedCustom.flatMap((c) => c.leafPaths)).size;
-  const MODE_BUTTON = 'flex-1 px-2 py-1';
-  const modeClass = (on: boolean) => `${MODE_BUTTON} ${on ? 'bg-[#0B1E3A] text-white' : 'bg-white text-gray-700 hover:bg-slate-50'}`;
+  // Selected ids with no custom category behind them (deleted since, or not this user's) match
+  // nothing and have no box to untick, so the Custom side names them and offers to drop them.
+  const isKnownCustom = (id: string) => customCategories.some((c) => c.id === id);
+  const unknownCustomIds = pending.customCategoryIds.filter((id) => !isKnownCustom(id));
+  const missingCustomNote =
+    unknownCustomIds.length > 0 ? (
+      <p className={HINT}>
+        {missingCustomText(unknownCustomIds.length)}{' '}
+        <button
+          type="button"
+          aria-label="Clear missing custom categories"
+          onClick={() => set('customCategoryIds', pending.customCategoryIds.filter(isKnownCustom))}
+          className="text-gray-600 underline hover:text-gray-900"
+        >
+          Clear
+        </button>
+      </p>
+    ) : null;
 
   return (
     <>
@@ -403,7 +441,7 @@ export function ProductFilterPanel({
               </select>
             </Field>
 
-            <Field label="Leaf categories">
+            <Field label="Leaf categories" groupId="pf-leaf-categories">
               {/* Leaf | Custom segmented toggle, as the explorer sidebar's. */}
               <div className="mb-2 flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium">
                 <button type="button" aria-pressed={pending.leafMode === 'leaf'} onClick={() => set('leafMode', 'leaf')} className={modeClass(pending.leafMode === 'leaf')}>
@@ -427,7 +465,10 @@ export function ProductFilterPanel({
                   </p>
                 </>
               ) : customCategories.length === 0 ? (
-                <p className={HINT}>No custom categories yet — build one in the Category Builder tab.</p>
+                <>
+                  <p className={HINT}>No custom categories yet — build one in the Category Builder tab.</p>
+                  {missingCustomNote}
+                </>
               ) : (
                 <>
                   <div className="space-y-1">
@@ -445,6 +486,7 @@ export function ProductFilterPanel({
                       {selectedCustom.length} selected → {uniqueLeaves} leaves
                     </p>
                   )}
+                  {missingCustomNote}
                 </>
               )}
             </Field>
@@ -490,15 +532,21 @@ export function ProductFilterPanel({
   );
 }
 
-function Field({ label, htmlFor, children }: { label: string; htmlFor?: string; children: ReactNode }) {
+/**
+ * One heading over its controls. With htmlFor the heading is the control's <label>; with groupId
+ * (several controls under one heading) it names a role="group" around them, as RangeField's does.
+ */
+function Field({ label, htmlFor, groupId, children }: { label: string; htmlFor?: string; groupId?: string; children: ReactNode }) {
   return (
-    <div>
+    <div role={groupId ? 'group' : undefined} aria-labelledby={groupId}>
       {htmlFor ? (
         <label htmlFor={htmlFor} className={LABEL}>
           {label}
         </label>
       ) : (
-        <p className={LABEL}>{label}</p>
+        <p id={groupId} className={LABEL}>
+          {label}
+        </p>
       )}
       {children}
     </div>

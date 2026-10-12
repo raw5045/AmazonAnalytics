@@ -63,8 +63,12 @@ const many = (v: string | string[] | undefined): string[] => (v === undefined ? 
 const CONTROL_CHARS = /[\u0000-\u001f]/;
 /** A trimmed category value worth keeping: non-empty, at most MAX_CATEGORY_PATH_LENGTH, no control characters. */
 const usablePath = (s: string): boolean => s.length > 0 && s.length <= MAX_CATEGORY_PATH_LENGTH && !CONTROL_CHARS.test(s);
-/** Repeated `leaf` values: trimmed, each a usablePath, the first PRODUCT_MAX_LEAF_PATHS. */
-const leafPaths = (v: string | string[] | undefined): string[] => many(v).map((s) => s.trim()).filter(usablePath).slice(0, PRODUCT_MAX_LEAF_PATHS);
+/**
+ * Repeated `leaf` values: trimmed, each a usablePath, deduplicated (the typeahead keys its chips by
+ * path), then the first PRODUCT_MAX_LEAF_PATHS.
+ */
+const leafPaths = (v: string | string[] | undefined): string[] =>
+  [...new Set(many(v).map((s) => s.trim()).filter(usablePath))].slice(0, PRODUCT_MAX_LEAF_PATHS);
 /** One `dept` value, kept only when its trimmed form is a usablePath (the schema then trims and bounds it); else null. */
 const department = (v: string | undefined): string | null => (v !== undefined && usablePath(v.trim()) ? v : null);
 const uuid = z.uuid();
