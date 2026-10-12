@@ -39,7 +39,7 @@ CREATE INDEX IF NOT EXISTS keyword_top_asins_broad_category_idx ON keyword_top_a
   WHERE broad_category IS NOT NULL;
 ```
 
-The apply script runs the index statement as `CREATE INDEX CONCURRENTLY` outside the transaction (as 0051's six did) and asserts `indisvalid`; on the live table every row is still null, so the index is empty and the statement is a scan of the heap, seconds. The `_prev` ALTER keeps the two tables shaped alike (the backfill rebuilds `_prev` with `SELECT *`). Drizzle mirror: `db/schema/keywordTopAsins.ts` gains `broadCategory: varchar('broad_category', { length: 255 })` and the partial index; `keywordTopAsins.test.ts` pins the nine columns and the 0052 statements.
+The apply script runs the index statement as `CREATE INDEX CONCURRENTLY` outside the transaction (as 0051's six did) and asserts `indisvalid` and the index definition, both scoped to the live table; on the live table every row is still null, so the index is empty, but CONCURRENTLY scans the heap twice and waits for every older transaction in the database: a minute or two on a cold compute, with no import active. It also asserts the column's shape (varchar(255), nullable) and refuses a re-run after a build that moved the canonical index name (`index_drifted`): the swap converges the names on its own, and a rebuild would only add a duplicate index. The `_prev` ALTER keeps the two tables shaped alike (the backfill rebuilds `_prev` with `SELECT *`). Drizzle mirror: `db/schema/keywordTopAsins.ts` gains `broadCategory: varchar('broad_category', { length: 255 })` and the partial index; `keywordTopAsins.test.ts` pins the nine columns and the 0052 statements.
 
 ## 4. The build carries the code
 
@@ -66,7 +66,7 @@ EXISTS (SELECT 1 FROM keyword_top_asins k WHERE k.asin = a.asin AND k.broad_cate
 
 Postgres treats it as a semi-join and picks, per code, a nested loop over the sort-key index with one probe of `keyword_top_asins_broad_category_idx` per candidate (large codes: `Home` finds 51 matches within the first few hundred best-sellers) or the code's ASIN set first (tiny codes), both through the partial index (`= $n` implies `IS NOT NULL`). Department, Keepa categories and the broad category combine with AND. The `keywords` sort and the result count are unaffected beyond the extra predicate. The file's header lists the new index with the others.
 
-`ProductFilters` (`lib/products/filterParams.ts`) gains `broadCategory: string | null` (default null); `PRODUCT_MAX_BROAD_CATEGORY_LENGTH = 255` (the column's width); URL key `broad`, parsed like `dept` (trimmed, `usablePath`, bounded) and serialised when set. Every full-literal `ProductFilters` site gains the field (the arc-8 lesson): `toProductFilters` in `lib/research/contracts.ts`, `pendingToFilters` in the panel, the fixtures in `filters.test.ts` and `searchProducts.test.ts`, and any other found by `grep -rn "customCategoryIds: \[\]"`.
+`ProductFilters` (`lib/products/filterParams.ts`) gains `broadCategory: string | null` (default null); `PRODUCT_MAX_BROAD_CATEGORY_LENGTH = 255` (the column's width); URL key `broad`, parsed like `dept` (trimmed, its own `usableCode` check — no control characters, at most 255 — and the schema's bound) and serialised when set. Every full-literal `ProductFilters` site gains the field (the arc-8 lesson): `toProductFilters` in `lib/research/contracts.ts`, `pendingToFilters` in the panel, the fixtures in `filters.test.ts` and `searchProducts.test.ts`, and any other found by `grep -rn "customCategoryIds: \[\]"`.
 
 ## 6. The list of codes
 
@@ -126,7 +126,7 @@ Integration (owner-gated, `RUN_INTEGRATION=1`, run with `--disableConsoleInterce
 
 1. `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts` (quiet), then `APPLY_0052=yes node --env-file=.env.local --import tsx scripts/applyMigration0052.ts` — expect the ALTERs, "index valid", seconds.
 2. One-off fill with the new local code (§4): `TOP_ASINS_WEEK=<meta week> … scripts/buildTopAsinsWeek.ts` — expect `rows=8.3M previous=<meta week> carried=prev`, 1–2 min.
-3. `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts tests/integration/productsQueries.test.ts --disableConsoleIntercept` — plans name the partial index.
+3. `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept` first and ALONE (its timings must be cold; the build test's carry sorts the whole live pair table), then `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts --disableConsoleIntercept` — plans name the partial index; every broad search under the page's 30 s cap.
 4. `checkActiveJobs`, then a bare `git push origin main` as its own call; watch the three deploys (`gh api … /status`; an empty commit if Vercel creates none).
 5. If an import landed between steps 1 and 4 and its rows carry no codes, run step 2 for the meta week again.
 6. Smoke, page: `Home`; `Home` + a department; a broad code + a leaf pick; an old link with a bogus code shows it in the select and zero rows; an ASIN page shows its codes. Tools: a `broadCategory` search; a typo returns the codes; `get_product_details` shows `broadCategories`.
