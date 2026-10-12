@@ -1406,6 +1406,6 @@ Every task's commit, two reviews and a nits round are recorded in the session's 
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
 | Push + deploys | | | |
-| Integration test | | | |
+| Integration test | 2026-10-12 | OK: 12/12 in 13 s (read-only, before the push) | department-only (smallest, 'Alexa Skills'), leaf subtree and the smallest custom category (1 path) all plan as BitmapOr / Bitmap Index Scan on asin_products_category_path_idx; the largest custom category (1,355 paths) planned on the monthly_sold sort index instead and ran in 0.26 s with 10,000+ matches (both plans correct); option lists 34 departments / 23,025 paths; largest per-department cache entry = Books, 3,997 paths ≈ 339k chars (limit 2 MB; Clothing 1,912 paths ≈ 165k); the per-department loader statement for Books plans as a bitmap scan on the path index; the arc-7 cases (default view, owner search 0.46 s / 3,823 matches, loaders, stub) still pass |
 | Page smoke | | | |
 | Tools smoke | | | |
