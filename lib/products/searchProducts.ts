@@ -150,7 +150,7 @@ export type NeonRunnerSql = Pick<NeonQueryFunction<false, false>, 'query' | 'tra
 /**
  * The page's runner: neon's query form (positional parameters), one statement per call, run as its
  * own HTTP transaction behind `SET LOCAL statement_timeout` so a slow read is cancelled server-side
- * after PRODUCT_READ_TIMEOUT_MS. That matters most for `sort=keywords` on broad filters, which counts
+ * after PRODUCT_READ_TIMEOUT_MS. That matters most for `sort=keywords` on wide filters, which counts
  * keywords for the whole catalog while holding a read lock on keyword_top_asins; an import's table
  * swap waits on that lock (120 s, then the build fails soft and the reverse table stays a week
  * behind). `@neondatabase/serverless` 1.x (checked against 1.0.2): `sql.query()` only builds a lazy

@@ -137,7 +137,7 @@ const NEVER_FETCHED: ProductFacts = {
   broadCategories: [],
 };
 
-/** An ASIN only the keyword side knows (the catalog has no row for it, e.g. an excluded category): no facts at all. */
+/** An ASIN only the keyword side knows (the catalog has no row for it, e.g. an excluded category): no catalog facts at all (the keyword side's title and codes can still be set). */
 const UNTRACKED: ProductFacts = {
   asin: 'B000000003', title: null, brand: null, imageUrl: null, categoryPath: null, listedSince: null, trackingSince: null,
   currentPriceCents: null, avg30PriceCents: null, avg90PriceCents: null, avg180PriceCents: null, avg365PriceCents: null,
@@ -190,7 +190,7 @@ describe('loadProduct', () => {
   it('reads a never-fetched catalog row: in the catalog, fetched false, no facts, the title from the keyword side', async () => {
     const { run, calls } = fakeRun({ facts: [NEVER_FETCHED_RAW], fallback: [{ title: 'Keyword Side Title' }] });
     await expect(loadProduct(run, 'B000000002')).resolves.toEqual({ ...NEVER_FETCHED, title: 'Keyword Side Title' });
-    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT, FALLBACK_TEXT]); // a catalog row is never checked against the reverse table
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT, FALLBACK_TEXT]); // a catalog row never needs the tracked probe (the codes read still queries the reverse table)
     expect(calls.map((c) => c.values)).toEqual([['B000000002'], ['B000000002'], ['B000000002']]);
   });
 

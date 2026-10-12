@@ -64,8 +64,10 @@
  *    custom-category cases: when there is none they are skipped ("no custom category to test with");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
  *
- * Run (owner's go, Git Bash):
- *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts tests/integration/productsQueries.test.ts
+ * Run (owner's go, Git Bash), the products file first and alone (its timings must be cold: the build
+ * test's carry sorts the whole live pair table and would warm it), then the build test:
+ *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept
+ *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts --disableConsoleIntercept
  */
 import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
