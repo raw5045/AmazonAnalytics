@@ -238,7 +238,7 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
   });
   it('with no codes on the pair table yet, says so instead of listing none', async () => {
     const err = await notAvailable(makeDeps({ broadCategories: vi.fn(async () => []) }), { filters: { broadCategory: 'Home' } });
-    expect(err.message).toBe('No broad categories are available yet (the weekly keyword-to-product table is empty).');
+    expect(err.message).toBe('No broad categories are available yet: this week\'s keyword-to-product table carries no codes.');
     expect(err.details).toEqual([{ path: 'filters.broadCategory', message: 'unknown broad category' }]);
   });
   it('a blank broad category is INVALID_FILTERS, before reserving', async () => {

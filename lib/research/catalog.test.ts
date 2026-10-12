@@ -298,6 +298,7 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(rules).toContain("filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory and a keyword row's broadCategory carry it");
     expect(rules).toContain("the product's own code on that row, which can differ from the keyword's broadCategory");
     expect(rules).toContain('get_product_details returns the product\'s codes as broadCategories');
+    expect(rules).toContain("(get_product_details lists the product's keywords and its codes)");
     expect(rules).toContain('filters.categories is the object search_keywords takes');
     expect(rules).toContain('matches the path and everything under it whatever includeDescendants says');
     expect(rules).toContain('a custom selection matches the paths that custom category stores, exactly');

@@ -23,7 +23,7 @@ import {
 } from './contracts';
 import { ResearchError } from './errors';
 import {
-  MAX_CATEGORY_PATH_LENGTH, PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, productFiltersSchema,
+  MAX_CATEGORY_PATH_LENGTH, PRODUCT_DEFAULTS, PRODUCT_MAX_BROAD_CATEGORY_LENGTH, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, productFiltersSchema,
 } from '@/lib/products/filters';
 
 const base = { schemaVersion: 1 as const };
@@ -459,7 +459,7 @@ describe('productSearchInputSchema (the search_products input)', () => {
       { ratingMin: -0.1 }, { ratingMax: 5.1 }, { ratingMin: 4.55 }, { priceMin: -1 }, { priceMax: 9.999 }, { priceMax: PRODUCT_PRICE_DOLLARS_MAX + 0.01 },
       { bsrMin: 0 }, { bsrMax: INT4_MAX + 1 }, { bsrRatioMax: 0 }, { bsrRatioMax: 1001 }, { bsrRatioMax: 70.5 },
       { department: '' }, { department: '   ' }, { department: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH + 1) }, { department: null }, { fba: 'maybe' }, { amazonSelling: true },
-      { broadCategory: '' }, { broadCategory: '   ' }, { broadCategory: 'x'.repeat(256) }, { broadCategory: null },
+      { broadCategory: '' }, { broadCategory: '   ' }, { broadCategory: 'x'.repeat(PRODUCT_MAX_BROAD_CATEGORY_LENGTH + 1) }, { broadCategory: null },
     ];
     for (const filters of badFilters) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(false);
     for (const input of [{ sort: 'title' }, { dir: 'up' }, { page: 0 }, { page: PRODUCT_MAX_PAGE + 1 }, { page: 1.5 }, { filters: null }]) {
@@ -471,7 +471,7 @@ describe('productSearchInputSchema (the search_products input)', () => {
     const atBounds: Array<Record<string, unknown>> = [
       { listedWithinDays: 60 }, { listedWithinDays: 365 }, { monthlySoldMin: 1 }, { reviewsMax: 0 }, { ratingMin: 0, ratingMax: 5 }, { priceMin: 0 },
       { priceMax: PRODUCT_PRICE_DOLLARS_MAX }, { bsrMin: 1, bsrMax: INT4_MAX }, { bsrRatioMax: 1 }, { bsrRatioMax: 1000 }, { department: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH) },
-      { broadCategory: 'x'.repeat(255) },
+      { broadCategory: 'x'.repeat(PRODUCT_MAX_BROAD_CATEGORY_LENGTH) },
     ];
     for (const filters of atBounds) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(true);
     for (const sort of PRODUCT_SORTS) expect(productSearchInputSchema.safeParse({ sort }).success, sort).toBe(true);

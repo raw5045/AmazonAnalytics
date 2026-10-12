@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { MAX_EXCLUDE_TERM_LENGTH, MAX_EXCLUDE_TERMS, MIN_EXCLUDE_TERM_LENGTH } from '@/lib/explorer/parseFilters';
 import { ASIN_RE } from '@/lib/products/asin';
 import {
-  MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters,
+  MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_BROAD_CATEGORY_LENGTH, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters,
 } from '@/lib/products/filters';
 import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import type { HistoryPoint as SnapshotHistoryPoint } from '@/lib/products/loadProductHistory';
@@ -387,7 +387,7 @@ const productSearchFiltersSchema = z
     department: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).optional().describe(
       "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not a keyword row's broadCategory. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
     ),
-    broadCategory: z.string().trim().min(1).max(255).optional().describe(
+    broadCategory: z.string().trim().min(1).max(PRODUCT_MAX_BROAD_CATEGORY_LENGTH).optional().describe(
       "One Brand Analytics code, spelled as a keyword row's broadCategory carries it ('Home', 'Apparel', 'Biss', 'Pet Supplies'): the weekly report filed the product under it on at least one keyword where it was a top-3 clicked product this week (the product's own code on that row, which can differ from the keyword's broadCategory; a product can carry several codes and any one matches). Independent of filters.department (the product's own Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
     ),
     categories: categoriesSchema.optional().describe(

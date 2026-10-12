@@ -35,8 +35,9 @@ export { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP };
 const DETAILS_ROWS = 1;
 
 /**
- * The data side of the products tools: the four Products page loaders, plus the four a search's
- * category scope is checked against. `defaultProductsDeps` wires production; tests inject stubs.
+ * The data side of the products tools: the four Products page loaders, plus the three a search's
+ * category scope is checked against, plus the pair table's code list the broad category is checked
+ * against. `defaultProductsDeps` wires production; tests inject stubs.
  */
 export interface ProductLoaders {
   search: (filters: ProductFilters, scope: ProductCategoryScope) => Promise<ProductSearchResult>;
@@ -111,7 +112,8 @@ function pathNotAvailable(path: string, at: string): ResearchError {
 
 /**
  * The search's category scope (spec 2026-10-12 §6): the department and the broad category checked
- * against the catalog's lists (the code travels on the page filters, not the scope);
+ * against the catalog's department list and the pair table's code list (the code travels on the page
+ * filters, not the scope);
  * every taxonomy selection as a subtree, whatever includeDescendants says (resolve_categories marks
  * keyword-side leaves as having no descendants, but the product catalog files products deeper); custom
  * selections as the account's stored paths, exactly; leafPaths exactly. Every taxonomy and leaf path is
@@ -137,7 +139,7 @@ export async function resolveProductCategoryScope(deps: ScopeDeps, actor: Resear
     const codes = await deps.broadCategories();
     if (!codes.includes(broad)) {
       const message = codes.length === 0
-        ? 'No broad categories are available yet (the weekly keyword-to-product table is empty).'
+        ? 'No broad categories are available yet: this week\'s keyword-to-product table carries no codes.'
         : `"${broad}" is not a broad category of this week's clicked products. Pass one of: ${codes.join('; ')}.`;
       throw new ResearchError('CATEGORY_NOT_AVAILABLE', message, { details: [{ path: 'filters.broadCategory', message: 'unknown broad category' }] });
     }
@@ -187,6 +189,7 @@ export async function resolveProductCategoryScope(deps: ScopeDeps, actor: Resear
  * row's ASIN page link. The total is exact up to the page's count cap, then `at_least` that cap.
  * The department and the categories object become the search's category scope
  * (resolveProductCategoryScope), resolved after the reserve as the keyword tools resolve theirs.
+ * The broad category is checked there too and travels on the page filters, not in the scope.
  */
 export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchActor, input: unknown): Promise<ProductSearchResponse> {
   assertAdmin(actor);

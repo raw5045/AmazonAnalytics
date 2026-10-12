@@ -119,7 +119,7 @@ function searchDescription(limits: Pick<ResearchLimits, 'maxRowsPerSearch'>): st
 function searchProductsDescription(): string {
   return [
     "Search the product catalog (Amazon ASINs with Keepa data) by listing age, monthly sold, reviews, rating, price, best sellers rank (BSR), BSR against its 30-day average, department (the product's Keepa storefront department, not a keyword row's broadCategory), broad category (the Brand Analytics code a keyword row's broadCategory carries; any of a product's codes), categories, FBA offers and whether Amazon sells it; every filter is optional and they combine with AND.",
-    "Categories go in filters.categories, the same object search_keywords takes: resolve_categories selections (several = OR; a taxonomy selection includes everything under it, whatever includeDescendants says; a custom selection is that custom category's stored paths, exactly) and exact leafPaths. An unknown department, path or custom id fails with CATEGORY_NOT_AVAILABLE.",
+    "Categories go in filters.categories, the same object search_keywords takes: resolve_categories selections (several = OR; a taxonomy selection includes everything under it, whatever includeDescendants says; a custom selection is that custom category's stored paths, exactly) and exact leafPaths. An unknown department, broad category, path or custom id fails with CATEGORY_NOT_AVAILABLE.",
     'Units: filters take ratings in stars (0–5, one decimal) and prices in US dollars; answers carry averageRatingX10 (stars × 10: 45 = 4.5 stars) and currentPriceCents (cents).',
     "monthlySold is Amazon's 'bought in past month' floor: 1000 means 1,000+.",
     'bsrRatioMax: current BSR ÷ 30-day average × 100; 70 = at least 30 % better (rankRatioX100 in answers: under 100 = better than its 30-day average).',
@@ -136,7 +136,7 @@ function searchProductsDescription(): string {
  */
 function productDetailsDescription(): string {
   return [
-    "One product by its ASIN (from search_products, or a keyword's top clicked products): the catalog facts, its Keepa snapshot history and the current keywords it is a top-3 clicked product for.",
+    "One product by its ASIN (from search_products, or a keyword's top clicked products): the catalog facts, with the product's Brand Analytics codes as broadCategories (most keywords first), its Keepa snapshot history and the current keywords it is a top-3 clicked product for.",
     "Units: averageRatingX10 = stars × 10 (45 = 4.5 stars); prices are in cents; monthlySold is Amazon's 'bought in past month' floor: 1000 means 1,000+; rankRatioX100 = current BSR ÷ 30-day average × 100 (under 100 = better than its 30-day average).",
     `history.points holds the newest ${PRODUCT_TOOL_HISTORY_POINTS} snapshots, oldest first; first and last are the oldest and newest of the loaded window, for a then-and-now, and pointsTotal counts that window (at most ${PRODUCT_HISTORY_CAP} snapshots).`,
     `keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}, best keyword rank first, each with its slot, click and conversion share percentages, weeksInTop3 and keywordUrl; keywordsTotal counts every keyword, past the cap too.`,
