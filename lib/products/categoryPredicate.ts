@@ -5,9 +5,12 @@
  * page (pageCategoryScope: URL filters + the custom categories expanded by the page) and the tools
  * (lib/research/products.ts: department + the categories object, validated). Pure: no I/O.
  *
- * Every form rides asin_products_category_path_idx (text_pattern_ops): the planner rewrites
- * starts_with(column, constant) into an index range, so a subtree is a BitmapOr of two index scans,
- * and `= ANY(array)` is one index scan whatever the array's length (measured 2026-10-10, spec §2).
+ * Every path form is indexable by asin_products_category_path_idx (text_pattern_ops): with the
+ * prefix bound as a plan-time constant (the custom plans neon's HTTP queries get), the planner
+ * rewrites starts_with into an index range, so a subtree can be a BitmapOr of two index scans and
+ * `= ANY(array)` a single index scan rather than one per path (measured 2026-10-10 up to 2,000
+ * paths, spec §2/§10). A very large department or path list may legitimately send the planner to
+ * the sort index instead; both plans are correct.
  */
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
 import type { ProductFilters } from './filterParams';
@@ -15,16 +18,17 @@ import type { ProductFilters } from './filterParams';
 export interface ProductCategoryScope {
   /** A Keepa root department, matched as a subtree; null for all departments. */
   dept: string | null;
-  /** Each matches the path and its descendants (the page's leaf picks; the tools' taxonomy selections). */
-  subtreePaths: string[];
-  /** Each matches exactly (custom categories' stored paths; the tools' leafPaths). */
-  exactPaths: string[];
+  /** Each matches the path and its descendants (the page's leaf picks; the tools' taxonomy selections that include descendants). */
+  subtreePaths: readonly string[];
+  /** Each matches exactly (custom categories' stored paths; the tools' leafPaths and taxonomy selections with includeDescendants false). */
+  exactPaths: readonly string[];
   /** A leaf or custom selection was requested; with no paths left, the group is FALSE instead of absent. */
   scoped: boolean;
 }
 
-export const EMPTY_CATEGORY_SCOPE: Readonly<ProductCategoryScope> = Object.freeze({ dept: null, subtreePaths: [], exactPaths: [], scoped: false });
+export const EMPTY_CATEGORY_SCOPE: Readonly<ProductCategoryScope> = Object.freeze({ dept: null, subtreePaths: Object.freeze([]), exactPaths: Object.freeze([]), scoped: false });
 
+/** Records the value and returns its positional placeholder — the injection guarantee rests on this contract. */
 type Bind = (v: unknown) => string;
 const unique = (paths: readonly string[]): string[] => [...new Set(paths)];
 
