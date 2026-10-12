@@ -113,11 +113,13 @@ function searchDescription(limits: Pick<ResearchLimits, 'maxRowsPerSearch'>): st
  * like searchDescription: PRODUCT_PAGE_SIZE and PRODUCT_MAX_PAGE (lib/products/filters.ts — the
  * page size, and the last page `productSearchInputSchema.page` accepts) and PRODUCT_COUNT_CAP
  * (lib/products/searchProducts.ts — where the count stops being exact). Each filter's own units
- * are in the schema; the guide's products section (catalog.ts) repeats the semantics.
+ * are in the schema; the guide's products section (catalog.ts) repeats the semantics, the
+ * category ones (spec 2026-10-12 §6) included.
  */
 function searchProductsDescription(): string {
   return [
-    'Search the product catalog (Amazon ASINs with Keepa data) by listing age, monthly sold, reviews, rating, price, best sellers rank (BSR), BSR against its 30-day average, category, FBA offers and whether Amazon sells it; every filter is optional and they combine with AND.',
+    "Search the product catalog (Amazon ASINs with Keepa data) by listing age, monthly sold, reviews, rating, price, best sellers rank (BSR), BSR against its 30-day average, department (the product's Keepa storefront department, not the keyword report's broad category), categories, FBA offers and whether Amazon sells it; every filter is optional and they combine with AND.",
+    "Categories go in filters.categories, the same object search_keywords takes: resolve_categories selections (several = OR; a taxonomy pick includes its sub-categories unless includeDescendants is false; a custom pick is that custom category's stored paths, exactly) and exact leafPaths. An unknown department, path or custom id fails with CATEGORY_NOT_AVAILABLE.",
     'Units: filters take ratings in stars (0–5, one decimal) and prices in US dollars; answers carry averageRatingX10 (stars × 10: 45 = 4.5 stars) and currentPriceCents (cents).',
     "monthlySold is Amazon's 'bought in past month' floor: 1000 means 1,000+.",
     'bsrRatioMax: current BSR ÷ 30-day average × 100; 70 = at least 30 % better (rankRatioX100 in answers: under 100 = better than its 30-day average).',

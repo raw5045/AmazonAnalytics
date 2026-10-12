@@ -75,6 +75,11 @@ describe('RESEARCH_TOOLS', () => {
     expect(details).toContain('prices are in cents');
     for (const d of [search, details]) expect(d.endsWith('Admin accounts only for now.')).toBe(true);
   });
+  it('search_products describes the department and categories filters', () => {
+    const text = researchToolByName('search_products').description(DEFAULT_LIMITS);
+    expect(text).toContain("department (the product's Keepa storefront department, not the keyword report's broad category)");
+    expect(text).toContain('filters.categories, the same object search_keywords takes');
+  });
   it('builds the search description from the operating constants', () => {
     const d = researchToolByName('search_keywords').description({ ...DEFAULT_LIMITS, maxRowsPerSearch: 1234 });
     expect(d).toContain(`up to ${PAGE_SIZE_MAX} rows`);

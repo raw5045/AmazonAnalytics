@@ -226,9 +226,9 @@ describe('buildGuide', () => {
 
 describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
   it('is absent unless asked for, and then carries the rules and the caps', () => {
-    expect(GUIDE_VERSION).toBe(3);
+    expect(GUIDE_VERSION).toBe(4);
     const off = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS });
-    expect(off.guideVersion).toBe(3);
+    expect(off.guideVersion).toBe(4);
     expect(off.workspace).toBeUndefined();
     const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: { ...DEFAULT_LIMITS, writesPerDay: 42 }, workspace: true });
     expect(on.workspace).toEqual({ rules: WORKSPACE_RULES, caps: { savedViews: 5, customCategories: 25, watchedKeywords: 100, leavesPerCategory: 12000, writesPerDay: 42 } });
@@ -287,5 +287,15 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(unitsOf('ratingMin')).toContain('stars');
     expect(unitsOf('monthlySoldMin')).toContain('1000 means 1,000+');
     expect(unitsOf('bsrRatioMax')).toContain('30-day average');
+    // The category filters (spec 2026-10-12 §6): a product's own Keepa path, never the keyword report's broad category.
+    expect(rules).toContain("filters.department is one of the catalog's storefront departments");
+    expect(rules).toContain("not the keyword report's broad category");
+    expect(rules).toContain('filters.categories is the object search_keywords takes');
+    expect(rules).toContain('matches the path and everything under it unless includeDescendants is false');
+    expect(rules).toContain('an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page');
+    expect(rules).toContain("a product row's categoryPath is that product's own Keepa category path");
+    expect(unitsOf('department')).toContain('storefront department');
+    expect(unitsOf('categories')).toContain('resolve_categories');
+    expect(on.products?.filters.map((f) => f.name)).not.toContain('categoryPath');
   });
 });
