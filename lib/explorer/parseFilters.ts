@@ -17,6 +17,7 @@ import type {
   WindowKey,
 } from './types';
 import { findJumpPreset, type JumpMetric } from './jumpPresets';
+import { isUuid } from '@/lib/db/uuid';
 
 export const EXPLORER_DEFAULTS: ExplorerFilters = {
   window: '1w',
@@ -151,18 +152,18 @@ function parseSeverities(value: string | undefined): SeverityKey[] {
 }
 
 /**
- * Comma-separated `leaf` URL param → string[]. URL-encoded commas
- * inside category names would be ambiguous, but Keepa leaves don't
- * contain commas so we treat `,` as the delimiter unambiguously.
+ * Comma-separated `custom` URL param → string[] of custom-category ids: only
+ * well-formed uuids (lower-cased, deduplicated), the first
+ * MAX_CUSTOM_CATEGORY_IDS. Anything else is dropped here, because the page and
+ * the export route hand these ids straight to a uuid-typed query
+ * (expandCustomCategories): a malformed id would fail that query (Postgres
+ * 22P02) instead of being ignored like every other bad filter value.
  * Empty / missing → empty array.
  */
-function parseLeafCategories(value: string | undefined): string[] {
+export function parseCustomCategoryIds(value: string | undefined): string[] {
   if (!value) return [];
-  return value
-    .split(',')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0 && s.length <= MAX_LEAF_PATH_LENGTH)
-    .slice(0, MAX_CUSTOM_CATEGORY_IDS);
+  const ids = value.split(',').map((s) => s.trim().toLowerCase()).filter(isUuid);
+  return [...new Set(ids)].slice(0, MAX_CUSTOM_CATEGORY_IDS);
 }
 
 /**
@@ -288,7 +289,7 @@ export function parseExplorerFilters(searchParams: SearchParamsLike): ExplorerFi
     jumpTo: jump === 'custom' ? jumpTo : null,
     category: getOne(searchParams.category) ?? null,
     leafPaths: parseLeafPaths(searchParams.leaf),
-    customCategoryIds: parseLeafCategories(getOne(searchParams.custom)),
+    customCategoryIds: parseCustomCategoryIds(getOne(searchParams.custom)),
     severities,
     titleSlots,
     titleMatchMode,

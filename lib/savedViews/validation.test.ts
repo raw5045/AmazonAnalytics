@@ -73,10 +73,19 @@ describe('normalizeFilters + normalizeFiltersBlob', () => {
   });
 
   it('round-trips customCategoryIds through the blob (normalizeFiltersBlob)', () => {
-    expect(normalizeFiltersBlob({ customCategoryIds: ['id-1', 'id-2'] }).customCategoryIds).toEqual(['id-1', 'id-2']);
+    const ID1 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const ID2 = 'ffffffff-0000-4111-8222-abcdefabcdef';
+    expect(normalizeFiltersBlob({ customCategoryIds: [ID1, ID2] }).customCategoryIds).toEqual([ID1, ID2]);
+    // The blob obeys the URL parser's rule: only well-formed uuids, lower-cased, deduplicated — a stored
+    // malformed id would otherwise reach the uuid-typed expansion query on every load of the view.
+    expect(normalizeFiltersBlob({ customCategoryIds: ['nope', ID2.toUpperCase(), ID1, 7, ID2] }).customCategoryIds).toEqual([ID2, ID1]);
+    expect(normalizeFiltersBlob({ customCategoryIds: 'not-an-array' }).customCategoryIds).toEqual([]);
   });
   it('round-trips customCategoryIds through normalizeFilters (custom param serialize→parse)', () => {
-    expect(normalizeFilters({ customCategoryIds: ['id-1', 'id-2'] }).customCategoryIds).toEqual(['id-1', 'id-2']);
+    const ID1 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const ID2 = 'ffffffff-0000-4111-8222-abcdefabcdef';
+    expect(normalizeFilters({ customCategoryIds: [ID1, ID2] }).customCategoryIds).toEqual([ID1, ID2]);
+    expect(normalizeFilters({ customCategoryIds: ['nope', ID1] }).customCategoryIds).toEqual([ID1]);
   });
 });
 

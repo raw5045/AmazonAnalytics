@@ -240,16 +240,35 @@ describe('parseExplorerFilters — qMode', () => {
 });
 
 describe('parseExplorerFilters — customCategoryIds', () => {
+  const ID1 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  const ID2 = 'ffffffff-0000-4111-8222-abcdefabcdef';
+  const uuidAt = (i: number) => `33333333-3333-4333-8333-${String(i).padStart(12, '0')}`;
+
   it('parses the custom param into customCategoryIds', () => {
-    const f = parseExplorerFilters({ custom: 'id-1,id-2' });
-    expect(f.customCategoryIds).toEqual(['id-1', 'id-2']);
+    const f = parseExplorerFilters({ custom: `${ID1},${ID2}` });
+    expect(f.customCategoryIds).toEqual([ID1, ID2]);
   });
   it('defaults customCategoryIds to []', () => {
     expect(parseExplorerFilters({}).customCategoryIds).toEqual([]);
+    expect(parseExplorerFilters({ custom: '' }).customCategoryIds).toEqual([]);
   });
-  it('caps the number of custom category ids', () => {
-    const many = Array.from({ length: MAX_CUSTOM_CATEGORY_IDS + 10 }, (_, i) => `id-${i}`).join(',');
-    expect(parseExplorerFilters({ custom: many }).customCategoryIds).toHaveLength(MAX_CUSTOM_CATEGORY_IDS);
+  it('keeps only well-formed uuids: the page hands these ids to a uuid-typed query, so a malformed one must never reach it', () => {
+    // Before this guard, /explorer?custom=nope reached expandCustomCategories' inArray on the uuid column (Postgres 22P02).
+    expect(parseExplorerFilters({ custom: 'nope' }).customCategoryIds).toEqual([]);
+    expect(parseExplorerFilters({ custom: `nope,${ID1},${ID2.slice(0, -1)},,  ` }).customCategoryIds).toEqual([ID1]);
+    expect(parseExplorerFilters({ custom: '00000000-0000-0000-0000-00000000000g' }).customCategoryIds).toEqual([]);
+  });
+  it('lower-cases ids and drops duplicates (case-insensitively), keeping the first occurrence order', () => {
+    expect(parseExplorerFilters({ custom: ` ${ID2.toUpperCase()} , ${ID1},${ID2}` }).customCategoryIds).toEqual([ID2, ID1]);
+  });
+  it('caps the number of custom category ids after the junk and duplicates are gone', () => {
+    const many = Array.from({ length: MAX_CUSTOM_CATEGORY_IDS + 10 }, (_, i) => uuidAt(i));
+    expect(parseExplorerFilters({ custom: many.join(',') }).customCategoryIds).toEqual(many.slice(0, MAX_CUSTOM_CATEGORY_IDS));
+    const withJunk = ['nope', ...many.slice(0, MAX_CUSTOM_CATEGORY_IDS), uuidAt(0)].join(',');
+    expect(parseExplorerFilters({ custom: withJunk }).customCategoryIds).toEqual(many.slice(0, MAX_CUSTOM_CATEGORY_IDS));
+  });
+  it('reads only the first custom key when the URL repeats it', () => {
+    expect(parseExplorerFilters({ custom: [ID1, ID2] }).customCategoryIds).toEqual([ID1]);
   });
 });
 

@@ -6,7 +6,7 @@
  * the default in that function, so we don't need separate schema
  * validation. Name validation is straightforward.
  */
-import { parseExplorerFilters, parseExcludeTerms, type SearchParamsLike } from '@/lib/explorer/parseFilters';
+import { parseExplorerFilters, parseExcludeTerms, parseCustomCategoryIds, type SearchParamsLike } from '@/lib/explorer/parseFilters';
 import type { ExplorerFilters } from '@/lib/explorer/types';
 import { findJumpPreset } from '@/lib/explorer/jumpPresets';
 
@@ -100,7 +100,11 @@ export function normalizeFiltersBlob(blob: unknown): ExplorerFilters {
     jumpTo: typeof f.jumpTo === 'number' ? f.jumpTo : null,
     category: typeof f.category === 'string' ? f.category : null,
     leafPaths: Array.isArray(f.leafPaths) ? (f.leafPaths as string[]) : [],
-    customCategoryIds: Array.isArray(f.customCategoryIds) ? (f.customCategoryIds as string[]) : [],
+    // Stored as an array; run it through the URL parser so a stored or posted blob obeys the same
+    // well-formed-uuid rule (these ids go straight into a uuid-typed query when the view loads).
+    customCategoryIds: parseCustomCategoryIds(
+      Array.isArray(f.customCategoryIds) ? (f.customCategoryIds as unknown[]).filter((v): v is string => typeof v === 'string').join(',') : undefined,
+    ),
     severities: Array.isArray(f.severities) ? (f.severities as ExplorerFilters['severities']) : ['none', 'warning'],
     titleSlots: Array.isArray(f.titleSlots) ? (f.titleSlots as number[]) : [1, 2, 3],
     titleMatchMode: (f.titleMatchMode as ExplorerFilters['titleMatchMode']) ?? null,
