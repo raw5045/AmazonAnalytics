@@ -1405,7 +1405,7 @@ Every task's commit, two reviews and a nits round are recorded in the session's 
 
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
-| Push + deploys | | | |
+| Push + deploys | 2026-10-12 | OK: pushed 13:47 UTC (cca065f → d477143, 30 commits incl. the Explorer custom-id fix); Railway worker + keepa-importer green by 13:49 UTC; Vercel created NO deployment for the push (second time after 2026-09-29) → empty commit c3ad8f4 pushed 14:03 UTC on the owner's go; Vercel green 14:05:10 UTC, both Railway services green 14:06 UTC | pre-push gate quiet (0 Keepa runs, 0 imports mid-phase); the Keepa service kept its 10-10 boot (no change in its files) and is idle by design — tier 1 fully refreshed, next due 2026-10-13 10:31 UTC, the tail lane disabled; no Inngest sync needed |
 | Integration test | 2026-10-12 | OK: 12/12 in 13 s (read-only, before the push) | department-only (smallest, 'Alexa Skills'), leaf subtree and the smallest custom category (1 path) all plan as BitmapOr / Bitmap Index Scan on asin_products_category_path_idx; the largest custom category (1,355 paths) planned on the monthly_sold sort index instead and ran in 0.26 s with 10,000+ matches (both plans correct); option lists 34 departments / 23,025 paths; largest per-department cache entry = Books, 3,997 paths ≈ 339k chars (limit 2 MB; Clothing 1,912 paths ≈ 165k); the per-department loader statement for Books plans as a bitmap scan on the path index; the arc-7 cases (default view, owner search 0.46 s / 3,823 matches, loaders, stub) still pass |
 | Page smoke | | | |
 | Tools smoke | | | |
