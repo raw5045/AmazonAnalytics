@@ -5,7 +5,8 @@
  *  - the advance INSERT (partition name, ASIN regex, the three-slot UNION ALL, the DISTINCT ON streak
  *    carry) runs on this database and yields the rows the week's partition promises;
  *  - the carried broad_category equals the partition's slot category (checked on a sample of the first
- *    scratch table's rows: the code travels from the same kwm row, spec 2026-10-12 broad category §4);
+ *    scratch table's rows, taken per slot so slots 2 and 3 are covered too: the code travels from the
+ *    same kwm row, spec 2026-10-12 broad category §4);
  *  - the carry arithmetic: a second build that carries from the first scratch table adds one week to
  *    every pair the two share, keeps its streak start, and starts a pair the first lacked at 1;
  *  - the object names the rename swap relies on (what LIKE ... INCLUDING ALL generates, what the live
@@ -38,9 +39,9 @@
  *  - no import running (the week's partition must be quiet). An import that reaches its build phase
  *    meanwhile waits at the advisory lock until the case ends, so prefer a quiet hour;
  *  - expect minutes on a cold Neon: each INSERT scans the week's partition three times and sorts ~8M
- *    carry rows, and the two scratch tables hold roughly 1-1.5 GB each (the compute's local disk)
- *    until the rollback. The first INSERT's time is printed: that is the build's INSERT on this
- *    database (TEMP tables write no WAL, so the real build costs at least as much).
+ *    carry rows, and the two scratch tables hold roughly 1.5-2 GB each (3.5-4 GB for the two; the
+ *    compute's local disk) until the rollback. The first INSERT's time is printed: that is the build's
+ *    INSERT on this database (TEMP tables write no WAL, so the real build costs at least as much).
  *
  * Run (owner's go, Git Bash):
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts tests/integration/productsQueries.test.ts
@@ -130,6 +131,10 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
       "SELECT to_regclass('keyword_top_asins') IS NOT NULL AND to_regclass('keyword_top_asins_meta') IS NOT NULL AS ok",
     );
     if (!tables.rows[0]?.ok) throw new Error('migration 0051 is not applied (keyword_top_asins or keyword_top_asins_meta is missing)');
+    const column = await client.query<{ ok: boolean }>(
+      "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'keyword_top_asins' AND column_name = 'broad_category') AS ok",
+    );
+    if (!column.rows[0]?.ok) throw new Error('migration 0052 is not applied (keyword_top_asins has no broad_category column)');
     const kcs = await client.query<{ week: string }>('SELECT current_week_end_date::text AS week FROM keyword_current_summary_meta WHERE singleton');
     if (!kcs.rows[0]) throw new Error('keyword_current_summary_meta has no row: the explorer week is unknown');
     currentWeek = kcs.rows[0].week;
@@ -258,17 +263,28 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
           expect(stats.carried, 'pairs that carried a streak from the live table').toBeGreaterThan(0);
         }
 
-        // The code travels from the same kwm row (spec 2026-10-12 broad category §4): per slot, equal to that slot's category.
-        const codeCheck = await client.query<{ sampled: number; coded: number; mismatched: number }>(
-          `WITH s AS (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} LIMIT 20000)
-           SELECT count(*)::int AS sampled, count(*) FILTER (WHERE s.broad_category IS NOT NULL)::int AS coded,
+        // The code travels from the same kwm row (spec 2026-10-12 broad category §4): per slot, equal to that slot's category. The sample is
+        // taken per slot: one unordered LIMIT over the whole table would most likely return slot-1 rows only (the INSERT writes them first)
+        // and leave the CASE branches for slots 2 and 3 unchecked.
+        const codeCheck = await client.query<{ sampled: number; sampled1: number; sampled2: number; sampled3: number; coded: number; mismatched: number }>(
+          `WITH s AS (
+             (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 1 LIMIT 7000)
+             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 2 LIMIT 7000)
+             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 3 LIMIT 7000))
+           SELECT count(*)::int AS sampled,
+                  count(*) FILTER (WHERE s.slot = 1)::int AS sampled1, count(*) FILTER (WHERE s.slot = 2)::int AS sampled2, count(*) FILTER (WHERE s.slot = 3)::int AS sampled3,
+                  count(*) FILTER (WHERE s.broad_category IS NOT NULL)::int AS coded,
                   count(*) FILTER (WHERE s.broad_category IS DISTINCT FROM CASE s.slot WHEN 1 THEN m.top_clicked_category_1 WHEN 2 THEN m.top_clicked_category_2 ELSE m.top_clicked_category_3 END)::int AS mismatched
            FROM s JOIN ${partition} m ON m.search_term_id = s.search_term_id AND m.week_end_date = $1::date`,
           [currentWeek],
         );
         const codes = codeCheck.rows[0];
-        console.log(`[topAsinsBuild] codes: ${codes.coded} of ${codes.sampled} sampled rows carry a broad_category, ${codes.mismatched} differ from the partition`);
+        console.log(`[topAsinsBuild] codes: ${codes.coded} of ${codes.sampled} sampled rows (slots 1/2/3: ${codes.sampled1}/${codes.sampled2}/${codes.sampled3}) carry a broad_category, ${codes.mismatched} differ from the partition`);
         expect(codes.sampled, 'sampled rows').toBeGreaterThan(0);
+        // A slot the partition has well-formed ASINs for (n1/n2/n3, counted above) must be in the sample, or its branch of the CASE went unchecked.
+        if (n1 > 0) expect(codes.sampled1, 'slot-1 rows in the sample').toBeGreaterThan(0);
+        if (n2 > 0) expect(codes.sampled2, 'slot-2 rows in the sample').toBeGreaterThan(0);
+        if (n3 > 0) expect(codes.sampled3, 'slot-3 rows in the sample').toBeGreaterThan(0);
         expect(codes.mismatched, 'rows whose broad_category differs from the kwm slot category').toBe(0);
         expect(codes.coded, 'coded rows in the sample (every slot-1 row has a code)').toBeGreaterThan(0);
 
