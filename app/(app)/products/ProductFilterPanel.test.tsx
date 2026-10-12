@@ -208,6 +208,7 @@ describe('ProductFilterPanel Apply / Reset', () => {
     expect(control('Reviews (at most)')).toHaveValue(null);
     expect(control('Minimum price')).toHaveValue(null);
     expect(control('Department')).toHaveDisplayValue('All departments');
+    expect(control('Broad category')).toHaveDisplayValue('All broad categories');
     expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
     expect(control('Sort')).toHaveDisplayValue('Monthly sold');
     expect(control('Sort direction')).toHaveDisplayValue('Most sold first');

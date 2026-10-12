@@ -131,9 +131,9 @@ describe('ProductsPage (/products)', () => {
     expect(screen.getByLabelText('Department')).toHaveDisplayValue('All departments');
     expect(screen.getByLabelText('Broad category')).toHaveDisplayValue('All broad categories');
     // Two departments, two broad codes and one path in the fixtures: a swapped or an empty list fails one of these.
-    // 'Pet Supplies' is in both the department and the broad fixtures, so each option is looked up inside its own select.
-    expect(within(screen.getByLabelText('Department')).getByRole('option', { name: 'Pet Supplies' })).toBeInTheDocument();
-    expect(within(screen.getByLabelText('Broad category')).getByRole('option', { name: 'Home' })).toBeInTheDocument();
+    // Both option lists are pinned whole: 'Pet Supplies' is in each fixture, so one shared option could not tell them apart.
+    expect(within(screen.getByLabelText('Department')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments', 'Home & Kitchen', 'Pet Supplies']);
+    expect(within(screen.getByLabelText('Broad category')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All broad categories', 'Home', 'Pet Supplies']);
     expect(screen.getByText(/^1 categories/)).toBeInTheDocument();
   });
 
