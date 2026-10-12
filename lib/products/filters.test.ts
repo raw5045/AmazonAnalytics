@@ -3,9 +3,13 @@ import { describe, it, expect, expectTypeOf } from 'vitest';
 import type { z } from 'zod';
 import * as filterParams from './filterParams';
 import * as filters from './filters';
+import { MAX_CUSTOM_CATEGORY_IDS, MAX_LEAF_PATHS, MAX_LEAF_PATH_LENGTH } from '@/lib/explorer/parseFilters';
 import {
+  MAX_CATEGORY_PATH_LENGTH,
   PRODUCT_AGES,
   PRODUCT_DEFAULTS,
+  PRODUCT_MAX_CUSTOM_IDS,
+  PRODUCT_MAX_LEAF_PATHS,
   PRODUCT_SORTS,
   parseProductFilters,
   productFiltersToSearchParams,
@@ -24,14 +28,14 @@ function toSearchParamsLike(qs: string): Record<string, string | string[]> {
 }
 /** What a browser does: serialise to the query string, then parse that string back. */
 const viaUrl = (f: ProductFilters): ProductFilters => parseProductFilters(toSearchParamsLike(productFiltersToSearchParams(f).toString()));
-const ID1 = '11111111-1111-4111-8111-000000000001';
-const ID2 = '22222222-2222-4222-8222-000000000002';
+const ID1 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+const ID2 = 'ffffffff-0000-4111-8222-abcdefabcdef';
 
 /** Every field set to a non-default value (prices: $19.99 and $20). */
 const FULL: ProductFilters = {
   age: 365, soldMin: 100000, reviewsMax: 300, ratingMin: 35, ratingMax: 50,
   priceMinCents: 1999, priceMaxCents: 2000, bsrMin: 1, bsrMax: 50000, ratioMax: 70,
-  cat: 'Home & Kitchen › Bath', dept: 'Home & Kitchen', leafPaths: ['Home & Kitchen › Bath', 'Home & Kitchen › Lighting'], customCategoryIds: [ID1, ID2],
+  dept: 'Home & Kitchen', leafPaths: ['Home & Kitchen › Bath', 'Home & Kitchen › Lighting'], customCategoryIds: [ID1, ID2],
   fba: 'yes', amazon: 'no', sort: 'ratio', dir: 'asc', page: 7,
 };
 
@@ -41,8 +45,8 @@ describe('parseProductFilters', () => {
     expect(PRODUCT_DEFAULTS).toMatchObject({ sort: 'sold', dir: 'desc', page: 1 });
   });
   it('parses every filter and ignores junk', () => {
-    const f = parseProductFilters({ age: '180', soldMin: '1000', reviewsMax: '300', ratingMin: '35', ratingMax: '50', priceMin: '9.99', priceMax: '40', bsrMin: '1', bsrMax: '50000', ratioMax: '70', cat: 'Tools › Bath', fba: 'no', amazon: 'no', sort: 'listed', dir: 'asc', page: '3', junk: 'x' });
-    expect(f).toEqual({ age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 35, ratingMax: 50, priceMinCents: 999, priceMaxCents: 4000, bsrMin: 1, bsrMax: 50000, ratioMax: 70, cat: 'Tools › Bath', dept: null, leafPaths: [], customCategoryIds: [], fba: 'no', amazon: 'no', sort: 'listed', dir: 'asc', page: 3 });
+    const f = parseProductFilters({ age: '180', soldMin: '1000', reviewsMax: '300', ratingMin: '35', ratingMax: '50', priceMin: '9.99', priceMax: '40', bsrMin: '1', bsrMax: '50000', ratioMax: '70', fba: 'no', amazon: 'no', sort: 'listed', dir: 'asc', page: '3', junk: 'x' });
+    expect(f).toEqual({ age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 35, ratingMax: 50, priceMinCents: 999, priceMaxCents: 4000, bsrMin: 1, bsrMax: 50000, ratioMax: 70, dept: null, leafPaths: [], customCategoryIds: [], fba: 'no', amazon: 'no', sort: 'listed', dir: 'asc', page: 3 });
   });
   it('falls back per field on invalid values (never throws)', () => {
     const f = parseProductFilters({ age: '45', soldMin: '-1', reviewsMax: 'abc', ratingMin: '99', page: '0', sort: 'nope', dir: 'sideways', fba: 'maybe' });
@@ -51,9 +55,13 @@ describe('parseProductFilters', () => {
   it('falls back per field, not all-or-nothing: a valid neighbour of a bad value survives', () => {
     expect(parseProductFilters({ age: '45', soldMin: '1000' })).toEqual({ ...PRODUCT_DEFAULTS, soldMin: 1000 });
   });
-  it('caps page and the category path length', () => {
+  it('caps page and the category path length (256 characters kept, 257 dropped, for leaf and dept alike)', () => {
     expect(parseProductFilters({ page: '999999' }).page).toBe(200);
-    expect(parseProductFilters({ cat: 'x'.repeat(300) }).cat).toBeNull();
+    const atCap = 'x'.repeat(256);
+    const overCap = 'x'.repeat(257);
+    expect(parseProductFilters({ leaf: [atCap, overCap] }).leafPaths).toEqual([atCap]);
+    expect(parseProductFilters({ dept: atCap }).dept).toBe(atCap);
+    expect(parseProductFilters({ dept: overCap }).dept).toBeNull();
   });
   it('clamps any all-digit page to the last page, however long; anything else is page 1', () => {
     expect(parseProductFilters({ page: '200' }).page).toBe(200);
@@ -70,10 +78,12 @@ describe('parseProductFilters', () => {
     for (const a of PRODUCT_AGES) expect(parseProductFilters({ age: String(a) }).age).toBe(a);
     for (const bad of ['0', '30', '61', '364', '366']) expect(parseProductFilters({ age: bad }).age).toBeNull();
   });
-  it('trims the category path; a whitespace-only value is dropped', () => {
-    expect(parseProductFilters({ cat: '  Tools › Bath ' }).cat).toBe('Tools › Bath');
-    expect(parseProductFilters({ cat: '   ' }).cat).toBeNull();
-    expect(parseProductFilters({ cat: '\t\n' }).cat).toBeNull();
+  it('ignores the retired cat key', () => expect(parseProductFilters({ cat: 'Tools › Bath' })).toEqual(PRODUCT_DEFAULTS));
+  it('drops leaf and dept values containing control characters; surrounding whitespace is trimmed before the check', () => {
+    expect(parseProductFilters({ leaf: ['a\u0000b', 'Tools › Bath'] }).leafPaths).toEqual(['Tools › Bath']);
+    expect(parseProductFilters({ dept: 'x\u001fy' }).dept).toBeNull();
+    expect(parseProductFilters({ dept: '\tTools\n', leaf: '\nTools › Bath\t' })).toMatchObject({ dept: 'Tools', leafPaths: ['Tools › Bath'] });
+    expect(parseProductFilters({ dept: '\t\n' }).dept).toBeNull();
   });
   it('reads dept, repeated leaf and the comma-list custom (spec 2026-10-12 §3), and writes them back in a fixed order', () => {
     const f = parseProductFilters({ dept: ' Pet Supplies ', leaf: ['Pet Supplies › Dogs › Toys', ' Pet Supplies › Cats › Toys '], custom: `${ID1},${ID2.toUpperCase()}` });
@@ -86,15 +96,20 @@ describe('parseProductFilters', () => {
   it('one leaf arrives as a string, several as an array; blanks and over-long paths are dropped, the rest kept', () => {
     expect(parseProductFilters({ leaf: 'Tools › Bath' }).leafPaths).toEqual(['Tools › Bath']);
     expect(parseProductFilters({ leaf: ['  ', 'x'.repeat(257), 'Tools › Bath'] }).leafPaths).toEqual(['Tools › Bath']);
-    expect(parseProductFilters({ leaf: Array.from({ length: 2001 }, (_, i) => `p${i}`) }).leafPaths).toHaveLength(2000);
+    const input = Array.from({ length: 2001 }, (_, i) => `p${i}`);
+    expect(parseProductFilters({ leaf: input }).leafPaths).toEqual(input.slice(0, 2000));
   });
   it('custom keeps well-formed uuids only, lower-cased and deduplicated, at most 50', () => {
-    expect(parseProductFilters({ custom: `${ID1},nope,${ID1.toUpperCase()},11111111-1111-4111-8111-00000000000,` }).customCategoryIds).toEqual([ID1]);
+    // The last entry is ID1 one hex digit short.
+    expect(parseProductFilters({ custom: `${ID1},nope,${ID1.toUpperCase()},${ID1.slice(0, -1)},` }).customCategoryIds).toEqual([ID1]);
     expect(parseProductFilters({ custom: '' }).customCategoryIds).toEqual([]);
-    // ID1/ID2 are all digits, so toUpperCase() above is a no-op; real hex letters prove the lower-casing.
+    // Surrounding whitespace is trimmed and the hex letters lower-cased.
     expect(parseProductFilters({ custom: ' ABCDEF01-ABCD-4BCD-8BCD-ABCDEF012345 ' }).customCategoryIds).toEqual(['abcdef01-abcd-4bcd-8bcd-abcdef012345']);
     const many = Array.from({ length: 51 }, (_, i) => `33333333-3333-4333-8333-${String(i).padStart(12, '0')}`);
     expect(parseProductFilters({ custom: many.join(',') }).customCategoryIds).toEqual(many.slice(0, 50));
+  });
+  it('reads only the first custom key when Next hands a repeated one as an array', () => {
+    expect(parseProductFilters({ custom: [ID1, ID2] }).customCategoryIds).toEqual([ID1]);
   });
   it('dept is trimmed; blank or over-long values fall back to null', () => {
     expect(parseProductFilters({ dept: ' Tools ' }).dept).toBe('Tools');
@@ -134,7 +149,7 @@ describe('parseProductFilters', () => {
     expect(sp.get('priceMin')).toBe('19.99');
     expect(sp.get('priceMax')).toBe('20');
     expect(sp.toString()).toBe(
-      'age=365&soldMin=100000&reviewsMax=300&ratingMin=35&ratingMax=50&priceMin=19.99&priceMax=20&bsrMin=1&bsrMax=50000&ratioMax=70&cat=Home+%26+Kitchen+%E2%80%BA+Bath&dept=Home+%26+Kitchen&leaf=Home+%26+Kitchen+%E2%80%BA+Bath&leaf=Home+%26+Kitchen+%E2%80%BA+Lighting&custom=11111111-1111-4111-8111-000000000001%2C22222222-2222-4222-8222-000000000002&fba=yes&amazon=no&sort=ratio&dir=asc&page=7',
+      `age=365&soldMin=100000&reviewsMax=300&ratingMin=35&ratingMax=50&priceMin=19.99&priceMax=20&bsrMin=1&bsrMax=50000&ratioMax=70&dept=Home+%26+Kitchen&leaf=Home+%26+Kitchen+%E2%80%BA+Bath&leaf=Home+%26+Kitchen+%E2%80%BA+Lighting&custom=${ID1}%2C${ID2}&fba=yes&amazon=no&sort=ratio&dir=asc&page=7`,
     );
     expect(viaUrl(FULL)).toEqual(FULL);
   });
@@ -154,6 +169,9 @@ describe('parseProductFilters', () => {
     expect(PRODUCT_SORTS).toEqual(['sold', 'listed', 'reviews', 'price', 'bsr', 'ratio', 'keywords']);
     expect(productFiltersSchema.safeParse({ ...PRODUCT_DEFAULTS, sort: 'x' }).success).toBe(false);
   });
+  it('schema: custom ids come out lower-cased, as in the workspace contracts', () => {
+    expect(productFiltersSchema.shape.customCategoryIds.parse([ID2.toUpperCase()])).toEqual([ID2]);
+  });
 });
 
 describe('the zod-free half (./filterParams)', () => {
@@ -164,6 +182,10 @@ describe('the zod-free half (./filterParams)', () => {
 
   it('PRODUCT_DEFAULTS satisfies the schema', () => {
     expect(productFiltersSchema.safeParse(PRODUCT_DEFAULTS).success).toBe(true);
+  });
+
+  it('the caps are the Explorer caps (leaf paths, custom ids, path length)', () => {
+    expect([PRODUCT_MAX_LEAF_PATHS, PRODUCT_MAX_CUSTOM_IDS, MAX_CATEGORY_PATH_LENGTH]).toEqual([MAX_LEAF_PATHS, MAX_CUSTOM_CATEGORY_IDS, MAX_LEAF_PATH_LENGTH]);
   });
 
   it('this module re-exports every value of ./filterParams as the same object', () => {

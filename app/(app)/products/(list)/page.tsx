@@ -65,7 +65,7 @@ async function ProductsResults({ filters }: { filters: ProductFilters }) {
   const panelKey = productFiltersToSearchParams({ ...filters, page: 1 }).toString();
   return (
     <div className="flex">
-      <ProductFilterPanel key={panelKey} filters={filters} leafCategories={leafCategories} />
+      <ProductFilterPanel key={panelKey} filters={filters} departments={[]} leafCategories={leafCategories} customCategories={[]} />
       <div className="min-w-0 flex-1 p-6">
         <ProductResultsTable rows={result.rows} total={result.total} totalIsCapped={result.totalIsCapped} filters={filters} now={now} />
         <ProductPagination page={filters.page} total={result.total} totalIsCapped={result.totalIsCapped} pageSize={result.pageSize} />

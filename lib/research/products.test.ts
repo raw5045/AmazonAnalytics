@@ -114,7 +114,7 @@ describe('searchProductsForTool', () => {
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, { filters: { categoryPath: 'Health & Household' } });
     expect(deps.search).toHaveBeenCalledWith(
-      { ...PRODUCT_DEFAULTS, cat: 'Health & Household', leafPaths: ['Health & Household'] },
+      { ...PRODUCT_DEFAULTS, leafPaths: ['Health & Household'] },
       { ...EMPTY_CATEGORY_SCOPE, subtreePaths: ['Health & Household'], scoped: true },
     );
   });

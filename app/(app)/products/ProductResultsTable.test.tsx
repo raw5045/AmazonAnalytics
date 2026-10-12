@@ -87,11 +87,11 @@ describe('ProductResultsTable rows', () => {
 
   it("the from it sends is the ASIN page back control's products list: the exact filtered URL, never with a from of its own", () => {
     // A stray from= on the list URL is not a filter, so the parse drops it and it cannot nest.
-    const filters = parseProductFilters({ age: '180', cat: 'Home & Kitchen › Lighting', sort: 'listed', dir: 'asc', page: '2', from: '/explorer' });
+    const filters = parseProductFilters({ age: '180', leaf: 'Home & Kitchen › Lighting', sort: 'listed', dir: 'asc', page: '2', from: '/explorer' });
     renderTable({ filters });
     const href = within(bodyCells()[0]).getByRole('link', { name: 'LED Desk Lamp' }).getAttribute('href') ?? '';
     const from = new URL(href, 'https://keywordquarry.test').searchParams.get('from') ?? '';
-    expect(from).toBe('/products?age=180&cat=Home+%26+Kitchen+%E2%80%BA+Lighting&sort=listed&dir=asc&page=2');
+    expect(from).toBe('/products?age=180&leaf=Home+%26+Kitchen+%E2%80%BA+Lighting&sort=listed&dir=asc&page=2');
     expect(new URLSearchParams(from.slice(from.indexOf('?') + 1)).has('from')).toBe(false);
     expect(parseProductFilters(Object.fromEntries(new URLSearchParams(from.slice(from.indexOf('?') + 1))))).toEqual(filters);
     expect(resolveProductBack(from)).toEqual({ href: from, label: 'Back to products', cameFromPage: true });

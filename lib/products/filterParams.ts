@@ -33,7 +33,6 @@ export type ProductFilters = {
   bsrMax: number | null;
   /** rank_ratio_x100 ≤ N (e.g. 70 = at least 30 % better than the 30-day average). */
   ratioMax: number | null;
-  cat: string | null;
   /** One Keepa root department ('Health & Household'): the product's own storefront department, matched at any depth (spec 2026-10-12 §3). */
   dept: string | null;
   /** Leaf picks: each matches the path and everything under it; several combine with OR. */
@@ -49,7 +48,7 @@ export type ProductFilters = {
 
 export const PRODUCT_DEFAULTS: Readonly<ProductFilters> = Object.freeze({
   age: null, soldMin: null, reviewsMax: null, ratingMin: null, ratingMax: null, priceMinCents: null, priceMaxCents: null,
-  bsrMin: null, bsrMax: null, ratioMax: null, cat: null, dept: null, leafPaths: [], customCategoryIds: [], fba: null, amazon: null, sort: 'sold', dir: 'desc', page: 1,
+  bsrMin: null, bsrMax: null, ratioMax: null, dept: null, leafPaths: [], customCategoryIds: [], fba: null, amazon: null, sort: 'sold', dir: 'desc', page: 1,
 });
 
 /** The URL form (dollars for prices; defaults omitted) — the inverse of parseProductFilters. */
@@ -59,7 +58,7 @@ export function productFiltersToSearchParams(f: ProductFilters): URLSearchParams
   set('age', f.age, null); set('soldMin', f.soldMin, null); set('reviewsMax', f.reviewsMax, null); set('ratingMin', f.ratingMin, null); set('ratingMax', f.ratingMax, null);
   if (f.priceMinCents !== null) sp.set('priceMin', (f.priceMinCents / 100).toFixed(2).replace(/\.00$/, ''));
   if (f.priceMaxCents !== null) sp.set('priceMax', (f.priceMaxCents / 100).toFixed(2).replace(/\.00$/, ''));
-  set('bsrMin', f.bsrMin, null); set('bsrMax', f.bsrMax, null); set('ratioMax', f.ratioMax, null); set('cat', f.cat, null); set('dept', f.dept, null);
+  set('bsrMin', f.bsrMin, null); set('bsrMax', f.bsrMax, null); set('ratioMax', f.ratioMax, null); set('dept', f.dept, null);
   for (const path of f.leafPaths) sp.append('leaf', path);
   if (f.customCategoryIds.length > 0) sp.set('custom', f.customCategoryIds.join(','));
   set('fba', f.fba, null); set('amazon', f.amazon, null);

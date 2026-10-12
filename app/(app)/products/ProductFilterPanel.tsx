@@ -74,7 +74,11 @@ export interface PendingProductFilters {
   bsrMin: string;
   bsrMax: string;
   ratioMax: string;
-  cat: string | null;
+  dept: string;
+  leafPaths: string[];
+  /** Which side of the Leaf | Custom toggle is open; only that side's selection is applied. */
+  leafMode: 'leaf' | 'custom';
+  customCategoryIds: string[];
   fba: '' | 'yes' | 'no';
   amazon: '' | 'yes' | 'no';
   sort: ProductSort;
@@ -99,7 +103,11 @@ export function filtersToPending(f: ProductFilters): PendingProductFilters {
     bsrMin: asText(f.bsrMin),
     bsrMax: asText(f.bsrMax),
     ratioMax: asText(f.ratioMax),
-    cat: f.cat,
+    dept: f.dept ?? '',
+    leafPaths: [...f.leafPaths],
+    // The Explorer's rule: custom ids in the applied filters open the Custom side.
+    leafMode: f.customCategoryIds.length > 0 ? 'custom' : 'leaf',
+    customCategoryIds: [...f.customCategoryIds],
     fba: f.fba ?? '',
     amazon: f.amazon ?? '',
     sort: f.sort,
@@ -138,10 +146,9 @@ export function pendingToFilters(p: PendingProductFilters): ProductFilters {
     bsrMin: toNumber(p.bsrMin),
     bsrMax: toNumber(p.bsrMax),
     ratioMax: toNumber(p.ratioMax),
-    cat: p.cat,
-    dept: null,
-    leafPaths: [],
-    customCategoryIds: [],
+    dept: p.dept === '' ? null : p.dept,
+    leafPaths: p.leafMode === 'leaf' ? p.leafPaths : [],
+    customCategoryIds: p.leafMode === 'custom' ? p.customCategoryIds : [],
     fba: p.fba === '' ? null : p.fba,
     amazon: p.amazon === '' ? null : p.amazon,
     sort: p.sort,
@@ -162,13 +169,29 @@ const INPUT =
 const LABEL = 'mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500';
 const HINT = 'mt-1 text-xs text-gray-500';
 
+/** One of the user's custom categories, as the panel's Custom list shows it. */
+export interface PanelCustomCategory { id: string; name: string; leafPaths: string[] }
+
 /**
- * Filter panel for /products (spec 2026-10-09 §5.1), built like the explorer's FilterSidebar: local
- * state seeded from the applied filters (the page keys it by them, so a header re-sort re-seeds it),
- * Apply / Reset inside a transition with the LoadingOverlay. Apply builds a ProductFilters object
- * and replaces the URL with productFiltersToSearchParams of it, back on page 1.
+ * Filter panel for /products (spec 2026-10-09 §5.1; categories, spec 2026-10-12 §5.1), built like the
+ * explorer's FilterSidebar: local state seeded from the applied filters (the page keys it by them, so a
+ * header re-sort re-seeds it), Apply / Reset inside a transition with the LoadingOverlay. Apply builds a
+ * ProductFilters object and replaces the URL with productFiltersToSearchParams of it, back on page 1.
+ * The page hands it three lists: the departments, the category paths and the user's custom categories.
+ * Under "Leaf categories", Leaf mode applies the typeahead picks and Custom mode the checked custom
+ * ids, never both.
  */
-export function ProductFilterPanel({ filters, leafCategories }: { filters: ProductFilters; leafCategories: string[] }) {
+export function ProductFilterPanel({
+  filters, departments, leafCategories, customCategories,
+}: {
+  filters: ProductFilters;
+  /** The catalog's root departments (lib/products/listCategories). */
+  departments: string[];
+  /** The catalog's distinct category paths, the typeahead's options. */
+  leafCategories: string[];
+  /** The signed-in user's custom categories (lib/customCategories/loadServer). */
+  customCategories: ReadonlyArray<PanelCustomCategory>;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [pending, setPending] = useState<PendingProductFilters>(() => filtersToPending(filters));
@@ -200,6 +223,14 @@ export function ProductFilterPanel({ filters, leafCategories }: { filters: Produ
   const hint = sortHint(pending.sort);
   const soldOptions = withCurrent(SOLD_BUCKETS, pending.soldMin, (a, b) => a - b);
   const ratioOptions = withCurrent(RATIO_PRESETS, pending.ratioMax, (a, b) => b - a);
+  // A department from a hand-edited URL that the list lacks still shows as the selected option.
+  const departmentOptions = pending.dept === '' || departments.includes(pending.dept) ? departments : [...departments, pending.dept];
+  const toggleCustom = (id: string) =>
+    set('customCategoryIds', pending.customCategoryIds.includes(id) ? pending.customCategoryIds.filter((x) => x !== id) : [...pending.customCategoryIds, id]);
+  const selectedCustom = customCategories.filter((c) => pending.customCategoryIds.includes(c.id));
+  const uniqueLeaves = new Set(selectedCustom.flatMap((c) => c.leafPaths)).size;
+  const MODE_BUTTON = 'flex-1 px-2 py-1';
+  const modeClass = (on: boolean) => `${MODE_BUTTON} ${on ? 'bg-[#0B1E3A] text-white' : 'bg-white text-gray-700 hover:bg-slate-50'}`;
 
   return (
     <>
@@ -361,14 +392,61 @@ export function ProductFilterPanel({ filters, leafCategories }: { filters: Produ
               <p className={HINT}>Today&apos;s BSR against its own 30-day average.</p>
             </Field>
 
-            <Field label="Category">
-              <LeafCategoryTypeahead
-                options={leafCategories}
-                selected={pending.cat ? [pending.cat] : []}
-                // One category: the typeahead appends a pick, so the newest pick replaces the old one.
-                onChange={(next) => set('cat', next.length > 0 ? next[next.length - 1] : null)}
-              />
-              <p className={HINT}>One category; picking another replaces it.</p>
+            <Field label="Department" htmlFor="pf-dept">
+              <select id="pf-dept" value={pending.dept} onChange={(e) => set('dept', e.target.value)} className={INPUT}>
+                <option value="">All departments</option>
+                {departmentOptions.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Leaf categories">
+              {/* Leaf | Custom segmented toggle, as the explorer sidebar's. */}
+              <div className="mb-2 flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium">
+                <button type="button" aria-pressed={pending.leafMode === 'leaf'} onClick={() => set('leafMode', 'leaf')} className={modeClass(pending.leafMode === 'leaf')}>
+                  Leaf
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={pending.leafMode === 'custom'}
+                  onClick={() => set('leafMode', 'custom')}
+                  className={`border-l border-slate-300 ${modeClass(pending.leafMode === 'custom')}`}
+                >
+                  Custom
+                </button>
+              </div>
+              {pending.leafMode === 'leaf' ? (
+                <>
+                  <LeafCategoryTypeahead options={leafCategories} selected={pending.leafPaths} onChange={(next) => set('leafPaths', next)} />
+                  <p className={HINT}>
+                    {leafCategories.length.toLocaleString('en-US')} categories — type to search, click or Enter to add. Each pick includes its sub-categories; several
+                    match with OR.
+                  </p>
+                </>
+              ) : customCategories.length === 0 ? (
+                <p className={HINT}>No custom categories yet — build one in the Category Builder tab.</p>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    {customCategories.map((c) => (
+                      <label key={c.id} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={pending.customCategoryIds.includes(c.id)} onChange={() => toggleCustom(c.id)} />
+                        <span>
+                          {c.name} <span className="text-gray-400">({c.leafPaths.length})</span>
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                  {selectedCustom.length > 0 && (
+                    <p className={HINT}>
+                      {selectedCustom.length} selected → {uniqueLeaves} leaves
+                    </p>
+                  )}
+                </>
+              )}
             </Field>
 
             <Field label="FBA offer" htmlFor="pf-fba">

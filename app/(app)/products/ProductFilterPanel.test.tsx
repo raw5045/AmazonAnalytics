@@ -11,15 +11,20 @@ const LEAVES = [
   'Home & Kitchen › Lighting › Floor Lamps',
   'Toys & Games › Puzzles › Jigsaw Puzzles',
 ];
+const DEPARTMENTS = ['Home & Kitchen', 'Pet Supplies', 'Toys & Games'];
+const CUSTOM = [
+  { id: '11111111-1111-4111-8111-000000000001', name: 'Lamps', leafPaths: [LEAVES[0], LEAVES[1]] },
+  { id: '22222222-2222-4222-8222-000000000002', name: 'Puzzles & lamps', leafPaths: [LEAVES[1], LEAVES[2]] },
+];
 
-/** Every filter set to a non-default value, on page 3. */
+/** Every filter set to a non-default value, on page 3 (leaf mode: picks, no custom ids). */
 const SEEDED: ProductFilters = {
   age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 40, ratingMax: 48, priceMinCents: 999, priceMaxCents: 3000,
-  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, cat: LEAVES[0], dept: null, leafPaths: [], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
+  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, dept: 'Home & Kitchen', leafPaths: [LEAVES[0]], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
 };
 
-function renderPanel(filters: ProductFilters = PRODUCT_DEFAULTS) {
-  return render(<ProductFilterPanel filters={filters} leafCategories={LEAVES} />);
+function renderPanel(filters: ProductFilters = PRODUCT_DEFAULTS, customCategories = CUSTOM) {
+  return render(<ProductFilterPanel filters={filters} departments={DEPARTMENTS} leafCategories={LEAVES} customCategories={customCategories} />);
 }
 
 const control = (label: string) => screen.getByLabelText(label);
@@ -53,6 +58,11 @@ describe('ProductFilterPanel controls', () => {
     }
     expect(control('BSR vs 30-day avg')).toHaveDisplayValue('Any');
     expect(optionTexts('BSR vs 30-day avg')).toEqual(['Any', 'At least 10% better', 'At least 30% better', 'At least 50% better']);
+    expect(control('Department')).toHaveDisplayValue('All departments');
+    expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS]);
+    expect(screen.getByRole('button', { name: 'Leaf' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText(/3 categories — type to search/)).toBeInTheDocument();
     expect(control('Add leaf category')).toHaveValue('');
     expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
     expect(control('FBA offer')).toHaveDisplayValue('Any');
@@ -77,6 +87,7 @@ describe('ProductFilterPanel controls', () => {
     expect(control('Minimum BSR')).toHaveValue(1);
     expect(control('Maximum BSR')).toHaveValue(50_000);
     expect(control('BSR vs 30-day avg')).toHaveDisplayValue('At least 30% better');
+    expect(control('Department')).toHaveDisplayValue('Home & Kitchen');
     expect(screen.getByRole('button', { name: `Remove ${LEAVES[0]}` })).toBeInTheDocument();
     expect(control('FBA offer')).toHaveDisplayValue('Present');
     expect(control('Amazon selling')).toHaveDisplayValue('No');
@@ -191,28 +202,82 @@ describe('ProductFilterPanel Apply / Reset', () => {
     expect(control('Listing age')).toHaveDisplayValue('Any');
     expect(control('Reviews (at most)')).toHaveValue(null);
     expect(control('Minimum price')).toHaveValue(null);
+    expect(control('Department')).toHaveDisplayValue('All departments');
     expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
     expect(control('Sort')).toHaveDisplayValue('Monthly sold');
     expect(control('Sort direction')).toHaveDisplayValue('Most sold first');
   });
 });
 
-describe('ProductFilterPanel category (single selection)', () => {
+describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
   beforeEach(() => replace.mockClear());
 
-  it('a pick becomes the category, a second pick replaces it, removing the chip clears it', () => {
+  it('leaf picks accumulate as chips and apply as repeated leaf params, with the department', () => {
     renderPanel();
+    change('Department', 'Home & Kitchen');
     pickCategory('Desk Lamps');
-    expect(screen.getByRole('button', { name: `Remove ${LEAVES[0]}` })).toBeInTheDocument();
     pickCategory('Jigsaw Puzzles');
-    expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(1);
-    expect(screen.getByRole('button', { name: `Remove ${LEAVES[2]}` })).toBeInTheDocument();
-
+    expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(2);
     fireEvent.click(applyButton());
-    expect(replace).toHaveBeenLastCalledWith(`/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, cat: LEAVES[2] })}`, { scroll: false });
+    expect(replace).toHaveBeenLastCalledWith(
+      `/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, dept: 'Home & Kitchen', leafPaths: [LEAVES[0], LEAVES[2]] })}`,
+      { scroll: false },
+    );
+    fireEvent.click(screen.getByRole('button', { name: `Remove ${LEAVES[0]}` }));
+    expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(1);
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: `Remove ${LEAVES[2]}` }));
-    expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
+  it('a department the list lacks (from the URL) still shows as the selected option', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Appliances' });
+    expect(control('Department')).toHaveDisplayValue('Appliances');
+    expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS, 'Appliances']);
+  });
+
+  it('Custom mode lists the custom categories with their leaf counts; checked ones apply as the custom param and drop the leaf picks', () => {
+    renderPanel(SEEDED);
+    fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
+    expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByLabelText('Add leaf category')).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Lamps (2)' })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Lamps (2)' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Puzzles & lamps (2)' }));
+    expect(screen.getByText('2 selected → 3 leaves')).toBeInTheDocument();
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith(
+      `/products?${productFiltersToSearchParams({ ...SEEDED, leafPaths: [], customCategoryIds: [CUSTOM[0].id, CUSTOM[1].id], page: 1 })}`,
+      { scroll: false },
+    );
+  });
+
+  it('opens in Custom mode when the applied filters carry custom ids, with those boxes checked', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[1].id] });
+    expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('checkbox', { name: 'Puzzles & lamps (2)' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Lamps (2)' })).not.toBeChecked();
+    expect(screen.getByText('1 selected → 2 leaves')).toBeInTheDocument();
+    expect(applyButton()).toBeDisabled();
+  });
+
+  it('switching back to Leaf mode applies the picks and drops the custom ids', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id] });
+    fireEvent.click(screen.getByRole('button', { name: 'Leaf' }));
+    pickCategory('Floor Lamps');
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith(`/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, leafPaths: [LEAVES[1]] })}`, { scroll: false });
+  });
+
+  it('says where to build one when the account has no custom categories', () => {
+    renderPanel(PRODUCT_DEFAULTS, []);
+    fireEvent.click(screen.getByRole('button', { name: 'Custom' }));
+    expect(screen.getByText(/No custom categories yet — build one in the Category Builder tab/)).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+  });
+
+  it('a department + leaf URL is not dirty on load, and its picks show as chips', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies', leafPaths: [LEAVES[0], LEAVES[2]] });
+    expect(control('Department')).toHaveDisplayValue('Pet Supplies');
+    expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(2);
+    expect(applyButton()).toBeDisabled();
   });
 });
 
@@ -245,5 +310,24 @@ describe('filtersToPending / pendingToFilters', () => {
   it('build the ProductFilters object without validating it (the server parse is the judge)', () => {
     const p = { ...filtersToPending(PRODUCT_DEFAULTS), reviewsMax: ' 12 ', ratingMin: '4.45', priceMax: '19.999', bsrMin: 'abc' };
     expect(pendingToFilters(p)).toMatchObject({ reviewsMax: 12, ratingMin: 45, priceMaxCents: 2000, bsrMin: null });
+  });
+
+  it('derives the mode from the applied filters, and the active mode wins on the way back (custom ids drop leaf picks and vice versa)', () => {
+    expect(filtersToPending(SEEDED).leafMode).toBe('leaf');
+    expect(filtersToPending({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id] }).leafMode).toBe('custom');
+    const hybrid = { ...PRODUCT_DEFAULTS, leafPaths: [LEAVES[0]], customCategoryIds: [CUSTOM[0].id] };
+    expect(pendingToFilters(filtersToPending(hybrid))).toEqual({ ...PRODUCT_DEFAULTS, customCategoryIds: [CUSTOM[0].id] });
+    expect(pendingToFilters({ ...filtersToPending(hybrid), leafMode: 'leaf' })).toEqual({ ...PRODUCT_DEFAULTS, leafPaths: [LEAVES[0]] });
+    expect(pendingToFilters({ ...filtersToPending(PRODUCT_DEFAULTS), dept: '' }).dept).toBeNull();
+  });
+
+  // PRODUCT_DEFAULTS' arrays are shared (Object.freeze is shallow); the pending state must never alias them.
+  it('copies the array fields, so editing the pending state can never touch the applied filters or the defaults', () => {
+    const p = filtersToPending(PRODUCT_DEFAULTS);
+    expect(p.leafPaths).not.toBe(PRODUCT_DEFAULTS.leafPaths);
+    expect(p.customCategoryIds).not.toBe(PRODUCT_DEFAULTS.customCategoryIds);
+    const q = filtersToPending(SEEDED);
+    expect(q.leafPaths).toEqual(SEEDED.leafPaths);
+    expect(q.leafPaths).not.toBe(SEEDED.leafPaths);
   });
 });
