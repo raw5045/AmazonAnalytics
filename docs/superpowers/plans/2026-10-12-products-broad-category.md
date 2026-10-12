@@ -302,7 +302,7 @@ git commit -m "feat(top-asins): migration 0052 — broad_category column + parti
       expect(insertCols).toHaveLength(9);
 ```
 
-(d) The three swap tests gain the third index's renames. Both renames are `IF EXISTS`, and the same-week swap first moves a canonical name off `_prev`: an OLD-code build between the apply of 0052 and the deploy carries the index along unrenamed (LIKE names it `keyword_top_asins_next_broad_category_asin_idx` on the new live table while the canonical name moves to `_prev`), and index names are schema-wide, so a fixed-name rename would fail with 42704 (source gone) or 42P07 (target taken by `_prev`) on every later build. Advance (`'advance: retires the old _prev …'`): the expected list becomes
+(d) The three swap tests gain the third index's renames. Both renames are `IF EXISTS`, and the same-week swap first moves a canonical name off `_prev`: an OLD-code build between the apply of 0052 and the deploy carries the index along unrenamed (LIKE names it `keyword_top_asins_next_broad_category_asin_idx` on the new live table while the canonical name moves to `_prev`), and index names are schema-wide, so a fixed-name rename would fail with 42P01 (source gone) or 42P07 (target taken by `_prev`) on every later build. Advance (`'advance: retires the old _prev …'`): the expected list becomes
 
 ```ts
       'DROP TABLE IF EXISTS keyword_top_asins_prev',
