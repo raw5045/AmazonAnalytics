@@ -701,7 +701,7 @@ Read `node_modules/next/dist/docs/01-app/` (server components, `unstable_cache`)
   });
 ```
 
-(d) In the `pendingToFilters` tests (near `const tools = filtersToPending({ ...PRODUCT_DEFAULTS, dept: 'Tools' })`):
+(d) `SEEDED` ("Every filter set to a non-default value") now gets `broadCategory: 'Home'` instead of Task 3's interim `null` (`BROAD` contains it); the seeded render test asserts `expect(control('Broad category')).toHaveDisplayValue('Home');`, and the seeded Apply/round-trip tests carry `broad=Home` wherever they spell the URL (run them and update the expected strings they print). In the `pendingToFilters` tests (near `const tools = filtersToPending({ ...PRODUCT_DEFAULTS, dept: 'Tools' })`):
 
 ```ts
     const home = filtersToPending({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
@@ -734,7 +734,7 @@ Read `node_modules/next/dist/docs/01-app/` (server components, `unstable_cache`)
                   </option>
                 ))}
               </select>
-              <p className={HINT}>The Brand Analytics code the product was clicked under this week (the Explorer&apos;s broad categories). A product can carry several.</p>
+              <p className={HINT}>The Brand Analytics code the weekly report filed the product under, on the keywords it was a top-3 clicked product for this week (the Explorer&apos;s broad categories). A product can carry several.</p>
             </Field>
 ```
 
@@ -899,7 +899,7 @@ git commit -m "feat(products): ProductFacts.broadCategories (most keywords first
 - [ ] **Step 1: Failing tests** —
 
 `lib/research/products.test.ts`:
-(a) `scopeMock` gains `broad: vi.fn(async () => ['Home'])`; the `listCategories` mock gains `listProductBroadCategories: scopeMock.broad`. `const BROAD_CODES = ['Apparel', 'Home', 'Pet Supplies'];` beside `DEPARTMENTS`; `makeDeps` gains `broadCategories: vi.fn(async () => BROAD_CODES),` after `categoryPaths`.
+(a) `scopeMock` gains `broad: vi.fn(async () => ['Home'])`; the `listCategories` mock gains `listProductBroadCategories: scopeMock.broad`. `const BROAD_CODES = ['Apparel', 'Home', 'Pet Supplies'];` beside `DEPARTMENTS`; `makeDeps` gains `broadCategories: vi.fn(async () => BROAD_CODES),` after `categoryPaths`. In `lib/research/contracts.test.ts`, the `'maps every field…'` test's `fullProductSearch.filters` gains `broadCategory: 'Home'` and its `toStrictEqual` literal expects `broadCategory: 'Home'` (Task 3 left it at `null`); the test that pins the search input's field order/descriptions (if any) gains the new field.
 (b) In `describe('searchProductsForTool: department and categories …')`, after the department tests:
 
 ```ts
@@ -947,6 +947,7 @@ git commit -m "feat(products): ProductFacts.broadCategories (most keywords first
 
 ```ts
     expect(rules).toContain("filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory and a keyword row's broadCategory carry it");
+    expect(rules).toContain("the product's own code on that row, which can differ from the keyword's broadCategory");
     expect(rules).toContain('get_product_details returns the product\'s codes as broadCategories');
     expect(unitsOf('broadCategory')).toContain('Brand Analytics code');
     expect(unitsOf('broadCategory')).toContain('CATEGORY_NOT_AVAILABLE');
@@ -960,7 +961,7 @@ git commit -m "feat(products): ProductFacts.broadCategories (most keywords first
 
 ```ts
     broadCategory: z.string().trim().min(1).max(255).optional().describe(
-      "One Brand Analytics code, spelled exactly as a keyword row's broadCategory carries it ('Home', 'Apparel', 'Biss', 'Pet Supplies'): the product is a top-3 clicked product this week under at least one keyword filed with that code (a product can carry several; any one matches). Independent of filters.department (the product's own Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
+      "One Brand Analytics code, spelled as a keyword row's broadCategory carries it ('Home', 'Apparel', 'Biss', 'Pet Supplies'): the weekly report filed the product under it on at least one keyword where it was a top-3 clicked product this week (the product's own code on that row, which can differ from the keyword's broadCategory; a product can carry several codes and any one matches). Independent of filters.department (the product's own Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
     ),
 ```
 
@@ -993,7 +994,7 @@ The function's doc comment: "the department and the broad category checked again
 - [ ] **Step 5: tools.ts, catalog.ts** — `tools.ts` `search_products` description: after `department (the product's Keepa storefront department, not a keyword row's broadCategory)` insert `, broad category (the Brand Analytics code a keyword row's broadCategory carries; any of a product's codes)`. `catalog.ts`: `GUIDE_VERSION = 5`; in `PRODUCT_RULES`, after the department rule:
 
 ```ts
-  "filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory and a keyword row's broadCategory carry it ('Home', 'Apparel', 'Biss' …): the product was a top-3 clicked product this week under a keyword filed with that code, any of the product's codes. filters.department is the product's own Keepa storefront department — a different list; both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the message lists the valid codes. get_product_details returns the product's codes as broadCategories, most keywords first.",
+  "filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory and a keyword row's broadCategory carry it ('Home', 'Apparel', 'Biss' …): the weekly report filed the product under that code on at least one keyword where it was a top-3 clicked product this week — the product's own code on that row, which can differ from the keyword's broadCategory (the number-one product's code), so a search_keywords cross-check may not find the keyword; a product can carry several codes and any one matches. filters.department is the product's own Keepa storefront department — a different list; both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the message lists the valid codes. get_product_details returns the product's codes as broadCategories, most keywords first.",
 ```
 
 Add to the `GUIDE_VERSION` comment history: "5 (2026-10-12): the products broad-category filter and field."
