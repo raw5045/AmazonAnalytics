@@ -69,7 +69,7 @@ describe('RESEARCH_TOOLS', () => {
     expect(details).toContain(`keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}`);
     expect(details).toContain('keywordsTotal counts every keyword, past the cap too');
     expect(details).toContain('weeks in top 3 = consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword');
-    expect(details).toContain('product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side');
+    expect(details).toContain('product.inCatalog false: keywords known, no product facts (the title and broadCategories may still come from the keyword side');
     expect(details).not.toContain('every fact is null');
     expect(details).toContain('averageRatingX10 = stars × 10');
     expect(details).toContain('prices are in cents');
@@ -78,6 +78,7 @@ describe('RESEARCH_TOOLS', () => {
   it('search_products describes the department and categories filters', () => {
     const text = researchToolByName('search_products').description(DEFAULT_LIMITS);
     expect(text).toContain("department (the product's Keepa storefront department, not a keyword row's broadCategory)");
+    expect(text).toContain("broad category (the Brand Analytics code a keyword row's broadCategory carries; any of a product's codes)");
     expect(text).toContain('filters.categories, the same object search_keywords takes');
     expect(text).toContain('a taxonomy selection includes everything under it, whatever includeDescendants says');
     expect(text).toContain("a custom selection is that custom category's stored paths, exactly");

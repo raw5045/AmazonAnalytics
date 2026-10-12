@@ -14,7 +14,7 @@ import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
 import { env } from '@/lib/env';
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
 import { PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
-import { listProductCategoryPaths, listProductDepartments } from '@/lib/products/listCategories';
+import { listProductBroadCategories, listProductCategoryPaths, listProductDepartments } from '@/lib/products/listCategories';
 import { loadProduct, type ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import { loadProductHistory } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
@@ -35,7 +35,7 @@ export { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP };
 const DETAILS_ROWS = 1;
 
 /**
- * The data side of the products tools: the four Products page loaders, plus the three a search's
+ * The data side of the products tools: the four Products page loaders, plus the four a search's
  * category scope is checked against. `defaultProductsDeps` wires production; tests inject stubs.
  */
 export interface ProductLoaders {
@@ -48,6 +48,8 @@ export interface ProductLoaders {
   departments: () => Promise<string[]>;
   /** The catalog's distinct category paths (lib/products/listCategories, cached an hour): a search's taxonomy and leaf paths are checked against them. */
   categoryPaths: () => Promise<string[]>;
+  /** The Brand Analytics codes on the pair table (lib/products/listCategories, cached an hour): a search's broadCategory must be one of them. */
+  broadCategories: () => Promise<string[]>;
   /** The actor's own custom categories by id; unknown and foreign ids are absent (lib/research/categories.ts loadCustomRows). */
   customRows: (userId: string, ids: string[]) => Promise<CustomRow[]>;
 }
@@ -77,6 +79,7 @@ export function defaultProductsDeps(): ProductLoaders {
     keywords: (asin, limit) => loadProductKeywords(run(), asin, limit),
     departments: () => listProductDepartments(),
     categoryPaths: () => listProductCategoryPaths(),
+    broadCategories: () => listProductBroadCategories(),
     customRows: (userId, ids) => loadCustomRows(userId, ids),
   };
 }
@@ -95,7 +98,7 @@ function assertAdmin(actor: ResearchActor): void {
 }
 
 type ProductSearchFilters = NonNullable<ProductSearchInput['filters']>;
-type ScopeDeps = Pick<ProductLoaders, 'departments' | 'categoryPaths' | 'customRows'>;
+type ScopeDeps = Pick<ProductLoaders, 'departments' | 'categoryPaths' | 'broadCategories' | 'customRows'>;
 const PATH_NOT_AVAILABLE = 'not a category path of the product catalog';
 
 function pathNotAvailable(path: string, at: string): ResearchError {
@@ -107,7 +110,8 @@ function pathNotAvailable(path: string, at: string): ResearchError {
 }
 
 /**
- * The search's category scope (spec 2026-10-12 §6): the department checked against the catalog's list;
+ * The search's category scope (spec 2026-10-12 §6): the department and the broad category checked
+ * against the catalog's lists (the code travels on the page filters, not the scope);
  * every taxonomy selection as a subtree, whatever includeDescendants says (resolve_categories marks
  * keyword-side leaves as having no descendants, but the product catalog files products deeper); custom
  * selections as the account's stored paths, exactly; leafPaths exactly. Every taxonomy and leaf path is
@@ -126,6 +130,16 @@ export async function resolveProductCategoryScope(deps: ScopeDeps, actor: Resear
         ? 'The product catalog has no departments yet.'
         : `"${dept}" is not a department of the product catalog. Pass one of: ${departments.join('; ')}.`;
       throw new ResearchError('CATEGORY_NOT_AVAILABLE', message, { details: [{ path: 'filters.department', message: 'unknown department' }] });
+    }
+  }
+  const broad = filters.broadCategory ?? null;
+  if (broad !== null) {
+    const codes = await deps.broadCategories();
+    if (!codes.includes(broad)) {
+      const message = codes.length === 0
+        ? 'No broad categories are available yet (the weekly keyword-to-product table is empty).'
+        : `"${broad}" is not a broad category of this week's clicked products. Pass one of: ${codes.join('; ')}.`;
+      throw new ResearchError('CATEGORY_NOT_AVAILABLE', message, { details: [{ path: 'filters.broadCategory', message: 'unknown broad category' }] });
     }
   }
   const categories = filters.categories;

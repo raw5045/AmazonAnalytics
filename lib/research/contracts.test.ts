@@ -422,7 +422,7 @@ const INT4_MAX = 2_147_483_647;
 const fullProductSearch = {
   filters: {
     listedWithinDays: 180, monthlySoldMin: 1000, reviewsMax: 300, ratingMin: 4.2, ratingMax: 4.9, priceMin: 9.99, priceMax: 19.99,
-    bsrMin: 1, bsrMax: 5000, bsrRatioMax: 70, department: 'Health & Household', fba: 'yes', amazonSelling: 'no',
+    bsrMin: 1, bsrMax: 5000, bsrRatioMax: 70, department: 'Health & Household', broadCategory: 'Home', fba: 'yes', amazonSelling: 'no',
   },
   sort: 'price',
   dir: 'asc',
@@ -459,6 +459,7 @@ describe('productSearchInputSchema (the search_products input)', () => {
       { ratingMin: -0.1 }, { ratingMax: 5.1 }, { ratingMin: 4.55 }, { priceMin: -1 }, { priceMax: 9.999 }, { priceMax: PRODUCT_PRICE_DOLLARS_MAX + 0.01 },
       { bsrMin: 0 }, { bsrMax: INT4_MAX + 1 }, { bsrRatioMax: 0 }, { bsrRatioMax: 1001 }, { bsrRatioMax: 70.5 },
       { department: '' }, { department: '   ' }, { department: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH + 1) }, { department: null }, { fba: 'maybe' }, { amazonSelling: true },
+      { broadCategory: '' }, { broadCategory: '   ' }, { broadCategory: 'x'.repeat(256) }, { broadCategory: null },
     ];
     for (const filters of badFilters) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(false);
     for (const input of [{ sort: 'title' }, { dir: 'up' }, { page: 0 }, { page: PRODUCT_MAX_PAGE + 1 }, { page: 1.5 }, { filters: null }]) {
@@ -470,6 +471,7 @@ describe('productSearchInputSchema (the search_products input)', () => {
     const atBounds: Array<Record<string, unknown>> = [
       { listedWithinDays: 60 }, { listedWithinDays: 365 }, { monthlySoldMin: 1 }, { reviewsMax: 0 }, { ratingMin: 0, ratingMax: 5 }, { priceMin: 0 },
       { priceMax: PRODUCT_PRICE_DOLLARS_MAX }, { bsrMin: 1, bsrMax: INT4_MAX }, { bsrRatioMax: 1 }, { bsrRatioMax: 1000 }, { department: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH) },
+      { broadCategory: 'x'.repeat(255) },
     ];
     for (const filters of atBounds) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(true);
     for (const sort of PRODUCT_SORTS) expect(productSearchInputSchema.safeParse({ sort }).success, sort).toBe(true);
@@ -524,6 +526,9 @@ describe('productSearchInputSchema (the search_products input)', () => {
     expect(filters.department.description).toBe(
       "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not a keyword row's broadCategory. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
     );
+    expect(filters.broadCategory.description).toBe(
+      "One Brand Analytics code, spelled as a keyword row's broadCategory carries it ('Home', 'Apparel', 'Biss', 'Pet Supplies'): the weekly report filed the product under it on at least one keyword where it was a top-3 clicked product this week (the product's own code on that row, which can differ from the keyword's broadCategory; a product can carry several codes and any one matches). Independent of filters.department (the product's own Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
+    );
     // On products every taxonomy selection is a subtree: resolve_categories hands keyword-side leaves back with includeDescendants false.
     expect(filters.categories.description).toBe(
       'The object search_keywords takes: selections from resolve_categories (several = OR) and leafPaths. On products a taxonomy selection matches the path and everything under it whatever includeDescendants says (resolve_categories marks keyword-side leaves as having no descendants, but the product catalog files products deeper); a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Taxonomy and leaf paths are checked against the product catalog (keyword-side paths almost always exist there); an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.',
@@ -559,7 +564,7 @@ describe('toProductFilters (search_products input to the Products page filters)'
   it('maps every field: dollars to cents, stars to ×10, the tool names onto the page names', () => {
     expect(toProductFilters(productSearchInputSchema.parse(fullProductSearch))).toStrictEqual({
       age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 42, ratingMax: 49, priceMinCents: 999, priceMaxCents: 1999,
-      bsrMin: 1, bsrMax: 5000, ratioMax: 70, dept: 'Health & Household', broadCategory: null, leafPaths: [], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'price', dir: 'asc', page: 3,
+      bsrMin: 1, bsrMax: 5000, ratioMax: 70, dept: 'Health & Household', broadCategory: 'Home', leafPaths: [], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'price', dir: 'asc', page: 3,
     });
     // The categories object becomes the search's category scope (lib/research/products.ts), never page filters.
     const categories = { selections: [{ kind: 'custom', id: '11111111-1111-4111-8111-000000000001' }], leafPaths: ['A › B'] };

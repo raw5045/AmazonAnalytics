@@ -17,9 +17,12 @@ vi.mock('@neondatabase/serverless', () => ({ neon: neonMock.neon }));
 const scopeMock = vi.hoisted(() => ({
   departments: vi.fn(async () => ['Pet Supplies']),
   paths: vi.fn(async () => ['Pet Supplies › Cats › Toys']),
+  broad: vi.fn(async () => ['Home']),
   customRows: vi.fn(async (userId: string, ids: string[]) => ids.map((id) => ({ id, leafPaths: [`${userId} path`] }))),
 }));
-vi.mock('@/lib/products/listCategories', () => ({ listProductDepartments: scopeMock.departments, listProductCategoryPaths: scopeMock.paths }));
+vi.mock('@/lib/products/listCategories', () => ({
+  listProductDepartments: scopeMock.departments, listProductCategoryPaths: scopeMock.paths, listProductBroadCategories: scopeMock.broad,
+}));
 vi.mock('./categories', () => ({ loadCustomRows: scopeMock.customRows }));
 
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
@@ -81,6 +84,8 @@ const keywordRow = (n: number, over: Partial<ProductKeywordRow> = {}): ProductKe
 
 /** The catalog's departments and category paths, as the cached lists hold them (code-unit order). */
 const DEPARTMENTS = ['Health & Household', 'Pet Supplies'];
+/** The pair table's Brand Analytics codes, as the cached list holds them (code-unit order). */
+const BROAD_CODES = ['Apparel', 'Home', 'Pet Supplies'];
 const CATALOG_PATHS = [
   'Health & Household', 'Health & Household › Vitamins', 'Health & Household › Vitamins › Magnesium',
   'Pet Supplies › Cats › Toys', 'Pet Supplies › Dogs › Toys', 'Pet Supplies › Dogs › Toys › Chew Toys',
@@ -98,6 +103,7 @@ function makeDeps(over: Partial<ProductsDeps> = {}): ProductsDeps {
     keywords: vi.fn(async () => ({ rows: [keywordRow(1), keywordRow(2, { slot: 3 })], total: 7 })),
     departments: vi.fn(async () => DEPARTMENTS),
     categoryPaths: vi.fn(async () => CATALOG_PATHS),
+    broadCategories: vi.fn(async () => BROAD_CODES),
     // Owner-scoped, as loadCustomRows is: the admin's own id has rows; an unknown or foreign id is simply absent.
     customRows: vi.fn(async (userId: string, ids: string[]): Promise<CustomRow[]> => (
       userId === admin.localUserId && ids.includes(CUSTOM_ID) ? [{ id: CUSTOM_ID, leafPaths: ['Pet Supplies › Dogs › Toys › Chew Toys', 'Pet Supplies › Cats › Toys'] }] : []
@@ -158,12 +164,12 @@ describe('searchProductsForTool', () => {
   });
 
   it('refuses a non-admin account with FORBIDDEN before anything runs (no reserve, read or record), whatever the input', async () => {
-    for (const input of [{}, { filters: { priceMin: -1 } }, 'not an object', { filters: { department: 'Pet Supplies', categories: { leafPaths: ['Pet Supplies › Cats › Toys'] } } }]) {
+    for (const input of [{}, { filters: { priceMin: -1 } }, 'not an object', { filters: { department: 'Pet Supplies', categories: { leafPaths: ['Pet Supplies › Cats › Toys'] } } }, { filters: { broadCategory: 'Home' } }]) {
       const deps = makeDeps();
       const err = await searchProductsForTool(deps, member, input).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ResearchError);
       expect((err as ResearchError).toInfo()).toStrictEqual(FORBIDDEN_INFO);
-      for (const fn of [deps.reserve, deps.departments, deps.categoryPaths, deps.customRows, deps.search, deps.record]) expect(fn).not.toHaveBeenCalled();
+      for (const fn of [deps.reserve, deps.departments, deps.categoryPaths, deps.broadCategories, deps.customRows, deps.search, deps.record]) expect(fn).not.toHaveBeenCalled();
     }
   });
 
@@ -182,9 +188,9 @@ describe('searchProductsForTool', () => {
     const limited = new ResearchError('RATE_LIMITED', 'slow', { retryable: true, retryAfterSeconds: 30 });
     const deps = makeDeps({ reserve: vi.fn(async () => { throw limited; }) });
     await expect(searchProductsForTool(deps, admin, {})).rejects.toBe(limited);
-    const scoped = { filters: { department: 'Pet Supplies', categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }], leafPaths: ['Pet Supplies › Cats › Toys'] } } };
+    const scoped = { filters: { department: 'Pet Supplies', broadCategory: 'Home', categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }], leafPaths: ['Pet Supplies › Cats › Toys'] } } };
     await expect(searchProductsForTool(deps, admin, scoped)).rejects.toBe(limited);
-    for (const fn of [deps.departments, deps.categoryPaths, deps.customRows, deps.search, deps.record]) expect(fn).not.toHaveBeenCalled();
+    for (const fn of [deps.departments, deps.categoryPaths, deps.broadCategories, deps.customRows, deps.search, deps.record]) expect(fn).not.toHaveBeenCalled();
   });
 });
 
@@ -215,6 +221,31 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
     const err = await notAvailable(makeDeps({ departments: vi.fn(async () => []) }), { filters: { department: 'Pet Supplies' } });
     expect(err.message).toBe('The product catalog has no departments yet.');
     expect(err.details).toEqual([{ path: 'filters.department', message: 'unknown department' }]);
+  });
+  it('a broad category is checked against the pair table\'s code list and becomes broadCategory; the scope is untouched (spec 2026-10-12 broad category §9)', async () => {
+    const deps = makeDeps();
+    await searchProductsForTool(deps, admin, { filters: { broadCategory: 'Home', department: 'Pet Supplies' } });
+    expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies', broadCategory: 'Home' }, { dept: 'Pet Supplies', subtreePaths: [], exactPaths: [], scoped: false });
+    expect(deps.broadCategories).toHaveBeenCalledTimes(1);
+  });
+  it('an unknown broad category fails with the valid codes in the message and the field in details; the list is not read for a search without one', async () => {
+    const err = await notAvailable(makeDeps(), { filters: { broadCategory: 'Pets' } });
+    expect(err.message).toBe('"Pets" is not a broad category of this week\'s clicked products. Pass one of: Apparel; Home; Pet Supplies.');
+    expect(err.details).toEqual([{ path: 'filters.broadCategory', message: 'unknown broad category' }]);
+    const deps = makeDeps();
+    await searchProductsForTool(deps, admin, {});
+    expect(deps.broadCategories).not.toHaveBeenCalled();
+  });
+  it('with no codes on the pair table yet, says so instead of listing none', async () => {
+    const err = await notAvailable(makeDeps({ broadCategories: vi.fn(async () => []) }), { filters: { broadCategory: 'Home' } });
+    expect(err.message).toBe('No broad categories are available yet (the weekly keyword-to-product table is empty).');
+    expect(err.details).toEqual([{ path: 'filters.broadCategory', message: 'unknown broad category' }]);
+  });
+  it('a blank broad category is INVALID_FILTERS, before reserving', async () => {
+    const deps = makeDeps();
+    const err = await searchProductsForTool(deps, admin, { filters: { broadCategory: '  ' } }).catch((e: unknown) => e);
+    expect((err as ResearchError).code).toBe('INVALID_FILTERS');
+    expect(deps.reserve).not.toHaveBeenCalled();
   });
   it('taxonomy selections are always subtrees (includeDescendants is ignored); leafPaths are exact; all checked against the catalog', async () => {
     const deps = makeDeps();
@@ -277,15 +308,18 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
   });
   it("resolves the scope after the reserve and before the search (the keyword tools' order)", async () => {
     const deps = makeDeps();
-    await searchProductsForTool(deps, admin, { filters: { department: 'Pet Supplies' } });
+    await searchProductsForTool(deps, admin, { filters: { department: 'Pet Supplies', broadCategory: 'Home' } });
     expect(firstCall(deps.reserve)).toBeLessThan(firstCall(deps.departments));
     expect(firstCall(deps.departments)).toBeLessThan(firstCall(deps.search));
+    expect(firstCall(deps.reserve)).toBeLessThan(firstCall(deps.broadCategories));
+    expect(firstCall(deps.broadCategories)).toBeLessThan(firstCall(deps.search));
   });
-  it('lets a failed department, path or custom-row read through unchanged (never a false CATEGORY_NOT_AVAILABLE): no search, nothing recorded', async () => {
+  it('lets a failed department, broad-category, path or custom-row read through unchanged (never a false CATEGORY_NOT_AVAILABLE): no search, nothing recorded', async () => {
     const boom = new Error('read failed');
     const fail = vi.fn(async () => { throw boom; });
     const cases: Array<[Partial<ProductsDeps>, unknown]> = [
       [{ departments: fail }, { filters: { department: 'Pet Supplies' } }],
+      [{ broadCategories: fail }, { filters: { broadCategory: 'Home' } }],
       [{ categoryPaths: fail }, { filters: { categories: { leafPaths: ['Pet Supplies › Cats › Toys'] } } }],
       [{ customRows: fail }, { filters: { categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }] } } }],
     ];
@@ -315,6 +349,7 @@ describe('productDetailsForTool', () => {
       ],
       keywordsTotal: 7,
     });
+    expect(out.product.broadCategories).toEqual([]);
     expect(deps.facts).toHaveBeenCalledWith(ASIN);
     expect(deps.history).toHaveBeenCalledWith(ASIN);
     expect(deps.keywords).toHaveBeenCalledWith(ASIN, PRODUCT_TOOL_KEYWORDS_CAP);
@@ -323,6 +358,12 @@ describe('productDetailsForTool', () => {
     expect(deps.reserve).toHaveBeenCalledWith(admin, 1);
     expect(firstCall(deps.reserve)).toBeLessThan(firstCall(deps.facts));
     expect(deps.record).toHaveBeenCalledWith(admin, 1);
+  });
+
+  it('returns the facts\' broadCategories as the loader gives them (most keywords first)', async () => {
+    const deps = makeDeps({ facts: vi.fn(async () => ({ ...catalogFacts, broadCategories: ['Home', 'Pet Supplies'] })) });
+    const res = await productDetailsForTool(deps, admin, { asin: ASIN });
+    expect(res.product.broadCategories).toEqual(['Home', 'Pet Supplies']);
   });
 
   it('answers a stub (keyword tables only, no catalog row) normally: inCatalog false, no history read, keywords as usual', async () => {
@@ -397,11 +438,11 @@ describe('productDetailsForTool', () => {
 });
 
 describe('defaultProductsDeps', () => {
-  it('has the seven loaders (no app URL: the service supplies its own), and opens no client while wiring', () => {
+  it('has the eight loaders (no app URL: the service supplies its own), and opens no client while wiring', () => {
     neonMock.neon.mockClear();
     for (const fn of Object.values(scopeMock)) fn.mockClear();
     const d = defaultProductsDeps();
-    const loaders = ['categoryPaths', 'customRows', 'departments', 'facts', 'history', 'keywords', 'search'] as const;
+    const loaders = ['broadCategories', 'categoryPaths', 'customRows', 'departments', 'facts', 'history', 'keywords', 'search'] as const;
     expect(Object.keys(d).sort()).toEqual([...loaders]);
     for (const k of loaders) expect(typeof d[k]).toBe('function');
     expect(neonMock.neon).not.toHaveBeenCalled();
@@ -413,9 +454,11 @@ describe('defaultProductsDeps', () => {
     const d = defaultProductsDeps();
     await expect(d.departments()).resolves.toEqual(['Pet Supplies']);
     await expect(d.categoryPaths()).resolves.toEqual(['Pet Supplies › Cats › Toys']);
+    await expect(d.broadCategories()).resolves.toEqual(['Home']);
     await expect(d.customRows('u1', [CUSTOM_ID])).resolves.toEqual([{ id: CUSTOM_ID, leafPaths: ['u1 path'] }]);
     expect(scopeMock.departments).toHaveBeenCalledExactlyOnceWith();
     expect(scopeMock.paths).toHaveBeenCalledExactlyOnceWith();
+    expect(scopeMock.broad).toHaveBeenCalledExactlyOnceWith();
     expect(scopeMock.customRows).toHaveBeenCalledExactlyOnceWith('u1', [CUSTOM_ID]);
   });
 

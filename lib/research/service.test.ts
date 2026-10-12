@@ -65,6 +65,7 @@ function makeDeps(over: Partial<ResearchServiceDeps> = {}) {
       keywords: vi.fn(async () => ({ rows: [], total: 0 })),
       departments: vi.fn(async () => []),
       categoryPaths: vi.fn(async () => []),
+      broadCategories: vi.fn(async () => []),
       customRows: vi.fn(async () => []),
     },
     ...over,
@@ -85,7 +86,7 @@ describe('search: a new request', () => {
     expect(res.pagination.expiresAt).toBe('2026-09-21T12:15:00.000Z');
     const cursor = verifyCursor(res.pagination.nextCursor!, 'test-secret', 0);
     expect(cursor).toMatchObject({ off: 50, ps: 50, snap: 'snap-a', uid: 'u1', ch: 'mcp', tm: { kind: 'exact', value: 137 } });
-    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 4, queryVersion: 1 });
+    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 5, queryVersion: 1 });
     expect(res.warnings.map((w) => w.code)).toEqual(['ESTIMATED_VOLUME', 'LIVE_PAGINATION']);
     expect(deps.record).toHaveBeenCalledWith('u1', 50, 'mcp');
     const call = (deps.runSearch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -403,7 +404,7 @@ describe('defaultResearchService', () => {
   });
   it('wires the Products page loaders for the two product tools; their links take the base URL from the service deps, not from the loaders', () => {
     const deps = defaultResearchDeps();
-    expect(Object.keys(deps.products).sort()).toEqual(['categoryPaths', 'customRows', 'departments', 'facts', 'history', 'keywords', 'search']);
+    expect(Object.keys(deps.products).sort()).toEqual(['broadCategories', 'categoryPaths', 'customRows', 'departments', 'facts', 'history', 'keywords', 'search']);
     expect(deps.appUrl).toBe('https://keywordquarry.com');
   });
 });
