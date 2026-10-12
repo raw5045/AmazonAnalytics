@@ -734,7 +734,7 @@ Read `node_modules/next/dist/docs/01-app/` (server components, `unstable_cache`)
                   </option>
                 ))}
               </select>
-              <p className={HINT}>The Brand Analytics code the weekly report filed the product under, on the keywords it was a top-3 clicked product for this week (the Explorer&apos;s broad categories). A product can carry several.</p>
+              <p className={HINT}>Brand Analytics code, as on the Explorer, from this week&apos;s keywords where the product was a top-3 click. A product can have several.</p>
             </Field>
 ```
 
