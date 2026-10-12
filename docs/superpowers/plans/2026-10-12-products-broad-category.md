@@ -302,38 +302,51 @@ git commit -m "feat(top-asins): migration 0052 — broad_category column + parti
       expect(insertCols).toHaveLength(9);
 ```
 
-(d) The three swap tests gain the third index's renames. Advance (`'advance: retires the old _prev …'`): the expected list becomes
+(d) The three swap tests gain the third index's renames. Both renames are `IF EXISTS`, and the same-week swap first moves a canonical name off `_prev`: an OLD-code build between the apply of 0052 and the deploy carries the index along unrenamed (LIKE names it `keyword_top_asins_next_broad_category_asin_idx` on the new live table while the canonical name moves to `_prev`), and index names are schema-wide, so a fixed-name rename would fail with 42704 (source gone) or 42P07 (target taken by `_prev`) on every later build. Advance (`'advance: retires the old _prev …'`): the expected list becomes
 
 ```ts
       'DROP TABLE IF EXISTS keyword_top_asins_prev',
       'ALTER TABLE keyword_top_asins RENAME TO keyword_top_asins_prev',
       'ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx',
-      'ALTER INDEX keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx',
+      'ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx',
       'ALTER TABLE keyword_top_asins_prev RENAME CONSTRAINT keyword_top_asins_pkey TO keyword_top_asins_prev_pkey',
       PREV_COMMENT,
       'ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins',
       CURRENT_COMMENT,
       'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx',
-      'ALTER INDEX keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx',
+      'ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx',
       'ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey',
 ```
 
-Same-week and rewind: insert `'ALTER INDEX keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx'` right after the `_next_asin_search_term_id_idx` rename in each expected list (the exact arrays are in the file; keep their other lines unchanged).
+Same-week (`'same-week rebuild: …'`): the expected list becomes `'DROP TABLE keyword_top_asins'`, then the guard `'ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx'`, then the promote lines (with the `IF EXISTS` promote rename right after the `_next_asin_search_term_id_idx` rename); its `not.toContain('keyword_top_asins_prev')` assertion becomes "names `_prev` only in the guard": `expect(swapOf(st).filter((t) => t.includes('keyword_top_asins_prev'))).toEqual(['ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx'])`. Rewind: only the `IF EXISTS` promote rename is inserted after the `_next_asin_search_term_id_idx` rename (it drops `_prev`, so no guard). Add one more test:
+
+```ts
+  it('tolerates the drifted names an old-code build leaves between the apply of 0052 and the deploy: both broad-index renames are IF EXISTS, and the same-week swap first moves a canonical name off _prev', () => {
+    for (const st of everyMode) {
+      for (const t of swapOf(st).filter((t) => t.includes('broad_category'))) expect(t).toMatch(/^ALTER INDEX IF EXISTS /);
+    }
+    const sameWeek = swapOf(sameWeekPrev);
+    expect(sameWeek.indexOf('ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx')).toBe(sameWeek.indexOf('DROP TABLE keyword_top_asins') + 1);
+    expect(swapOf(rewind).some((t) => t.endsWith('RENAME TO keyword_top_asins_prev_broad_category_idx'))).toBe(false);
+  });
+```
 
 `lib/topAsins/backfill.test.ts`:
 
 (e) `'names only real columns'` (in `describe('backfillWeekStatements')`): the same regex, `14` and `9` as (c).
 
-(f) In `describe('finalizeStatements')`: `"swaps like a build's same-week rebuild …"` expects `toHaveLength(6)`; the test name `'keeps the previous week walked as keyword_top_asins_prev: … (all eight columns, …)'` says `all nine columns`. Add after the swap test:
+(f) In `describe('finalizeStatements')`: `"swaps like a build's same-week rebuild …"` compares against the build's same-week swap as before (`buildSwapOf({ carryFrom: 'none', sameWeek: true })`), so it now expects the guard and the `IF EXISTS` promote rename too and `toHaveLength(7)`; the test name `'keeps the previous week walked as keyword_top_asins_prev: … (all eight columns, …)'` says `all nine columns`. Add after the swap test:
 
 ```ts
-  it("renames the third index (broad_category, asin) by the name LIKE gives it on _next, after the asin index", () => {
+  it("renames the third index (broad_category, asin) by the name LIKE gives it on _next, IF EXISTS, after the asin index", () => {
     const texts = f.swap.map((s) => norm(s.text));
     const asin = texts.indexOf('ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx');
     expect(asin).toBeGreaterThanOrEqual(0);
-    expect(texts[asin + 1]).toBe('ALTER INDEX keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx');
+    expect(texts[asin + 1]).toBe('ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx');
   });
 ```
+
+(The backfill recreates `_prev` with `CREATE TABLE … AS SELECT *`, which carries no index, so its swap's guard is a no-op there; it stays because the swap is the build's own.)
 
 - [ ] **Step 2: Run to verify failure** — `pnpm vitest run lib/topAsins` → the new and changed assertions fail.
 
@@ -373,19 +386,34 @@ export function slotSelect(partition: string, slot: 1 | 2 | 3): string {
              LEFT JOIN (
 ```
 
-(c) `swapStatements`: `promoteNext` gains, after the asin rename, `sql('ALTER INDEX keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx')`; the advance list gains, after `'ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx'`, `sql('ALTER INDEX keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx')`. Update the function's doc comment: "its primary key `<table>_pkey` and its other indexes `<table>_<columns>_idx`, so _next's are the three literals below".
+(c) `swapStatements`:
+
+```ts
+/** The broad-category index's names: canonical on the live table, _prev's after an advance, LIKE's on _next (spec 2026-10-12 broad category §4). */
+const BROAD_INDEX = { current: 'keyword_top_asins_broad_category_idx', prev: 'keyword_top_asins_prev_broad_category_idx', next: 'keyword_top_asins_next_broad_category_asin_idx' } as const;
+/**
+ * Moves a canonical broad-index name off _prev, where an old-code build leaves it (its swap carried the index
+ * along unrenamed; index names are schema-wide), so the promote below can take the name. A no-op after a new-code
+ * advance, which renamed it already.
+ */
+const PREV_BROAD_GUARD = sql(`ALTER INDEX IF EXISTS ${BROAD_INDEX.current} RENAME TO ${BROAD_INDEX.prev}`);
+```
+
+`promoteNext` gains, after the asin rename, `sql(\`ALTER INDEX IF EXISTS ${BROAD_INDEX.next} RENAME TO ${BROAD_INDEX.current}\`)`; the rewind list is `[DROP _prev, DROP current, ...promoteNext]` as before; the same-week list becomes `[sql('DROP TABLE keyword_top_asins'), PREV_BROAD_GUARD, ...promoteNext]`; the advance list gains, after `'ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx'`, `PREV_BROAD_GUARD` (the same statement: on an advance the current table has just become `_prev`, so this is its proper rename). Both broad renames are `IF EXISTS` because between the apply of 0052 and the deploy an old-code build can leave the live table's index under LIKE's generated name (and `_next`'s copy then as `…_asin_idx1`): a missing source is skipped and the names converge within two builds; a build never fails over a name. Update the function's doc comment: "its primary key `<table>_pkey` and its other indexes `<table>_<columns>_idx`, so _next's are the three literals below; the broad-index renames tolerate the drift an old-code build leaves (see PREV_BROAD_GUARD)".
 
 (d) Header comment: after the first paragraph add: "Each row also carries `broad_category`, the report's code for that clicked product (`top_clicked_category_<slot>` of the same kwm row; migration 0052), so the Products page can filter by the Explorer's broad categories; the swap renames its partial index like the asin index." In the swap paragraph, "the two names" → "the three names" where it describes what LIKE generates.
 
-- [ ] **Step 4: backfill.ts** — `backfillWeekStatements`'s INSERT: the column list ends `week_end_date, broad_category)` and the select adds `p.broad_category` after the `$1::date` line (same shape as the build's carry form). `finalizeStatements.swap`: after the `_next_asin_search_term_id_idx` rename add `sql('ALTER INDEX keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx')`. The `prev` doc comment: "all nine columns as a build-made _prev has". The header's line about `_bf_prev` (`SELECT *, all eight columns`) → nine.
+- [ ] **Step 4: backfill.ts** — `backfillWeekStatements`'s INSERT: the column list ends `week_end_date, broad_category)` and the select adds `p.broad_category` after the `$1::date` line (same shape as the build's carry form). `finalizeStatements.swap` is the build's same-week swap: after `'DROP TABLE keyword_top_asins'` add `sql('ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx')` and after the `_next_asin_search_term_id_idx` rename add `sql('ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx')` (export `PREV_BROAD_GUARD` and `BROAD_INDEX` from buildWeek.ts and reuse them if that reads better; the statement texts must be identical to the build's). The `prev` doc comment: "all nine columns as a build-made _prev has". The header's line about `_bf_prev` (`SELECT *, all eight columns`) → nine.
+
+- [ ] **Step 4b: spec §4** — in `docs/superpowers/specs/2026-10-12-products-broad-category-design.md` §4, after the swap bullet, add: "Both broad-index renames are `ALTER INDEX IF EXISTS`, and the same-week swap first renames a canonical name found on `_prev` to `_prev`'s name: an old-code build between the apply of 0052 and the deploy carries the index along unrenamed (index names are schema-wide), and a fixed-name rename would otherwise fail on every later build. The names converge within two builds; nothing else depends on them."
 
 - [ ] **Step 5: Run to verify pass** — `pnpm vitest run lib/topAsins db/schema` → green. `pnpm typecheck`; `pnpm exec eslint lib/topAsins/buildWeek.ts lib/topAsins/buildWeek.test.ts lib/topAsins/backfill.ts lib/topAsins/backfill.test.ts`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add lib/topAsins/buildWeek.ts lib/topAsins/buildWeek.test.ts lib/topAsins/backfill.ts lib/topAsins/backfill.test.ts
-git commit -m "feat(top-asins): the build and the backfill carry each slot's Brand Analytics code and rename the broad_category index in the swap"
+git add lib/topAsins/buildWeek.ts lib/topAsins/buildWeek.test.ts lib/topAsins/backfill.ts lib/topAsins/backfill.test.ts docs/superpowers/specs/2026-10-12-products-broad-category-design.md
+git commit -m "feat(top-asins): the build and the backfill carry each slot's Brand Analytics code and rename the broad_category index in the swap (IF EXISTS, drift-tolerant)"
 ```
 
 ---
@@ -994,7 +1022,7 @@ Never run these here: they need `RUN_INTEGRATION=1` and production. Only `pnpm t
 - [ ] **Step 1: topAsinsBuild.test.ts** —
   (a) `generatedNames` gains `broadIndex: \`${table}_broad_category_asin_idx\`` (doc: "its primary key, its (asin, search_term_id) index and its (broad_category, asin) index").
   (b) In the naming case: `expect(copy.indexes, …).toEqual([generated.asinIndex, generated.broadIndex, generated.pkey].sort());` and the live table's indexes `arrayContaining(['keyword_top_asins_pkey', 'keyword_top_asins_asin_idx', 'keyword_top_asins_broad_category_idx'])`.
-  (c) In the swap-text case: `expect(swap).toContain('ALTER INDEX keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx');` and `expect(swap).toContain(\`ALTER INDEX ${next.broadIndex} RENAME TO keyword_top_asins_broad_category_idx\`);`.
+  (c) In the swap-text case: `expect(swap).toContain('ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx');` and `expect(swap).toContain(\`ALTER INDEX IF EXISTS ${next.broadIndex} RENAME TO keyword_top_asins_broad_category_idx\`);`.
   (d) In the scratch-build case, after the `stats` assertions and before the carry section, the carried code is checked against the partition for a sample:
 
 ```ts
@@ -1053,7 +1081,7 @@ Before this task: the final whole-diff review (all tasks), `pnpm vitest run` (wh
 2. **One-off fill (local new code, production):** read the meta week (`SELECT week_end_date FROM keyword_top_asins_meta`; the build script prints it too), then `TOP_ASINS_WEEK=<meta week> node --env-file=.env.local --import tsx scripts/buildTopAsinsWeek.ts`. Expect `built week …: rows=8.3M previous=<meta week> carried=prev`, 1–2 min; readers may queue ≤ 120 s at the swap. Quiet hour, no import running.
 3. **Integration:** `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts tests/integration/productsQueries.test.ts --disableConsoleIntercept`. Expect the build test's "codes: … 0 differ", the three generated names, the two broad plans naming `keyword_top_asins_broad_category_idx` with their cold timings, the code list count (≈120) and time, the multi-code ASIN.
 4. **Push:** `checkActiveJobs` again, then a bare `git push origin main` as its own call. Watch: `gh api repos/raw5045/AmazonAnalytics/commits/<sha>/status --jq '"overall: \(.state)", (.statuses[] | "\(.context): \(.state) @ \(.updated_at)")'` (contexts `Vercel`, `amazon-analytics-worker - AmazonAnalytics`, `amazon-analytics-worker - keepa-importer`); if Vercel creates no deployment, an empty commit on the owner's go.
-5. **Re-fill if needed:** if an import landed between steps 1 and 4 (meta week newer than the one filled) and `SELECT count(*) FROM keyword_top_asins WHERE broad_category IS NOT NULL` is 0, run step 2 for the new meta week.
+5. **Re-fill if needed:** no upload between steps 1 and 4 (the owner controls uploads; the window is under an hour). If an import did land in between (meta week newer than the one filled) and `SELECT count(*) FROM keyword_top_asins WHERE broad_category IS NOT NULL` is 0, run step 2 for the new meta week. Then check the names: `SELECT tablename, indexname FROM pg_indexes WHERE indexname LIKE '%broad_category%' ORDER BY 1` must show `keyword_top_asins | keyword_top_asins_broad_category_idx` (and `keyword_top_asins_prev | keyword_top_asins_prev_broad_category_idx` when `_prev` exists); if the live one still carries a generated name, run step 2 once more (the drift-tolerant swap converges in two builds) — never hand-run DDL.
 6. **Smoke:** page — `Home`; `Home` + a department; a code + a leaf pick; an old link with `?broad=Nope` shows "Nope" selected and zero rows; an ASIN page shows its codes. Tools (owner, from Claude) — a `broadCategory` search; a typo returns the codes; `get_product_details` shows `broadCategories`; Ask AI one question with a broad category.
 7. **Results + memory:** fill the table below; update `arc8-category-filters.md` (or a new memory file) with the landed state.
 
