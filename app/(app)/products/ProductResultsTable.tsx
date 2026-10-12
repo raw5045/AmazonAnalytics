@@ -8,6 +8,7 @@ import { productFiltersToSearchParams, type ProductFilters, type ProductSort } f
 import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { isAsin } from '@/lib/products/asin';
 import { availabilityLabel, formatBadge, formatPriceCents, formatRatio, formatReviewCount, listingAge } from '@/lib/products/format';
+import { splitCategoryPath } from '@/lib/categoryBuilder/pathDisplay';
 import { LoadingOverlay } from '@/app/(app)/explorer/LoadingOverlay';
 import { SORT_DIR_LABEL, SORT_FIRST_DIR, sortHint } from './ProductFilterPanel';
 
@@ -54,8 +55,10 @@ function ariaSort(filters: ProductFilters, sorts: ProductSort[]): 'ascending' | 
 
 /**
  * Results for /products (spec 2026-10-09 §5.2): the count line, the sort hint, then the table (or
- * the empty state). A client component only for the sort links' pending overlay (useLinkStatus);
- * the rows arrive as props from the page's server read.
+ * the empty state). The Category column (spec 2026-10-12 §5.2) shows each product's leaf name,
+ * its full path on hover and a dash when unknown, so a filtered list shows why each row is there.
+ * A client component only for the sort links' pending overlay (useLinkStatus); the rows arrive
+ * as props from the page's server read.
  */
 export function ProductResultsTable({
   rows,
@@ -101,6 +104,7 @@ export function ProductResultsTable({
             <thead className="bg-[#F8FAFD] text-left text-slate-500">
               <tr>
                 <th className="p-2">Product</th>
+                <th className="p-2" title="The product's Keepa category (leaf); hover a cell for the full path">Category</th>
                 <SortHeader filters={filters} sort="listed" label="Listed" />
                 <SortHeader filters={filters} sort="sold" label="Monthly sold" align="right" title="Amazon's “bought in past month” badge" />
                 <SortHeader filters={filters} sort="reviews" label="Reviews" align="right" />
@@ -175,6 +179,15 @@ function ProductRow({ row, from, now }: { row: ProductSummaryRow; from: string; 
             {row.asin}
           </a>
         </div>
+      </td>
+      <td className="max-w-40 p-2 text-xs text-gray-700">
+        {row.categoryPath ? (
+          <span className="block truncate" title={row.categoryPath}>
+            {splitCategoryPath(row.categoryPath).leaf}
+          </span>
+        ) : (
+          orDash(DASH)
+        )}
       </td>
       <td className="whitespace-nowrap p-2">
         {row.listedSince ? (

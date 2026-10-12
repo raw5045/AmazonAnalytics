@@ -52,7 +52,8 @@ describe('ProductResultsTable rows', () => {
   it('formats one full row', () => {
     renderTable({ filters: { ...PRODUCT_DEFAULTS, age: 180 } });
     const cells = bodyCells();
-    expect(cells).toHaveLength(9);
+    expect(cells).toHaveLength(10);
+    expect(screen.getByRole('columnheader', { name: 'Category' })).toBeInTheDocument();
 
     const title = within(cells[0]).getByRole('link', { name: 'LED Desk Lamp' });
     // The ASIN page's back link returns to this exact list (its `from`, percent-encoded).
@@ -65,16 +66,18 @@ describe('ProductResultsTable rows', () => {
     expect(amazon).toHaveAttribute('href', 'https://www.amazon.com/dp/B000000001');
     expect(amazon).toHaveAttribute('target', '_blank');
 
-    expect(cells[1]).toHaveTextContent('Aug 1, 2026');
-    expect(cells[1]).toHaveTextContent('69 days');
-    expect(cells[2]).toHaveTextContent(/^1,000\+$/);
-    expect(cells[3]).toHaveTextContent(/^120 · ★ 4\.4$/);
-    expect(cells[4]).toHaveTextContent(/^\$19\.99$/);
-    expect(cells[5]).toHaveTextContent('1,234');
-    expect(within(cells[5]).getByText('−35%')).toHaveAttribute('title', expect.stringMatching(/30-day average/));
-    expect(cells[6]).toHaveTextContent(/^FBA 3 \/ FBM 1$/);
-    expect(cells[7]).toHaveTextContent(/^No Amazon offer$/);
-    expect(cells[8]).toHaveTextContent(/^7$/);
+    expect(cells[1]).toHaveTextContent(/^Desk Lamps$/);
+    expect(within(cells[1]).getByText('Desk Lamps')).toHaveAttribute('title', 'Home & Kitchen › Lighting › Desk Lamps');
+    expect(cells[2]).toHaveTextContent('Aug 1, 2026');
+    expect(cells[2]).toHaveTextContent('69 days');
+    expect(cells[3]).toHaveTextContent(/^1,000\+$/);
+    expect(cells[4]).toHaveTextContent(/^120 · ★ 4\.4$/);
+    expect(cells[5]).toHaveTextContent(/^\$19\.99$/);
+    expect(cells[6]).toHaveTextContent('1,234');
+    expect(within(cells[6]).getByText('−35%')).toHaveAttribute('title', expect.stringMatching(/30-day average/));
+    expect(cells[7]).toHaveTextContent(/^FBA 3 \/ FBM 1$/);
+    expect(cells[8]).toHaveTextContent(/^No Amazon offer$/);
+    expect(cells[9]).toHaveTextContent(/^7$/);
   });
 
   it('the from param is the bare list URL under the default filters, and carries the page', () => {
@@ -108,26 +111,26 @@ describe('ProductResultsTable rows', () => {
   it('missing values render as dashes; an untitled product links by its ASIN', () => {
     renderTable({
       rows: [makeRow({
-        title: null, brand: null, listedSince: null, monthlySold: null, reviewCount: null, averageRatingX10: null, currentPriceCents: null,
+        title: null, brand: null, categoryPath: null, listedSince: null, monthlySold: null, reviewCount: null, averageRatingX10: null, currentPriceCents: null,
         salesRank: null, rankRatioX100: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null, enrichmentStatus: 'no_price', keywordCount: 0,
       })],
     });
     const cells = bodyCells();
     const links = within(cells[0]).getAllByRole('link', { name: 'B000000001' });
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/products/B000000001?from=%2Fproducts', 'https://www.amazon.com/dp/B000000001']);
-    for (const i of [1, 2, 3, 4, 5, 6, 7]) expect(cells[i], `column ${i}`).toHaveTextContent(/^—$/);
-    expect(cells[8]).toHaveTextContent(/^0$/);
+    for (const i of [1, 2, 3, 4, 5, 6, 7, 8]) expect(cells[i], `column ${i}`).toHaveTextContent(/^—$/);
+    expect(cells[9]).toHaveTextContent(/^0$/);
   });
 
   it('a rank above its 30-day average shows a "+" chip; at the average there is no chip', () => {
     renderTable({ rows: [makeRow({ asin: 'B000000001', rankRatioX100: 130 }), makeRow({ asin: 'B000000002', rankRatioX100: 100 })] });
-    expect(within(bodyCells(0)[5]).getByText('+30%')).toBeInTheDocument();
-    expect(bodyCells(1)[5]).toHaveTextContent(/^1,234$/);
+    expect(within(bodyCells(0)[6]).getByText('+30%')).toBeInTheDocument();
+    expect(bodyCells(1)[6]).toHaveTextContent(/^1,234$/);
   });
 
   it('shows the reviews without stars when the rating is missing, and large counts compactly', () => {
     renderTable({ rows: [makeRow({ reviewCount: 1834, averageRatingX10: null })] });
-    expect(bodyCells()[3]).toHaveTextContent(/^1\.8k$/);
+    expect(bodyCells()[4]).toHaveTextContent(/^1\.8k$/);
   });
 });
 
