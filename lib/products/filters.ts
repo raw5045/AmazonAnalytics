@@ -1,6 +1,7 @@
 // lib/products/filters.ts
 /**
- * Product-search filters (spec 2026-10-09 §5.1): the validated shape behind the Products page URL.
+ * Product-search filters (spec 2026-10-09 §5.1; categories, spec 2026-10-12 §3; the broad category,
+ * spec 2026-10-12 (broad category) §5): the validated shape behind the Products page URL.
  * parseProductFilters never throws — a value that fails its schema branch falls back to that
  * field's default, like the explorer. Prices are cents here and dollars in the URL.
  * lib/research/contracts.ts does NOT re-export this schema: the search_products tool defines its own
@@ -11,7 +12,7 @@
  * re-exported here, so every import from this module keeps working.
  */
 import { z } from 'zod';
-import { MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_CUSTOM_IDS, PRODUCT_MAX_LEAF_PATHS, PRODUCT_MAX_PAGE, PRODUCT_SORTS, type ProductFilters } from './filterParams';
+import { MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_BROAD_CATEGORY_LENGTH, PRODUCT_MAX_CUSTOM_IDS, PRODUCT_MAX_LEAF_PATHS, PRODUCT_MAX_PAGE, PRODUCT_SORTS, type ProductFilters } from './filterParams';
 
 export * from './filterParams';
 
@@ -30,6 +31,7 @@ export const productFiltersSchema = z.strictObject({
   /** rank_ratio_x100 ≤ N (e.g. 70 = at least 30 % better than the 30-day average). */
   ratioMax: z.int().min(1).max(1000).nullable(),
   dept: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).nullable(),
+  broadCategory: z.string().trim().min(1).max(PRODUCT_MAX_BROAD_CATEGORY_LENGTH).nullable(),
   leafPaths: z.array(z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH)).max(PRODUCT_MAX_LEAF_PATHS),
   customCategoryIds: z.array(z.uuid().toLowerCase()).max(PRODUCT_MAX_CUSTOM_IDS),
   fba: z.enum(['yes', 'no']).nullable(),
@@ -71,6 +73,10 @@ const leafPaths = (v: string | string[] | undefined): string[] =>
   [...new Set(many(v).map((s) => s.trim()).filter(usablePath))].slice(0, PRODUCT_MAX_LEAF_PATHS);
 /** One `dept` value, kept only when its trimmed form is a usablePath (the schema then trims and bounds it); else null. */
 const department = (v: string | undefined): string | null => (v !== undefined && usablePath(v.trim()) ? v : null);
+/** A trimmed `broad` value worth keeping: non-empty, at most PRODUCT_MAX_BROAD_CATEGORY_LENGTH, no control characters. */
+const usableCode = (s: string): boolean => s.length > 0 && s.length <= PRODUCT_MAX_BROAD_CATEGORY_LENGTH && !CONTROL_CHARS.test(s);
+/** One `broad` value (a Brand Analytics code), kept only when its trimmed form is a usableCode; else null. */
+const broadCategory = (v: string | undefined): string | null => (v !== undefined && usableCode(v.trim()) ? v : null);
 const uuid = z.uuid();
 /** One comma-separated `custom` value: well-formed uuids only (lower-cased, deduplicated), the first PRODUCT_MAX_CUSTOM_IDS; anything else is dropped. */
 const customIds = (v: string | undefined): string[] =>
@@ -81,7 +87,7 @@ export function parseProductFilters(sp: SearchParamsLike): ProductFilters {
   const raw: Record<keyof ProductFilters, unknown> = {
     age: int(one(sp.age)), soldMin: int(one(sp.soldMin)), reviewsMax: int(one(sp.reviewsMax)), ratingMin: int(one(sp.ratingMin)), ratingMax: int(one(sp.ratingMax)),
     priceMinCents: dollarsToCents(one(sp.priceMin)), priceMaxCents: dollarsToCents(one(sp.priceMax)), bsrMin: int(one(sp.bsrMin)), bsrMax: int(one(sp.bsrMax)),
-    ratioMax: int(one(sp.ratioMax)), dept: department(one(sp.dept)), leafPaths: leafPaths(sp.leaf), customCategoryIds: customIds(one(sp.custom)), fba: one(sp.fba) ?? null, amazon: one(sp.amazon) ?? null,
+    ratioMax: int(one(sp.ratioMax)), dept: department(one(sp.dept)), broadCategory: broadCategory(one(sp.broad)), leafPaths: leafPaths(sp.leaf), customCategoryIds: customIds(one(sp.custom)), fba: one(sp.fba) ?? null, amazon: one(sp.amazon) ?? null,
     sort: one(sp.sort) ?? PRODUCT_DEFAULTS.sort, dir: one(sp.dir) ?? PRODUCT_DEFAULTS.dir, page: pageNumber(one(sp.page)),
   };
   const out = { ...PRODUCT_DEFAULTS } as Record<keyof ProductFilters, unknown>;

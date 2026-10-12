@@ -436,6 +436,7 @@ export function toProductFilters(input: ProductSearchInput): ProductFilters {
     bsrMax: f.bsrMax ?? PRODUCT_DEFAULTS.bsrMax,
     ratioMax: f.bsrRatioMax ?? PRODUCT_DEFAULTS.ratioMax,
     dept: f.department ?? PRODUCT_DEFAULTS.dept,
+    broadCategory: PRODUCT_DEFAULTS.broadCategory, // mapped from filters.broadCategory in Task 8
     // The categories object is resolved into the search scope by lib/research/products.ts, not into the page filters.
     leafPaths: [],
     customCategoryIds: [],

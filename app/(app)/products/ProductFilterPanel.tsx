@@ -156,6 +156,7 @@ export function pendingToFilters(p: PendingProductFilters): ProductFilters {
     bsrMax: toNumber(p.bsrMax),
     ratioMax: toNumber(p.ratioMax),
     dept: p.dept === '' ? null : p.dept,
+    broadCategory: null, // the select lands in Task 6
     leafPaths: p.leafMode === 'leaf' ? p.leafPaths : [],
     customCategoryIds: p.leafMode === 'custom' ? p.customCategoryIds : [],
     fba: p.fba === '' ? null : p.fba,

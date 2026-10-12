@@ -8,6 +8,7 @@ import {
   MAX_CATEGORY_PATH_LENGTH,
   PRODUCT_AGES,
   PRODUCT_DEFAULTS,
+  PRODUCT_MAX_BROAD_CATEGORY_LENGTH,
   PRODUCT_MAX_CUSTOM_IDS,
   PRODUCT_MAX_LEAF_PATHS,
   PRODUCT_SORTS,
@@ -35,7 +36,7 @@ const ID2 = 'ffffffff-0000-4111-8222-abcdefabcdef';
 const FULL: ProductFilters = {
   age: 365, soldMin: 100000, reviewsMax: 300, ratingMin: 35, ratingMax: 50,
   priceMinCents: 1999, priceMaxCents: 2000, bsrMin: 1, bsrMax: 50000, ratioMax: 70,
-  dept: 'Home & Kitchen', leafPaths: ['Home & Kitchen › Bath', 'Home & Kitchen › Lighting'], customCategoryIds: [ID1, ID2],
+  dept: 'Home & Kitchen', broadCategory: 'Home', leafPaths: ['Home & Kitchen › Bath', 'Home & Kitchen › Lighting'], customCategoryIds: [ID1, ID2],
   fba: 'yes', amazon: 'no', sort: 'ratio', dir: 'asc', page: 7,
 };
 
@@ -46,7 +47,7 @@ describe('parseProductFilters', () => {
   });
   it('parses every filter and ignores junk', () => {
     const f = parseProductFilters({ age: '180', soldMin: '1000', reviewsMax: '300', ratingMin: '35', ratingMax: '50', priceMin: '9.99', priceMax: '40', bsrMin: '1', bsrMax: '50000', ratioMax: '70', fba: 'no', amazon: 'no', sort: 'listed', dir: 'asc', page: '3', junk: 'x' });
-    expect(f).toEqual({ age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 35, ratingMax: 50, priceMinCents: 999, priceMaxCents: 4000, bsrMin: 1, bsrMax: 50000, ratioMax: 70, dept: null, leafPaths: [], customCategoryIds: [], fba: 'no', amazon: 'no', sort: 'listed', dir: 'asc', page: 3 });
+    expect(f).toEqual({ age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 35, ratingMax: 50, priceMinCents: 999, priceMaxCents: 4000, bsrMin: 1, bsrMax: 50000, ratioMax: 70, dept: null, broadCategory: null, leafPaths: [], customCategoryIds: [], fba: 'no', amazon: 'no', sort: 'listed', dir: 'asc', page: 3 });
   });
   it('falls back per field on invalid values (never throws)', () => {
     const f = parseProductFilters({ age: '45', soldMin: '-1', reviewsMax: 'abc', ratingMin: '99', page: '0', sort: 'nope', dir: 'sideways', fba: 'maybe' });
@@ -123,6 +124,24 @@ describe('parseProductFilters', () => {
     expect(parseProductFilters({ dept: '   ' }).dept).toBeNull();
     expect(parseProductFilters({ dept: 'x'.repeat(300) }).dept).toBeNull();
   });
+  it('reads broad (one Brand Analytics code) trimmed; blank, over-long or control-character values fall back to null (spec 2026-10-12 broad category §5)', () => {
+    expect(parseProductFilters({ broad: ' Pet Supplies ' }).broadCategory).toBe('Pet Supplies');
+    expect(parseProductFilters({ broad: 'Home' })).toEqual({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
+    expect(parseProductFilters({ broad: '   ' }).broadCategory).toBeNull();
+    expect(parseProductFilters({ broad: 'x'.repeat(255) }).broadCategory).toBe('x'.repeat(255));
+    expect(parseProductFilters({ broad: 'x'.repeat(256) }).broadCategory).toBeNull();
+    expect(parseProductFilters({ broad: 'x\u001fy' }).broadCategory).toBeNull();
+    expect(parseProductFilters({ broad: ['Home', 'Toys'] }).broadCategory).toBe('Home'); // a repeated key: the first value
+    expect(PRODUCT_DEFAULTS.broadCategory).toBeNull();
+    expect(PRODUCT_MAX_BROAD_CATEGORY_LENGTH).toBe(255);
+  });
+  it('writes broad after dept and before leaf, and omits it when null', () => {
+    expect(productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies', broadCategory: 'Home', leafPaths: ['Pet Supplies › Dogs'] }).toString()).toBe(
+      'dept=Pet+Supplies&broad=Home&leaf=Pet+Supplies+%E2%80%BA+Dogs',
+    );
+    expect(productFiltersToSearchParams(PRODUCT_DEFAULTS).toString()).toBe('');
+    expect(parseProductFilters(Object.fromEntries(productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, broadCategory: 'Misc SDP' })))).toEqual({ ...PRODUCT_DEFAULTS, broadCategory: 'Misc SDP' });
+  });
   it('hands back fresh arrays, never the defaults\u2019 own', () => {
     const f = parseProductFilters({});
     expect(f.leafPaths).toEqual([]);
@@ -156,7 +175,7 @@ describe('parseProductFilters', () => {
     expect(sp.get('priceMin')).toBe('19.99');
     expect(sp.get('priceMax')).toBe('20');
     expect(sp.toString()).toBe(
-      `age=365&soldMin=100000&reviewsMax=300&ratingMin=35&ratingMax=50&priceMin=19.99&priceMax=20&bsrMin=1&bsrMax=50000&ratioMax=70&dept=Home+%26+Kitchen&leaf=Home+%26+Kitchen+%E2%80%BA+Bath&leaf=Home+%26+Kitchen+%E2%80%BA+Lighting&custom=${ID1}%2C${ID2}&fba=yes&amazon=no&sort=ratio&dir=asc&page=7`,
+      `age=365&soldMin=100000&reviewsMax=300&ratingMin=35&ratingMax=50&priceMin=19.99&priceMax=20&bsrMin=1&bsrMax=50000&ratioMax=70&dept=Home+%26+Kitchen&broad=Home&leaf=Home+%26+Kitchen+%E2%80%BA+Bath&leaf=Home+%26+Kitchen+%E2%80%BA+Lighting&custom=${ID1}%2C${ID2}&fba=yes&amazon=no&sort=ratio&dir=asc&page=7`,
     );
     expect(viaUrl(FULL)).toEqual(FULL);
   });

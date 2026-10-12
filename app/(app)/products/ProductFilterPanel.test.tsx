@@ -20,7 +20,7 @@ const CUSTOM = [
 /** Every filter set to a non-default value, on page 3 (leaf mode: picks, no custom ids). */
 const SEEDED: ProductFilters = {
   age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 40, ratingMax: 48, priceMinCents: 999, priceMaxCents: 3000,
-  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, dept: 'Home & Kitchen', leafPaths: [LEAVES[0]], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
+  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, dept: 'Home & Kitchen', broadCategory: null, leafPaths: [LEAVES[0]], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
 };
 
 function renderPanel(filters: ProductFilters = PRODUCT_DEFAULTS, customCategories = CUSTOM) {

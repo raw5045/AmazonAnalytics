@@ -559,7 +559,7 @@ describe('toProductFilters (search_products input to the Products page filters)'
   it('maps every field: dollars to cents, stars to ×10, the tool names onto the page names', () => {
     expect(toProductFilters(productSearchInputSchema.parse(fullProductSearch))).toStrictEqual({
       age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 42, ratingMax: 49, priceMinCents: 999, priceMaxCents: 1999,
-      bsrMin: 1, bsrMax: 5000, ratioMax: 70, dept: 'Health & Household', leafPaths: [], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'price', dir: 'asc', page: 3,
+      bsrMin: 1, bsrMax: 5000, ratioMax: 70, dept: 'Health & Household', broadCategory: null, leafPaths: [], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'price', dir: 'asc', page: 3,
     });
     // The categories object becomes the search's category scope (lib/research/products.ts), never page filters.
     const categories = { selections: [{ kind: 'custom', id: '11111111-1111-4111-8111-000000000001' }], leafPaths: ['A › B'] };
