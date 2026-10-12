@@ -82,6 +82,7 @@ const CATALOG_ROW: ProductFacts = {
   inScope: true,
   bestRank: 523,
   tier: 1,
+  broadCategories: [],
 };
 
 /** loadProduct's stub for an ASIN with keyword rows and no catalog row. */
@@ -110,6 +111,7 @@ const STUB: ProductFacts = {
   inScope: false,
   bestRank: null,
   tier: 0,
+  broadCategories: [],
 };
 
 const KEYWORDS = {

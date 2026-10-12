@@ -40,6 +40,7 @@ const FULL: ProductPageFacts = {
   inScope: true,
   bestRank: 523,
   tier: 1,
+  broadCategories: ['Home', 'Pet Supplies'],
   inCatalog: true,
 };
 
@@ -99,6 +100,7 @@ describe('FactsCard — a full active row', () => {
     render(<FactsCard facts={FULL} now={NOW} />);
     expect(fact('Brand')).toHaveTextContent('Acme Labs');
     expect(fact('Category')).toHaveTextContent(CATEGORY);
+    expect(fact('Broad categories')).toHaveTextContent('Home, Pet Supplies');
     expect(fact('Listed since')).toHaveTextContent('2026-04-12 · 180 days');
     expect(fact('Tracking since')).toHaveTextContent('2026-04-15');
     expect(fact('Price')).toHaveTextContent('$19.99');
@@ -155,6 +157,11 @@ describe('FactsCard — a full active row', () => {
   it('one fetch reads "1 fetch"', () => {
     render(<FactsCard facts={{ ...FULL, fetchCount: 1 }} now={NOW} />);
     expect(fact('Status')).toHaveTextContent('fetched 2026-10-08 (1 fetch)');
+  });
+
+  it('a product with no coded keyword rows reads a dash for its broad categories', () => {
+    render(<FactsCard facts={{ ...FULL, broadCategories: [] }} now={NOW} />);
+    expect(fact('Broad categories')).toHaveTextContent('—');
   });
 });
 

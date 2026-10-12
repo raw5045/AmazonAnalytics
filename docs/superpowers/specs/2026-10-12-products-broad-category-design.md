@@ -100,7 +100,7 @@ WHERE asin = $1 AND broad_category IS NOT NULL
 GROUP BY broad_category ORDER BY count(*) DESC, broad_category
 ```
 
-`FactsCard.tsx` renders a "Broad categories" line: the codes joined with ", " (`Home, Pet Supplies`), or the card's dash when the list is empty (no keyword rows this week, or none coded). A failed read fails the page as the facts read does; nothing is hidden behind a dash.
+`FactsCard.tsx` renders a "Broad categories" line: the codes joined with ", " (`Home, Pet Supplies`), or the card's dash when the list is empty (no keyword rows this week, or none coded). The line sits in the full fact list, under Category; the "Not fetched yet" and "Not in the catalog" shapes are unchanged (the keywords section below them still lists the rows). A failed read fails the page as the facts read does; nothing is hidden behind a dash.
 
 ## 9. Tools
 

@@ -56,6 +56,7 @@ const catalogFacts: CatalogProductFacts = {
   reviewCount: 812, averageRatingX10: 45, lastRatingUpdate: '2026-10-01',
   monthlySold: 2000, keepaUpdatedAt: '2026-10-08', newOfferCount: 4, fbaOfferCount: 3, fbmOfferCount: 1, amazonAvailability: -1,
   enrichmentStatus: 'active', inCatalog: true, fetched: true, lastFetchedAt: '2026-10-08T06:00:00.000Z', fetchCount: 9, inScope: true, bestRank: 1234, tier: 1,
+  broadCategories: [],
 };
 /** What loadProduct returns for an ASIN the keyword tables know but the catalog has no row for. */
 const stubFacts: CatalogProductFacts = {
@@ -64,6 +65,7 @@ const stubFacts: CatalogProductFacts = {
   salesRank: null, avg30SalesRank: null, avg90SalesRank: null, rankRatioX100: null, reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
   monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
   enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
+  broadCategories: [],
 };
 
 const point = (fetchedAt: string, over: Partial<HistoryPoint> = {}): HistoryPoint => ({

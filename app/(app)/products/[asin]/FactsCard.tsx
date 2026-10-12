@@ -3,7 +3,8 @@
  * product, with the dates each fact is "as of". The loader (lib/products/loadProduct.ts) already
  * applies the hiding rules: prices are null unless the row is active, and a delisted row's
  * point-in-time facts (rank, its averages and ratio, monthly sold, offers, Amazon availability) are
- * null, so each of those reads as a dash here.
+ * null, so each of those reads as a dash here. The Brand Analytics codes of its keyword rows this
+ * week read as one line, most keywords first (a dash when none).
  *
  * Three shapes: the full fact list; "Not fetched yet" for a catalog row the service has not fetched
  * (every fact null); one line for an ASIN with keyword rows but no catalog row (usually an excluded
@@ -90,6 +91,9 @@ export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }
           <Fact label="Brand">{facts.brand ?? DASH}</Fact>
           <Fact label="Category" wide>
             {facts.categoryPath ?? DASH}
+          </Fact>
+          <Fact label="Broad categories" wide>
+            {facts.broadCategories.length > 0 ? facts.broadCategories.join(', ') : DASH}
           </Fact>
           <Fact label="Listed since">
             {facts.listedSince ? `${facts.listedSince} · ${listingAge(facts.listedSince, now)}` : DASH}

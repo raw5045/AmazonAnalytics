@@ -422,6 +422,7 @@ describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
     salesRank: null, avg30SalesRank: null, avg90SalesRank: null, rankRatioX100: null, reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
     monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
     enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
+    broadCategories: [],
   };
   const keywordRow: ProductKeywordRow = {
     searchTermId: '22222222-2222-4222-8222-222222222222', searchTermRaw: 'desk lamp', currentRank: 10, estimatedMonthlySearches: null,
