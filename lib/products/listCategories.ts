@@ -15,6 +15,9 @@
  * A failed read rejects the whole list (the tools validate category scopes against it, so a
  * partial list would turn a transient error into a false CATEGORY_NOT_AVAILABLE); never catch
  * inside a cached function, or an empty list is cached for an hour.
+ * Each cached callback holds its own statement: Next keys a data-cache entry on the callback's
+ * source text plus the key parts, so an edit to the SQL starts a new entry instead of serving the
+ * old statement's results (Vercel's data cache outlives a deploy) until the hour is up.
  */
 import { cache } from 'react';
 import { unstable_cache } from 'next/cache';
@@ -34,26 +37,23 @@ export function assemblePathLists(lists: ReadonlyArray<ReadonlyArray<string>>): 
   return [...new Set(lists.flat())].sort(compareCodeUnits);
 }
 
-async function fetchDepartments(): Promise<string[]> {
+/** The catalog's root departments, in code-unit order (the statement's ORDER BY is the database's collation; re-sorted here). */
+async function fetchDepartmentsSorted(): Promise<string[]> {
   const sql = neon(env.DATABASE_URL);
   const rows = (await sql`
     SELECT DISTINCT category_root FROM asin_products
     WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_root IS NOT NULL
     ORDER BY category_root
   `) as Array<{ category_root: string }>;
-  return rows.map((r) => r.category_root);
+  return rows.map((r) => r.category_root).sort(compareCodeUnits);
 }
 
 /**
- * The catalog's root departments, in code-unit order (the statement's ORDER BY is the database's collation; re-sorted here).
+ * fetchDepartmentsSorted, cached an hour (it is the callback itself, so the key covers its statement; see the header).
  * React's cache dedupes it per render: the page calls it twice at once (directly and via listProductCategoryPaths), and a full miss would scan twice.
  */
 export const listProductDepartments = cache(
-  unstable_cache(
-    async () => [...(await fetchDepartments())].sort(compareCodeUnits),
-    ['product-departments'],
-    { revalidate: REVALIDATE_SECONDS, tags: [PRODUCT_CATEGORIES_TAG] },
-  ),
+  unstable_cache(fetchDepartmentsSorted, ['product-departments'], { revalidate: REVALIDATE_SECONDS, tags: [PRODUCT_CATEGORIES_TAG] }),
 );
 
 /** One department's distinct paths: the root itself and everything under it, through the path index. */

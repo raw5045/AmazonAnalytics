@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { EMPTY_CATEGORY_SCOPE } from '@/lib/products/categoryPredicate';
 import { PRODUCT_DEFAULTS } from '@/lib/products/filterParams';
@@ -141,6 +141,16 @@ describe('ProductsPage (/products)', () => {
     expect(scope).toEqual({ dept: 'Home & Kitchen', subtreePaths: [], exactPaths: ['Home & Kitchen › Lighting › Desk Lamps'], scoped: true });
     expect(data.expand).toHaveBeenCalledWith('a1', [ID], []);
     expect(screen.getByRole('checkbox', { name: 'Lamps (1)' })).toBeChecked();
+  });
+
+  it('a failed department or path read renders empty lists and still searches: the search does not need them', async () => {
+    data.departments.mockRejectedValue(new Error('cold'));
+    data.paths.mockRejectedValue(new Error('cold'));
+    render(<>{await resolveAsync(await callPage())}</>);
+    expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
+    expect(data.search).toHaveBeenCalledTimes(1);
+    expect(within(screen.getByLabelText('Department')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments']);
+    expect(screen.getByText(/^0 categories/)).toBeInTheDocument();
   });
 
   it('a failed expansion fails the page and never searches', async () => {

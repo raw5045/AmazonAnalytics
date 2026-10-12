@@ -64,8 +64,12 @@ async function loadProductsPage(filters: ProductFilters, userId: string) {
   const searched = expandCustomCategories(userId, filters.customCategoryIds, []).then((customPaths) =>
     searchProducts(neonRunner(sql), filters, pageCategoryScope(filters, customPaths)),
   );
+  // A failed department or path read shows an empty list; caught here, outside the cached functions, so nothing empty is cached and the tools still reject.
   const [result, departments, leafCategories, customCategories] = await Promise.all([
-    searched, listProductDepartments(), listProductCategoryPaths(), listCustomCategoriesForUser(userId),
+    searched,
+    listProductDepartments().catch(() => [] as string[]),
+    listProductCategoryPaths().catch(() => [] as string[]),
+    listCustomCategoriesForUser(userId),
   ]);
   return { result, departments, leafCategories, customCategories, now: new Date() };
 }

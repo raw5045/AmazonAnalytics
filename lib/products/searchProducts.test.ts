@@ -309,7 +309,7 @@ describe('neonRunner', () => {
       { query: 'SELECT $1::int AS n', params: ['1'] },
     ]);
   });
-  it('with the real neon client: an exact-path array travels as one Postgres array literal', async () => {
+  it('with the real neon client: an exact-path array travels as one Postgres array literal, quotes and backslashes escaped', async () => {
     const requests: Array<{ url: string; batch: Batch }> = [];
     await withNeonFetch(
       (url, batch) => {
@@ -317,10 +317,13 @@ describe('neonRunner', () => {
         return okResults(SET_RESULT, { command: 'SELECT', rowCount: 0, rows: [], fields: [], rowAsArray: true });
       },
       async (sql) => {
-        const q = productSearchSql(PRODUCT_DEFAULTS, { ...EMPTY_CATEGORY_SCOPE, exactPaths: ['Pet Supplies › Dogs › Toys', 'Pet Supplies › Cats › Toys'], scoped: true });
+        // The third path holds a double quote, a comma and one backslash (two in the source).
+        const exactPaths = ['Pet Supplies › Dogs › Toys', 'Pet Supplies › Cats › Toys', 'Toys › "Plush", Soft\\Cuddly'];
+        const q = productSearchSql(PRODUCT_DEFAULTS, { ...EMPTY_CATEGORY_SCOPE, exactPaths, scoped: true });
         await neonRunner(sql)(q.count.text, q.count.values);
       },
     );
-    expect(requests[0].batch.queries[1].params).toEqual(['{"Pet Supplies › Dogs › Toys","Pet Supplies › Cats › Toys"}']);
+    // pg's arrayString quotes every element and escapes `"` and `\` with a backslash; String.raw shows the wire text as sent.
+    expect(requests[0].batch.queries[1].params).toEqual([String.raw`{"Pet Supplies › Dogs › Toys","Pet Supplies › Cats › Toys","Toys › \"Plush\", Soft\\Cuddly"}`]);
   });
 });

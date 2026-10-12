@@ -2,15 +2,18 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
-// unstable_cache records what is registered (key parts, options) and what is called (key parts, arguments), then passes
-// through: the caching itself is Next's; these tests check the settings, the statements and the assembly.
+// unstable_cache records what is registered (key parts, options, the callback's source text) and what is called (key parts,
+// arguments), then passes through: the caching itself is Next's; these tests check the settings, the statements and the assembly.
 const cacheMock = vi.hoisted(() => ({
   registered: [] as Array<{ keyParts: string[]; options: unknown }>,
+  /** Each registered callback's source text, in registration order: Next keys an entry on it plus the key parts. */
+  sources: [] as string[],
   calls: [] as Array<{ keyParts: string[]; args: unknown[] }>,
 }));
 vi.mock('next/cache', () => ({
   unstable_cache: (fn: (...a: unknown[]) => unknown, keyParts: string[], options: unknown) => {
     cacheMock.registered.push({ keyParts, options });
+    cacheMock.sources.push(String(fn));
     return (...args: unknown[]) => {
       cacheMock.calls.push({ keyParts, args });
       return fn(...args);
@@ -100,6 +103,14 @@ describe('the loaders', () => {
       { keyParts: ['product-departments'], options },
       { keyParts: ['product-category-paths'], options },
     ]);
+  });
+
+  it("each cached callback holds its own statement, so an edit to the SQL changes the cache key (Next keys an entry on the callback's source and the key parts)", () => {
+    const [departments, paths] = cacheMock.sources.map((s) => s.replace(/\s+/g, ' '));
+    expect(cacheMock.sources).toHaveLength(2);
+    expect(departments).toContain(`SELECT DISTINCT category_root FROM asin_products WHERE ${SCOPE} AND category_root IS NOT NULL ORDER BY category_root`);
+    // The path statement's head only: its holes are code, which the test transform may rewrite.
+    expect(paths).toContain("SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price')");
   });
 
   it('calls the departments cache with no arguments, then the paths cache once per department with only that department (not the map index or array)', async () => {
