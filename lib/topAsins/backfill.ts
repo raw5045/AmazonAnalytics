@@ -34,12 +34,12 @@
  *
  * The swap-in is one transaction and a build's rename swap, so readers are blocked only for its last statements,
  * never for the copy. In order: take the build lock; check the run stamp; refuse to replace a build newer than the
- * last week (an import landed mid-run); rebuild keyword_top_asins_prev from _bf_prev (SELECT *, all eight columns, as
+ * last week (an import landed mid-run); rebuild keyword_top_asins_prev from _bf_prev (SELECT *, all nine columns, as
  * a build-made _prev has; only builds read it, and the lock keeps them out); build keyword_top_asins_next
  * (LIKE keyword_top_asins INCLUDING ALL) from _bf; write the meta row; drop the scratch tables; then, under
  * lock_timeout = 120s (set only now, so it bounds the wait for the live table's lock behind in-flight readers, never
  * the copy or the wait behind a running build), swap: DROP the live table and promote _next under the canonical names
- * with the table comment. The live table is locked from its DROP to COMMIT, five statements; a 55P03 rolls the whole
+ * with the table comment. The live table is locked from its DROP to COMMIT, seven statements; a 55P03 rolls the whole
  * swap-in back. ANALYZE follows the COMMIT on its own: a failure there is reported on the result (analyzeError), never
  * thrown, because the swap is done. Every transaction begins READ COMMITTED explicitly, as a build's does (see
  * inTransaction).
@@ -166,11 +166,12 @@ export function backfillWeekStatements(week: string): BackfillWeekStatements {
   const slots = `(${slotSelect(partition, 1)} UNION ALL ${slotSelect(partition, 2)} UNION ALL ${slotSelect(partition, 3)}) p`;
   return {
     insert: {
-      text: `INSERT INTO keyword_top_asins_bf (search_term_id, asin, slot, click_share, conversion_share, weeks_in_top3, streak_started_week, week_end_date)
+      text: `INSERT INTO keyword_top_asins_bf (search_term_id, asin, slot, click_share, conversion_share, weeks_in_top3, streak_started_week, week_end_date, broad_category)
              SELECT p.search_term_id, p.asin, p.slot, p.click_share, p.conversion_share,
                     COALESCE(prev.weeks_in_top3, 0) + 1,
                     COALESCE(prev.streak_started_week, $1::date),
-                    $1::date
+                    $1::date,
+                    p.broad_category
              FROM ${slots}
              LEFT JOIN (
                SELECT DISTINCT ON (search_term_id, asin) search_term_id, asin, weeks_in_top3, streak_started_week
@@ -203,7 +204,7 @@ export function rotateStatements(token: string): SqlStatement[] {
 export interface BackfillFinalizeStatements {
   /** The meta row's week, read under the lock: the swap-in refuses to replace a newer build. */
   metaWeek: SqlStatement;
-  /** keyword_top_asins_prev, rebuilt from the previous week walked (_bf_prev), all eight columns as a build-made _prev has. */
+  /** keyword_top_asins_prev, rebuilt from the previous week walked (_bf_prev), all nine columns as a build-made _prev has. */
   prev: SqlStatement[];
   /** The replacement, built beside the live table exactly as a build builds _next. */
   createNext: SqlStatement;
@@ -234,9 +235,12 @@ export function finalizeStatements(lastWeek: string): BackfillFinalizeStatements
     cleanup: [sql('DROP TABLE keyword_top_asins_bf'), sql('DROP TABLE keyword_top_asins_bf_prev')],
     swap: [
       sql('DROP TABLE keyword_top_asins'),
+      // The build's own guard (buildWeek.ts PREV_BROAD_GUARD), a no-op here: the DROP took the live table's index, and _prev (a CTAS copy) has none.
+      sql('ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx'),
       sql('ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins'),
       sql(CURRENT_COMMENT),
       sql('ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx'),
+      sql('ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx'),
       sql('ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey'),
     ],
     analyze: sql('ANALYZE keyword_top_asins'),
