@@ -4,13 +4,19 @@
  * unstable_cache like lib/explorer/listLeafCategories.ts:
  *  - listProductDepartments: the distinct Keepa root departments of the rows the page can show
  *    (36 today; the uncached statement scans the catalog, 1.3 s cold, hence the cache);
- *  - listProductCategoryPaths: every distinct category_path of those rows (22,693 today, 1.9 MB),
- *    read one department at a time through asin_products_category_path_idx and cached per
- *    department (unstable_cache keys on the function's arguments), so no single cache entry is
- *    large and a cold fill is a parallel half-second instead of a 1.4 s scan.
- * Both lists are sorted by plain code-unit comparison, the ordering lib/research/categories.ts uses,
- * so the typeahead's options and the tools' catalog check agree. An empty catalog gives empty lists.
+ *  - listProductCategoryPaths: every distinct category_path of those rows (22,693 today), read one
+ *    department at a time through asin_products_category_path_idx and cached per department
+ *    (unstable_cache keys on the function's arguments). Per department because Next's data cache
+ *    refuses entries over 2 MB (it warns and skips in production, throws in dev) and the full list
+ *    is about 1.9 MB today, so one entry would sit at the limit; the per-department entries stay
+ *    well under it (the largest, Clothing, is roughly 0.5-1 MB).
+ * Both lists are sorted by plain code-unit comparison so the order never depends on the host's
+ * ICU data (lib/research/categories.ts sorts the same way). An empty catalog gives empty lists.
+ * A failed read rejects the whole list (the tools validate category scopes against it, so a
+ * partial list would turn a transient error into a false CATEGORY_NOT_AVAILABLE); never catch
+ * inside a cached function, or an empty list is cached for an hour.
  */
+import { cache } from 'react';
 import { unstable_cache } from 'next/cache';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
@@ -38,11 +44,16 @@ async function fetchDepartments(): Promise<string[]> {
   return rows.map((r) => r.category_root);
 }
 
-/** The catalog's root departments, in code-unit order (the statement's ORDER BY is the database's collation; re-sorted here). */
-export const listProductDepartments = unstable_cache(
-  async () => [...(await fetchDepartments())].sort(compareCodeUnits),
-  ['product-departments'],
-  { revalidate: REVALIDATE_SECONDS, tags: [PRODUCT_CATEGORIES_TAG] },
+/**
+ * The catalog's root departments, in code-unit order (the statement's ORDER BY is the database's collation; re-sorted here).
+ * React's cache dedupes it per render: the page calls it twice at once (directly and via listProductCategoryPaths), and a full miss would scan twice.
+ */
+export const listProductDepartments = cache(
+  unstable_cache(
+    async () => [...(await fetchDepartments())].sort(compareCodeUnits),
+    ['product-departments'],
+    { revalidate: REVALIDATE_SECONDS, tags: [PRODUCT_CATEGORIES_TAG] },
+  ),
 );
 
 /** One department's distinct paths: the root itself and everything under it, through the path index. */

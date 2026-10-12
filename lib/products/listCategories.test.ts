@@ -2,8 +2,21 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
-// unstable_cache as a pass-through: the caching is Next's; these tests check the statements and the assembly.
-vi.mock('next/cache', () => ({ unstable_cache: (fn: (...args: unknown[]) => unknown) => fn }));
+// unstable_cache records what is registered (key parts, options) and what is called (key parts, arguments), then passes
+// through: the caching itself is Next's; these tests check the settings, the statements and the assembly.
+const cacheMock = vi.hoisted(() => ({
+  registered: [] as Array<{ keyParts: string[]; options: unknown }>,
+  calls: [] as Array<{ keyParts: string[]; args: unknown[] }>,
+}));
+vi.mock('next/cache', () => ({
+  unstable_cache: (fn: (...a: unknown[]) => unknown, keyParts: string[], options: unknown) => {
+    cacheMock.registered.push({ keyParts, options });
+    return (...args: unknown[]) => {
+      cacheMock.calls.push({ keyParts, args });
+      return fn(...args);
+    };
+  },
+}));
 const neonMock = vi.hoisted(() => ({
   queries: [] as Array<{ text: string; values: unknown[] }>,
   answer: (() => []) as (text: string, values: unknown[]) => unknown[],
@@ -39,6 +52,7 @@ describe('the loaders', () => {
 
   beforeEach(() => {
     neonMock.queries.length = 0;
+    cacheMock.calls.length = 0; // registered is filled once, at import; only the calls belong to a single test
     neonMock.answer = (text, values) => {
       if (text.includes('DISTINCT category_root')) return DEPARTMENT_ROWS;
       if (text.includes('DISTINCT category_path')) return PATH_ROWS[values[0] as string] ?? [];
@@ -69,7 +83,31 @@ describe('the loaders', () => {
     await expect(listProductCategoryPaths()).resolves.toEqual([]);
   });
 
-  it('tags both caches for one revalidation', () => {
+  it('a failed department read rejects the whole list: nothing is swallowed and no partial list is returned', async () => {
+    const failure = new Error('connection reset');
+    const answer = neonMock.answer;
+    neonMock.answer = (text, values) => {
+      if (text.includes('DISTINCT category_path') && values[0] === 'Pet Supplies') throw failure;
+      return answer(text, values);
+    };
+    await expect(listProductCategoryPaths()).rejects.toBe(failure);
+  });
+
+  it('registers the two caches under their own key parts, with the one-hour revalidation and the shared tag', () => {
     expect(PRODUCT_CATEGORIES_TAG).toBe('product-categories');
+    const options = { revalidate: 3600, tags: [PRODUCT_CATEGORIES_TAG] };
+    expect(cacheMock.registered).toEqual([
+      { keyParts: ['product-departments'], options },
+      { keyParts: ['product-category-paths'], options },
+    ]);
+  });
+
+  it('calls the departments cache with no arguments, then the paths cache once per department with only that department (not the map index or array)', async () => {
+    await listProductCategoryPaths();
+    expect(cacheMock.calls).toEqual([
+      { keyParts: ['product-departments'], args: [] },
+      { keyParts: ['product-category-paths'], args: ['Appliances'] },
+      { keyParts: ['product-category-paths'], args: ['Pet Supplies'] },
+    ]);
   });
 });
