@@ -18,9 +18,9 @@ import type { ProductFilters } from './filterParams';
 export interface ProductCategoryScope {
   /** A Keepa root department, matched as a subtree; null for all departments. */
   dept: string | null;
-  /** Each matches the path and its descendants (the page's leaf picks; the tools' taxonomy selections that include descendants). */
+  /** Each matches the path and its descendants (the page's leaf picks; the tools' taxonomy selections, whatever includeDescendants says). */
   subtreePaths: readonly string[];
-  /** Each matches exactly (custom categories' stored paths; the tools' leafPaths and taxonomy selections with includeDescendants false). */
+  /** Each matches exactly (custom categories' stored paths; the tools' leafPaths). */
   exactPaths: readonly string[];
   /** A leaf or custom selection was requested; with no paths left, the group is FALSE instead of absent. */
   scoped: boolean;
