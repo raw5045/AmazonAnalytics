@@ -103,7 +103,7 @@ describe('productSearchSql', () => {
   });
   it.each(SORT_DIR_PAIRS)('%s %s: the rows and count WHEREs match, and the tie-break follows the direction', (sort, dir) => {
     const D = dir.toUpperCase();
-    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 100, reviewsMax: 300, priceMaxCents: 5000, ratioMax: 80, fba: 'yes', amazon: 'no', sort, dir, page: 2 }, { ...EMPTY_CATEGORY_SCOPE, dept: 'Tools', subtreePaths: ['Tools › Bath'], scoped: true });
+    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 100, reviewsMax: 300, priceMaxCents: 5000, ratioMax: 80, fba: 'yes', amazon: 'no', sort, dir, page: 2 }, { ...EMPTY_CATEGORY_SCOPE, dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true });
     const rowsWhere = whereText(q.rows.text, ' ORDER BY ');
     const countWhere = whereText(q.count.text, ' LIMIT ');
     // The total counts exactly what the pager can reach: the same predicate, the same bound values.
@@ -140,7 +140,8 @@ describe('productSearchSql', () => {
     expect(productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords', dir: 'asc' }, EMPTY_CATEGORY_SCOPE).rows.text).toContain('ORDER BY kc.keyword_count ASC, a.asin ASC LIMIT $1 OFFSET $2');
   });
   it.each(PRODUCT_SORTS)('%s: names only real columns', (sort) => {
-    const t = productSearchSql({ ...PRODUCT_DEFAULTS, sort, age: 60, fba: 'yes', amazon: 'yes', ratioMax: 50 }, EMPTY_CATEGORY_SCOPE).rows.text;
+    const scope: ProductCategoryScope = { dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true };
+    const t = productSearchSql({ ...PRODUCT_DEFAULTS, sort, age: 60, fba: 'yes', amazon: 'yes', ratioMax: 50 }, scope).rows.text;
     const a = aliasCols(t, 'a');
     expect([...a].filter((c) => !dbCols(asinProducts).has(c))).toEqual([]);
     expect([...aliasCols(t, 'k')].filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);

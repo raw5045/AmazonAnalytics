@@ -532,11 +532,14 @@ export function ProductFilterPanel({
   );
 }
 
+/** Field's two heading forms are exclusive: htmlFor (one control) or groupId (several), never both. */
+type FieldProps = { label: string; children: ReactNode } & ({ htmlFor?: string; groupId?: never } | { groupId?: string; htmlFor?: never });
+
 /**
  * One heading over its controls. With htmlFor the heading is the control's <label>; with groupId
  * (several controls under one heading) it names a role="group" around them, as RangeField's does.
  */
-function Field({ label, htmlFor, groupId, children }: { label: string; htmlFor?: string; groupId?: string; children: ReactNode }) {
+function Field({ label, htmlFor, groupId, children }: FieldProps) {
   return (
     <div role={groupId ? 'group' : undefined} aria-labelledby={groupId}>
       {htmlFor ? (

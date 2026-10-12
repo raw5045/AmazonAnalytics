@@ -4,8 +4,9 @@
  * over a `(text, values) => rows` runner (the page wraps neon's client in `neonRunner`; the tools reuse it).
  * The category filter is a ProductCategoryScope built by the caller — see ./categoryPredicate; every
  * other filter is read from ProductFilters (spec 2026-10-12 §4.3).
- * Every predicate rides on a partial index from migration 0051; the base predicate matches those
- * indexes' WHERE clause exactly.
+ * Every predicate rides on a partial index: the 0051 (key, asin) indexes for the filters and sorts (the
+ * base predicate matches their WHERE clause exactly) and 0050's asin_products_category_path_idx for the
+ * category predicate (see ./categoryPredicate).
  *
  * Two rules keep a page cheap on a multi-million-row catalog:
  *  - Page first, count second. The filter, the order and the 50-row page are a subquery (it also
