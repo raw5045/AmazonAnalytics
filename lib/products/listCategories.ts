@@ -1,6 +1,6 @@
 // lib/products/listCategories.ts
 /**
- * The Products page's category option lists (spec 2026-10-12 §4.4), cached an hour with
+ * The Products page's category option lists (spec 2026-10-12 (category filters) §4.4), cached an hour with
  * unstable_cache like lib/explorer/listLeafCategories.ts:
  *  - listProductDepartments: the distinct Keepa root departments of the rows the page can show
  *    (36 today; the uncached statement scans the catalog, 1.3 s cold, hence the cache);
@@ -11,7 +11,8 @@
  *    is about 1.9 MB today, so one entry would sit at the limit; the per-department entries stay
  *    well under it (the largest, Clothing, is roughly 0.5-1 MB);
  *  - listProductBroadCategories: the codes on keyword_top_asins, one index probe each (a loose index
- *    scan; see BROAD_CATEGORY_LIST_SQL below).
+ *    scan; see BROAD_CATEGORY_LIST_SQL below), read through neonRunner so PRODUCT_READ_TIMEOUT_MS caps
+ *    it like the page's reads.
  * All three lists are sorted by plain code-unit comparison so the order never depends on the host's
  * ICU data (lib/research/categories.ts sorts the same way). An empty catalog (or pair table) gives empty lists.
  * A failed read rejects the whole list (the tools validate category scopes against it, so a
@@ -28,6 +29,7 @@ import { unstable_cache } from 'next/cache';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
+import { neonRunner } from './searchProducts';
 
 const REVALIDATE_SECONDS = 60 * 60;
 /** One tag for the three lists, so a future revalidateTag can refresh them together. */
@@ -95,10 +97,14 @@ export const BROAD_CATEGORY_LIST_SQL = `WITH RECURSIVE codes AS (
 )
 SELECT code FROM codes WHERE code IS NOT NULL`;
 
-/** The codes in code-unit order (the recursion walks the index in the database's collation; re-sorted here). */
+/**
+ * The codes in code-unit order (the recursion walks the index in the database's collation; re-sorted here).
+ * Run through neonRunner, so PRODUCT_READ_TIMEOUT_MS caps the read like every web read of keyword_top_asins:
+ * a reader holds a lock the weekly table swap waits on (120 s at most), so a stuck one must not outlive it.
+ */
 async function fetchBroadCategoriesSorted(): Promise<string[]> {
-  const sql = neon(env.DATABASE_URL);
-  const rows = (await sql.query(BROAD_CATEGORY_LIST_SQL)) as Array<{ code: string }>;
+  const run = neonRunner(neon(env.DATABASE_URL));
+  const rows = (await run(BROAD_CATEGORY_LIST_SQL, [])) as Array<{ code: string }>;
   return rows.map((r) => r.code).sort(compareCodeUnits);
 }
 
