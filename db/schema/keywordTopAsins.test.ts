@@ -2,9 +2,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
+import { getTableConfig } from 'drizzle-orm/pg-core';
 import { keywordTopAsins, keywordTopAsinsMeta, asinProducts } from '@/db/schema';
 
-describe('keyword_top_asins schema (migration 0051)', () => {
+describe('keyword_top_asins schema (migrations 0051 and 0052)', () => {
   it('mirrors the migration columns', () => {
     const cols = Object.values(getTableColumns(keywordTopAsins)).map((c) => c.name).sort();
     expect(cols).toEqual(
@@ -89,7 +90,7 @@ describe('migration 0052 SQL text', () => {
     expect(statements).toHaveLength(4);
     for (const s of statements) expect(s.match(/^(ALTER|COMMENT|CREATE)\b/gm) ?? []).toHaveLength(1);
   });
-  it('adds the nullable code column to the live table and, when it exists, to _prev (the backfill rebuilds _prev with SELECT *)', () => {
+  it('adds the nullable code column to the live table and, when it exists, to _prev (the retained build stays shaped like the live one)', () => {
     expect(statements[0]).toBe('ALTER TABLE keyword_top_asins ADD COLUMN IF NOT EXISTS broad_category varchar(255);');
     expect(statements[2]).toBe('ALTER TABLE IF EXISTS keyword_top_asins_prev ADD COLUMN IF NOT EXISTS broad_category varchar(255);');
     expect(getTableColumns(keywordTopAsins).broadCategory.name).toBe('broad_category');
@@ -101,5 +102,12 @@ describe('migration 0052 SQL text', () => {
   });
   it('indexes (broad_category, asin) over the coded rows only, under the canonical name the swap renames', () => {
     expect(flat).toContain('CREATE INDEX IF NOT EXISTS keyword_top_asins_broad_category_idx ON keyword_top_asins (broad_category, asin) WHERE broad_category IS NOT NULL');
+  });
+  it('the mirror declares varchar(255) and the partial (broad_category, asin) index', () => {
+    const cfg = getTableConfig(keywordTopAsins);
+    expect(cfg.columns.find((c) => c.name === 'broad_category')?.getSQLType()).toBe('varchar(255)');
+    const idx = cfg.indexes.find((i) => i.config.name === 'keyword_top_asins_broad_category_idx');
+    expect(idx?.config.columns.map((c) => (c as { name: string }).name)).toEqual(['broad_category', 'asin']);
+    expect(idx?.config.where).toBeDefined();
   });
 });
