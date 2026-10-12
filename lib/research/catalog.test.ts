@@ -243,6 +243,8 @@ describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
 describe('buildGuide products section (spec 2026-10-09 §9)', () => {
   const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS, products: true });
   const filterShape = productSearchInputSchema.shape.filters.unwrap().shape;
+  const rulesText = () => on.products?.rules.join('\n') ?? '';
+  const unitsOf = (name: string) => on.products?.filters.find((f) => f.name === name)?.definition ?? '';
 
   it('is absent unless asked for (an admin account), and then carries the rules and every search_products filter', () => {
     expect(buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS }).products).toBeUndefined();
@@ -264,7 +266,7 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
   });
 
   it('states the units, the badge, the ratio, weeks in top 3, the not-in-catalog case, the paging numbers, the details caps and that the tools are admin-only', () => {
-    const rules = on.products?.rules.join('\n') ?? '';
+    const rules = rulesText();
     expect(rules).toContain('for admin accounts only for now: no other account is offered them, and a call from one is refused with FORBIDDEN');
     expect(rules).toContain('stars (0–5, one decimal)');
     expect(rules).toContain('US dollars');
@@ -281,19 +283,25 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     // pointsTotal stops at the loaded window; keywordsTotal counts everything.
     expect(rules).toContain(`up to ${PRODUCT_TOOL_KEYWORDS_CAP} keywords, best rank first, and keywordsTotal counts every one`);
     expect(rules).toContain(`the newest ${PRODUCT_TOOL_HISTORY_POINTS} snapshots, while first, last and pointsTotal describe the loaded window (at most ${PRODUCT_HISTORY_CAP} snapshots`);
-    const unitsOf = (name: string) => on.products?.filters.find((f) => f.name === name)?.definition ?? '';
     expect(unitsOf('listedWithinDays')).toContain('days');
     expect(unitsOf('priceMin')).toContain('US dollars');
     expect(unitsOf('ratingMin')).toContain('stars');
     expect(unitsOf('monthlySoldMin')).toContain('1000 means 1,000+');
     expect(unitsOf('bsrRatioMax')).toContain('30-day average');
-    // The category filters (spec 2026-10-12 §6): a product's own Keepa path, never the keyword report's broad category.
+  });
+
+  // Spec 2026-10-12 §6: a product's own Keepa path, never a keyword row's broadCategory; every taxonomy selection a subtree.
+  it('states the product category rules', () => {
+    const rules = rulesText();
     expect(rules).toContain("filters.department is one of the catalog's storefront departments");
-    expect(rules).toContain("not the keyword report's broad category");
+    expect(rules).toContain("not a keyword row's broadCategory");
     expect(rules).toContain('filters.categories is the object search_keywords takes');
-    expect(rules).toContain('matches the path and everything under it unless includeDescendants is false');
+    expect(rules).toContain('matches the path and everything under it whatever includeDescendants says');
+    expect(rules).toContain('a custom selection matches the paths that custom category stores, exactly');
+    expect(rules).toContain('Taxonomy and leaf paths are checked against the product catalog');
     expect(rules).toContain('an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page');
-    expect(rules).toContain("a product row's categoryPath is that product's own Keepa category path");
+    expect(rules).toContain("a product row's categoryPath (and product.categoryPath in get_product_details) is that product's own Keepa category path");
+    expect(rules).not.toContain('unless includeDescendants is false');
     expect(unitsOf('department')).toContain('storefront department');
     expect(unitsOf('categories')).toContain('resolve_categories');
     expect(on.products?.filters.map((f) => f.name)).not.toContain('categoryPath');

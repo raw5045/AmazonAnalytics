@@ -77,8 +77,11 @@ describe('RESEARCH_TOOLS', () => {
   });
   it('search_products describes the department and categories filters', () => {
     const text = researchToolByName('search_products').description(DEFAULT_LIMITS);
-    expect(text).toContain("department (the product's Keepa storefront department, not the keyword report's broad category)");
+    expect(text).toContain("department (the product's Keepa storefront department, not a keyword row's broadCategory)");
     expect(text).toContain('filters.categories, the same object search_keywords takes');
+    expect(text).toContain('a taxonomy selection includes everything under it, whatever includeDescendants says');
+    expect(text).toContain("a custom selection is that custom category's stored paths, exactly");
+    expect(text).not.toContain('unless includeDescendants is false');
   });
   it('builds the search description from the operating constants', () => {
     const d = researchToolByName('search_keywords').description({ ...DEFAULT_LIMITS, maxRowsPerSearch: 1234 });

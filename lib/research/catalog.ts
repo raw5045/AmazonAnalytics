@@ -13,7 +13,7 @@ import type { ResearchLimits } from './limits';
 import { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP } from './productCaps';
 
 export const CATALOG_VERSION = 1;
-/** 2: the workspace section (spec 2026-09-30 §9.1); 3: the products section (spec 2026-10-09 §9); 4: search_products gained department + categories (spec 2026-10-12 §6). */
+/** 2: the workspace section (spec 2026-09-30 §9.1); 3: the products section (spec 2026-10-09 §9); 4: the products section's category rules and filters (spec 2026-10-12 §6). */
 export const GUIDE_VERSION = 4;
 export const QUERY_VERSION = 1;
 
@@ -240,9 +240,9 @@ export const WORKSPACE_RULES: readonly string[] = Object.freeze([
 export const PRODUCT_RULES: readonly string[] = Object.freeze([
   'search_products and get_product_details are for admin accounts only for now: no other account is offered them, and a call from one is refused with FORBIDDEN.',
   'search_products finds catalog products (Amazon ASINs with Keepa data) by the filters below, combined with AND. It covers in-scope products with an active or no_price listing, so a delisted product never appears there; get_product_details still opens one by its ASIN.',
-  "Categories on products are the product's own Keepa category path. filters.department is one of the catalog's storefront departments (Health & Household, Pet Supplies, …), not the keyword report's broad category; an unknown name fails with CATEGORY_NOT_AVAILABLE and the message lists the valid names.",
-  'filters.categories is the object search_keywords takes: resolve_categories selections (several = OR) and leafPaths. A taxonomy selection matches the path and everything under it unless includeDescendants is false; a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Paths are checked against the product catalog, where almost every keyword-side path exists; an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.',
-  "In answers, a product row's categoryPath is that product's own Keepa category path (the keyword guide's categoryPath is the most-clicked product's path, a proxy for the keyword's niche).",
+  "Categories on products are the product's own Keepa category path. filters.department is one of the catalog's storefront departments (Health & Household, Pet Supplies, …), not a keyword row's broadCategory; an unknown name fails with CATEGORY_NOT_AVAILABLE and the message lists the valid names.",
+  'filters.categories is the object search_keywords takes: resolve_categories selections (several = OR) and leafPaths. On products a taxonomy selection matches the path and everything under it whatever includeDescendants says (resolve_categories marks keyword-side leaves as having no descendants, but the product catalog files products deeper); a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Taxonomy and leaf paths are checked against the product catalog, where almost every keyword-side path exists; an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.',
+  "In answers, a product row's categoryPath (and product.categoryPath in get_product_details) is that product's own Keepa category path; a keyword row's categoryPath, in metrics, is the most-clicked product's path, a proxy for the keyword's niche.",
   'Units: filters take ratings in stars (0–5, one decimal) and prices in US dollars; answers carry averageRatingX10 (stars × 10: 45 = 4.5 stars) and prices in cents (currentPriceCents and the price averages). Dates are YYYY-MM-DD; fetch times are ISO 8601.',
   "monthlySold is Amazon's 'bought in past month' floor: 1000 means 1,000+. Report it as a floor, never as an exact count; null is unknown, never zero.",
   'rankRatioX100 = current BSR ÷ 30-day average BSR × 100: under 100 = ranked better than its own 30-day average, over 100 = worse. bsrRatioMax bounds it: 70 = at least 30 % better.',
