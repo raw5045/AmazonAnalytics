@@ -2,8 +2,9 @@
  * /products/<asin>: the ASIN page (spec 2026-10-09 §6), admin only (§10). Modelled on the keyword
  * page (app/(app)/explorer/keyword/[id]/page.tsx):
  *   1. Admin gate, then validate the [asin] param (cheap 404 path).
- *   2. Await ONLY loadProduct (one primary-key read, plus a keyword-side title read for a catalog
- *      row without a title) so the title band and the facts card paint fast.
+ *   2. Await ONLY loadProduct (the primary-key read and the codes read together, plus a
+ *      keyword-side title read for a catalog row without a title) so the title band and the facts
+ *      card paint fast.
  *   3. Stream the snapshot history (charts in a lazy recharts chunk) and the keywords table behind
  *      <Suspense>, each failing soft on its own (StreamedProductSections.tsx).
  */

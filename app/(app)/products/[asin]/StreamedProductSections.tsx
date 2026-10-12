@@ -1,11 +1,12 @@
 /**
  * Streamed history and keywords sections for the ASIN page (spec 2026-10-09 §6.2, §6.3).
  *
- * The page awaits only the facts (one primary-key read) so the title band and the facts card paint
- * first; these two reads stream in behind <Suspense>. Like the keyword page's StreamedSections and
- * TopProductsSection, each section awaits its own read inside a try/catch and fails soft, and NO
- * client error boundary wraps their <Suspense> (that would de-opt the server streaming). A failure is
- * logged as coded fields only (errFields), never an error message.
+ * The page awaits only the facts (the primary-key read and the codes read, in parallel) so the
+ * title band and the facts card paint first; these two reads stream in behind <Suspense>. Like the
+ * keyword page's StreamedSections and TopProductsSection, each section awaits its own read inside
+ * a try/catch and fails soft, and NO client error boundary wraps their <Suspense> (that would
+ * de-opt the server streaming). A failure is logged as coded fields only (errFields), never an
+ * error message.
  */
 import type { ReactNode } from 'react';
 import { errFields } from '@/lib/ask/logSafe';

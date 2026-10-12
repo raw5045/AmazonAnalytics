@@ -2,7 +2,8 @@
 /**
  * The ASIN page's facts card (spec 2026-10-09 §6.1): one catalog row by ASIN, plus a title from
  * the keyword side when the catalog has none (an ASIN the Keepa service has not fetched yet), plus
- * the ASIN's Brand Analytics codes from the reverse table, most keywords first (spec 2026-10-12 §8).
+ * the ASIN's Brand Analytics codes from the reverse table, most keywords first (spec 2026-10-12
+ * broad category §8).
  *
  * The catalog KEEPS every fact on a delisted row (the service's delisted write leaves them in
  * place); this reader hides them, as mapEnrichedProducts (lib/explorer/fetchKeywordDetail.ts) does
@@ -59,8 +60,8 @@ export interface ProductFacts {
   enrichmentStatus: AsinEnrichmentStatus | null;
   /**
    * False for a stub: an ASIN the keyword tables know but the catalog has no row for (e.g. an
-   * excluded category). Every catalog fact is then null (counts 0, inScope false, tier 0; only
-   * broadCategories can be set); the page says "Not in the Keepa catalog".
+   * excluded category). Every catalog fact is then null (counts 0, inScope false, tier 0; only the
+   * keyword-side title and broadCategories can be set); the page says "Not in the Keepa catalog".
    */
   inCatalog: boolean;
   /** False until the service has fetched the ASIN once (last_fetched_at is null): the facts above are then all null. */
@@ -234,7 +235,8 @@ async function keywordSideTitle(run: SqlRunner, asin: string): Promise<string | 
  * the reverse table whether or not the catalog has a row), plus the keyword-side title read only
  * when the row has no title. With no catalog row, one more read checks the reverse table: an ASIN
  * found there is a stub (`inCatalog: false`) that still carries its codes; null, which the page
- * answers with a 404, means neither table has the ASIN.
+ * answers with a 404, means neither table has the ASIN. That check is skipped when the codes came
+ * back non-empty: they already prove the ASIN is on the reverse table.
  */
 export async function loadProduct(run: SqlRunner, asin: string): Promise<ProductFacts | null> {
   const facts = productFactsSql(asin);
@@ -246,7 +248,10 @@ export async function loadProduct(run: SqlRunner, asin: string): Promise<Product
   const broadCategories = codeRows.map((r) => r.broad_category);
   const row = rows[0];
   if (row) return toFacts(row, nonBlank(row.title) ?? (await keywordSideTitle(run, asin)), broadCategories);
-  const tracked = productTrackedSql(asin);
-  if (((await run(tracked.text, tracked.values)) as unknown[]).length === 0) return null;
+  // A code is a pair row for this ASIN, so the tracked probe would only repeat it.
+  if (broadCategories.length === 0) {
+    const tracked = productTrackedSql(asin);
+    if (((await run(tracked.text, tracked.values)) as unknown[]).length === 0) return null;
+  }
   return untrackedStub(asin, await keywordSideTitle(run, asin), broadCategories);
 }

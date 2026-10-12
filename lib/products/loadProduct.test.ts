@@ -91,6 +91,7 @@ describe('productBroadCategoriesSql', () => {
     expect(q.values).toEqual(['B000000004']);
   });
   it('names only real columns', () => {
+    expect(aliasCols(q.text, 'k')).toEqual(new Set(['asin', 'broad_category']));
     expect(notIn(aliasCols(q.text, 'k'), dbCols(keywordTopAsins))).toEqual([]);
   });
 });
@@ -225,7 +226,27 @@ describe('loadProduct', () => {
   it('carries the codes, most keywords first, on a catalog row and on a stub', async () => {
     const codes = [{ broad_category: 'Home' }, { broad_category: 'Pet Supplies' }];
     await expect(loadProduct(fakeRun({ facts: [rawRow()], codes }).run, 'B000000001')).resolves.toEqual({ ...ACTIVE, broadCategories: ['Home', 'Pet Supplies'] });
-    await expect(loadProduct(fakeRun({ facts: [], codes, tracked: [{ '?column?': 1 }], fallback: [] }).run, 'B000000003')).resolves.toEqual({ ...UNTRACKED, broadCategories: ['Home', 'Pet Supplies'] });
+    // A code is a pair row for the ASIN: no tracked probe (its default empty answer here would turn the stub into null).
+    const { run, calls } = fakeRun({ facts: [], codes, fallback: [] });
+    await expect(loadProduct(run, 'B000000003')).resolves.toEqual({ ...UNTRACKED, broadCategories: ['Home', 'Pet Supplies'] });
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT, FALLBACK_TEXT]);
+  });
+
+  it('starts the facts and codes reads together, not one after the other', async () => {
+    const events: string[] = [];
+    const run = async (text: string) => {
+      if (text === FACTS_TEXT) {
+        events.push('facts:start');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        events.push('facts:end');
+        return [rawRow()];
+      }
+      events.push('codes:start');
+      return [];
+    };
+    await expect(loadProduct(run, 'B000000001')).resolves.toEqual(ACTIVE);
+    // The codes read starts while the facts read is still pending: a sequential loader would log it last.
+    expect(events).toEqual(['facts:start', 'codes:start', 'facts:end']);
   });
 
   it('reads exactly the columns the facts statement selects', async () => {

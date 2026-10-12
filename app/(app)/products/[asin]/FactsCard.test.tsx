@@ -161,7 +161,7 @@ describe('FactsCard — a full active row', () => {
 
   it('a product with no coded keyword rows reads a dash for its broad categories', () => {
     render(<FactsCard facts={{ ...FULL, broadCategories: [] }} now={NOW} />);
-    expect(fact('Broad categories')).toHaveTextContent('—');
+    expect(fact('Broad categories')).toHaveTextContent(/^—$/);
   });
 });
 
