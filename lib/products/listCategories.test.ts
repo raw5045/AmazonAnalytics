@@ -25,15 +25,24 @@ const neonMock = vi.hoisted(() => ({
   answer: (() => []) as (text: string, values: unknown[]) => unknown[],
 }));
 vi.mock('@neondatabase/serverless', () => ({
-  // neon()'s tagged template: the statement with a ? per hole, and the hole values.
-  neon: () => async (strings: TemplateStringsArray, ...values: unknown[]) => {
-    const text = strings.join('?').replace(/\s+/g, ' ').trim();
-    neonMock.queries.push({ text, values });
-    return neonMock.answer(text, values);
+  // neon()'s tagged template: the statement with a ? per hole, and the hole values. query(text): a fixed statement.
+  neon: () => {
+    const tagged = async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?').replace(/\s+/g, ' ').trim();
+      neonMock.queries.push({ text, values });
+      return neonMock.answer(text, values);
+    };
+    return Object.assign(tagged, {
+      query: async (text: string) => {
+        const t = text.replace(/\s+/g, ' ').trim();
+        neonMock.queries.push({ text: t, values: [] });
+        return neonMock.answer(t, []);
+      },
+    });
   },
 }));
 
-import { assemblePathLists, compareCodeUnits, listProductCategoryPaths, listProductDepartments, PRODUCT_CATEGORIES_TAG } from './listCategories';
+import { assemblePathLists, BROAD_CATEGORY_LIST_SQL, compareCodeUnits, listProductBroadCategories, listProductCategoryPaths, listProductDepartments, PRODUCT_CATEGORIES_TAG } from './listCategories';
 
 const SCOPE = "in_scope AND enrichment_status IN ('active', 'no_price')";
 
@@ -48,6 +57,8 @@ describe('assemblePathLists', () => {
 describe('the loaders', () => {
   /** Two departments, answered out of code-unit order so the re-sort shows. */
   const DEPARTMENT_ROWS = [{ category_root: 'Pet Supplies' }, { category_root: 'Appliances' }];
+  /** Three codes, answered out of code-unit order so the re-sort shows. */
+  const BROAD_ROWS = [{ code: 'Toys' }, { code: 'Home' }, { code: 'Misc SDP' }];
   const PATH_ROWS: Record<string, Array<{ category_path: string }>> = {
     Appliances: [{ category_path: 'Appliances › Dishwashers' }],
     'Pet Supplies': [{ category_path: 'Pet Supplies › Dogs › Toys' }, { category_path: 'Pet Supplies' }],
@@ -59,6 +70,7 @@ describe('the loaders', () => {
     neonMock.answer = (text, values) => {
       if (text.includes('DISTINCT category_root')) return DEPARTMENT_ROWS;
       if (text.includes('DISTINCT category_path')) return PATH_ROWS[values[0] as string] ?? [];
+      if (text.includes('WITH RECURSIVE codes')) return BROAD_ROWS;
       return [];
     };
   });
@@ -96,21 +108,41 @@ describe('the loaders', () => {
     await expect(listProductCategoryPaths()).rejects.toBe(failure);
   });
 
-  it('registers the two caches under their own key parts, with the one-hour revalidation and the shared tag', () => {
+  it('lists the codes present on the pair table by a loose index scan (one probe per code), in code-unit order', async () => {
+    await expect(listProductBroadCategories()).resolves.toEqual(['Home', 'Misc SDP', 'Toys']);
+    expect(neonMock.queries).toHaveLength(1);
+    expect(neonMock.queries[0].text).toBe(BROAD_CATEGORY_LIST_SQL.replace(/\s+/g, ' ').trim());
+    expect(neonMock.queries[0].text).toBe(
+      'WITH RECURSIVE codes AS ( (SELECT broad_category AS code FROM keyword_top_asins WHERE broad_category IS NOT NULL ORDER BY broad_category LIMIT 1) UNION ALL SELECT (SELECT k.broad_category FROM keyword_top_asins k WHERE k.broad_category > c.code ORDER BY k.broad_category LIMIT 1) FROM codes c WHERE c.code IS NOT NULL ) SELECT code FROM codes WHERE code IS NOT NULL',
+    );
+  });
+
+  it('an empty pair table gives an empty code list; a failed read rejects (never an empty list cached for an hour)', async () => {
+    neonMock.answer = () => [];
+    await expect(listProductBroadCategories()).resolves.toEqual([]);
+    neonMock.answer = () => { throw Object.assign(new Error('cold'), { code: '57014' }); };
+    await expect(listProductBroadCategories()).rejects.toMatchObject({ code: '57014' });
+  });
+
+  it('registers the three caches under their own key parts, with the one-hour revalidation and the shared tag', () => {
     expect(PRODUCT_CATEGORIES_TAG).toBe('product-categories');
     const options = { revalidate: 3600, tags: [PRODUCT_CATEGORIES_TAG] };
     expect(cacheMock.registered).toEqual([
       { keyParts: ['product-departments'], options },
       { keyParts: ['product-category-paths'], options },
+      // The broad-category callback names its statement instead of inlining it, so the statement's text is a key part.
+      { keyParts: ['product-broad-categories', BROAD_CATEGORY_LIST_SQL], options },
     ]);
   });
 
-  it("each cached callback holds its own statement, so an edit to the SQL changes the cache key (Next keys an entry on the callback's source and the key parts)", () => {
-    const [departments, paths] = cacheMock.sources.map((s) => s.replace(/\s+/g, ' '));
-    expect(cacheMock.sources).toHaveLength(2);
+  it("each cached callback holds its own statement (or names the constant whose text is a key part), so an edit to the SQL changes the cache key (Next keys an entry on the callback's source and the key parts)", () => {
+    const [departments, paths, broad] = cacheMock.sources.map((s) => s.replace(/\s+/g, ' '));
+    expect(cacheMock.sources).toHaveLength(3);
     expect(departments).toContain(`SELECT DISTINCT category_root FROM asin_products WHERE ${SCOPE} AND category_root IS NOT NULL ORDER BY category_root`);
     // The path statement's head only: its holes are code, which the test transform may rewrite.
     expect(paths).toContain("SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price')");
+    // The broad-category callback runs the exported constant by name; the statement text itself is its second key part (pinned above).
+    expect(broad).toContain('sql.query(BROAD_CATEGORY_LIST_SQL)');
   });
 
   it('calls the departments cache with no arguments, then the paths cache once per department with only that department (not the map index or array)', async () => {
