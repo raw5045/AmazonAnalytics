@@ -8,7 +8,7 @@ describe('keyword_top_asins schema (migration 0051)', () => {
   it('mirrors the migration columns', () => {
     const cols = Object.values(getTableColumns(keywordTopAsins)).map((c) => c.name).sort();
     expect(cols).toEqual(
-      ['asin', 'click_share', 'conversion_share', 'search_term_id', 'slot', 'streak_started_week', 'week_end_date', 'weeks_in_top3'].sort(),
+      ['asin', 'broad_category', 'click_share', 'conversion_share', 'search_term_id', 'slot', 'streak_started_week', 'week_end_date', 'weeks_in_top3'].sort(),
     );
     const meta = Object.values(getTableColumns(keywordTopAsinsMeta)).map((c) => c.name).sort();
     expect(meta).toEqual(['built_at', 'row_count', 'singleton', 'week_end_date'].sort());
@@ -63,7 +63,8 @@ describe('migration 0051 SQL text', () => {
   });
 
   it('creates the reverse table and its meta row exactly as the drizzle mirrors declare them', () => {
-    expect(declared(createTable('keyword_top_asins'))).toEqual(mirror(getTableColumns(keywordTopAsins)));
+    // 0051 created eight columns; 0052 (below) added broad_category, so the mirror is the union.
+    expect([...declared(createTable('keyword_top_asins')), 'broad_category'].sort()).toEqual(mirror(getTableColumns(keywordTopAsins)));
     expect(declared(createTable('keyword_top_asins_meta'))).toEqual(mirror(getTableColumns(keywordTopAsinsMeta)));
     expect(flat).toContain('PRIMARY KEY (search_term_id, slot)');
     expect(flat).toContain('CREATE INDEX IF NOT EXISTS keyword_top_asins_asin_idx ON keyword_top_asins (asin, search_term_id)');
@@ -73,5 +74,32 @@ describe('migration 0051 SQL text', () => {
     expect(raw).not.toContain('null on delisted');
     const comment = statements.find((s) => s.startsWith('COMMENT ON COLUMN asin_products.rank_ratio_x100'));
     expect(comment).toContain('point-in-time fact');
+  });
+});
+
+describe('migration 0052 SQL text', () => {
+  const MARKER = '--> statement-breakpoint';
+  const raw = readFileSync('db/migrations/0052_top_asins_broad_category.sql', 'utf8');
+  const chunks = raw.split(MARKER);
+  const statements = chunks.map((s) => s.replace(/^\s*--.*$/gm, '').trim()).filter((s) => s.length > 0);
+  const flat = statements.join(' ').replace(/\s+/g, ' ');
+
+  it('has 4 statements, one per chunk, split by 3 breakpoints', () => {
+    expect(chunks).toHaveLength(4);
+    expect(statements).toHaveLength(4);
+    for (const s of statements) expect(s.match(/^(ALTER|COMMENT|CREATE)\b/gm) ?? []).toHaveLength(1);
+  });
+  it('adds the nullable code column to the live table and, when it exists, to _prev (the backfill rebuilds _prev with SELECT *)', () => {
+    expect(statements[0]).toBe('ALTER TABLE keyword_top_asins ADD COLUMN IF NOT EXISTS broad_category varchar(255);');
+    expect(statements[2]).toBe('ALTER TABLE IF EXISTS keyword_top_asins_prev ADD COLUMN IF NOT EXISTS broad_category varchar(255);');
+    expect(getTableColumns(keywordTopAsins).broadCategory.name).toBe('broad_category');
+    expect(getTableColumns(keywordTopAsins).broadCategory.notNull).toBe(false);
+  });
+  it('describes the column as the per-slot report code, any-of per product', () => {
+    expect(statements[1]).toContain('top_clicked_category_<slot>');
+    expect(statements[1]).toContain('any-of');
+  });
+  it('indexes (broad_category, asin) over the coded rows only, under the canonical name the swap renames', () => {
+    expect(flat).toContain('CREATE INDEX IF NOT EXISTS keyword_top_asins_broad_category_idx ON keyword_top_asins (broad_category, asin) WHERE broad_category IS NOT NULL');
   });
 });

@@ -1,9 +1,13 @@
 // db/schema/keywordTopAsins.ts
-import { pgTable, uuid, text, smallint, numeric, integer, date, boolean, bigint, timestamp, primaryKey, index } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { pgTable, uuid, text, varchar, smallint, numeric, integer, date, boolean, bigint, timestamp, primaryKey, index } from 'drizzle-orm/pg-core';
 
 /**
  * Current week's top-3 clicked ASINs per keyword with consecutive-week streaks (spec 2026-10-09
  * §3.2). Rebuilt per import by lib/topAsins/buildWeek.ts; read by the ASIN page and the tools.
+ * broad_category (migration 0052): the Brand Analytics code the report filed the clicked product
+ * under for this keyword (top_clicked_category_<slot>), null when it gave none; a product belongs to
+ * every code it carries (any-of). Indexed over the coded rows for the Products page's broad filter.
  */
 export const keywordTopAsins = pgTable(
   'keyword_top_asins',
@@ -17,10 +21,13 @@ export const keywordTopAsins = pgTable(
     weeksInTop3: integer('weeks_in_top3').notNull(),
     streakStartedWeek: date('streak_started_week').notNull(),
     weekEndDate: date('week_end_date').notNull(),
+    /** The report's code for this clicked product (migration 0052); null when it gave none. */
+    broadCategory: varchar('broad_category', { length: 255 }),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.searchTermId, t.slot] }),
     asinIdx: index('keyword_top_asins_asin_idx').on(t.asin, t.searchTermId),
+    broadCategoryIdx: index('keyword_top_asins_broad_category_idx').on(t.broadCategory, t.asin).where(sql`${t.broadCategory} IS NOT NULL`),
   }),
 );
 
