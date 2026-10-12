@@ -82,6 +82,8 @@ export interface PendingProductFilters {
   bsrMax: string;
   ratioMax: string;
   dept: string;
+  /** The Broad category select's value ('' = all). */
+  broad: string;
   leafPaths: string[];
   /** Which side of the Leaf | Custom toggle is open; only that side's selection is applied. */
   leafMode: 'leaf' | 'custom';
@@ -111,6 +113,7 @@ export function filtersToPending(f: ProductFilters): PendingProductFilters {
     bsrMax: asText(f.bsrMax),
     ratioMax: asText(f.ratioMax),
     dept: f.dept ?? '',
+    broad: f.broadCategory ?? '',
     leafPaths: [...f.leafPaths],
     // The Explorer's rule: custom ids in the applied filters open the Custom side.
     leafMode: f.customCategoryIds.length > 0 ? 'custom' : 'leaf',
@@ -156,7 +159,7 @@ export function pendingToFilters(p: PendingProductFilters): ProductFilters {
     bsrMax: toNumber(p.bsrMax),
     ratioMax: toNumber(p.ratioMax),
     dept: p.dept === '' ? null : p.dept,
-    broadCategory: null, // the select lands in Task 6
+    broadCategory: p.broad === '' ? null : p.broad,
     leafPaths: p.leafMode === 'leaf' ? p.leafPaths : [],
     customCategoryIds: p.leafMode === 'custom' ? p.customCategoryIds : [],
     fba: p.fba === '' ? null : p.fba,
@@ -199,16 +202,18 @@ export interface PanelCustomCategory { id: string; name: string; leafPaths: stri
  * explorer's FilterSidebar: local state seeded from the applied filters (the page keys it by them, so a
  * header re-sort re-seeds it), Apply / Reset inside a transition with the LoadingOverlay. Apply builds a
  * ProductFilters object and replaces the URL with productFiltersToSearchParams of it, back on page 1.
- * The page hands it three lists: the departments, the category paths and the user's custom categories.
- * Under "Leaf categories", Leaf mode applies the typeahead picks and Custom mode the checked custom
- * ids, never both.
+ * The page hands it four lists: the departments, the Brand Analytics codes, the category paths and the
+ * user's custom categories. Under "Leaf categories", Leaf mode applies the typeahead picks and Custom
+ * mode the checked custom ids, never both.
  */
 export function ProductFilterPanel({
-  filters, departments, leafCategories, customCategories,
+  filters, departments, broadCategories, leafCategories, customCategories,
 }: {
   filters: ProductFilters;
   /** The catalog's root departments (lib/products/listCategories). */
   departments: string[];
+  /** The Brand Analytics codes on the pair table (lib/products/listCategories), the Broad category select's options. */
+  broadCategories: string[];
   /** The catalog's distinct category paths, the typeahead's options. */
   leafCategories: string[];
   /** The signed-in user's custom categories (lib/customCategories/loadServer). */
@@ -246,8 +251,9 @@ export function ProductFilterPanel({
   const hint = sortHint(pending.sort);
   const soldOptions = withCurrent(SOLD_BUCKETS, pending.soldMin, (a, b) => a - b);
   const ratioOptions = withCurrent(RATIO_PRESETS, pending.ratioMax, (a, b) => b - a);
-  // A department from a hand-edited URL that the list lacks still shows as the selected option.
+  // A department or broad category from a hand-edited URL that the list lacks still shows as the selected option.
   const departmentOptions = pending.dept === '' || departments.includes(pending.dept) ? departments : [...departments, pending.dept];
+  const broadOptions = pending.broad === '' || broadCategories.includes(pending.broad) ? broadCategories : [...broadCategories, pending.broad];
   const toggleCustom = (id: string) =>
     set('customCategoryIds', pending.customCategoryIds.includes(id) ? pending.customCategoryIds.filter((x) => x !== id) : [...pending.customCategoryIds, id]);
   const selectedCustom = customCategories.filter((c) => pending.customCategoryIds.includes(c.id));
@@ -440,6 +446,18 @@ export function ProductFilterPanel({
                   </option>
                 ))}
               </select>
+            </Field>
+
+            <Field label="Broad category" htmlFor="pf-broad">
+              <select id="pf-broad" value={pending.broad} onChange={(e) => set('broad', e.target.value)} className={INPUT}>
+                <option value="">All broad categories</option>
+                {broadOptions.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <p className={HINT}>The Brand Analytics code the weekly report filed the product under, on the keywords it was a top-3 clicked product for this week (the Explorer&apos;s broad categories). A product can carry several.</p>
             </Field>
 
             <Field label="Leaf categories" groupId="pf-leaf-categories">

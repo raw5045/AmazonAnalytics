@@ -12,6 +12,7 @@ const LEAVES = [
   'Toys & Games › Puzzles › Jigsaw Puzzles',
 ];
 const DEPARTMENTS = ['Home & Kitchen', 'Pet Supplies', 'Toys & Games'];
+const BROAD = ['Apparel', 'Home', 'Pet Supplies'];
 const CUSTOM = [
   { id: '11111111-1111-4111-8111-000000000001', name: 'Lamps', leafPaths: [LEAVES[0], LEAVES[1]] },
   { id: '22222222-2222-4222-8222-000000000002', name: 'Puzzles & lamps', leafPaths: [LEAVES[1], LEAVES[2]] },
@@ -20,11 +21,11 @@ const CUSTOM = [
 /** Every filter set to a non-default value, on page 3 (leaf mode: picks, no custom ids). */
 const SEEDED: ProductFilters = {
   age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 40, ratingMax: 48, priceMinCents: 999, priceMaxCents: 3000,
-  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, dept: 'Home & Kitchen', broadCategory: null, leafPaths: [LEAVES[0]], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
+  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, dept: 'Home & Kitchen', broadCategory: 'Home', leafPaths: [LEAVES[0]], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
 };
 
 function renderPanel(filters: ProductFilters = PRODUCT_DEFAULTS, customCategories = CUSTOM) {
-  return render(<ProductFilterPanel filters={filters} departments={DEPARTMENTS} leafCategories={LEAVES} customCategories={customCategories} />);
+  return render(<ProductFilterPanel filters={filters} departments={DEPARTMENTS} broadCategories={BROAD} leafCategories={LEAVES} customCategories={customCategories} />);
 }
 
 const control = (label: string) => screen.getByLabelText(label);
@@ -60,6 +61,8 @@ describe('ProductFilterPanel controls', () => {
     expect(optionTexts('BSR vs 30-day avg')).toEqual(['Any', 'At least 10% better', 'At least 30% better', 'At least 50% better']);
     expect(control('Department')).toHaveDisplayValue('All departments');
     expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS]);
+    expect(control('Broad category')).toHaveDisplayValue('All broad categories');
+    expect(optionTexts('Broad category')).toEqual(['All broad categories', ...BROAD]);
     expect(screen.getByRole('button', { name: 'Leaf' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(screen.getByRole('group', { name: 'Leaf categories' })).getByLabelText('Add leaf category')).toBeInTheDocument();
@@ -89,6 +92,7 @@ describe('ProductFilterPanel controls', () => {
     expect(control('Maximum BSR')).toHaveValue(50_000);
     expect(control('BSR vs 30-day avg')).toHaveDisplayValue('At least 30% better');
     expect(control('Department')).toHaveDisplayValue('Home & Kitchen');
+    expect(control('Broad category')).toHaveDisplayValue('Home');
     expect(screen.getByRole('button', { name: `Remove ${LEAVES[0]}` })).toBeInTheDocument();
     expect(control('FBA offer')).toHaveDisplayValue('Present');
     expect(control('Amazon selling')).toHaveDisplayValue('No');
@@ -232,6 +236,33 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
     renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Appliances' });
     expect(control('Department')).toHaveDisplayValue('Appliances');
     expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS, 'Appliances']);
+  });
+
+  it('seeds the Broad category select from the applied filters (spec 2026-10-12 broad category §7)', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
+    expect(control('Broad category')).toHaveDisplayValue('Home');
+  });
+
+  it('a broad category the list lacks (from the URL) still shows as the selected option', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, broadCategory: 'Ebook' });
+    expect(control('Broad category')).toHaveDisplayValue('Ebook');
+    expect(optionTexts('Broad category')).toEqual(['All broad categories', ...BROAD, 'Ebook']);
+  });
+
+  it('picking a broad category dirties the form and Apply writes broad= beside dept=', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies' });
+    expect(applyButton()).toBeDisabled();
+    change('Broad category', 'Home');
+    expect(applyButton()).toBeEnabled();
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith('/products?dept=Pet+Supplies&broad=Home', { scroll: false });
+  });
+
+  it('Reset clears the broad category with everything else', () => {
+    renderPanel({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
+    fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+    expect(control('Broad category')).toHaveDisplayValue('All broad categories');
+    expect(replace).toHaveBeenLastCalledWith('/products', { scroll: false });
   });
 
   it('Custom mode lists the custom categories with their leaf counts; checked ones apply as the custom param and drop the leaf picks', () => {
@@ -414,6 +445,10 @@ describe('filtersToPending / pendingToFilters', () => {
     const tools = filtersToPending({ ...PRODUCT_DEFAULTS, dept: 'Tools' });
     expect(pendingToFilters(tools).dept).toBe('Tools');
     expect(pendingToFilters({ ...tools, dept: '' }).dept).toBeNull();
+    const home = filtersToPending({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
+    expect(home.broad).toBe('Home');
+    expect(pendingToFilters(home).broadCategory).toBe('Home');
+    expect(pendingToFilters({ ...home, broad: '' }).broadCategory).toBeNull();
   });
 
   // PRODUCT_DEFAULTS' arrays are shared (Object.freeze is shallow); the pending state must never alias them.

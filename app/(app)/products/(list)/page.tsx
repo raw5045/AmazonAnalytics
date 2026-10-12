@@ -4,7 +4,7 @@
  * Server component, built like /explorer:
  *   1. Admin gate, then parse searchParams → ProductFilters (bad values fall back per field)
  *   2. Stream the shell; behind <Suspense>, expand the custom ids, run the product search, and read
- *      the department, path and custom-category lists
+ *      the department, broad-category, path and custom-category lists
  *   3. Render ProductFilterPanel + ProductResultsTable + ProductPagination
  * Soft filter / sort / page changes run inside transitions, so the old results stay mounted
  * (with the loading overlay) and the skeleton only shows on initial loads.
@@ -24,7 +24,7 @@ import { expandCustomCategories } from '@/lib/customCategories/expand';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
 import { pageCategoryScope } from '@/lib/products/categoryPredicate';
 import { parseProductFilters, productFiltersToSearchParams, type ProductFilters, type SearchParamsLike } from '@/lib/products/filters';
-import { listProductCategoryPaths, listProductDepartments } from '@/lib/products/listCategories';
+import { listProductBroadCategories, listProductCategoryPaths, listProductDepartments } from '@/lib/products/listCategories';
 import { searchProducts, neonRunner } from '@/lib/products/searchProducts';
 import { ProductFilterPanel } from '../ProductFilterPanel';
 import { ProductResultsTable } from '../ProductResultsTable';
@@ -55,7 +55,7 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
 /**
  * The page's reads, in parallel, and the moment they finished. The custom-category ids expand
  * (owner-scoped; unknown ids skipped, so an unowned selection scopes to nothing) before the search
- * they scope; the three option lists load alongside. The clock is read once, here on the server,
+ * they scope; the four option lists load alongside. The clock is read once, here on the server,
  * and passed to the (client) table as a prop: every row's listing age counts to the same instant,
  * and hydration reuses that value instead of reading the browser's clock.
  */
@@ -64,24 +64,25 @@ async function loadProductsPage(filters: ProductFilters, userId: string) {
   const searched = expandCustomCategories(userId, filters.customCategoryIds, []).then((customPaths) =>
     searchProducts(neonRunner(sql), filters, pageCategoryScope(filters, customPaths)),
   );
-  // A failed department or path read shows an empty list; caught here, outside the cached functions, so nothing empty is cached and the tools still reject.
-  const [result, departments, leafCategories, customCategories] = await Promise.all([
+  // A failed department, broad-category or path read shows an empty list; caught here, outside the cached functions, so nothing empty is cached and the tools still reject.
+  const [result, departments, broadCategories, leafCategories, customCategories] = await Promise.all([
     searched,
     listProductDepartments().catch(() => [] as string[]),
+    listProductBroadCategories().catch(() => [] as string[]),
     listProductCategoryPaths().catch(() => [] as string[]),
     listCustomCategoriesForUser(userId),
   ]);
-  return { result, departments, leafCategories, customCategories, now: new Date() };
+  return { result, departments, broadCategories, leafCategories, customCategories, now: new Date() };
 }
 
 async function ProductsResults({ filters, userId }: { filters: ProductFilters; userId: string }) {
-  const { result, departments, leafCategories, customCategories, now } = await loadProductsPage(filters, userId);
+  const { result, departments, broadCategories, leafCategories, customCategories, now } = await loadProductsPage(filters, userId);
   // Keyed by the applied filters (page aside): a header re-sort or an Apply re-seeds the panel's
   // inputs, while paging keeps any edits not yet applied.
   const panelKey = productFiltersToSearchParams({ ...filters, page: 1 }).toString();
   return (
     <div className="flex">
-      <ProductFilterPanel key={panelKey} filters={filters} departments={departments} leafCategories={leafCategories} customCategories={customCategories} />
+      <ProductFilterPanel key={panelKey} filters={filters} departments={departments} broadCategories={broadCategories} leafCategories={leafCategories} customCategories={customCategories} />
       <div className="min-w-0 flex-1 p-6">
         <ProductResultsTable rows={result.rows} total={result.total} totalIsCapped={result.totalIsCapped} filters={filters} now={now} />
         <ProductPagination page={filters.page} total={result.total} totalIsCapped={result.totalIsCapped} pageSize={result.pageSize} />

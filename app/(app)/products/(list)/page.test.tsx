@@ -28,12 +28,12 @@ vi.mock('@/lib/auth/requireAdmin', async () => {
     },
   };
 });
-const data = vi.hoisted(() => ({ search: vi.fn(), departments: vi.fn(), paths: vi.fn(), custom: vi.fn(), expand: vi.fn() }));
+const data = vi.hoisted(() => ({ search: vi.fn(), departments: vi.fn(), broad: vi.fn(), paths: vi.fn(), custom: vi.fn(), expand: vi.fn() }));
 vi.mock('@/lib/products/searchProducts', async (orig) => ({
   ...(await orig<typeof import('@/lib/products/searchProducts')>()),
   searchProducts: data.search,
 }));
-vi.mock('@/lib/products/listCategories', () => ({ listProductDepartments: data.departments, listProductCategoryPaths: data.paths }));
+vi.mock('@/lib/products/listCategories', () => ({ listProductDepartments: data.departments, listProductBroadCategories: data.broad, listProductCategoryPaths: data.paths }));
 vi.mock('@/lib/customCategories/loadServer', () => ({ listCustomCategoriesForUser: data.custom }));
 vi.mock('@/lib/customCategories/expand', () => ({ expandCustomCategories: data.expand }));
 
@@ -84,6 +84,7 @@ describe('ProductsPage (/products)', () => {
     neonMock.transaction.mockResolvedValue([[], []]);
     data.search.mockResolvedValue(RESULT);
     data.departments.mockResolvedValue(['Home & Kitchen', 'Pet Supplies']);
+    data.broad.mockResolvedValue(['Home', 'Pet Supplies']);
     data.paths.mockResolvedValue(['Home & Kitchen › Lighting › Desk Lamps']);
     data.custom.mockResolvedValue([{ id: '11111111-1111-4111-8111-000000000001', name: 'Lamps', leafPaths: ['Home & Kitchen › Lighting › Desk Lamps'], createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }]);
     data.expand.mockResolvedValue([]);
@@ -94,7 +95,7 @@ describe('ProductsPage (/products)', () => {
     await expect(callPage()).rejects.toThrow('redirect:/sign-in');
     expect(neonMock.neon).not.toHaveBeenCalled();
     expect(data.search).not.toHaveBeenCalled();
-    for (const fn of [data.departments, data.paths, data.custom, data.expand]) expect(fn).not.toHaveBeenCalled();
+    for (const fn of [data.departments, data.broad, data.paths, data.custom, data.expand]) expect(fn).not.toHaveBeenCalled();
   });
 
   it('redirects a signed-in non-admin to /explorer before any read', async () => {
@@ -102,7 +103,7 @@ describe('ProductsPage (/products)', () => {
     await expect(callPage()).rejects.toThrow('redirect:/explorer');
     expect(neonMock.neon).not.toHaveBeenCalled();
     expect(data.search).not.toHaveBeenCalled();
-    for (const fn of [data.departments, data.paths, data.custom, data.expand]) expect(fn).not.toHaveBeenCalled();
+    for (const fn of [data.departments, data.broad, data.paths, data.custom, data.expand]) expect(fn).not.toHaveBeenCalled();
   });
 
   it('for an admin: searches on the parsed filters through the neon runner and renders the results', async () => {
@@ -123,12 +124,16 @@ describe('ProductsPage (/products)', () => {
     // One transaction per statement (the statement timeout itself is pinned in searchProducts.test.ts).
     expect(neonMock.transaction).toHaveBeenCalledTimes(1);
     expect(data.departments).toHaveBeenCalledTimes(1);
+    expect(data.broad).toHaveBeenCalledTimes(1);
     expect(data.paths).toHaveBeenCalledTimes(1);
     expect(data.custom).toHaveBeenCalledWith('a1');
     expect(data.expand).toHaveBeenCalledWith('a1', [], []);
     expect(screen.getByLabelText('Department')).toHaveDisplayValue('All departments');
-    // Two departments and one path in the fixtures: a swapped or an empty list fails one of these.
-    expect(screen.getByRole('option', { name: 'Pet Supplies' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Broad category')).toHaveDisplayValue('All broad categories');
+    // Two departments, two broad codes and one path in the fixtures: a swapped or an empty list fails one of these.
+    // 'Pet Supplies' is in both the department and the broad fixtures, so each option is looked up inside its own select.
+    expect(within(screen.getByLabelText('Department')).getByRole('option', { name: 'Pet Supplies' })).toBeInTheDocument();
+    expect(within(screen.getByLabelText('Broad category')).getByRole('option', { name: 'Home' })).toBeInTheDocument();
     expect(screen.getByText(/^1 categories/)).toBeInTheDocument();
   });
 
@@ -143,13 +148,15 @@ describe('ProductsPage (/products)', () => {
     expect(screen.getByRole('checkbox', { name: 'Lamps (1)' })).toBeChecked();
   });
 
-  it('a failed department or path read renders empty lists and still searches: the search does not need them', async () => {
+  it('a failed department, broad-category or path read renders empty lists and still searches: the search does not need them', async () => {
     data.departments.mockRejectedValue(new Error('cold'));
+    data.broad.mockRejectedValue(new Error('cold'));
     data.paths.mockRejectedValue(new Error('cold'));
     render(<>{await resolveAsync(await callPage())}</>);
     expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
     expect(data.search).toHaveBeenCalledTimes(1);
     expect(within(screen.getByLabelText('Department')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments']);
+    expect(within(screen.getByLabelText('Broad category')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All broad categories']);
     expect(screen.getByText(/^0 categories/)).toBeInTheDocument();
   });
 
