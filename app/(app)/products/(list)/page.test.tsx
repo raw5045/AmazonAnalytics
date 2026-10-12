@@ -127,6 +127,9 @@ describe('ProductsPage (/products)', () => {
     expect(data.custom).toHaveBeenCalledWith('a1');
     expect(data.expand).toHaveBeenCalledWith('a1', [], []);
     expect(screen.getByLabelText('Department')).toHaveDisplayValue('All departments');
+    // Two departments and one path in the fixtures: a swapped or an empty list fails one of these.
+    expect(screen.getByRole('option', { name: 'Pet Supplies' })).toBeInTheDocument();
+    expect(screen.getByText(/^1 categories/)).toBeInTheDocument();
   });
 
   it("expands the admin's custom categories into exact paths for the query and keeps the ids in the filters", async () => {
@@ -138,5 +141,11 @@ describe('ProductsPage (/products)', () => {
     expect(scope).toEqual({ dept: 'Home & Kitchen', subtreePaths: [], exactPaths: ['Home & Kitchen › Lighting › Desk Lamps'], scoped: true });
     expect(data.expand).toHaveBeenCalledWith('a1', [ID], []);
     expect(screen.getByRole('checkbox', { name: 'Lamps (1)' })).toBeChecked();
+  });
+
+  it('a failed expansion fails the page and never searches', async () => {
+    data.expand.mockRejectedValue(new Error('expand failed'));
+    await expect(resolveAsync(await callPage({ custom: '11111111-1111-4111-8111-000000000001' }))).rejects.toThrow('expand failed');
+    expect(data.search).not.toHaveBeenCalled();
   });
 });
