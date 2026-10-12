@@ -5,6 +5,17 @@
  *    by the 0051 partial indexes; a short outline of each plan (node type, index, estimated rows) is
  *    printed;
  *  - the owner's search runs for real through searchProducts (rows + capped count), timed;
+ *  - the category filter's three forms (spec 2026-10-12 §7), each planned and run through
+ *    searchProducts, every row checked against its scope: a department-only search (the smallest
+ *    department) and a leaf pick (its subtree) must be served by asin_products_category_path_idx; a
+ *    real custom category's paths match exactly (the array form) — the smallest custom category for
+ *    the index assertion, and the largest one planned and timed only (its plan may use the sort index
+ *    instead; both are correct);
+ *  - the option lists: the department and distinct-path counts among the rows the page can show; the
+ *    estimated size of the largest per-department cache entry, which must stay well under Next's 2 MB
+ *    limit; and the plan of the per-department list statement for the largest department, printed.
+ *    The loaders themselves are not called (unstable_cache needs Next's request scope); the counts
+ *    and the plan stand in for them;
  *  - the ASIN page's loaders (facts, snapshot history, keywords with weeks in top 3) answer for an ASIN
  *    taken from the search; an ASIN the reverse table has but the catalog lacks gets a stub
  *    (inCatalog false); an unknown ASIN has no facts.
@@ -30,7 +41,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
-import { EMPTY_CATEGORY_SCOPE } from '@/lib/products/categoryPredicate';
+import { EMPTY_CATEGORY_SCOPE, pageCategoryScope } from '@/lib/products/categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
 import { productSearchSql, searchProducts, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
 import { loadProduct } from '@/lib/products/loadProduct';
@@ -54,6 +65,8 @@ const PRODUCT_SEARCH_INDEXES = [
   'asin_products_price_idx',
   'asin_products_rank_ratio_idx',
 ] as const;
+/** The category filter's index (migration 0050): category_path text_pattern_ops, partial on in_scope AND category_path IS NOT NULL. */
+const CATEGORY_PATH_INDEX = 'asin_products_category_path_idx';
 
 /** The owner's example search: listed within 180 days, 1,000+ sold a month, at most 300 reviews. */
 const OWNER_SEARCH: ProductFilters = { ...PRODUCT_DEFAULTS, age: 180, soldMin: 1000, reviewsMax: 300 };
@@ -185,6 +198,121 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         expect(result.rows.length, 'rows on the page').toBeLessThanOrEqual(PRODUCT_PAGE_SIZE);
         for (const row of result.rows) expect(row.asin, 'asin of a result row').toHaveLength(10);
         expect(result.total, 'total matches').toBeGreaterThanOrEqual(result.rows.length);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a department-only search (the smallest department) is served by the category path index',
+    async () => {
+      await inReadOnlyTransaction(async () => {
+        const picked = await client.query<{ category_root: string }>(
+          "SELECT category_root FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_root IS NOT NULL GROUP BY 1 ORDER BY count(*) ASC LIMIT 1",
+        );
+        const dept = picked.rows[0].category_root;
+        const q = productSearchSql(PRODUCT_DEFAULTS, pageCategoryScope({ ...PRODUCT_DEFAULTS, dept }, []));
+        const { lines, seconds } = await explain(q.rows);
+        console.log(`[productsQueries] department "${dept}" planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
+        expect(lines.join('\n')).toContain(CATEGORY_PATH_INDEX);
+        const result = await searchProducts(run, PRODUCT_DEFAULTS, pageCategoryScope({ ...PRODUCT_DEFAULTS, dept }, []));
+        for (const row of result.rows) expect(row.categoryPath === dept || row.categoryPath?.startsWith(`${dept} › `), `${row.asin} in ${dept}`).toBe(true);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'a leaf pick matches its subtree through the path index',
+    async () => {
+      await inReadOnlyTransaction(async () => {
+        // A mid-size path (enough rows to fill a page, few enough that the bitmap plan is the cheap one), the deepest such
+        // path first: deep paths are leaves, so the subtree half of the predicate stays small and the plan stays on the index.
+        const picked = await client.query<{ category_path: string }>(
+          "SELECT category_path FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_path IS NOT NULL GROUP BY 1 HAVING count(*) BETWEEN 60 AND 400 ORDER BY length(category_path) DESC, category_path LIMIT 1",
+        );
+        const path = picked.rows[0].category_path;
+        const scope = pageCategoryScope({ ...PRODUCT_DEFAULTS, leafPaths: [path] }, []);
+        const { lines, seconds } = await explain(productSearchSql(PRODUCT_DEFAULTS, scope).rows);
+        console.log(`[productsQueries] leaf "${path}" planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
+        expect(lines.join('\n')).toContain(CATEGORY_PATH_INDEX);
+        const result = await searchProducts(run, PRODUCT_DEFAULTS, scope);
+        expect(result.rows.length).toBeGreaterThanOrEqual(1);
+        for (const row of result.rows) expect(row.categoryPath === path || row.categoryPath?.startsWith(`${path} › `), `${row.asin} under ${path}`).toBe(true);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "a real custom category's paths match exactly through the path index",
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        // The smallest custom category: the index assertion is about the array form, and a huge path list could legitimately
+        // send the planner to the sort index instead (it would still be correct, just a different plan).
+        const picked = await client.query<{ leaf_paths: string[] }>('SELECT leaf_paths FROM custom_categories ORDER BY jsonb_array_length(leaf_paths) ASC LIMIT 1');
+        const paths = picked.rows[0]?.leaf_paths;
+        if (!paths || paths.length === 0) return ctx.skip('no custom category to test with');
+        const scope = pageCategoryScope({ ...PRODUCT_DEFAULTS, customCategoryIds: ['11111111-1111-4111-8111-000000000001'] }, paths);
+        const { lines, seconds } = await explain(productSearchSql(PRODUCT_DEFAULTS, scope).rows);
+        console.log(`[productsQueries] custom category with ${paths.length} paths planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
+        expect(lines.join('\n')).toContain(CATEGORY_PATH_INDEX);
+        const started = performance.now();
+        const result = await searchProducts(run, PRODUCT_DEFAULTS, scope);
+        console.log(`[productsQueries] custom category search ran in ${((performance.now() - started) / 1000).toFixed(2)}s: ${result.rows.length} rows, ${result.total}${result.totalIsCapped ? '+' : ''} matches`);
+        const set = new Set(paths);
+        for (const row of result.rows) expect(set.has(row.categoryPath ?? ''), `${row.asin}'s path is in the custom category`).toBe(true);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "the largest custom category: planned and run for timing (the plan may use the sort index instead; both are correct)",
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        const picked = await client.query<{ leaf_paths: string[] }>('SELECT leaf_paths FROM custom_categories ORDER BY jsonb_array_length(leaf_paths) DESC LIMIT 1');
+        const paths = picked.rows[0]?.leaf_paths;
+        if (!paths || paths.length === 0) return ctx.skip('no custom category to test with');
+        const scope = pageCategoryScope({ ...PRODUCT_DEFAULTS, customCategoryIds: ['11111111-1111-4111-8111-000000000001'] }, paths);
+        const { lines, seconds } = await explain(productSearchSql(PRODUCT_DEFAULTS, scope).rows);
+        console.log(`[productsQueries] largest custom category (${paths.length} paths) planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
+        const started = performance.now();
+        const result = await searchProducts(run, PRODUCT_DEFAULTS, scope);
+        console.log(`[productsQueries] largest custom category search ran in ${((performance.now() - started) / 1000).toFixed(2)}s: ${result.rows.length} rows, ${result.total}${result.totalIsCapped ? '+' : ''} matches`);
+        const set = new Set(paths);
+        for (const row of result.rows) expect(set.has(row.categoryPath ?? ''), `${row.asin}'s path is in the custom category`).toBe(true);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'the option lists: 36-ish departments and about 22.7k distinct paths among the rows the page can show; per-department cache entries stay well under 2 MB',
+    async () => {
+      await inReadOnlyTransaction(async () => {
+        const counts = await client.query<{ departments: number; paths: number }>(
+          "SELECT count(DISTINCT category_root)::int AS departments, count(DISTINCT category_path)::int AS paths FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price')",
+        );
+        console.log(`[productsQueries] option lists: ${counts.rows[0].departments} departments, ${counts.rows[0].paths} paths`);
+        expect(counts.rows[0].departments).toBeGreaterThanOrEqual(20);
+        expect(counts.rows[0].paths).toBeGreaterThanOrEqual(10_000);
+        // The per-department path list is one unstable_cache entry each (lib/products/listCategories.ts); Next skips entries over
+        // 2 MB, so the largest department's list must stay well under it. est_entry ≈ the JSON size of the cached string[].
+        const sizes = await client.query<{ category_root: string; paths: number; est_entry: number }>(
+          "SELECT category_root, count(*)::int AS paths, sum(length(category_path) + 5)::int AS est_entry FROM (SELECT DISTINCT category_root, category_path FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_path IS NOT NULL) d GROUP BY 1 ORDER BY 3 DESC LIMIT 3",
+        );
+        console.log(`[productsQueries] largest department entries: ${sizes.rows.map((r) => `${r.category_root}: ${r.paths} paths ≈ ${r.est_entry} chars`).join('; ')}`);
+        expect(sizes.rows[0].est_entry, 'the largest department list must stay well under the 2 MB cache limit').toBeLessThan(1_500_000);
+        // The per-department statement the loader runs, planned for the largest department: it is the one statement no unit test plans.
+        const largest = sizes.rows[0].category_root;
+        const planned = await client.query<{ 'QUERY PLAN': unknown }>(
+          "EXPLAIN (FORMAT JSON) SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price') AND (category_path = $1 OR starts_with(category_path, $2)) ORDER BY category_path",
+          [largest, `${largest} › `],
+        );
+        const raw = planned.rows[0]['QUERY PLAN'];
+        const plan = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Array<{ Plan: PlanNode }>;
+        console.log(`[productsQueries] per-department list statement for "${largest}":\n${outline(plan[0].Plan).join('\n')}`);
       });
     },
     TEST_TIMEOUT_MS,
