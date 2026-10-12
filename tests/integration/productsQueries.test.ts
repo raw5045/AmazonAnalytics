@@ -11,26 +11,28 @@
  *    real custom category's paths match exactly (the array form) — the smallest custom category for
  *    the index assertion, and the largest one planned and timed only (its plan may use the sort index
  *    instead; both are correct);
- *  - the broad-category filter (spec 2026-10-12 broad category), each search planned and run through
- *    searchProducts under the default sort, its rows statement and its count statement TIMED APART
- *    and each held to the page's cap (PRODUCT_READ_TIMEOUT_MS; the page runs them in parallel with a
- *    cap each, here they run back to back on one connection, under a local 60 s statement timeout so
- *    a bad plan cannot outlive the case). The rows statement is then re-run with EXPLAIN (ANALYZE,
- *    BUFFERS): its loop counts tell a probe of the broad index per candidate from one read of the
- *    code's ASINs, which a plain plan outline cannot. Every row is checked to have a pair row carrying
- *    the code. The largest code must plan on keyword_top_asins_broad_category_idx; the smallest code
- *    by distinct products (the spec measured single-ASIN codes) must also start from the code's ASINs,
- *    not walk the sold sort index; the code with the lowest share of in-scope products among its pair
- *    rows (at least 5,000 of them: the planner's worst case, which estimates the semi-join as if every
- *    pair-table ASIN had a catalog product) must stay inside the cap, its search warm because the pick
- *    read the same pages. The largest code and the heaviest ASIN come from pg_stats (the aggregate
- *    only when the statistics have no value), so the reads timed next are not warmed by a full scan.
- *    The code list statement (the loader's own text, BROAD_CATEGORY_LIST_SQL, imported; the loader
- *    itself is not called) lists every distinct code inside a 5 s cold bound (a loose index scan:
- *    well under a second warm); loadProduct lists a multi-code ASIN's codes, most keywords first,
- *    checked against a per-code count; and the codes read of the heaviest ASIN (now on the ASIN
- *    page's first-paint path) is a case of its own, timed with EXPLAIN (ANALYZE, BUFFERS) against
- *    the cap;
+ *  - the broad-category filter (spec 2026-10-12 broad category), six cases, the cold ones first (the
+ *    picks of the smallest code and of the low-share code read the whole broad index and the pair-table
+ *    heap, and would warm what a later timed read touches; the largest code and the heaviest ASIN come
+ *    from pg_stats for the same reason, the aggregate only when the statistics have no value). Every
+ *    broad search has its rows statement and its count statement planned (both plans are printed) and
+ *    runs through searchProducts under the default sort, the two statements TIMED APART and each held
+ *    to the page's cap (PRODUCT_READ_TIMEOUT_MS; the page runs them in parallel with a cap each, here
+ *    they run back to back on one connection, under a local 60 s statement timeout so a bad plan
+ *    cannot outlive the case). The rows statement is then re-run with EXPLAIN (ANALYZE, BUFFERS): its
+ *    loop counts tell a probe of the broad index per candidate from one read of the code's ASINs,
+ *    which a plain plan outline cannot. Every row is checked to have a pair row carrying the code. In
+ *    order: the largest code must plan on keyword_top_asins_broad_category_idx; the code list
+ *    statement (the loader's own text, BROAD_CATEGORY_LIST_SQL, imported; the loader itself is not
+ *    called) lists every distinct code inside a 5 s cold bound (a loose index scan: well under a
+ *    second warm); the codes read of the heaviest ASIN (now on the ASIN page's first-paint path) is
+ *    timed with EXPLAIN (ANALYZE, BUFFERS) against the cap, under the same local cap; the smallest
+ *    code by distinct products (the spec measured single-ASIN codes) must also start from the code's
+ *    ASINs, not walk the sold sort index; the code with the lowest share of in-scope products among
+ *    its pair rows (at least 5,000 of them: the planner's worst case, which estimates the semi-join as
+ *    if every pair-table ASIN had a catalog product) must stay inside the cap, its search warm because
+ *    the pick read the same pages; and loadProduct lists a multi-code ASIN's codes, most keywords
+ *    first, checked against a per-code count;
  *  - the option lists: the department and distinct-path counts among the rows the page can show; the
  *    estimated size of the largest per-department cache entry, which must stay well under Next's 2 MB
  *    limit; and the plan of the per-department list statement for the largest department, printed.
@@ -69,7 +71,7 @@ import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vit
 import { Pool, type PoolClient } from 'pg';
 import { EMPTY_CATEGORY_SCOPE, pageCategoryScope } from '@/lib/products/categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
-import { PRODUCT_READ_TIMEOUT_MS, productSearchSql, searchProducts, type ProductSummaryRow, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
+import { PRODUCT_READ_TIMEOUT_MS, productSearchSql, searchProducts, type ProductSearchResult, type ProductSummaryRow, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
 import { BROAD_CATEGORY_LIST_SQL } from '@/lib/products/listCategories';
 import { loadProduct, productBroadCategoriesSql } from '@/lib/products/loadProduct';
 import { loadProductHistory } from '@/lib/products/loadProductHistory';
@@ -83,8 +85,9 @@ const CONNECTION_CHECK_INTERVAL = '10s';
 const TEST_TIMEOUT_MS = 6 * 60_000;
 const HOOK_TIMEOUT_MS = 2 * 60_000;
 /**
- * The local cap on a timed broad search: twice the page's own (the page stops a read at PRODUCT_READ_TIMEOUT_MS), so a bad plan is
- * cancelled here instead of running on to the 300 s statement timeout and past the case's test timeout.
+ * The local cap on a timed broad read (a search, or the heaviest ASIN's codes): twice the page's own (the page stops a read at
+ * PRODUCT_READ_TIMEOUT_MS), so a bad plan is cancelled here instead of running on to the 300 s statement timeout and past the case's
+ * test timeout.
  */
 const SEARCH_TIMEOUT = `${(PRODUCT_READ_TIMEOUT_MS * 2) / 1000}s`;
 
@@ -224,11 +227,12 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   /**
    * The first most-common value of a keyword_top_asins column per the planner's statistics (pg_stats): the largest code, or one of the
    * heaviest ASINs, read without a scan of the table, so the read timed next is not warmed by a full scan. Null when the statistics have
-   * no such value (not analyzed since the column was filled, or no value repeats in the sample).
+   * no such value (not analyzed since the column was filled, no value repeats in the sample, or the table is not in the current
+   * schema); the callers then count instead.
    */
   async function mostCommon(column: 'broad_category' | 'asin'): Promise<string | null> {
     const r = await client.query<{ v: string | null }>(
-      "SELECT (most_common_vals::text::text[])[1] AS v FROM pg_stats WHERE tablename = 'keyword_top_asins' AND attname = $1",
+      "SELECT (most_common_vals::text::text[])[1] AS v FROM pg_stats WHERE schemaname = current_schema() AND tablename = 'keyword_top_asins' AND attname = $1",
       [column],
     );
     return r.rows[0]?.v ?? null;
@@ -266,20 +270,22 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
 
   /**
    * One broad-category search under the default sort (spec 2026-10-12 broad category §5); `note` says how warm it runs, when that is
-   * known. The rows statement is planned (EXPLAIN). The search runs for real through searchProducts under a local SEARCH_TIMEOUT, with
-   * its rows statement and its count statement timed apart (they run back to back on this one connection, while the page runs them in
-   * parallel with a cap each) and each held to the page's cap. The rows statement is then re-run with EXPLAIN (ANALYZE, BUFFERS),
-   * whose loop counts tell a probe of the broad index per candidate (a nested-loop walk of the sort index) from one read of the code's
-   * ASINs (the ASIN-set-first plan), which a plain plan outline cannot; the local cap stays on through that re-run, so a bad plan
-   * cannot outlive the case there either. Last, every row of the page is checked to have a pair row carrying the code, whatever plan
-   * served it.
+   * known. Both statements are planned (EXPLAIN, so the plans print even if the count later aborts the transaction). The search runs
+   * for real through searchProducts under a local SEARCH_TIMEOUT, with its rows statement and its count statement timed apart (they run
+   * back to back on this one connection, while the page runs them in parallel with a cap each) and each held to the page's cap. The
+   * rows statement is then re-run with EXPLAIN (ANALYZE, BUFFERS), whose loop counts tell a probe of the broad index per candidate (a
+   * nested-loop walk of the sort index) from one read of the code's ASINs (the ASIN-set-first plan), which a plain plan outline cannot;
+   * the local cap stays on through that re-run, so a bad plan cannot outlive the case there either. Last, every row of the page is
+   * checked to have a pair row carrying the code, whatever plan served it.
    */
   async function broadSearch(code: string, note?: string): Promise<{ lines: string[]; rows: ProductSummaryRow[] }> {
     const cap = PRODUCT_READ_TIMEOUT_MS / 1000;
     const filters: ProductFilters = { ...PRODUCT_DEFAULTS, broadCategory: code };
     const q = productSearchSql(filters, EMPTY_CATEGORY_SCOPE);
     const planned = await explain(q.rows);
-    console.log(`[productsQueries] broad category "${code}" planned in ${planned.seconds.toFixed(2)}s:\n${planned.lines.join('\n')}`);
+    console.log(`[productsQueries] broad category "${code}" rows plan (planned in ${planned.seconds.toFixed(2)}s):\n${planned.lines.join('\n')}`);
+    const countPlanned = await explain(q.count);
+    console.log(`[productsQueries] broad category "${code}" count plan (planned in ${countPlanned.seconds.toFixed(2)}s):\n${countPlanned.lines.join('\n')}`);
 
     // searchProducts sends both statements at once and the connection runs them in order: note when each completes, and each one's
     // own time is the gap since the one before it finished.
@@ -293,7 +299,15 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     };
     await client.query(`SET LOCAL statement_timeout = '${SEARCH_TIMEOUT}'`);
     const started = performance.now();
-    const result = await searchProducts(timedRun, filters, EMPTY_CATEGORY_SCOPE);
+    let result: ProductSearchResult;
+    try {
+      result = await searchProducts(timedRun, filters, EMPTY_CATEGORY_SCOPE);
+    } catch (e) {
+      // searchProducts swallows a count cancelled by the cap, so a statement timeout (SQLSTATE 57014, query_canceled) that gets out is
+      // the rows statement's; any other error is left as it is.
+      if ((e as { code?: unknown } | null)?.code !== '57014') throw e;
+      throw new Error(`the rows statement of "${code}" hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s) after ${((performance.now() - started) / 1000).toFixed(1)}s`, { cause: e });
+    }
     const seconds = { rows: 0, count: 0 };
     let previous = started;
     for (const done of finished) {
@@ -477,6 +491,57 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it(
+    'the code list statement runs inside the 5 s cold bound and lists every distinct code',
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        await skipUnlessCodes(ctx);
+        // The page's own statement (lib/products/listCategories.ts): a loose index scan, one probe of the broad index per code. Well under a
+        // second warm; 5 s is the cold bound.
+        const started = performance.now();
+        const listed = await client.query<{ code: string }>(BROAD_CATEGORY_LIST_SQL);
+        const seconds = (performance.now() - started) / 1000;
+        console.log(`[productsQueries] broad category list: ${listed.rows.length} codes in ${seconds.toFixed(2)}s (the cold bound is 5s)`);
+        // The slow way, once: a distinct count over every coded row.
+        const distinct = await client.query<{ n: number }>('SELECT count(DISTINCT broad_category)::int AS n FROM keyword_top_asins WHERE broad_category IS NOT NULL');
+        expect(listed.rows.length, 'codes the list statement returns, against the distinct codes on the table').toBe(distinct.rows[0].n);
+        expect(seconds, 'the code list statement (the cold bound)').toBeLessThan(5);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    "productBroadCategoriesSql on the heaviest ASIN stays under the page's cap",
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        await skipUnlessCodes(ctx);
+        // The ASIN with the most pair rows: its codes read is on the ASIN page's first-paint path now, so the heaviest ASIN is that
+        // read's worst case. The statistics' first most-common ASIN (the heaviest or among the heaviest, found without a scan, so the
+        // timed read is not warmed by one), else the aggregate with the build's memory, taken away again before the read.
+        let asin = await mostCommon('asin');
+        if (asin === null) {
+          await client.query("SET LOCAL work_mem = '256MB'");
+          const picked = await client.query<{ asin: string }>('SELECT asin FROM keyword_top_asins GROUP BY asin ORDER BY count(*) DESC LIMIT 1');
+          await client.query('SET LOCAL work_mem TO DEFAULT');
+          asin = picked.rows[0].asin;
+        }
+        // The read itself runs under the same local cap as the searches, so a bad plan cannot outlive the case.
+        await client.query(`SET LOCAL statement_timeout = '${SEARCH_TIMEOUT}'`);
+        const analyzed = await explainAnalyze(productBroadCategoriesSql(asin));
+        await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`);
+        // Counted only after the timed read, so the count did not warm it.
+        const size = await client.query<{ pairs: number }>('SELECT count(*)::int AS pairs FROM keyword_top_asins WHERE asin = $1', [asin]);
+        console.log(
+          `[productsQueries] codes of the heaviest ASIN ${asin} (${size.rows[0].pairs} pair rows): ${analyzed.rows} codes in ${analyzed.seconds.toFixed(3)}s ` +
+            `(EXPLAIN ANALYZE, planning + execution; shared blocks hit ${analyzed.hit}, read ${analyzed.read}):\n${analyzed.lines.join('\n')}`,
+        );
+        expect(analyzed.seconds, `the codes read of ${asin}`).toBeLessThan(PRODUCT_READ_TIMEOUT_MS / 1000);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "the smallest broad category by distinct products starts from the code's ASINs, not from the sort index",
     async (ctx) => {
       await inReadOnlyTransaction(async () => {
@@ -533,26 +598,6 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it(
-    'the code list statement runs inside the 5 s cold bound and lists every distinct code',
-    async (ctx) => {
-      await inReadOnlyTransaction(async () => {
-        await skipUnlessCodes(ctx);
-        // The page's own statement (lib/products/listCategories.ts): a loose index scan, one probe of the broad index per code. Well under a
-        // second warm; 5 s is the cold bound.
-        const started = performance.now();
-        const listed = await client.query<{ code: string }>(BROAD_CATEGORY_LIST_SQL);
-        const seconds = (performance.now() - started) / 1000;
-        console.log(`[productsQueries] broad category list: ${listed.rows.length} codes in ${seconds.toFixed(2)}s (the cold bound is 5s)`);
-        // The slow way, once: a distinct count over every coded row.
-        const distinct = await client.query<{ n: number }>('SELECT count(DISTINCT broad_category)::int AS n FROM keyword_top_asins WHERE broad_category IS NOT NULL');
-        expect(listed.rows.length, 'codes the list statement returns, against the distinct codes on the table').toBe(distinct.rows[0].n);
-        expect(seconds, 'the code list statement (the cold bound)').toBeLessThan(5);
-      });
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
     "loadProduct lists a multi-code ASIN's codes, most keywords first",
     async (ctx) => {
       await inReadOnlyTransaction(async () => {
@@ -585,34 +630,6 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         for (let i = 1; i < counts.length; i++) {
           expect(counts[i], `keywords of ${codes[i]} (${counts[i]}) after ${codes[i - 1]} (${counts[i - 1]})`).toBeLessThanOrEqual(counts[i - 1]);
         }
-      });
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "productBroadCategoriesSql on the heaviest ASIN stays under the page's cap",
-    async (ctx) => {
-      await inReadOnlyTransaction(async () => {
-        await skipUnlessCodes(ctx);
-        // The ASIN with the most pair rows: its codes read is on the ASIN page's first-paint path now, so the heaviest ASIN is that
-        // read's worst case. The statistics' first most-common ASIN (the heaviest or among the heaviest, found without a scan, so the
-        // timed read is not warmed by one), else the aggregate with the build's memory, taken away again before the read.
-        let asin = await mostCommon('asin');
-        if (asin === null) {
-          await client.query("SET LOCAL work_mem = '256MB'");
-          const picked = await client.query<{ asin: string }>('SELECT asin FROM keyword_top_asins GROUP BY asin ORDER BY count(*) DESC LIMIT 1');
-          await client.query('SET LOCAL work_mem TO DEFAULT');
-          asin = picked.rows[0].asin;
-        }
-        const analyzed = await explainAnalyze(productBroadCategoriesSql(asin));
-        // Counted only after the timed read, so the count did not warm it.
-        const size = await client.query<{ pairs: number }>('SELECT count(*)::int AS pairs FROM keyword_top_asins WHERE asin = $1', [asin]);
-        console.log(
-          `[productsQueries] codes of the heaviest ASIN ${asin} (${size.rows[0].pairs} pair rows): ${analyzed.rows} codes in ${analyzed.seconds.toFixed(3)}s ` +
-            `(EXPLAIN ANALYZE, planning + execution; shared blocks hit ${analyzed.hit}, read ${analyzed.read}):\n${analyzed.lines.join('\n')}`,
-        );
-        expect(analyzed.seconds, `the codes read of ${asin}`).toBeLessThan(PRODUCT_READ_TIMEOUT_MS / 1000);
       });
     },
     TEST_TIMEOUT_MS,
