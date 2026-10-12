@@ -15,7 +15,7 @@ const LEAVES = [
 /** Every filter set to a non-default value, on page 3. */
 const SEEDED: ProductFilters = {
   age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 40, ratingMax: 48, priceMinCents: 999, priceMaxCents: 3000,
-  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, cat: LEAVES[0], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
+  bsrMin: 1, bsrMax: 50_000, ratioMax: 70, cat: LEAVES[0], dept: null, leafPaths: [], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'listed', dir: 'asc', page: 3,
 };
 
 function renderPanel(filters: ProductFilters = PRODUCT_DEFAULTS) {
