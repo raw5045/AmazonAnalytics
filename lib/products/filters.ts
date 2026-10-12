@@ -61,7 +61,7 @@ const dollarsToCents = (v: string | undefined): number | null => (v !== undefine
 const pageNumber = (v: string | undefined): number | null => (v !== undefined && /^\d+$/.test(v) ? Math.min(Number(v), PRODUCT_MAX_PAGE) : null);
 /** A repeated key as Next hands it: absent, one value, or an array of values. */
 const many = (v: string | string[] | undefined): string[] => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
-/** C0 control characters: no catalog path or department name contains one. */
+/** C0 control characters: no catalog path, department name or Brand Analytics code contains one. */
 const CONTROL_CHARS = /[\u0000-\u001f]/;
 /** A trimmed category value worth keeping: non-empty, at most MAX_CATEGORY_PATH_LENGTH, no control characters. */
 const usablePath = (s: string): boolean => s.length > 0 && s.length <= MAX_CATEGORY_PATH_LENGTH && !CONTROL_CHARS.test(s);

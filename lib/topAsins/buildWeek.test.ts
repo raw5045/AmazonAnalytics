@@ -123,7 +123,7 @@ describe('buildTopAsinsStatements', () => {
     const pgError = (code: string) => Object.assign(new Error(code), { code });
     /**
      * Which table holds which broad index (names are schema-wide), from the state right after 0052: the live table holds C and
-     * there is no _prev. A rename onto a taken name fails (42P07), one from a missing name fails (42704) unless IF EXISTS. Only the
+     * there is no _prev. A rename onto a taken name fails (42P07), one from a missing name fails (42P01) unless IF EXISTS. Only the
      * statements that move a table or a broad index are modelled: the swap's comments, primary keys and asin index never touch one.
      */
     function model() {
@@ -150,7 +150,7 @@ describe('buildTopAsinsStatements', () => {
         }],
         [/^ALTER INDEX (IF EXISTS )?(\w+) RENAME TO (\w+)$/, (m) => {
           const at = holder(m[2]);
-          if (!at) { if (m[1]) return; throw pgError('42704'); }
+          if (!at) { if (m[1]) return; throw pgError('42P01'); }
           if (holder(m[3])) throw pgError('42P07');
           tables.get(at)?.delete(m[2]);
           tables.get(at)?.add(m[3]);

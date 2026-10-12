@@ -126,9 +126,11 @@ describe('parseProductFilters', () => {
   });
   it('reads broad (one Brand Analytics code) trimmed; blank, over-long or control-character values fall back to null (spec 2026-10-12 broad category §5)', () => {
     expect(parseProductFilters({ broad: ' Pet Supplies ' }).broadCategory).toBe('Pet Supplies');
+    expect(parseProductFilters({ broad: '\tHome\n' }).broadCategory).toBe('Home');
     expect(parseProductFilters({ broad: 'Home' })).toEqual({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
     expect(parseProductFilters({ broad: '   ' }).broadCategory).toBeNull();
     expect(parseProductFilters({ broad: 'x'.repeat(255) }).broadCategory).toBe('x'.repeat(255));
+    expect(parseProductFilters({ broad: ' ' + 'x'.repeat(255) + ' ' }).broadCategory).toBe('x'.repeat(255)); // the bound applies after trimming, as the schema does
     expect(parseProductFilters({ broad: 'x'.repeat(256) }).broadCategory).toBeNull();
     expect(parseProductFilters({ broad: 'x\u001fy' }).broadCategory).toBeNull();
     expect(parseProductFilters({ broad: ['Home', 'Toys'] }).broadCategory).toBe('Home'); // a repeated key: the first value
