@@ -1386,12 +1386,13 @@ Every task's commit, two reviews and a nits round are recorded in the session's 
 - **Task 8** needed `lib/research/service.test.ts` too, and a fix round: on products every taxonomy selection is a subtree whatever `includeDescendants` says (the keyword-side resolver marks leaves as having no descendants). The valid department names travel in the error message, not in `details`.
 - **Task 9**'s tools test must call `description(DEFAULT_LIMITS)` (the plan's no-argument call does not type-check); the guide rules name `broadCategory` and disambiguate `categoryPath`.
 - **Task 10** adds the largest-custom-category timing case and the per-department cache-entry size check; its leaf picker counts only badge-bearing rows.
+- **Final review (ship) nits, `5c8a3d9`:** the list page degrades to empty category controls when a cold-fill list read fails (the catch sits in the page, outside the cached functions; the search and the custom-category read still fail the page); the departments cache callback holds its own statement (`fetchDepartmentsSorted`, since Next keys the entry on the callback's source — Task 4's inline arrow would have kept a stale key across a deploy that changed the SQL); the wire test covers quotes, backslashes and commas in the array literal.
 
 ### Final review (before Task 11)
 
 - Full suite `pnpm vitest run` green; `pnpm typecheck` clean; `pnpm build` clean (the panel still imports no zod: `lib/products/filterParams.test.ts` guards it).
 - Dispatch the whole-diff code review (spec compliance against `2026-10-12-products-category-filters-design.md`, then quality). Fix findings; re-run.
-- Spec §14-style amendments, if any landed decisions differ from the spec, go into the spec's §10 Decisions log in a docs commit.
+- Spec §14-style amendments, where landed decisions differ from the spec, went into the spec's §11 "Amendments as landed" (docs commit fd25810 and its follow-up).
 
 ---
 
