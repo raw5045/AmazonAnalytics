@@ -100,7 +100,7 @@ WHERE asin = $1 AND broad_category IS NOT NULL
 GROUP BY broad_category ORDER BY count(*) DESC, broad_category
 ```
 
-`FactsCard.tsx` renders a "Broad categories" line: the codes joined with ", " (`Home, Pet Supplies`), or the card's dash when the list is empty (no keyword rows this week, or none coded). The line sits in the full fact list, under Category; the "Not fetched yet" and "Not in the catalog" shapes are unchanged (the keywords section below them still lists the rows). A failed read fails the page as the facts read does; nothing is hidden behind a dash.
+`FactsCard.tsx` renders a "Broad categories" line: the codes joined with ", " (`Home, Pet Supplies`), or the card's dash when the list is empty (no keyword rows this week, or none coded). The line sits in the full fact list, under Category; the "Not fetched yet" and "Not in the catalog" shapes are unchanged (the keywords section below them still lists the rows). A failed read fails the page as the facts read does; nothing is hidden behind a dash. The codes read runs in parallel with the facts read, so first paint costs no extra round trip; it does put every ASIN page on the pair table before first paint (before, only title-less rows and stubs were), so during the weekly swap's lock window (up to 120 s) a page can wait or hit its 30 s cap where it used to paint and only the keywords section failed soft — rare and admin-only. A non-empty code list proves the ASIN is on the pair table, so the stub path skips its tracked probe then.
 
 ## 9. Tools
 
