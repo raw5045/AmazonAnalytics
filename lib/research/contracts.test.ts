@@ -521,8 +521,13 @@ describe('productSearchInputSchema (the search_products input)', () => {
     expect(filters.monthlySoldMin.description).toContain('1,000+');
     expect(filters.priceMin.description).toContain('dollars');
     expect(filters.ratingMin.description).toContain('stars');
-    expect(filters.department.description).toContain('CATEGORY_NOT_AVAILABLE and the valid names');
-    expect(filters.categories.description).toContain('resolve_categories');
+    expect(filters.department.description).toBe(
+      "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not a keyword row's broadCategory. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
+    );
+    // On products every taxonomy selection is a subtree: resolve_categories hands keyword-side leaves back with includeDescendants false.
+    expect(filters.categories.description).toBe(
+      'The object search_keywords takes: selections from resolve_categories (several = OR) and leafPaths. On products a taxonomy selection matches the path and everything under it whatever includeDescendants says (resolve_categories marks keyword-side leaves as having no descendants, but the product catalog files products deeper); a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Taxonomy and leaf paths are checked against the product catalog (keyword-side paths almost always exist there); an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.',
+    );
     expect(filters).not.toHaveProperty('categoryPath');
     expect(productSearchInputSchema.shape.page.description).toContain(`${PRODUCT_PAGE_SIZE} products`);
     expect(productSearchInputSchema.shape.sort.description).toContain(PRODUCT_SORTS.join(', '));

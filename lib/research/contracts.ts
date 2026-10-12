@@ -383,10 +383,10 @@ const productSearchFiltersSchema = z
       'Current BSR ÷ its 30-day average BSR × 100, at most N: 70 = ranked at least 30 % better than its 30-day average; under 100 = better than average.',
     ),
     department: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).optional().describe(
-      "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not the keyword report's broad category. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
+      "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not a keyword row's broadCategory. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
     ),
     categories: categoriesSchema.optional().describe(
-      "The object search_keywords takes: selections from resolve_categories (several = OR) and leafPaths. A taxonomy selection matches the path and everything under it unless includeDescendants is false; a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Paths are checked against the product catalog (keyword-side paths almost always exist there); an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.",
+      "The object search_keywords takes: selections from resolve_categories (several = OR) and leafPaths. On products a taxonomy selection matches the path and everything under it whatever includeDescendants says (resolve_categories marks keyword-side leaves as having no descendants, but the product catalog files products deeper); a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Taxonomy and leaf paths are checked against the product catalog (keyword-side paths almost always exist there); an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.",
     ),
     fba: z.enum(['yes', 'no']).optional().describe('yes = at least one FBA offer; no = Keepa reported zero FBA offers (a product with no reported count matches neither).'),
     amazonSelling: z.enum(['yes', 'no']).optional().describe('yes = Amazon itself has an offer (in any availability state); no = no Amazon offer, or none reported.'),

@@ -44,8 +44,9 @@ export interface ProductLoaders {
   facts: (asin: string) => Promise<CatalogProductFacts | null>;
   history: (asin: string) => Promise<ProductHistoryPoint[]>;
   keywords: (asin: string, limit: number) => Promise<ProductKeywordsResult>;
-  /** The catalog's departments and distinct category paths (lib/products/listCategories, cached an hour), for a search's category scope. */
+  /** The catalog's Keepa root departments (lib/products/listCategories, cached an hour): a search's department must be one of them. */
   departments: () => Promise<string[]>;
+  /** The catalog's distinct category paths (lib/products/listCategories, cached an hour): a search's taxonomy and leaf paths are checked against them. */
   categoryPaths: () => Promise<string[]>;
   /** The actor's own custom categories by id; unknown and foreign ids are absent (lib/research/categories.ts loadCustomRows). */
   customRows: (userId: string, ids: string[]) => Promise<CustomRow[]>;
@@ -107,20 +108,24 @@ function pathNotAvailable(path: string, at: string): ResearchError {
 
 /**
  * The search's category scope (spec 2026-10-12 §6): the department checked against the catalog's list;
- * taxonomy selections as subtrees (includeDescendants, the default) or exact paths; custom selections as
- * the account's stored paths, exactly; leafPaths exactly. Every path is checked against the catalog's path
- * list — an exact path must be an entry, a subtree path an entry or a proper prefix of one — and every
- * custom id must be the actor's own. Any miss is CATEGORY_NOT_AVAILABLE naming the field: never a silent
- * skip, never an empty page for a typo. An absent or empty categories object scopes nothing.
+ * every taxonomy selection as a subtree, whatever includeDescendants says (resolve_categories marks
+ * keyword-side leaves as having no descendants, but the product catalog files products deeper); custom
+ * selections as the account's stored paths, exactly; leafPaths exactly. Every taxonomy and leaf path is
+ * checked against the catalog's path list — a leaf path must be an entry, a taxonomy path an entry or a
+ * proper prefix of one at a PATH_SEP boundary — and every custom id must be the actor's own. Any miss is
+ * CATEGORY_NOT_AVAILABLE naming the field: never a silent skip, never an empty page for a typo. A custom
+ * category whose stored paths are absent from the catalog (or empty) scopes to nothing rather than
+ * erroring; only unknown paths and ids error. An absent or empty categories object scopes nothing.
  */
 export async function resolveProductCategoryScope(deps: ScopeDeps, actor: ResearchActor, filters: ProductSearchFilters): Promise<ProductCategoryScope> {
   const dept = filters.department ?? null;
   if (dept !== null) {
     const departments = await deps.departments();
     if (!departments.includes(dept)) {
-      throw new ResearchError('CATEGORY_NOT_AVAILABLE', `"${dept}" is not a department of the product catalog. Pass one of: ${departments.join('; ')}.`, {
-        details: [{ path: 'filters.department', message: 'unknown department' }],
-      });
+      const message = departments.length === 0
+        ? 'The product catalog has no departments yet.'
+        : `"${dept}" is not a department of the product catalog. Pass one of: ${departments.join('; ')}.`;
+      throw new ResearchError('CATEGORY_NOT_AVAILABLE', message, { details: [{ path: 'filters.department', message: 'unknown department' }] });
     }
   }
   const categories = filters.categories;
@@ -131,8 +136,9 @@ export async function resolveProductCategoryScope(deps: ScopeDeps, actor: Resear
   const customIds: Array<{ id: string; at: string }> = [];
   categories.selections.forEach((sel, i) => {
     const at = `filters.categories.selections[${i}]`;
+    // A taxonomy selection is always a subtree on products: includeDescendants is ignored (see above).
     if (sel.kind === 'custom') customIds.push({ id: sel.id, at: `${at}.id` });
-    else (sel.includeDescendants ? subtree : exact).push({ path: sel.path, at: `${at}.path` });
+    else subtree.push({ path: sel.path, at: `${at}.path` });
   });
   categories.leafPaths.forEach((path, i) => exact.push({ path, at: `filters.categories.leafPaths[${i}]` }));
 
@@ -141,7 +147,8 @@ export async function resolveProductCategoryScope(deps: ScopeDeps, actor: Resear
     const known = new Set(catalog);
     for (const { path, at } of exact) if (!known.has(path)) throw pathNotAvailable(path, at);
     for (const { path, at } of subtree) {
-      if (!known.has(path) && !catalog.some((entry) => entry.startsWith(path + PATH_SEP))) throw pathNotAvailable(path, at);
+      const prefix = path + PATH_SEP;
+      if (!known.has(path) && !catalog.some((entry) => entry.startsWith(prefix))) throw pathNotAvailable(path, at);
     }
   }
   const exactPaths = exact.map((e) => e.path);

@@ -209,19 +209,38 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
     expect(err.message).toContain('Health & Household; Pet Supplies');
     expect(err.details).toEqual([{ path: 'filters.department', message: 'unknown department' }]);
   });
-  it('taxonomy selections are subtrees by default and exact without descendants; leafPaths are exact; all checked against the catalog', async () => {
+  it('with no departments in the catalog yet, says so instead of listing none', async () => {
+    const err = await notAvailable(makeDeps({ departments: vi.fn(async () => []) }), { filters: { department: 'Pet Supplies' } });
+    expect(err.message).toBe('The product catalog has no departments yet.');
+    expect(err.details).toEqual([{ path: 'filters.department', message: 'unknown department' }]);
+  });
+  it('taxonomy selections are always subtrees (includeDescendants is ignored); leafPaths are exact; all checked against the catalog', async () => {
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, {
       filters: { categories: { selections: [{ kind: 'taxonomy', path: 'Pet Supplies › Dogs › Toys' }, { kind: 'taxonomy', path: 'Health & Household › Vitamins', includeDescendants: false }], leafPaths: ['Pet Supplies › Cats › Toys'] } },
     });
-    expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS }, { dept: null, subtreePaths: ['Pet Supplies › Dogs › Toys'], exactPaths: ['Health & Household › Vitamins', 'Pet Supplies › Cats › Toys'], scoped: true });
+    expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS }, { dept: null, subtreePaths: ['Pet Supplies › Dogs › Toys', 'Health & Household › Vitamins'], exactPaths: ['Pet Supplies › Cats › Toys'], scoped: true });
   });
   it('a subtree path may be a parent of catalog paths without being one itself; an exact path must be an entry', async () => {
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, { filters: { categories: { selections: [{ kind: 'taxonomy', path: 'Pet Supplies › Dogs' }] } } });
     expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS }, { dept: null, subtreePaths: ['Pet Supplies › Dogs'], exactPaths: [], scoped: true });
-    const err = await notAvailable(makeDeps(), { filters: { categories: { selections: [{ kind: 'taxonomy', path: 'Pet Supplies › Dogs', includeDescendants: false }] } } });
+    // As resolve_categories returns a keyword-side leaf (includeDescendants false), even where the leaf is no product path itself.
+    const keywordLeaf = makeDeps();
+    await searchProductsForTool(keywordLeaf, admin, { filters: { categories: { selections: [{ kind: 'taxonomy', path: 'Pet Supplies › Dogs', includeDescendants: false }] } } });
+    expect(keywordLeaf.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS }, { dept: null, subtreePaths: ['Pet Supplies › Dogs'], exactPaths: [], scoped: true });
+    const err = await notAvailable(makeDeps(), { filters: { categories: { leafPaths: ['Pet Supplies › Dogs'] } } });
+    expect(err.details).toEqual([{ path: 'filters.categories.leafPaths[0]', message: 'not a category path of the product catalog' }]);
+  });
+  it("a subtree path must meet catalog paths at a ' › ' boundary: a sibling's text prefix is refused", async () => {
+    const err = await notAvailable(makeDeps(), { filters: { categories: { selections: [{ kind: 'taxonomy', path: 'Pet Supplies › Dog' }] } } });
     expect(err.details).toEqual([{ path: 'filters.categories.selections[0].path', message: 'not a category path of the product catalog' }]);
+  });
+  it('names the offending entry at its own index', async () => {
+    const custom = await notAvailable(makeDeps(), { filters: { categories: { selections: [{ kind: 'taxonomy', path: 'Pet Supplies › Dogs › Toys' }, { kind: 'custom', id: OTHER_ID }] } } });
+    expect(custom.details).toEqual([{ path: 'filters.categories.selections[1].id', message: 'unknown custom category id' }]);
+    const leaf = await notAvailable(makeDeps(), { filters: { categories: { leafPaths: ['Pet Supplies › Cats › Toys', 'Pet Supplies › Birds'] } } });
+    expect(leaf.details).toEqual([{ path: 'filters.categories.leafPaths[1]', message: 'not a category path of the product catalog' }]);
   });
   it('an unknown path fails, naming the field, and nothing runs', async () => {
     const err = await notAvailable(makeDeps(), { filters: { categories: { leafPaths: ['Pet Supplies › Birds'] } } });
@@ -235,6 +254,16 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
     expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies' }, { dept: 'Pet Supplies', subtreePaths: [], exactPaths: ['Pet Supplies › Dogs › Toys › Chew Toys', 'Pet Supplies › Cats › Toys'], scoped: true });
     const err = await notAvailable(makeDeps(), { filters: { categories: { selections: [{ kind: 'custom', id: OTHER_ID }] } } });
     expect(err.details).toEqual([{ path: 'filters.categories.selections[0].id', message: 'unknown custom category id' }]);
+  });
+  it('an owned custom category with no stored paths, or with paths the catalog lacks, scopes to nothing rather than erroring', async () => {
+    const empty = makeDeps({ customRows: vi.fn(async () => [{ id: CUSTOM_ID, leafPaths: [] }]) });
+    await searchProductsForTool(empty, admin, { filters: { categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }] } } });
+    expect(empty.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS }, { dept: null, subtreePaths: [], exactPaths: [], scoped: true });
+    // Stored paths are matched as stored, never checked against the catalog: a stale one simply matches nothing.
+    const stale = makeDeps({ customRows: vi.fn(async () => [{ id: CUSTOM_ID, leafPaths: ['Pet Supplies › Birds'] }]) });
+    await searchProductsForTool(stale, admin, { filters: { categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }] } } });
+    expect(stale.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS }, { dept: null, subtreePaths: [], exactPaths: ['Pet Supplies › Birds'], scoped: true });
+    expect(stale.categoryPaths).not.toHaveBeenCalled();
   });
   it('an empty categories object scopes nothing; paths are deduplicated', async () => {
     const deps = makeDeps();
