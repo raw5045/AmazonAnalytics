@@ -11,7 +11,7 @@
  * re-exported here, so every import from this module keeps working.
  */
 import { z } from 'zod';
-import { MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_SORTS, type ProductFilters } from './filterParams';
+import { MAX_CATEGORY_PATH_LENGTH, PRODUCT_AGES, PRODUCT_DEFAULTS, PRODUCT_MAX_CUSTOM_IDS, PRODUCT_MAX_LEAF_PATHS, PRODUCT_MAX_PAGE, PRODUCT_SORTS, type ProductFilters } from './filterParams';
 
 export * from './filterParams';
 
@@ -30,6 +30,9 @@ export const productFiltersSchema = z.strictObject({
   /** rank_ratio_x100 ≤ N (e.g. 70 = at least 30 % better than the 30-day average). */
   ratioMax: z.int().min(1).max(1000).nullable(),
   cat: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).nullable(),
+  dept: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).nullable(),
+  leafPaths: z.array(z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH)).max(PRODUCT_MAX_LEAF_PATHS),
+  customCategoryIds: z.array(z.uuid()).max(PRODUCT_MAX_CUSTOM_IDS),
   fba: z.enum(['yes', 'no']).nullable(),
   amazon: z.enum(['yes', 'no']).nullable(),
   sort: z.enum(PRODUCT_SORTS),
@@ -55,13 +58,22 @@ const int = (v: string | undefined): number | null => (v !== undefined && /^\d{1
 const dollarsToCents = (v: string | undefined): number | null => (v !== undefined && /^\d{1,8}(\.\d{1,2})?$/.test(v) ? Math.round(Number(v) * 100) : null);
 /** Any all-digit page clamps to the last page (a huge ?page= lands there, not on page 1); 0 and non-digits fall to the default. */
 const pageNumber = (v: string | undefined): number | null => (v !== undefined && /^\d+$/.test(v) ? Math.min(Number(v), PRODUCT_MAX_PAGE) : null);
+/** A repeated key as Next hands it: absent, one value, or an array of values. */
+const many = (v: string | string[] | undefined): string[] => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
+/** Repeated `leaf` values: trimmed, non-empty, at most MAX_CATEGORY_PATH_LENGTH each, the first PRODUCT_MAX_LEAF_PATHS. */
+const leafPaths = (v: string | string[] | undefined): string[] =>
+  many(v).map((s) => s.trim()).filter((s) => s.length > 0 && s.length <= MAX_CATEGORY_PATH_LENGTH).slice(0, PRODUCT_MAX_LEAF_PATHS);
+const uuid = z.uuid();
+/** One comma-separated `custom` value: well-formed uuids only (lower-cased, deduplicated), the first PRODUCT_MAX_CUSTOM_IDS; anything else is dropped. */
+const customIds = (v: string | undefined): string[] =>
+  v === undefined ? [] : [...new Set(v.split(',').map((s) => s.trim().toLowerCase()).filter((s) => uuid.safeParse(s).success))].slice(0, PRODUCT_MAX_CUSTOM_IDS);
 
 /** Field-by-field: each value that fails its schema branch falls back to the default for that field. */
 export function parseProductFilters(sp: SearchParamsLike): ProductFilters {
   const raw: Record<keyof ProductFilters, unknown> = {
     age: int(one(sp.age)), soldMin: int(one(sp.soldMin)), reviewsMax: int(one(sp.reviewsMax)), ratingMin: int(one(sp.ratingMin)), ratingMax: int(one(sp.ratingMax)),
     priceMinCents: dollarsToCents(one(sp.priceMin)), priceMaxCents: dollarsToCents(one(sp.priceMax)), bsrMin: int(one(sp.bsrMin)), bsrMax: int(one(sp.bsrMax)),
-    ratioMax: int(one(sp.ratioMax)), cat: one(sp.cat) ?? null, fba: one(sp.fba) ?? null, amazon: one(sp.amazon) ?? null,
+    ratioMax: int(one(sp.ratioMax)), cat: one(sp.cat) ?? null, dept: one(sp.dept) ?? null, leafPaths: leafPaths(sp.leaf), customCategoryIds: customIds(one(sp.custom)), fba: one(sp.fba) ?? null, amazon: one(sp.amazon) ?? null,
     sort: one(sp.sort) ?? PRODUCT_DEFAULTS.sort, dir: one(sp.dir) ?? PRODUCT_DEFAULTS.dir, page: pageNumber(one(sp.page)),
   };
   const out = { ...PRODUCT_DEFAULTS } as Record<keyof ProductFilters, unknown>;
