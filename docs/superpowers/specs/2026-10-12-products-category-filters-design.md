@@ -1,6 +1,6 @@
 # Products page: category filters — design
 
-**Date:** 2026-10-12 · **Status:** approved in brainstorm, awaiting the owner's read of this file · **Builds on:** `2026-10-09-products-page-design.md` (arc 7, live 2026-10-10)
+**Date:** 2026-10-12 · **Status:** approved; code complete 2026-10-12 (see §11 for the amendments as landed) · **Builds on:** `2026-10-09-products-page-design.md` (arc 7, live 2026-10-10)
 
 ## 1. Goal
 
@@ -68,7 +68,7 @@ Two scope producers, one predicate:
 
 `lib/products/filterParams.ts` (zod-free): `ProductFilters` drops `cat` and gains `dept: string | null`, `leafPaths: string[]`, `customCategoryIds: string[]`; constants `PRODUCT_MAX_LEAF_PATHS = 2000`, `PRODUCT_MAX_CUSTOM_IDS = 50` (`MAX_CATEGORY_PATH_LENGTH = 256` stays); `PRODUCT_DEFAULTS` gets `dept: null, leafPaths: [], customCategoryIds: []`; `productFiltersToSearchParams` writes `dept`, one `leaf` entry per path, and `custom` as the ids joined by commas.
 
-`lib/products/filters.ts` (zod): `dept: z.string().trim().min(1).max(256).nullable()`, `leafPaths: z.array(z.string().trim().min(1).max(256)).max(2000)`, `customCategoryIds: z.array(z.uuid()).max(50)`. `parseProductFilters` reads `leaf` as a string or string[] (trimmed, length-filtered, first 2,000), `custom` as one comma list (trimmed, lower-cased, only values passing `isValidUuid` from `lib/customCategories/validation`, first 50), `dept` as one value. The per-field fallback and the `ProductFiltersSchemaMatchesType` pin are unchanged.
+`lib/products/filters.ts` (zod): `dept: z.string().trim().min(1).max(256).nullable()`, `leafPaths: z.array(z.string().trim().min(1).max(256)).max(2000)`, `customCategoryIds: z.array(z.uuid()).max(50)`. `parseProductFilters` reads `leaf` as a string or string[] (trimmed, length-filtered, first 2,000), `custom` as one comma list (trimmed, lower-cased, only values `z.uuid()` accepts — the same check the schema applies, so a parsed id can never fail the schema — first 50), `dept` as one value. The per-field fallback and the `ProductFiltersSchemaMatchesType` pin are unchanged.
 
 ### 4.3 Search statement and rows
 
@@ -113,9 +113,9 @@ Unchanged; it already shows the full path.
 `toProductFilters` maps `department` onto `dept` and leaves `leafPaths` / `customCategoryIds` empty; the category scope is resolved separately because custom ids need a read.
 
 `lib/research/products.ts`: `resolveProductCategoryScope(deps, actor, filters)`:
-- `department`: must be in `deps.departments()` (the cached list), else `ResearchError('CATEGORY_NOT_AVAILABLE', …)` with `details.departments` = the valid names.
+- `department`: must be in `deps.departments()` (the cached list), else `ResearchError('CATEGORY_NOT_AVAILABLE', …)` whose message lists the valid names (`details` is `ResearchFieldIssue[]`, which cannot carry a list).
 - custom `{ id }`: loaded with `loadCustomRows(actor.localUserId, ids)` (`lib/research/categories.ts`, owner-scoped); every id must resolve, else `CATEGORY_NOT_AVAILABLE` (the keyword tools' rule: never a silent skip); the stored paths become exact paths.
-- taxonomy `{ path, includeDescendants: true }` → a subtree path; `false` → an exact path. `leafPaths` → exact paths.
+- taxonomy `{ path }` → a subtree path whatever `includeDescendants` says (`resolve_categories` marks keyword-side leaves as having no descendants, while the product catalog files products deeper — see §11); `leafPaths` → exact paths.
 - Every taxonomy path and leaf path is checked against `deps.categoryPaths()` (the cached catalog list): an exact path must be an entry; a subtree path must be an entry or a proper prefix of one (`entry === p || entry.startsWith(p + PATH_SEP)`). A miss throws `CATEGORY_NOT_AVAILABLE` with the message that the path is not in the product catalog and that `resolve_categories` paths usually are.
 - `scoped` = any selection or leaf path was given.
 
@@ -155,3 +155,21 @@ No migration. `checkActiveJobs`, then one bare `git push origin main` on the own
 - The broad filter is the Keepa department (36), not the Brand Analytics code (inconsistent per ASIN; not a product field).
 - The Explorer's toggle block is copied, not extracted, so the Explorer sidebar carries no risk from this change.
 - `cat` is dropped rather than aliased.
+
+## 11. Amendments as landed (2026-10-12)
+
+- **§3 / §4.2.** The parser deduplicates `leaf` values (before the cap) and drops `dept`/`leaf` values containing control characters; the schema lower-cases custom ids too (`z.uuid().toLowerCase()`); the caps are pinned to the Explorer's constants by a test. `ProductFilters`' array fields are copied into the panel's pending state (the defaults' arrays are shared, `Object.freeze` being shallow).
+- **§4.1.** `ProductCategoryScope`'s array fields are `readonly string[]`; `EMPTY_CATEGORY_SCOPE` freezes its inner arrays; `pageCategoryScope` deduplicates. The predicate module's header states the planner precondition (the prefix bound as a plan-time constant) rather than "every form rides the index".
+- **§4.4.** `listProductDepartments` is wrapped in React `cache()` so one page render runs the departments scan once (the page calls it directly and through `listProductCategoryPaths`); a failed per-department read rejects the whole list (never caught inside the cached function, or an empty list would be cached for an hour); the per-department split exists because Next's data cache skips entries over 2 MB (verified in the runtime) and the full list is ~1.9 MB. The departments statement names its column (`ORDER BY category_root`).
+- **§5.1.** A custom id in the URL that the user no longer owns is shown as "N selected custom categor(y|ies) no longer exist(s) and match(es) nothing" with a Clear button (the Explorer leaves it invisible); the dirty check compares canonical (sorted) forms while Apply keeps the user's order; the toggle buttons carry a focus-visible ring and the field is a labelled group.
+- **§5.2.** The tooltip sits on the cell (the whole cell is the hover target); a path whose last segment is blank shows the whole path.
+- **§6.** On products every taxonomy selection is a subtree whatever `includeDescendants` says (the keyword-side resolver sets it from the keyword catalog, which lacks 8.1k product-only paths holding 27,828 products). The valid department names travel in the error message. A custom category that stores no paths, or whose stored paths are all absent from the catalog, scopes to nothing (zero products) rather than erroring; only unknown paths and ids error. The tool's test suite stubs the list loaders and `loadCustomRows`, so nothing reaches `next/cache` or the pool. The guide's products rules name `broadCategory` (what a keyword row carries) rather than "the keyword report's broad category", and state that a product row's `categoryPath` is the product's own path (the keyword metric of the same name is the most-clicked product's path).
+- **§7.** The integration cases plan the predicates with direct SQL instead of calling the loaders (`unstable_cache` needs Next's request scope), use the smallest custom category for the index assertion and the largest for timing only, count only badge-bearing rows when picking the leaf path (the default sort hides the others), and add a per-department cache-entry size check (largest < 1.5M characters) plus the per-department loader statement's plan.
+- **Plan collision noted for future plans.** Adding required fields to `ProductFilters` broke four full-literal sites the plan did not list (`toProductFilters`, `pendingToFilters`, two test fixtures); the same happened to `ProductSummaryRow` (`lib/research/service.test.ts`) and `ProductLoaders` (same file). A plan that changes a shared type must list every full-literal site.
+
+### Follow-ups recorded
+- The Explorer passes raw custom ids from its URL into a uuid-typed query (`/explorer?custom=nope` most likely errors) — task chip offered to the owner.
+- The Explorer sidebar shares the stale-custom-id, order-sensitive dirty check and toggle a11y items fixed here; `LeafCategoryTypeahead`'s placeholder hard-codes "11k+" (a `placeholder` prop would let each page state its count).
+- `compareCodeUnits` is exported from a server module and duplicated privately in `lib/research/categories.ts`; a shared selection walker could serve both resolvers.
+- The exact-path array is uncapped (25 custom categories × 12,000 stored paths in theory; 2,349 stored paths today) — the largest-custom-category integration case measures it.
+- Owner's choice: make `search_products` error, as `search_keywords` does, when a custom category's stored paths are all absent from the catalog.

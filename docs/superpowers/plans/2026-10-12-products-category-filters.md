@@ -1367,11 +1367,25 @@ Add to `lib/research/tools.test.ts` (next to the existing description assertions
 
 (The loaders themselves are not called here: `unstable_cache` needs Next's request scope; their statements are the ones above.) Extend the header comment's bullet list with the three category cases and the option-list count.
 
-- [ ] **Step 2: Check it still skips and compiles** — `pnpm vitest run tests/integration/productsQueries.test.ts` → skipped; `pnpm exec eslint tests/integration/productsQueries.test.ts && pnpm typecheck` → PASS.
+- [ ] **Step 2: Check it compiles** — vitest EXCLUDES `tests/integration/**` while RUN_INTEGRATION is unset (running the file alone reports "No test files found"), so the compile check is `pnpm exec eslint tests/integration/productsQueries.test.ts && pnpm typecheck` → PASS.
 
 - [ ] **Step 3: Commit** → `test(products): integration cases for the department, leaf and custom-category predicates`.
 
 ---
+
+## Landed shape (2026-10-12, before Task 11)
+
+Every task's commit, two reviews and a nits round are recorded in the session's landing notes; the deviations that matter for a reader of this plan:
+
+- **Task 1** needed a second commit: adding required fields to `ProductFilters` broke four full-literal sites the plan did not list (`toProductFilters`, `pendingToFilters`, the panel test's `SEEDED`, `contracts.test.ts`'s "maps every field"). `3313efa` alone does not type-check; `8d00038` completes it.
+- **Task 3** also had to update `lib/research/service.test.ts` (a `ProductSummaryRow` fixture and a two-argument assertion); the neon driver was proven to send a JavaScript array as one Postgres array literal (the wire test recorded `[]` before the implementation).
+- **Task 4** gained a recording `next/cache` mock, a React `cache()` wrapper on `listProductDepartments`, and the documented failure contract (`26905ff`).
+- **Task 5** folded in the Task 1 review's parser hardening (dedupe, control characters, schema lower-casing, caps pinned to the Explorer) and, in `b03fcee`, the stale-custom-id notice, the order-insensitive dirty check and the a11y touches.
+- **Task 6** tests pin that the lists reach the panel and that a failed expansion never searches (`05fe79c`).
+- **Task 7** moved the tooltip to the cell and pins the header position (`b0f0f23`).
+- **Task 8** needed `lib/research/service.test.ts` too, and a fix round: on products every taxonomy selection is a subtree whatever `includeDescendants` says (the keyword-side resolver marks leaves as having no descendants). The valid department names travel in the error message, not in `details`.
+- **Task 9**'s tools test must call `description(DEFAULT_LIMITS)` (the plan's no-argument call does not type-check); the guide rules name `broadCategory` and disambiguate `categoryPath`.
+- **Task 10** adds the largest-custom-category timing case and the per-department cache-entry size check; its leaf picker counts only badge-bearing rows.
 
 ### Final review (before Task 11)
 
