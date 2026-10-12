@@ -15,6 +15,7 @@ vi.mock('./pool', () => ({ getResearchPool: () => ({}) }));
 
 import { createResearchService, defaultResearchDeps, defaultResearchService, resetResearchServiceForTests, type ResearchActor, type ResearchService, type ResearchServiceDeps } from './service';
 import type { ProductLoaders } from './products';
+import { EMPTY_CATEGORY_SCOPE } from '@/lib/products/categoryPredicate';
 import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
 import type { ProductSummaryRow } from '@/lib/products/searchProducts';
@@ -408,7 +409,7 @@ describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
   const admin: ResearchActor = { ...actor, isAdmin: true };
   const ASIN = 'B0ABCDEF12';
   const productRow: ProductSummaryRow = {
-    asin: 'B0AAAAAAA1', title: 'Desk lamp', brand: null, listedSince: null, monthlySold: null, reviewCount: null, averageRatingX10: null, currentPriceCents: null,
+    asin: 'B0AAAAAAA1', title: 'Desk lamp', brand: null, categoryPath: null, listedSince: null, monthlySold: null, reviewCount: null, averageRatingX10: null, currentPriceCents: null,
     salesRank: null, rankRatioX100: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null, enrichmentStatus: 'no_price', keywordCount: 1,
   };
   /** loadProduct's stub: an ASIN the keyword tables know but the catalog does not, so no history read. */
@@ -428,7 +429,7 @@ describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
     const svc = createResearchService(deps);
     const res = await svc.searchProducts(admin, { sort: 'bsr' });
     expect(res).toMatchObject({ schemaVersion: 1, products: [], total: { kind: 'exact', value: 0 }, page: 1, pageSize: 50, adminOnly: true });
-    expect(deps.products.search).toHaveBeenCalledWith(expect.objectContaining({ sort: 'bsr', dir: 'desc', page: 1 }));
+    expect(deps.products.search).toHaveBeenCalledWith(expect.objectContaining({ sort: 'bsr', dir: 'desc', page: 1 }), EMPTY_CATEGORY_SCOPE);
     expect(deps.reserve).toHaveBeenNthCalledWith(1, { userId: 'u1', channel: 'mcp', rows: 50, now: new Date('2026-09-21T12:00:00Z'), limits: deps.limits });
     expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', 0, 'mcp');
     // An unknown ASIN passes through guarded() as the NOT_FOUND ResearchError itself, and is never recorded.

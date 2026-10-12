@@ -430,7 +430,8 @@ export function toProductFilters(input: ProductSearchInput): ProductFilters {
     ratioMax: f.bsrRatioMax ?? PRODUCT_DEFAULTS.ratioMax,
     cat: f.categoryPath ?? PRODUCT_DEFAULTS.cat,
     dept: PRODUCT_DEFAULTS.dept,
-    leafPaths: [],
+    // Interim until the department + categories fields land: the old single path keeps its subtree meaning.
+    leafPaths: f.categoryPath === undefined ? [] : [f.categoryPath],
     customCategoryIds: [],
     fba: f.fba ?? PRODUCT_DEFAULTS.fba,
     amazon: f.amazonSelling ?? PRODUCT_DEFAULTS.amazon,

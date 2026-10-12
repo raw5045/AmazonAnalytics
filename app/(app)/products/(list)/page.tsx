@@ -18,6 +18,7 @@ import { redirect } from 'next/navigation';
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
 import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
+import { pageCategoryScope } from '@/lib/products/categoryPredicate';
 import { parseProductFilters, productFiltersToSearchParams, type ProductFilters, type SearchParamsLike } from '@/lib/products/filters';
 import { searchProducts, neonRunner } from '@/lib/products/searchProducts';
 import { listLeafCategories } from '@/lib/explorer/listLeafCategories';
@@ -53,7 +54,7 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
  */
 async function loadProductsPage(filters: ProductFilters) {
   const sql = neon(env.DATABASE_URL);
-  const [result, leafCategories] = await Promise.all([searchProducts(neonRunner(sql), filters), listLeafCategories()]);
+  const [result, leafCategories] = await Promise.all([searchProducts(neonRunner(sql), filters, pageCategoryScope(filters, [])), listLeafCategories()]);
   return { result, leafCategories, now: new Date() };
 }
 

@@ -30,6 +30,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
+import { EMPTY_CATEGORY_SCOPE } from '@/lib/products/categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
 import { productSearchSql, searchProducts, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
 import { loadProduct } from '@/lib/products/loadProduct';
@@ -143,7 +144,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   async function sampleAsin(): Promise<{ asin: string; from: string }> {
     if (sample) return sample;
     for (const [from, filters] of [['the owner search', OWNER_SEARCH], ['the default view', PRODUCT_DEFAULTS]] as const) {
-      const first = (await searchProducts(run, filters)).rows[0];
+      const first = (await searchProducts(run, filters, EMPTY_CATEGORY_SCOPE)).rows[0];
       if (first) return (sample = { asin: first.asin, from });
     }
     throw new Error('no product to sample: neither the owner search nor the default view returned a row');
@@ -153,7 +154,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     'default landing view: the sold sort comes off asin_products_monthly_sold_idx',
     async () => {
       await inReadOnlyTransaction(async () => {
-        const { root, lines, seconds } = await explain(productSearchSql({ ...PRODUCT_DEFAULTS }).rows);
+        const { root, lines, seconds } = await explain(productSearchSql({ ...PRODUCT_DEFAULTS }, EMPTY_CATEGORY_SCOPE).rows);
         console.log(`[productsQueries] default view planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
 
         expect(lines.join('\n'), 'the plan of the default view').toContain('asin_products_monthly_sold_idx');
@@ -169,14 +170,14 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     "the owner's search (age 180, sold >= 1,000, reviews <= 300) uses a 0051 index and returns a page",
     async () => {
       await inReadOnlyTransaction(async () => {
-        const { lines, seconds: planSeconds } = await explain(productSearchSql(OWNER_SEARCH).rows);
+        const { lines, seconds: planSeconds } = await explain(productSearchSql(OWNER_SEARCH, EMPTY_CATEGORY_SCOPE).rows);
         const plan = lines.join('\n');
         const used = PRODUCT_SEARCH_INDEXES.filter((name) => plan.includes(name));
         console.log(`[productsQueries] owner search planned in ${planSeconds.toFixed(2)}s (0051 indexes: ${used.join(', ') || 'none'}):\n${plan}`);
         expect(used.length, 'a 0051 partial index in the plan of the owner search').toBeGreaterThanOrEqual(1);
 
         const started = performance.now();
-        const result = await searchProducts(run, OWNER_SEARCH);
+        const result = await searchProducts(run, OWNER_SEARCH, EMPTY_CATEGORY_SCOPE);
         const seconds = (performance.now() - started) / 1000;
         console.log(`[productsQueries] owner search ran in ${seconds.toFixed(2)}s: ${result.rows.length} rows on page ${result.page}, ${result.total}${result.totalIsCapped ? '+' : ''} matches`);
         if (result.rows.length === 0) console.log('[productsQueries] the owner search matched nothing; the loader cases fall back to the default view.');

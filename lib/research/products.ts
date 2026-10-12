@@ -10,6 +10,7 @@
  */
 import { neon } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
+import { pageCategoryScope, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
 import { PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
 import { loadProduct, type ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import { loadProductHistory } from '@/lib/products/loadProductHistory';
@@ -34,7 +35,7 @@ const DETAILS_ROWS = 1;
  * production; tests inject stubs.
  */
 export interface ProductLoaders {
-  search: (filters: ProductFilters) => Promise<ProductSearchResult>;
+  search: (filters: ProductFilters, scope: ProductCategoryScope) => Promise<ProductSearchResult>;
   /** The facts, a stub (`inCatalog: false`) for an ASIN only the keyword tables know, or null when neither has it. */
   facts: (asin: string) => Promise<CatalogProductFacts | null>;
   history: (asin: string) => Promise<ProductHistoryPoint[]>;
@@ -58,7 +59,7 @@ export interface ProductsDeps extends ProductLoaders {
 export function defaultProductsDeps(): ProductLoaders {
   const run = () => neonRunner(neon(env.DATABASE_URL));
   return {
-    search: (filters) => searchProducts(run(), filters),
+    search: (filters, scope) => searchProducts(run(), filters, scope),
     facts: (asin) => loadProduct(run(), asin),
     history: (asin) => loadProductHistory(run(), asin),
     keywords: (asin, limit) => loadProductKeywords(run(), asin, limit),
@@ -88,7 +89,8 @@ export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchA
   if (!parsed.success) throw invalid(parsed.error);
   const filters = toProductFilters(parsed.data);
   await deps.reserve(actor, PRODUCT_PAGE_SIZE);
-  const result = await deps.search(filters);
+  // Interim, until the department + categories fields land: the old categoryPath arrives as one leaf path (toProductFilters), a subtree.
+  const result = await deps.search(filters, pageCategoryScope(filters, []));
   const response: ProductSearchResponse = {
     schemaVersion: SCHEMA_VERSION,
     products: result.rows.map((row) => ({ ...row, url: productUrlFor(deps.appUrl, row.asin) })),

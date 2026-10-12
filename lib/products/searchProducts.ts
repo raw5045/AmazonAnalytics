@@ -2,6 +2,8 @@
 /**
  * Product search over the live catalog (spec 2026-10-09 §5). Pure statement builder + a loader
  * over a `(text, values) => rows` runner (the page wraps neon's client in `neonRunner`; the tools reuse it).
+ * The category filter is a ProductCategoryScope built by the caller — see ./categoryPredicate; every
+ * other filter is read from ProductFilters (spec 2026-10-12 §4.3).
  * Every predicate rides on a partial index from migration 0051; the base predicate matches those
  * indexes' WHERE clause exactly.
  *
@@ -22,6 +24,7 @@
  * and `countTimedOut`, so a slow count never costs the page its rows.
  */
 import type { NeonQueryFunction } from '@neondatabase/serverless';
+import { categoryPredicate, type ProductCategoryScope } from './categoryPredicate';
 import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, sortHidesNullKey, type NullableKeySort, type ProductFilters } from './filterParams';
 
 // The sort-key rule lives in ./filterParams (zod-free, for the page's client components); re-exported for existing imports.
@@ -35,7 +38,7 @@ export interface SqlStatement { text: string; values: unknown[] }
 export type SqlRunner = (text: string, values: unknown[]) => Promise<unknown[]>;
 
 export interface ProductSummaryRow {
-  asin: string; title: string | null; brand: string | null; listedSince: string | null; monthlySold: number | null; reviewCount: number | null;
+  asin: string; title: string | null; brand: string | null; categoryPath: string | null; listedSince: string | null; monthlySold: number | null; reviewCount: number | null;
   averageRatingX10: number | null; currentPriceCents: number | null; salesRank: number | null; rankRatioX100: number | null;
   fbaOfferCount: number | null; fbmOfferCount: number | null; amazonAvailability: number | null; enrichmentStatus: 'active' | 'no_price'; keywordCount: number;
 }
@@ -52,13 +55,13 @@ const SORT_COLUMN: Record<NullableKeySort, string> = {
   sold: 'monthly_sold', listed: 'listed_since', reviews: 'review_count', price: 'current_price_cents', bsr: 'sales_rank', ratio: 'rank_ratio_x100',
 };
 
-const PAGE_COLUMNS = `a.asin, a.title, a.brand, a.listed_since::text AS listed_since, a.monthly_sold, a.review_count, a.average_rating_x10,
+const PAGE_COLUMNS = `a.asin, a.title, a.brand, a.category_path, a.listed_since::text AS listed_since, a.monthly_sold, a.review_count, a.average_rating_x10,
   CASE WHEN a.enrichment_status = 'active' THEN a.current_price_cents END AS current_price_cents,
   a.sales_rank, a.rank_ratio_x100, a.fba_offer_count, a.fbm_offer_count, a.amazon_availability, a.enrichment_status::text AS enrichment_status`;
 /** The current top-3 keyword count of the rows of `alias` (the catalog itself, or the page subquery). */
 const keywordCount = (alias: 'a' | 'p') => `LEFT JOIN LATERAL (SELECT count(*)::int AS keyword_count FROM keyword_top_asins k WHERE k.asin = ${alias}.asin) kc ON true`;
 
-export function productSearchSql(f: ProductFilters): { rows: SqlStatement; count: SqlStatement } {
+export function productSearchSql(f: ProductFilters, scope: ProductCategoryScope): { rows: SqlStatement; count: SqlStatement } {
   const where: string[] = [BASE];
   const values: unknown[] = [];
   const bind = (v: unknown) => { values.push(v); return `$${values.length}`; };
@@ -72,7 +75,9 @@ export function productSearchSql(f: ProductFilters): { rows: SqlStatement; count
   if (f.bsrMin !== null) where.push(`a.sales_rank >= ${bind(f.bsrMin)}::int`);
   if (f.bsrMax !== null) where.push(`a.sales_rank <= ${bind(f.bsrMax)}::int`);
   if (f.ratioMax !== null) where.push(`a.rank_ratio_x100 <= ${bind(f.ratioMax)}::int`);
-  if (f.cat !== null) where.push(`(a.category_path = ${bind(f.cat)}::text OR starts_with(a.category_path, ${bind(`${f.cat} › `)}::text))`);
+  // The category filter comes from the scope alone (spec 2026-10-12 §4.1); f's own category fields are the URL's, not the query's.
+  const category = categoryPredicate(scope, bind);
+  if (category !== null) where.push(category);
   if (f.fba === 'yes') where.push('a.fba_offer_count > 0');
   if (f.fba === 'no') where.push('a.fba_offer_count = 0');
   if (f.amazon === 'yes') where.push('a.amazon_availability >= 0');
@@ -98,7 +103,7 @@ export function productSearchSql(f: ProductFilters): { rows: SqlStatement; count
 }
 
 /** A result row. The page-first statement also returns `sort_key` (for its outer re-sort); the mapper does not read it. */
-interface Raw { asin: string; title: string | null; brand: string | null; listed_since: string | null; monthly_sold: number | null; review_count: number | null; average_rating_x10: number | null; current_price_cents: number | null; sales_rank: number | null; rank_ratio_x100: number | null; fba_offer_count: number | null; fbm_offer_count: number | null; amazon_availability: number | null; enrichment_status: 'active' | 'no_price'; keyword_count: number | null }
+interface Raw { asin: string; title: string | null; brand: string | null; category_path: string | null; listed_since: string | null; monthly_sold: number | null; review_count: number | null; average_rating_x10: number | null; current_price_cents: number | null; sales_rank: number | null; rank_ratio_x100: number | null; fba_offer_count: number | null; fbm_offer_count: number | null; amazon_availability: number | null; enrichment_status: 'active' | 'no_price'; keyword_count: number | null }
 
 /** SQLSTATE 57014 (query_canceled), what a statement timeout raises; pg's DatabaseError and neon's NeonDbError both carry it as `.code`. */
 const STATEMENT_TIMEOUT = '57014';
@@ -114,8 +119,8 @@ async function cappedCount(run: SqlRunner, q: SqlStatement): Promise<number | nu
   }
 }
 
-export async function searchProducts(run: SqlRunner, f: ProductFilters): Promise<ProductSearchResult> {
-  const q = productSearchSql(f);
+export async function searchProducts(run: SqlRunner, f: ProductFilters, scope: ProductCategoryScope): Promise<ProductSearchResult> {
+  const q = productSearchSql(f, scope);
   // The count is best-effort, like the explorer's: rows and count run in parallel, and a count that hits the
   // statement timeout costs the exact total (it becomes the capped one), never the page. A failing rows
   // statement, or any other count failure, still rejects.
@@ -124,7 +129,7 @@ export async function searchProducts(run: SqlRunner, f: ProductFilters): Promise
   const total = counted ?? PRODUCT_COUNT_CAP;
   return {
     rows: rows.map((r) => ({
-      asin: r.asin, title: r.title, brand: r.brand, listedSince: r.listed_since, monthlySold: r.monthly_sold, reviewCount: r.review_count, averageRatingX10: r.average_rating_x10,
+      asin: r.asin, title: r.title, brand: r.brand, categoryPath: r.category_path, listedSince: r.listed_since, monthlySold: r.monthly_sold, reviewCount: r.review_count, averageRatingX10: r.average_rating_x10,
       currentPriceCents: r.current_price_cents, salesRank: r.sales_rank, rankRatioX100: r.rank_ratio_x100, fbaOfferCount: r.fba_offer_count, fbmOfferCount: r.fbm_offer_count,
       amazonAvailability: r.amazon_availability, enrichmentStatus: r.enrichment_status, keywordCount: r.keyword_count ?? 0,
     })),

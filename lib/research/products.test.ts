@@ -13,11 +13,12 @@ const neonMock = vi.hoisted(() => {
 });
 vi.mock('@neondatabase/serverless', () => ({ neon: neonMock.neon }));
 
-import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE } from '@/lib/products/filters';
+import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
+import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
 import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import type { HistoryPoint } from '@/lib/products/loadProductHistory';
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
-import { PRODUCT_COUNT_CAP, productSearchSql, type ProductSummaryRow } from '@/lib/products/searchProducts';
+import { PRODUCT_COUNT_CAP, productSearchSql, type ProductSearchResult, type ProductSummaryRow } from '@/lib/products/searchProducts';
 import { ResearchError } from './errors';
 import {
   defaultProductsDeps, PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP, productDetailsForTool, searchProductsForTool, type ProductsDeps,
@@ -31,7 +32,7 @@ const member: ResearchActor = { ...admin, isAdmin: false };
 const FORBIDDEN_INFO = { code: 'FORBIDDEN', message: 'Products tools are admin-only for now.', retryable: false };
 
 const summaryRow = (asin: string, over: Partial<ProductSummaryRow> = {}): ProductSummaryRow => ({
-  asin, title: `Product ${asin}`, brand: 'Acme', listedSince: '2026-06-01', monthlySold: 1000, reviewCount: 120, averageRatingX10: 46,
+  asin, title: `Product ${asin}`, brand: 'Acme', categoryPath: 'Health & Household › Vitamins', listedSince: '2026-06-01', monthlySold: 1000, reviewCount: 120, averageRatingX10: 46,
   currentPriceCents: 1999, salesRank: 4321, rankRatioX100: 70, fbaOfferCount: 3, fbmOfferCount: 1, amazonAvailability: -1,
   enrichmentStatus: 'active', keywordCount: 4, ...over,
 });
@@ -69,7 +70,7 @@ const keywordRow = (n: number, over: Partial<ProductKeywordRow> = {}): ProductKe
 function makeDeps(over: Partial<ProductsDeps> = {}): ProductsDeps {
   return {
     appUrl: APP,
-    search: vi.fn(async () => ({ rows: pageRows, total: 2, totalIsCapped: false, page: 1, pageSize: PRODUCT_PAGE_SIZE })),
+    search: vi.fn<(filters: ProductFilters, scope: ProductCategoryScope) => Promise<ProductSearchResult>>(async () => ({ rows: pageRows, total: 2, totalIsCapped: false, page: 1, pageSize: PRODUCT_PAGE_SIZE })),
     facts: vi.fn(async () => catalogFacts),
     history: vi.fn(async () => points),
     keywords: vi.fn(async () => ({ rows: [keywordRow(1), keywordRow(2, { slot: 3 })], total: 7 })),
@@ -86,7 +87,7 @@ describe('searchProductsForTool', () => {
   it('maps the input onto the page filters, reserves the page before reading, and returns the rows with their ASIN page links', async () => {
     const deps = makeDeps();
     const out = await searchProductsForTool(deps, admin, { filters: { priceMin: 9.99, ratingMin: 4.5, listedWithinDays: 90 }, sort: 'bsr', dir: 'asc' });
-    expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS, priceMinCents: 999, ratingMin: 45, age: 90, sort: 'bsr', dir: 'asc' });
+    expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS, priceMinCents: 999, ratingMin: 45, age: 90, sort: 'bsr', dir: 'asc' }, EMPTY_CATEGORY_SCOPE);
     expect(out).toStrictEqual({
       schemaVersion: 1,
       products: [{ ...pageRows[0], url: `${APP}/products/B0AAAAAAA1` }, { ...pageRows[1], url: `${APP}/products/B0AAAAAAA2` }],
@@ -106,7 +107,16 @@ describe('searchProductsForTool', () => {
   it('searches with exactly the page defaults for an empty input', async () => {
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, {});
-    expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS });
+    expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS }, EMPTY_CATEGORY_SCOPE);
+  });
+
+  it('interim, until the department and categories fields: categoryPath reaches the search as one subtree path', async () => {
+    const deps = makeDeps();
+    await searchProductsForTool(deps, admin, { filters: { categoryPath: 'Health & Household' } });
+    expect(deps.search).toHaveBeenCalledWith(
+      { ...PRODUCT_DEFAULTS, cat: 'Health & Household', leafPaths: ['Health & Household'] },
+      { ...EMPTY_CATEGORY_SCOPE, subtreePaths: ['Health & Household'], scoped: true },
+    );
   });
 
   it('reports a capped count as at_least, and an empty page as an exact zero with zero rows recorded', async () => {
@@ -275,10 +285,10 @@ describe('defaultProductsDeps', () => {
     await expect(d.keywords(ASIN, PRODUCT_TOOL_KEYWORDS_CAP)).resolves.toEqual({ rows: [], total: 0 });
     expect(neonMock.query).toHaveBeenCalledWith(expect.any(String), [ASIN, PRODUCT_TOOL_KEYWORDS_CAP]);
     const asinReads = reads().length;
-    await expect(d.search({ ...PRODUCT_DEFAULTS })).resolves.toMatchObject({ rows: [], total: 0, totalIsCapped: false, page: 1, pageSize: PRODUCT_PAGE_SIZE });
+    await expect(d.search({ ...PRODUCT_DEFAULTS }, EMPTY_CATEGORY_SCOPE)).resolves.toMatchObject({ rows: [], total: 0, totalIsCapped: false, page: 1, pageSize: PRODUCT_PAGE_SIZE });
     // facts, history and keywords bind the ASIN first; the search then runs exactly its two statements, rows before count.
     for (const [, values] of reads().slice(0, asinReads)) expect(values?.[0]).toBe(ASIN);
-    const search = productSearchSql({ ...PRODUCT_DEFAULTS });
+    const search = productSearchSql({ ...PRODUCT_DEFAULTS }, EMPTY_CATEGORY_SCOPE);
     expect(reads().slice(asinReads)).toStrictEqual([[search.rows.text, search.rows.values], [search.count.text, search.count.values]]);
     expect(neonMock.transaction).toHaveBeenCalledTimes(reads().length);
   });

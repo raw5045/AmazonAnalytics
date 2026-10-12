@@ -2,6 +2,7 @@
 import { describe, it, expect } from 'vitest';
 import { neon, neonConfig, type NeonQueryFunction } from '@neondatabase/serverless';
 import { asinProducts, keywordTopAsins } from '@/db/schema';
+import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from './categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
 import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
 import { aliasCols, dbCols } from './testHelpers';
@@ -42,7 +43,7 @@ async function withNeonFetch(respond: (url: string, batch: Batch) => FakeRespons
 
 describe('productSearchSql', () => {
   it('applies the base predicate, hides null sort keys, and pages before counting keywords', () => {
-    const q = productSearchSql(PRODUCT_DEFAULTS);
+    const q = productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE);
     const t = q.rows.text;
     expect(t).toContain("a.in_scope AND a.enrichment_status IN ('active', 'no_price')");
     expect(t).toContain('a.monthly_sold IS NOT NULL');
@@ -58,8 +59,9 @@ describe('productSearchSql', () => {
     expect(q.count.text).toBe(`SELECT count(*)::int AS n FROM (SELECT 1 FROM asin_products a WHERE a.in_scope AND a.enrichment_status IN ('active', 'no_price') AND a.monthly_sold IS NOT NULL LIMIT ${PRODUCT_COUNT_CAP}) c`);
     expect(q.count.values).toEqual([]);
   });
-  it('maps every filter to its predicate with bound values', () => {
-    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 1000, reviewsMax: 300, ratingMin: 40, ratingMax: 50, priceMinCents: 999, priceMaxCents: 4000, bsrMin: 1, bsrMax: 50000, ratioMax: 70, cat: 'Tools › Bath', fba: 'no', amazon: 'yes', sort: 'listed', dir: 'asc', page: 3 });
+  it('maps every filter to its predicate with bound values; the category scope sits between ratioMax and the offer filters', () => {
+    const scope: ProductCategoryScope = { dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true };
+    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 1000, reviewsMax: 300, ratingMin: 40, ratingMax: 50, priceMinCents: 999, priceMaxCents: 4000, bsrMin: 1, bsrMax: 50000, ratioMax: 70, fba: 'no', amazon: 'yes', sort: 'listed', dir: 'asc', page: 3 }, scope);
     const t = q.rows.text;
     expect(t).toContain('a.listed_since >= current_date - $1::int');
     expect(t).toContain('a.monthly_sold >= $2::int');
@@ -71,25 +73,37 @@ describe('productSearchSql', () => {
     expect(t).toContain('a.sales_rank >= $8::int');
     expect(t).toContain('a.sales_rank <= $9::int');
     expect(t).toContain('a.rank_ratio_x100 <= $10::int');
-    expect(t).toContain("(a.category_path = $11::text OR starts_with(a.category_path, $12::text))");
-    expect(t).toContain('a.fba_offer_count = 0');
+    expect(t).toContain('(a.category_path = $11::text OR starts_with(a.category_path, $12::text)) AND ((a.category_path = $13::text OR starts_with(a.category_path, $14::text)) OR a.category_path = ANY($15::text[])) AND a.fba_offer_count = 0');
     expect(t).toContain('a.amazon_availability >= 0');
     expect(t).toContain('a.listed_since IS NOT NULL');
     expect(t).toContain(', a.listed_since AS sort_key FROM asin_products a WHERE ');
-    expect(t).toContain('ORDER BY a.listed_since ASC, a.asin ASC LIMIT $13 OFFSET $14) p');
+    expect(t).toContain('ORDER BY a.listed_since ASC, a.asin ASC LIMIT $16 OFFSET $17) p');
     expect(t.endsWith(' ORDER BY p.sort_key ASC, p.asin ASC')).toBe(true);
-    expect(q.rows.values).toEqual([90, 1000, 300, 40, 50, 999, 4000, 1, 50000, 70, 'Tools › Bath', 'Tools › Bath › ', 50, 100]);
+    expect(q.rows.values).toEqual([90, 1000, 300, 40, 50, 999, 4000, 1, 50000, 70, 'Tools', 'Tools › ', 'Tools › Bath', 'Tools › Bath › ', ['Tools › Bath › Mats'], 50, 100]);
     expect(q.count.values).toEqual(q.rows.values.slice(0, -2));
     expect(q.count.text).toContain('a.listed_since IS NOT NULL');
   });
+  it('the category fields of the filters object are not read: the scope alone decides', () => {
+    const q = productSearchSql({ ...PRODUCT_DEFAULTS, dept: 'Tools', leafPaths: ['Tools › Bath'], customCategoryIds: ['11111111-1111-4111-8111-000000000001'] }, EMPTY_CATEGORY_SCOPE);
+    expect(q.rows.text).not.toContain('category_path =');
+    expect(q.rows.values).toEqual([50, 0]);
+  });
+  it('a scoped selection with no paths matches nothing, in the rows and the count', () => {
+    const q = productSearchSql(PRODUCT_DEFAULTS, { ...EMPTY_CATEGORY_SCOPE, scoped: true });
+    expect(q.rows.text).toContain(' AND FALSE AND a.monthly_sold IS NOT NULL');
+    expect(q.count.text).toContain(' AND FALSE AND a.monthly_sold IS NOT NULL');
+  });
+  it('selects the category path for the Category column', () => {
+    expect(productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE).rows.text).toContain('a.brand, a.category_path, a.listed_since::text AS listed_since');
+  });
   it('fba=yes and amazon=no', () => {
-    const t = productSearchSql({ ...PRODUCT_DEFAULTS, fba: 'yes', amazon: 'no' }).rows.text;
+    const t = productSearchSql({ ...PRODUCT_DEFAULTS, fba: 'yes', amazon: 'no' }, EMPTY_CATEGORY_SCOPE).rows.text;
     expect(t).toContain('a.fba_offer_count > 0');
     expect(t).toContain('(a.amazon_availability IS NULL OR a.amazon_availability = -1)');
   });
   it.each(SORT_DIR_PAIRS)('%s %s: the rows and count WHEREs match, and the tie-break follows the direction', (sort, dir) => {
     const D = dir.toUpperCase();
-    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 100, reviewsMax: 300, priceMaxCents: 5000, ratioMax: 80, cat: 'Tools › Bath', fba: 'yes', amazon: 'no', sort, dir, page: 2 });
+    const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 100, reviewsMax: 300, priceMaxCents: 5000, ratioMax: 80, fba: 'yes', amazon: 'no', sort, dir, page: 2 }, { ...EMPTY_CATEGORY_SCOPE, dept: 'Tools', subtreePaths: ['Tools › Bath'], scoped: true });
     const rowsWhere = whereText(q.rows.text, ' ORDER BY ');
     const countWhere = whereText(q.count.text, ' LIMIT ');
     // The total counts exactly what the pager can reach: the same predicate, the same bound values.
@@ -115,7 +129,7 @@ describe('productSearchSql', () => {
     }
   });
   it('sorts by the keyword count single-level, through the lateral count', () => {
-    const desc = productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords' });
+    const desc = productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords' }, EMPTY_CATEGORY_SCOPE);
     const t = desc.rows.text;
     expect(t).toContain('LEFT JOIN LATERAL (SELECT count(*)::int AS keyword_count FROM keyword_top_asins k WHERE k.asin = a.asin) kc ON true');
     expect(t).toContain('ORDER BY kc.keyword_count DESC, a.asin DESC LIMIT $1 OFFSET $2');
@@ -123,10 +137,10 @@ describe('productSearchSql', () => {
     expect(t).not.toContain(') p ');
     expect(t).not.toContain('IS NOT NULL');
     expect(desc.count.text).not.toContain('IS NOT NULL');
-    expect(productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords', dir: 'asc' }).rows.text).toContain('ORDER BY kc.keyword_count ASC, a.asin ASC LIMIT $1 OFFSET $2');
+    expect(productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords', dir: 'asc' }, EMPTY_CATEGORY_SCOPE).rows.text).toContain('ORDER BY kc.keyword_count ASC, a.asin ASC LIMIT $1 OFFSET $2');
   });
   it.each(PRODUCT_SORTS)('%s: names only real columns', (sort) => {
-    const t = productSearchSql({ ...PRODUCT_DEFAULTS, sort, age: 60, cat: 'x', fba: 'yes', amazon: 'yes', ratioMax: 50 }).rows.text;
+    const t = productSearchSql({ ...PRODUCT_DEFAULTS, sort, age: 60, fba: 'yes', amazon: 'yes', ratioMax: 50 }, EMPTY_CATEGORY_SCOPE).rows.text;
     const a = aliasCols(t, 'a');
     expect([...a].filter((c) => !dbCols(asinProducts).has(c))).toEqual([]);
     expect([...aliasCols(t, 'k')].filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
@@ -161,13 +175,14 @@ describe('searchProducts', () => {
       calls.push({ text, values });
       return isCountStatement(text)
         ? [{ n: 3 }]
-        : [{ asin: 'B000000001', title: 'Lamp', brand: 'Acme', listed_since: '2026-08-01', monthly_sold: 1000, review_count: 120, average_rating_x10: 44, current_price_cents: 1999, sales_rank: 1234, rank_ratio_x100: 65, fba_offer_count: 3, fbm_offer_count: 1, amazon_availability: -1, enrichment_status: 'active', keyword_count: 7, sort_key: 1000 }];
+        : [{ asin: 'B000000001', title: 'Lamp', brand: 'Acme', category_path: 'Home & Kitchen › Lighting › Desk Lamps', listed_since: '2026-08-01', monthly_sold: 1000, review_count: 120, average_rating_x10: 44, current_price_cents: 1999, sales_rank: 1234, rank_ratio_x100: 65, fba_offer_count: 3, fbm_offer_count: 1, amazon_availability: -1, enrichment_status: 'active', keyword_count: 7, sort_key: 1000 }];
     };
-    const r = await searchProducts(fake, PRODUCT_DEFAULTS);
+    const r = await searchProducts(fake, PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE);
     expect(r.total).toBe(3);
     expect(r.totalIsCapped).toBe(false);
     expect(r).not.toHaveProperty('countTimedOut');
     expect(r.rows[0]).toMatchObject({ asin: 'B000000001', monthlySold: 1000, rankRatioX100: 65, keywordCount: 7, amazonAvailability: -1 });
+    expect(r.rows[0].categoryPath).toBe('Home & Kitchen › Lighting › Desk Lamps');
     // sort_key only carries the outer re-sort; it is not part of the mapped row.
     expect(r.rows[0]).not.toHaveProperty('sort_key');
     expect(r.rows[0]).not.toHaveProperty('sortKey');
@@ -175,7 +190,7 @@ describe('searchProducts', () => {
   });
   it('flags a capped total and defaults a missing keyword count to 0', async () => {
     const fake = async (text: string) => (isCountStatement(text) ? [{ n: PRODUCT_COUNT_CAP }] : [{ asin: 'B000000002', keyword_count: null }]);
-    const r = await searchProducts(fake, { ...PRODUCT_DEFAULTS, page: 2 });
+    const r = await searchProducts(fake, { ...PRODUCT_DEFAULTS, page: 2 }, EMPTY_CATEGORY_SCOPE);
     // The cap is the pager's last reachable row (the "10,000+" copy).
     expect(PRODUCT_COUNT_CAP).toBe(PRODUCT_MAX_PAGE * PRODUCT_PAGE_SIZE);
     expect(PRODUCT_COUNT_CAP).toBe(10_000);
@@ -201,7 +216,7 @@ describe('searchProducts', () => {
         events.push('rows:end');
         return [{ asin: 'B000000003', keyword_count: 2 }];
       };
-      const r = await searchProducts(fake, PRODUCT_DEFAULTS);
+      const r = await searchProducts(fake, PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE);
       expect(r).toMatchObject({ total: PRODUCT_COUNT_CAP, totalIsCapped: true, countTimedOut: true, page: 1, pageSize: PRODUCT_PAGE_SIZE });
       expect(r.rows).toHaveLength(1);
       expect(r.rows[0]).toMatchObject({ asin: 'B000000003', keywordCount: 2 });
@@ -214,7 +229,7 @@ describe('searchProducts', () => {
           if (isCountStatement(text)) throw error;
           return [];
         };
-        await expect(searchProducts(fake, PRODUCT_DEFAULTS)).rejects.toBe(error);
+        await expect(searchProducts(fake, PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE)).rejects.toBe(error);
       }
     });
     it('rejects when the rows statement times out: only the count is best-effort', async () => {
@@ -223,19 +238,19 @@ describe('searchProducts', () => {
         if (!isCountStatement(text)) throw error;
         return [{ n: 3 }];
       };
-      await expect(searchProducts(fake, PRODUCT_DEFAULTS)).rejects.toBe(error);
+      await expect(searchProducts(fake, PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE)).rejects.toBe(error);
     });
     it('with the real neon driver: a 57014 on the count is a capped total, any other server error still rejects', async () => {
       const rowsResult = { command: 'SELECT', rowCount: 1, rows: [['B000000001']], fields: [{ name: 'asin', dataTypeID: 25 }], rowAsArray: true };
       // Each statement is its own batch (SET LOCAL, then the statement): fail the count's, answer the rows'.
       const serve = (onCount: FakeResponse) => (_url: string, batch: Batch) => (batch.queries[1].query.startsWith('SELECT count(*)') ? onCount : okResults(SET_RESULT, rowsResult));
       await withNeonFetch(serve(sqlError('57014', 'canceling statement due to statement timeout')), async (sql) => {
-        const r = await searchProducts(neonRunner(sql), PRODUCT_DEFAULTS);
+        const r = await searchProducts(neonRunner(sql), PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE);
         expect(r).toMatchObject({ total: PRODUCT_COUNT_CAP, totalIsCapped: true, countTimedOut: true });
         expect(r.rows.map((row) => row.asin)).toEqual(['B000000001']);
       });
       await withNeonFetch(serve(sqlError('53200', 'out of memory')), async (sql) => {
-        await expect(searchProducts(neonRunner(sql), PRODUCT_DEFAULTS)).rejects.toMatchObject({ name: 'NeonDbError', code: '53200' });
+        await expect(searchProducts(neonRunner(sql), PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE)).rejects.toMatchObject({ name: 'NeonDbError', code: '53200' });
       });
     });
   });
@@ -261,7 +276,7 @@ describe('neonRunner', () => {
   });
   it("caps both of a search's statements, each in its own transaction", async () => {
     const { sql, transactions } = fakeNeon((statements) => [[], isCountStatement(statements[1].text) ? [{ n: 3 }] : [{ asin: 'B000000001', keyword_count: 7 }]]);
-    const r = await searchProducts(neonRunner(sql), PRODUCT_DEFAULTS);
+    const r = await searchProducts(neonRunner(sql), PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE);
     expect(r.total).toBe(3);
     expect(r.rows).toHaveLength(1);
     expect(r.rows[0]).toMatchObject({ asin: 'B000000001', keywordCount: 7 });
@@ -292,5 +307,19 @@ describe('neonRunner', () => {
       { query: `SET LOCAL statement_timeout = ${PRODUCT_READ_TIMEOUT_MS}`, params: [] },
       { query: 'SELECT $1::int AS n', params: ['1'] },
     ]);
+  });
+  it('with the real neon client: an exact-path array travels as one Postgres array literal', async () => {
+    const requests: Array<{ url: string; batch: Batch }> = [];
+    await withNeonFetch(
+      (url, batch) => {
+        requests.push({ url, batch });
+        return okResults(SET_RESULT, { command: 'SELECT', rowCount: 0, rows: [], fields: [], rowAsArray: true });
+      },
+      async (sql) => {
+        const q = productSearchSql(PRODUCT_DEFAULTS, { ...EMPTY_CATEGORY_SCOPE, exactPaths: ['Pet Supplies › Dogs › Toys', 'Pet Supplies › Cats › Toys'], scoped: true });
+        await neonRunner(sql)(q.count.text, q.count.values);
+      },
+    );
+    expect(requests[0].batch.queries[1].params).toEqual(['{"Pet Supplies › Dogs › Toys","Pet Supplies › Cats › Toys"}']);
   });
 });

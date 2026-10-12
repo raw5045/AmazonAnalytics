@@ -33,7 +33,7 @@ const NOW = new Date('2026-10-09T15:00:00Z');
 /** One fully-populated row. */
 function makeRow(over: Partial<ProductSummaryRow> = {}): ProductSummaryRow {
   return {
-    asin: 'B000000001', title: 'LED Desk Lamp', brand: 'Acme', listedSince: '2026-08-01', monthlySold: 1000, reviewCount: 120,
+    asin: 'B000000001', title: 'LED Desk Lamp', brand: 'Acme', categoryPath: 'Home & Kitchen › Lighting › Desk Lamps', listedSince: '2026-08-01', monthlySold: 1000, reviewCount: 120,
     averageRatingX10: 44, currentPriceCents: 1999, salesRank: 1234, rankRatioX100: 65, fbaOfferCount: 3, fbmOfferCount: 1,
     amazonAvailability: -1, enrichmentStatus: 'active', keywordCount: 7, ...over,
   };
