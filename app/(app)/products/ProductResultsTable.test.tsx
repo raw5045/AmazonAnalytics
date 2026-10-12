@@ -54,6 +54,9 @@ describe('ProductResultsTable rows', () => {
     const cells = bodyCells();
     expect(cells).toHaveLength(10);
     expect(screen.getByRole('columnheader', { name: 'Category' })).toBeInTheDocument();
+    const headers = screen.getAllByRole('columnheader');
+    expect(headers).toHaveLength(cells.length);
+    expect(headers[1]).toHaveTextContent(/^Category$/);
 
     const title = within(cells[0]).getByRole('link', { name: 'LED Desk Lamp' });
     // The ASIN page's back link returns to this exact list (its `from`, percent-encoded).
@@ -67,7 +70,7 @@ describe('ProductResultsTable rows', () => {
     expect(amazon).toHaveAttribute('target', '_blank');
 
     expect(cells[1]).toHaveTextContent(/^Desk Lamps$/);
-    expect(within(cells[1]).getByText('Desk Lamps')).toHaveAttribute('title', 'Home & Kitchen › Lighting › Desk Lamps');
+    expect(cells[1]).toHaveAttribute('title', 'Home & Kitchen › Lighting › Desk Lamps');
     expect(cells[2]).toHaveTextContent('Aug 1, 2026');
     expect(cells[2]).toHaveTextContent('69 days');
     expect(cells[3]).toHaveTextContent(/^1,000\+$/);
@@ -119,7 +122,14 @@ describe('ProductResultsTable rows', () => {
     const links = within(cells[0]).getAllByRole('link', { name: 'B000000001' });
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/products/B000000001?from=%2Fproducts', 'https://www.amazon.com/dp/B000000001']);
     for (const i of [1, 2, 3, 4, 5, 6, 7, 8]) expect(cells[i], `column ${i}`).toHaveTextContent(/^—$/);
+    expect(cells[1]).not.toHaveAttribute('title');
     expect(cells[9]).toHaveTextContent(/^0$/);
+  });
+
+  it('a category path whose last segment is blank shows the whole path', () => {
+    renderTable({ rows: [makeRow({ categoryPath: 'Home & Kitchen › ' })] });
+    expect(bodyCells()[1]).toHaveTextContent(/^Home & Kitchen ›$/);
+    expect(bodyCells()[1]).toHaveAttribute('title', 'Home & Kitchen › ');
   });
 
   it('a rank above its 30-day average shows a "+" chip; at the average there is no chip', () => {

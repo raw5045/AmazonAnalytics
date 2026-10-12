@@ -180,11 +180,9 @@ function ProductRow({ row, from, now }: { row: ProductSummaryRow; from: string; 
           </a>
         </div>
       </td>
-      <td className="max-w-40 p-2 text-xs text-gray-700">
+      <td className="max-w-40 p-2 text-xs text-gray-700" title={row.categoryPath || undefined}>
         {row.categoryPath ? (
-          <span className="block truncate" title={row.categoryPath}>
-            {splitCategoryPath(row.categoryPath).leaf}
-          </span>
+          <span className="block truncate leading-5">{splitCategoryPath(row.categoryPath).leaf.trim() || row.categoryPath}</span>
         ) : (
           orDash(DASH)
         )}
