@@ -168,7 +168,7 @@ No migration. `checkActiveJobs`, then one bare `git push origin main` on the own
 - **Plan collision noted for future plans.** Adding required fields to `ProductFilters` broke four full-literal sites the plan did not list (`toProductFilters`, `pendingToFilters`, two test fixtures); the same happened to `ProductSummaryRow` (`lib/research/service.test.ts`) and `ProductLoaders` (same file). A plan that changes a shared type must list every full-literal site.
 
 ### Follow-ups recorded
-- The Explorer passes raw custom ids from its URL into a uuid-typed query (`/explorer?custom=nope` most likely errors) — task chip offered to the owner.
+- The Explorer passed raw custom ids from its URL (and from stored saved-view blobs) into a uuid-typed query (`/explorer?custom=nope` failed with Postgres 22P02) — FIXED in 6238f82 (`parseCustomCategoryIds`: well-formed uuids only, lower-cased, deduplicated; the saved-view normaliser applies the same rule); rides with this push.
 - The Explorer sidebar shares the stale-custom-id, order-sensitive dirty check and toggle a11y items fixed here; `LeafCategoryTypeahead`'s placeholder hard-codes "11k+" (a `placeholder` prop would let each page state its count).
 - `compareCodeUnits` is exported from a server module and duplicated privately in `lib/research/categories.ts`; a shared selection walker could serve both resolvers.
 - The exact-path array is uncapped (25 custom categories × 12,000 stored paths in theory; 2,349 stored paths today) — the largest-custom-category integration case measures it.
