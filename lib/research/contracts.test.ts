@@ -422,7 +422,7 @@ const INT4_MAX = 2_147_483_647;
 const fullProductSearch = {
   filters: {
     listedWithinDays: 180, monthlySoldMin: 1000, reviewsMax: 300, ratingMin: 4.2, ratingMax: 4.9, priceMin: 9.99, priceMax: 19.99,
-    bsrMin: 1, bsrMax: 5000, bsrRatioMax: 70, categoryPath: 'Health & Household', fba: 'yes', amazonSelling: 'no',
+    bsrMin: 1, bsrMax: 5000, bsrRatioMax: 70, department: 'Health & Household', fba: 'yes', amazonSelling: 'no',
   },
   sort: 'price',
   dir: 'asc',
@@ -436,14 +436,17 @@ describe('productSearchInputSchema (the search_products input)', () => {
     expect(productSearchInputSchema.parse(fullProductSearch)).toStrictEqual(fullProductSearch);
   });
 
-  it('parses idempotently: re-parsing the parsed output changes nothing (the category path is trimmed once)', () => {
-    const once = productSearchInputSchema.parse({ ...fullProductSearch, filters: { ...fullProductSearch.filters, categoryPath: '  Health & Household  ' } });
-    expect(once.filters?.categoryPath).toBe('Health & Household');
+  it('parses idempotently: re-parsing the parsed output changes nothing (the department is trimmed once)', () => {
+    const once = productSearchInputSchema.parse({ ...fullProductSearch, filters: { ...fullProductSearch.filters, department: '  Health & Household  ' } });
+    expect(once.filters?.department).toBe('Health & Household');
     expect(productSearchInputSchema.parse(once)).toStrictEqual(once);
   });
 
-  it('is strict at both levels: an unknown key is rejected with unrecognized_keys, never dropped', () => {
-    for (const input of [{ __probe: 1 }, { filters: { __probe: 1 } }, { filters: { priceMinCents: 999 } }, { pageSize: 10 }, { filters: { age: 90 } }]) {
+  it('is strict at every level: an unknown key is rejected with unrecognized_keys, never dropped (the retired categoryPath too)', () => {
+    for (const input of [
+      { __probe: 1 }, { filters: { __probe: 1 } }, { filters: { priceMinCents: 999 } }, { pageSize: 10 }, { filters: { age: 90 } },
+      { filters: { categoryPath: 'Health & Household' } }, { filters: { categories: { paths: ['A › B'] } } },
+    ]) {
       const r = productSearchInputSchema.safeParse(input);
       expect(r.success, JSON.stringify(input)).toBe(false);
       expect(r.success ? [] : r.error.issues.map((i) => i.code), JSON.stringify(input)).toContain('unrecognized_keys');
@@ -455,7 +458,7 @@ describe('productSearchInputSchema (the search_products input)', () => {
       { listedWithinDays: 30 }, { listedWithinDays: '90' }, { monthlySoldMin: 0 }, { monthlySoldMin: 50.5 }, { monthlySoldMin: INT4_MAX + 1 }, { reviewsMax: -1 },
       { ratingMin: -0.1 }, { ratingMax: 5.1 }, { ratingMin: 4.55 }, { priceMin: -1 }, { priceMax: 9.999 }, { priceMax: PRODUCT_PRICE_DOLLARS_MAX + 0.01 },
       { bsrMin: 0 }, { bsrMax: INT4_MAX + 1 }, { bsrRatioMax: 0 }, { bsrRatioMax: 1001 }, { bsrRatioMax: 70.5 },
-      { categoryPath: '' }, { categoryPath: '   ' }, { categoryPath: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH + 1) }, { fba: 'maybe' }, { amazonSelling: true },
+      { department: '' }, { department: '   ' }, { department: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH + 1) }, { department: null }, { fba: 'maybe' }, { amazonSelling: true },
     ];
     for (const filters of badFilters) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(false);
     for (const input of [{ sort: 'title' }, { dir: 'up' }, { page: 0 }, { page: PRODUCT_MAX_PAGE + 1 }, { page: 1.5 }, { filters: null }]) {
@@ -466,11 +469,40 @@ describe('productSearchInputSchema (the search_products input)', () => {
   it('accepts every bound itself and every page sort', () => {
     const atBounds: Array<Record<string, unknown>> = [
       { listedWithinDays: 60 }, { listedWithinDays: 365 }, { monthlySoldMin: 1 }, { reviewsMax: 0 }, { ratingMin: 0, ratingMax: 5 }, { priceMin: 0 },
-      { priceMax: PRODUCT_PRICE_DOLLARS_MAX }, { bsrMin: 1, bsrMax: INT4_MAX }, { bsrRatioMax: 1 }, { bsrRatioMax: 1000 }, { categoryPath: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH) },
+      { priceMax: PRODUCT_PRICE_DOLLARS_MAX }, { bsrMin: 1, bsrMax: INT4_MAX }, { bsrRatioMax: 1 }, { bsrRatioMax: 1000 }, { department: 'x'.repeat(MAX_CATEGORY_PATH_LENGTH) },
     ];
     for (const filters of atBounds) expect(productSearchInputSchema.safeParse({ filters }).success, JSON.stringify(filters)).toBe(true);
     for (const sort of PRODUCT_SORTS) expect(productSearchInputSchema.safeParse({ sort }).success, sort).toBe(true);
     expect(productSearchInputSchema.safeParse({ page: PRODUCT_MAX_PAGE }).success).toBe(true);
+  });
+
+  it("takes search_keywords' own categories object: custom ids lower-cased, a taxonomy selection a subtree by default, the lists defaulted, re-parsed unchanged", () => {
+    expect(productSearchInputSchema.shape.filters.unwrap().shape.categories.unwrap()).toBe(categoriesSchema);
+    const parsed = productSearchInputSchema.parse({
+      filters: { categories: { selections: [{ kind: 'custom', id: 'ABCDEF12-ABCD-4ABC-8ABC-ABCDEF123456' }, { kind: 'taxonomy', path: ' Pet Supplies › Dogs ' }], leafPaths: ['A › B'] } },
+    });
+    expect(parsed).toStrictEqual({
+      filters: {
+        categories: {
+          selections: [{ kind: 'custom', id: 'abcdef12-abcd-4abc-8abc-abcdef123456' }, { kind: 'taxonomy', path: 'Pet Supplies › Dogs', includeDescendants: true }],
+          leafPaths: ['A › B'],
+        },
+      },
+    });
+    expect(productSearchInputSchema.parse(parsed)).toStrictEqual(parsed);
+    expect(productSearchInputSchema.parse({ filters: { categories: {} } })).toStrictEqual({ filters: { categories: { selections: [], leafPaths: [] } } });
+  });
+
+  it('refuses a 26th selection, a 2,001st leaf path, a malformed custom id, a blank path and an unknown selection kind', () => {
+    const taxonomy = (i: number) => ({ kind: 'taxonomy', path: `A › ${i}` });
+    const accepts = (categories: unknown) => productSearchInputSchema.safeParse({ filters: { categories } }).success;
+    expect(accepts({ selections: Array.from({ length: 25 }, (_, i) => taxonomy(i)), leafPaths: Array.from({ length: 2000 }, (_, i) => `A › ${i}`) })).toBe(true);
+    for (const categories of [
+      { selections: Array.from({ length: 26 }, (_, i) => taxonomy(i)) }, { leafPaths: Array.from({ length: 2001 }, (_, i) => `A › ${i}`) },
+      { selections: [{ kind: 'custom', id: 'not-a-uuid' }] }, { selections: [{ kind: 'taxonomy', path: '  ' }] }, { leafPaths: [''] }, { selections: [{ kind: 'leaf', path: 'A › B' }] }, null,
+    ]) {
+      expect(accepts(categories), JSON.stringify(categories).slice(0, 80)).toBe(false);
+    }
   });
 
   it('rejects a minimum above its maximum (no product could match) at the minimum, and accepts equal bounds', () => {
@@ -489,6 +521,9 @@ describe('productSearchInputSchema (the search_products input)', () => {
     expect(filters.monthlySoldMin.description).toContain('1,000+');
     expect(filters.priceMin.description).toContain('dollars');
     expect(filters.ratingMin.description).toContain('stars');
+    expect(filters.department.description).toContain('CATEGORY_NOT_AVAILABLE and the valid names');
+    expect(filters.categories.description).toContain('resolve_categories');
+    expect(filters).not.toHaveProperty('categoryPath');
     expect(productSearchInputSchema.shape.page.description).toContain(`${PRODUCT_PAGE_SIZE} products`);
     expect(productSearchInputSchema.shape.sort.description).toContain(PRODUCT_SORTS.join(', '));
   });
@@ -519,8 +554,11 @@ describe('toProductFilters (search_products input to the Products page filters)'
   it('maps every field: dollars to cents, stars to ×10, the tool names onto the page names', () => {
     expect(toProductFilters(productSearchInputSchema.parse(fullProductSearch))).toStrictEqual({
       age: 180, soldMin: 1000, reviewsMax: 300, ratingMin: 42, ratingMax: 49, priceMinCents: 999, priceMaxCents: 1999,
-      bsrMin: 1, bsrMax: 5000, ratioMax: 70, dept: null, leafPaths: ['Health & Household'], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'price', dir: 'asc', page: 3,
+      bsrMin: 1, bsrMax: 5000, ratioMax: 70, dept: 'Health & Household', leafPaths: [], customCategoryIds: [], fba: 'yes', amazon: 'no', sort: 'price', dir: 'asc', page: 3,
     });
+    // The categories object becomes the search's category scope (lib/research/products.ts), never page filters.
+    const categories = { selections: [{ kind: 'custom', id: '11111111-1111-4111-8111-000000000001' }], leafPaths: ['A › B'] };
+    expect(toProductFilters(productSearchInputSchema.parse({ filters: { categories } }))).toStrictEqual({ ...PRODUCT_DEFAULTS });
   });
 
   it('rounds away floating-point error, and keeps zero as a bound rather than no filter', () => {

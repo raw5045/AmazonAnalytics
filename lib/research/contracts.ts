@@ -337,9 +337,13 @@ export const emptyInputSchema = z.strictObject({});
 // Products tools (spec 2026-10-09 §8, §9; admin-only). The search input is the Products page's
 // filter set (lib/products/filters.ts) in a caller's units — US dollars and stars — under names a
 // reader expects; toProductFilters maps it onto ProductFilters (cents, stars × 10, the page's own
-// field names). Nothing is defaulted or transformed beyond a trim: the SDK hands the tool its own
-// parsed output and the service parses that again, so a parse must be idempotent, and the defaults
-// (PRODUCT_DEFAULTS) are the mapper's job.
+// field names). The two category fields (spec 2026-10-12 §6): `department` becomes the page's dept;
+// `categories` is search_keywords' own object (categoriesSchema above), which lib/research/products.ts
+// resolves into the search's category scope and checks against the product catalog, so it never
+// reaches the page filters. Nothing is defaulted or transformed beyond a trim, except inside
+// `categories`, whose own defaults (empty lists, includeDescendants true) and lower-cased custom ids
+// re-parse unchanged: the SDK hands the tool its own parsed output and the service parses that again,
+// so a parse must be idempotent, and the page defaults (PRODUCT_DEFAULTS) are the mapper's job.
 // ---------------------------------------------------------------------------
 
 /** The top price bound in dollars: its cents must still fit the int4 current_price_cents column (INT4_MAX above). */
@@ -378,8 +382,11 @@ const productSearchFiltersSchema = z
     bsrRatioMax: z.int().min(1).max(1000).optional().describe(
       'Current BSR ÷ its 30-day average BSR × 100, at most N: 70 = ranked at least 30 % better than its 30-day average; under 100 = better than average.',
     ),
-    categoryPath: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).optional().describe(
-      "A category path with ' › ' between levels (as resolve_categories returns it), or a department alone ('Health & Household'): matches that path and every path under it.",
+    department: z.string().trim().min(1).max(MAX_CATEGORY_PATH_LENGTH).optional().describe(
+      "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not the keyword report's broad category. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
+    ),
+    categories: categoriesSchema.optional().describe(
+      "The object search_keywords takes: selections from resolve_categories (several = OR) and leafPaths. A taxonomy selection matches the path and everything under it unless includeDescendants is false; a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Paths are checked against the product catalog (keyword-side paths almost always exist there); an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.",
     ),
     fba: z.enum(['yes', 'no']).optional().describe('yes = at least one FBA offer; no = Keepa reported zero FBA offers (a product with no reported count matches neither).'),
     amazonSelling: z.enum(['yes', 'no']).optional().describe('yes = Amazon itself has an offer (in any availability state); no = no Amazon offer, or none reported.'),
@@ -428,9 +435,9 @@ export function toProductFilters(input: ProductSearchInput): ProductFilters {
     bsrMin: f.bsrMin ?? PRODUCT_DEFAULTS.bsrMin,
     bsrMax: f.bsrMax ?? PRODUCT_DEFAULTS.bsrMax,
     ratioMax: f.bsrRatioMax ?? PRODUCT_DEFAULTS.ratioMax,
-    dept: PRODUCT_DEFAULTS.dept,
-    // Interim until the department + categories fields land: the old single path keeps its subtree meaning.
-    leafPaths: f.categoryPath === undefined ? [] : [f.categoryPath],
+    dept: f.department ?? PRODUCT_DEFAULTS.dept,
+    // The categories object is resolved into the search scope by lib/research/products.ts, not into the page filters.
+    leafPaths: [],
     customCategoryIds: [],
     fba: f.fba ?? PRODUCT_DEFAULTS.fba,
     amazon: f.amazonSelling ?? PRODUCT_DEFAULTS.amazon,

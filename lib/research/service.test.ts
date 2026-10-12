@@ -63,6 +63,9 @@ function makeDeps(over: Partial<ResearchServiceDeps> = {}) {
       facts: vi.fn(async () => null),
       history: vi.fn(async () => []),
       keywords: vi.fn(async () => ({ rows: [], total: 0 })),
+      departments: vi.fn(async () => []),
+      categoryPaths: vi.fn(async () => []),
+      customRows: vi.fn(async () => []),
     },
     ...over,
   };
@@ -400,7 +403,7 @@ describe('defaultResearchService', () => {
   });
   it('wires the Products page loaders for the two product tools; their links take the base URL from the service deps, not from the loaders', () => {
     const deps = defaultResearchDeps();
-    expect(Object.keys(deps.products).sort()).toEqual(['facts', 'history', 'keywords', 'search']);
+    expect(Object.keys(deps.products).sort()).toEqual(['categoryPaths', 'customRows', 'departments', 'facts', 'history', 'keywords', 'search']);
     expect(deps.appUrl).toBe('https://keywordquarry.com');
   });
 });

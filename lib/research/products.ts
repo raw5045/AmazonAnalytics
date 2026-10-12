@@ -3,22 +3,26 @@
  * The two admin-only products tools (spec 2026-10-09 §9): search_products and get_product_details,
  * over the Products page's own loaders (lib/products/*), so the page and the tools share one query
  * each. Order of operations, for both: refuse a non-admin actor (FORBIDDEN, before anything else:
- * no read, no usage reserve, no record) → validate → reserve → read → build → record. `reserve`
- * and `record` are the service's own (createResearchService binds them), so a products call is
- * metered exactly as the keyword tools are: search_keywords reserves its page size up front and
- * records the rows it delivered; get_keyword_details reserves and records one row.
+ * no read, no usage reserve, no record) → validate → reserve → resolve the category scope (the
+ * search only) → read → build → record. `reserve` and `record` are the service's own
+ * (createResearchService binds them), so a products call is metered exactly as the keyword tools
+ * are: search_keywords reserves its page size up front and records the rows it delivered;
+ * get_keyword_details reserves and records one row.
  */
 import { neon } from '@neondatabase/serverless';
+import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
 import { env } from '@/lib/env';
-import { pageCategoryScope, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
+import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
 import { PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
+import { listProductCategoryPaths, listProductDepartments } from '@/lib/products/listCategories';
 import { loadProduct, type ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import { loadProductHistory } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
 import { neonRunner, searchProducts, type ProductSearchResult } from '@/lib/products/searchProducts';
+import { loadCustomRows, type CustomRow } from './categories';
 import {
   invalid, productDetailsInputSchema, productSearchInputSchema, SCHEMA_VERSION, toProductFilters,
-  type ProductDetailsResponse, type ProductHistoryPoint, type ProductSearchResponse,
+  type ProductDetailsResponse, type ProductHistoryPoint, type ProductSearchInput, type ProductSearchResponse,
 } from './contracts';
 import { ResearchError } from './errors';
 import { keywordUrlFor, productUrlFor } from './links';
@@ -31,8 +35,8 @@ export { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP };
 const DETAILS_ROWS = 1;
 
 /**
- * The data side of the products tools: the four Products page loaders. `defaultProductsDeps` wires
- * production; tests inject stubs.
+ * The data side of the products tools: the four Products page loaders, plus the three a search's
+ * category scope is checked against. `defaultProductsDeps` wires production; tests inject stubs.
  */
 export interface ProductLoaders {
   search: (filters: ProductFilters, scope: ProductCategoryScope) => Promise<ProductSearchResult>;
@@ -40,6 +44,11 @@ export interface ProductLoaders {
   facts: (asin: string) => Promise<CatalogProductFacts | null>;
   history: (asin: string) => Promise<ProductHistoryPoint[]>;
   keywords: (asin: string, limit: number) => Promise<ProductKeywordsResult>;
+  /** The catalog's departments and distinct category paths (lib/products/listCategories, cached an hour), for a search's category scope. */
+  departments: () => Promise<string[]>;
+  categoryPaths: () => Promise<string[]>;
+  /** The actor's own custom categories by id; unknown and foreign ids are absent (lib/research/categories.ts loadCustomRows). */
+  customRows: (userId: string, ids: string[]) => Promise<CustomRow[]>;
 }
 
 /** What the two tool functions run on: the loaders plus the app's base URL and the service's usage hooks, bound to its own reserve and digest counters. */
@@ -54,7 +63,9 @@ export interface ProductsDeps extends ProductLoaders {
 
 /**
  * Production loaders over Neon's HTTP driver: each call creates its own neon() client lazily (as
- * details.ts's loaders do), so building the default service never touches DATABASE_URL.
+ * details.ts's loaders do), so building the default service never touches DATABASE_URL. The scope
+ * loaders are the Products page's cached option lists and the keyword tools' own custom-row read
+ * (over the research pool, which is created on first use).
  */
 export function defaultProductsDeps(): ProductLoaders {
   const run = () => neonRunner(neon(env.DATABASE_URL));
@@ -63,6 +74,9 @@ export function defaultProductsDeps(): ProductLoaders {
     facts: (asin) => loadProduct(run(), asin),
     history: (asin) => loadProductHistory(run(), asin),
     keywords: (asin, limit) => loadProductKeywords(run(), asin, limit),
+    departments: () => listProductDepartments(),
+    categoryPaths: () => listProductCategoryPaths(),
+    customRows: (userId, ids) => loadCustomRows(userId, ids),
   };
 }
 
@@ -79,9 +93,79 @@ function assertAdmin(actor: ResearchActor): void {
   if (!actor.isAdmin) throw productsForbiddenError();
 }
 
+type ProductSearchFilters = NonNullable<ProductSearchInput['filters']>;
+type ScopeDeps = Pick<ProductLoaders, 'departments' | 'categoryPaths' | 'customRows'>;
+const PATH_NOT_AVAILABLE = 'not a category path of the product catalog';
+
+function pathNotAvailable(path: string, at: string): ResearchError {
+  return new ResearchError(
+    'CATEGORY_NOT_AVAILABLE',
+    `"${path}" is not a category path of the product catalog (paths from resolve_categories almost always are; check the spelling and the '${PATH_SEP}' separators).`,
+    { details: [{ path: at, message: PATH_NOT_AVAILABLE }] },
+  );
+}
+
+/**
+ * The search's category scope (spec 2026-10-12 §6): the department checked against the catalog's list;
+ * taxonomy selections as subtrees (includeDescendants, the default) or exact paths; custom selections as
+ * the account's stored paths, exactly; leafPaths exactly. Every path is checked against the catalog's path
+ * list — an exact path must be an entry, a subtree path an entry or a proper prefix of one — and every
+ * custom id must be the actor's own. Any miss is CATEGORY_NOT_AVAILABLE naming the field: never a silent
+ * skip, never an empty page for a typo. An absent or empty categories object scopes nothing.
+ */
+export async function resolveProductCategoryScope(deps: ScopeDeps, actor: ResearchActor, filters: ProductSearchFilters): Promise<ProductCategoryScope> {
+  const dept = filters.department ?? null;
+  if (dept !== null) {
+    const departments = await deps.departments();
+    if (!departments.includes(dept)) {
+      throw new ResearchError('CATEGORY_NOT_AVAILABLE', `"${dept}" is not a department of the product catalog. Pass one of: ${departments.join('; ')}.`, {
+        details: [{ path: 'filters.department', message: 'unknown department' }],
+      });
+    }
+  }
+  const categories = filters.categories;
+  if (!categories || (categories.selections.length === 0 && categories.leafPaths.length === 0)) return { ...EMPTY_CATEGORY_SCOPE, dept };
+
+  const subtree: Array<{ path: string; at: string }> = [];
+  const exact: Array<{ path: string; at: string }> = [];
+  const customIds: Array<{ id: string; at: string }> = [];
+  categories.selections.forEach((sel, i) => {
+    const at = `filters.categories.selections[${i}]`;
+    if (sel.kind === 'custom') customIds.push({ id: sel.id, at: `${at}.id` });
+    else (sel.includeDescendants ? subtree : exact).push({ path: sel.path, at: `${at}.path` });
+  });
+  categories.leafPaths.forEach((path, i) => exact.push({ path, at: `filters.categories.leafPaths[${i}]` }));
+
+  if (subtree.length > 0 || exact.length > 0) {
+    const catalog = await deps.categoryPaths();
+    const known = new Set(catalog);
+    for (const { path, at } of exact) if (!known.has(path)) throw pathNotAvailable(path, at);
+    for (const { path, at } of subtree) {
+      if (!known.has(path) && !catalog.some((entry) => entry.startsWith(path + PATH_SEP))) throw pathNotAvailable(path, at);
+    }
+  }
+  const exactPaths = exact.map((e) => e.path);
+  if (customIds.length > 0) {
+    const rows = await deps.customRows(actor.localUserId, [...new Set(customIds.map((c) => c.id))]);
+    const found = new Map(rows.map((r) => [r.id, r.leafPaths]));
+    for (const { id, at } of customIds) {
+      const paths = found.get(id);
+      if (!paths) {
+        throw new ResearchError('CATEGORY_NOT_AVAILABLE', 'That custom category does not exist for this account. List yours with resolve_categories and pick from its custom candidates.', {
+          details: [{ path: at, message: 'unknown custom category id' }],
+        });
+      }
+      exactPaths.push(...paths);
+    }
+  }
+  return { dept, subtreePaths: [...new Set(subtree.map((s) => s.path))], exactPaths: [...new Set(exactPaths)], scoped: true };
+}
+
 /**
  * `search_products`: one page (PRODUCT_PAGE_SIZE rows) of the Products page's search, with each
  * row's ASIN page link. The total is exact up to the page's count cap, then `at_least` that cap.
+ * The department and the categories object become the search's category scope
+ * (resolveProductCategoryScope), resolved after the reserve as the keyword tools resolve theirs.
  */
 export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchActor, input: unknown): Promise<ProductSearchResponse> {
   assertAdmin(actor);
@@ -89,8 +173,8 @@ export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchA
   if (!parsed.success) throw invalid(parsed.error);
   const filters = toProductFilters(parsed.data);
   await deps.reserve(actor, PRODUCT_PAGE_SIZE);
-  // Interim, until the department + categories fields land: the old categoryPath arrives as one leaf path (toProductFilters), a subtree.
-  const result = await deps.search(filters, pageCategoryScope(filters, []));
+  const scope = await resolveProductCategoryScope(deps, actor, parsed.data.filters ?? {});
+  const result = await deps.search(filters, scope);
   const response: ProductSearchResponse = {
     schemaVersion: SCHEMA_VERSION,
     products: result.rows.map((row) => ({ ...row, url: productUrlFor(deps.appUrl, row.asin) })),
