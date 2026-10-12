@@ -4,6 +4,8 @@
  * touching the real tables. It proves what the fake-client unit tests cannot:
  *  - the advance INSERT (partition name, ASIN regex, the three-slot UNION ALL, the DISTINCT ON streak
  *    carry) runs on this database and yields the rows the week's partition promises;
+ *  - the carried broad_category equals the partition's slot category (checked on a sample of the first
+ *    scratch table's rows: the code travels from the same kwm row, spec 2026-10-12 broad category §4);
  *  - the carry arithmetic: a second build that carries from the first scratch table adds one week to
  *    every pair the two share, keeps its streak start, and starts a pair the first lacked at 1;
  *  - the object names the rename swap relies on (what LIKE ... INCLUDING ALL generates, what the live
@@ -30,7 +32,8 @@
  *    of its statements as the test sees them, and stops nothing on the server.
  *
  * Preconditions (owner-run only, never in CI):
- *  - migration 0051 applied; the reverse-table backfill done for meaningful numbers (an empty
+ *  - migrations 0051 and 0052 applied (the scratch tables copy keyword_top_asins, so the broad_category
+ *    column and its index must exist); the reverse-table backfill done for meaningful numbers (an empty
  *    keyword_top_asins still runs: the checks that need rows assert what they can and log a note);
  *  - no import running (the week's partition must be quiet). An import that reaches its build phase
  *    meanwhile waits at the advisory lock until the case ends, so prefer a quiet hour;
@@ -68,8 +71,12 @@ const NAMES_PROBE = 'keyword_top_asins_itest2';
  */
 const CARRY_SAMPLE_KEYWORDS = 3000;
 
-/** The names LIKE ... INCLUDING ALL gives a copy called `table`: its primary key and its (asin, search_term_id) index. */
-const generatedNames = (table: string) => ({ pkey: `${table}_pkey`, asinIndex: `${table}_asin_search_term_id_idx` });
+/** The names LIKE ... INCLUDING ALL gives a copy called `table`: its primary key, its (asin, search_term_id) index and its (broad_category, asin) index. */
+const generatedNames = (table: string) => ({
+  pkey: `${table}_pkey`,
+  asinIndex: `${table}_asin_search_term_id_idx`,
+  broadIndex: `${table}_broad_category_asin_idx`,
+});
 
 /**
  * The build's INSERT text aimed at scratch tables: `target` replaces keyword_top_asins_next; with
@@ -251,6 +258,20 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
           expect(stats.carried, 'pairs that carried a streak from the live table').toBeGreaterThan(0);
         }
 
+        // The code travels from the same kwm row (spec 2026-10-12 broad category §4): per slot, equal to that slot's category.
+        const codeCheck = await client.query<{ sampled: number; coded: number; mismatched: number }>(
+          `WITH s AS (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} LIMIT 20000)
+           SELECT count(*)::int AS sampled, count(*) FILTER (WHERE s.broad_category IS NOT NULL)::int AS coded,
+                  count(*) FILTER (WHERE s.broad_category IS DISTINCT FROM CASE s.slot WHEN 1 THEN m.top_clicked_category_1 WHEN 2 THEN m.top_clicked_category_2 ELSE m.top_clicked_category_3 END)::int AS mismatched
+           FROM s JOIN ${partition} m ON m.search_term_id = s.search_term_id AND m.week_end_date = $1::date`,
+          [currentWeek],
+        );
+        const codes = codeCheck.rows[0];
+        console.log(`[topAsinsBuild] codes: ${codes.coded} of ${codes.sampled} sampled rows carry a broad_category, ${codes.mismatched} differ from the partition`);
+        expect(codes.sampled, 'sampled rows').toBeGreaterThan(0);
+        expect(codes.mismatched, 'rows whose broad_category differs from the kwm slot category').toBe(0);
+        expect(codes.coded, 'coded rows in the sample (every slot-1 row has a code)').toBeGreaterThan(0);
+
         // Carry arithmetic, on this database's own data: build again, carrying from the first scratch table.
         // A fresh TEMP table has no statistics (the real one is analyzed after every build).
         await client.query(`ANALYZE ${SCRATCH}`);
@@ -310,7 +331,7 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         await client.query(`CREATE TEMP TABLE ${NAMES_PROBE} (LIKE keyword_top_asins INCLUDING ALL)`);
         const copy = await objectNames(NAMES_PROBE);
         const generated = generatedNames(NAMES_PROBE);
-        expect(copy.indexes, 'indexes of the scratch copy').toEqual([generated.asinIndex, generated.pkey].sort());
+        expect(copy.indexes, 'indexes of the scratch copy').toEqual([generated.asinIndex, generated.broadIndex, generated.pkey].sort());
         expect(copy.constraints.filter((c) => c.contype === 'p').map((c) => c.conname), 'primary key of the scratch copy').toEqual([generated.pkey]);
         const checks = copy.constraints.filter((c) => c.contype === 'c');
         expect(checks, 'CHECK constraints of the scratch copy').toHaveLength(2);
@@ -318,8 +339,10 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         expect(checks.some((c) => /\bweeks_in_top3\b/.test(c.def)), 'a CHECK on weeks_in_top3').toBe(true);
 
         // The names the advance swap renames FROM on the live table (to _prev), which must exist for the next build's swap to run.
+        // The broad index's rename is IF EXISTS, so a drifted name would not fail a swap; but after migration 0052 and the one-off
+        // fill the live table must carry the canonical one (an old-code build leaves the name LIKE generated).
         const live = await objectNames('keyword_top_asins');
-        expect(live.indexes, 'indexes of keyword_top_asins').toEqual(expect.arrayContaining(['keyword_top_asins_pkey', 'keyword_top_asins_asin_idx']));
+        expect(live.indexes, 'indexes of keyword_top_asins').toEqual(expect.arrayContaining(['keyword_top_asins_pkey', 'keyword_top_asins_asin_idx', 'keyword_top_asins_broad_category_idx']));
         expect(live.constraints.map((c) => c.conname), 'constraints of keyword_top_asins').toContain('keyword_top_asins_pkey');
       });
     },
@@ -328,16 +351,18 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
 
   it('the advance swap retires the current table to _prev and renames _next by the generated names (statement text only, never executed)', () => {
     const swap = buildTopAsinsStatements(currentWeek).swap.map((s) => s.text);
-    // Retire: drop the old _prev, then the current table (and its index and primary key) becomes _prev.
+    // Retire: drop the old _prev, then the current table (and its indexes and primary key) becomes _prev.
     const dropPrev = swap.indexOf('DROP TABLE IF EXISTS keyword_top_asins_prev');
     expect(dropPrev, 'the swap drops the old _prev').toBeGreaterThanOrEqual(0);
     expect(swap.indexOf('ALTER TABLE keyword_top_asins RENAME TO keyword_top_asins_prev'), 'the swap renames the current table to _prev, after dropping the old one').toBeGreaterThan(dropPrev);
     expect(swap).toContain('ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx');
+    expect(swap).toContain('ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx');
     expect(swap).toContain('ALTER TABLE keyword_top_asins_prev RENAME CONSTRAINT keyword_top_asins_pkey TO keyword_top_asins_prev_pkey');
     // Promote: the literals are the naming rule (proved above on a scratch copy) applied to keyword_top_asins_next.
     const next = generatedNames('keyword_top_asins_next');
     expect(swap).toContain('ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins');
     expect(swap).toContain(`ALTER INDEX ${next.asinIndex} RENAME TO keyword_top_asins_asin_idx`);
+    expect(swap).toContain(`ALTER INDEX IF EXISTS ${next.broadIndex} RENAME TO keyword_top_asins_broad_category_idx`);
     expect(swap).toContain(`ALTER TABLE keyword_top_asins RENAME CONSTRAINT ${next.pkey} TO keyword_top_asins_pkey`);
   });
 
