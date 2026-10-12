@@ -34,6 +34,8 @@
  *  - migration 0051 applied (the six partial indexes built and valid);
  *  - the reverse-table backfill done for the keyword and stub assertions: while keyword_top_asins_meta
  *    has no week they are skipped with a note ("reverse table not built yet");
+ *  - a custom category with stored paths (any account's; only its paths are read) for the two
+ *    custom-category cases: when there is none they are skipped ("no custom category to test with");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
  *
  * Run (owner's go, Git Bash):
@@ -228,8 +230,10 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
       await inReadOnlyTransaction(async () => {
         // A mid-size path (enough rows to fill a page, few enough that the bitmap plan is the cheap one), the deepest such
         // path first: deep paths are leaves, so the subtree half of the predicate stays small and the plan stays on the index.
+        // Only rows with the monthly sold badge count: the default sort (sold) leaves out the rest, and the rows check below
+        // needs rows the search can show.
         const picked = await client.query<{ category_path: string }>(
-          "SELECT category_path FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_path IS NOT NULL GROUP BY 1 HAVING count(*) BETWEEN 60 AND 400 ORDER BY length(category_path) DESC, category_path LIMIT 1",
+          "SELECT category_path FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_path IS NOT NULL AND monthly_sold IS NOT NULL GROUP BY 1 HAVING count(*) BETWEEN 60 AND 400 ORDER BY length(category_path) DESC, category_path LIMIT 1",
         );
         const path = picked.rows[0].category_path;
         const scope = pageCategoryScope({ ...PRODUCT_DEFAULTS, leafPaths: [path] }, []);
@@ -306,13 +310,11 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         expect(sizes.rows[0].est_entry, 'the largest department list must stay well under the 2 MB cache limit').toBeLessThan(1_500_000);
         // The per-department statement the loader runs, planned for the largest department: it is the one statement no unit test plans.
         const largest = sizes.rows[0].category_root;
-        const planned = await client.query<{ 'QUERY PLAN': unknown }>(
-          "EXPLAIN (FORMAT JSON) SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price') AND (category_path = $1 OR starts_with(category_path, $2)) ORDER BY category_path",
-          [largest, `${largest} › `],
-        );
-        const raw = planned.rows[0]['QUERY PLAN'];
-        const plan = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Array<{ Plan: PlanNode }>;
-        console.log(`[productsQueries] per-department list statement for "${largest}":\n${outline(plan[0].Plan).join('\n')}`);
+        const { lines, seconds } = await explain({
+          text: "SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price') AND (category_path = $1 OR starts_with(category_path, $2)) ORDER BY category_path",
+          values: [largest, `${largest} › `],
+        });
+        console.log(`[productsQueries] per-department list statement for "${largest}" planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
       });
     },
     TEST_TIMEOUT_MS,
