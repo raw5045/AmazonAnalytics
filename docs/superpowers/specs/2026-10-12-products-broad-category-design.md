@@ -144,6 +144,7 @@ Integration (owner-gated, `RUN_INTEGRATION=1`, run with `--disableConsoleInterce
 
 ## 13. Out of scope / follow-ups
 
+- **The keywords sort under the largest codes (found in the 2026-10-13 smoke).** `broad=Home&sort=keywords` exceeds the page's 30 s cap cold (5.4 s warm: a hash semi-join over the catalog, then one keyword-count probe per candidate — 200,599 — before the top-N sort); narrower combinations and the plain keywords sort work. Fix candidate: under `sort=keywords` with a broad code, aggregate the counts from the pair table first (`GROUP BY asin` over the code's ASIN set, one ordered index range instead of random probes), then join the catalog; and a friendlier timeout message than the error boundary's.
 - Keyword counts per code on the ASIN page ("Home (12)") — the GROUP BY has them; display only if wanted.
 - A broad-category column in the products table and on `search_products` rows (one aggregate per listed row).
 - The Explorer's list stays at the slot-1 codes; it could show the 18 slot-2/3 codes but they are not keyword broad categories.
