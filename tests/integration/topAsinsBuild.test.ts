@@ -267,17 +267,23 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
 
         // The code travels from the same kwm row (spec 2026-10-12 broad category §4): per slot, equal to that slot's category. The sample is
         // taken per slot: one unordered LIMIT over the whole table would most likely return slot-1 rows only (the INSERT writes them first)
-        // and leave the CASE branches for slots 2 and 3 unchecked.
+        // and leave the CASE branches for slots 2 and 3 unchecked. The partition is probed once per sampled row through its primary key
+        // (week_end_date, search_term_id): a LATERAL subquery with LIMIT 1 cannot be pulled up into the join tree, so the only plan is a
+        // nested loop with one index lookup per row (the key is unique, so the LIMIT drops nothing). A plain JOIN ran past the 600 s
+        // statement timeout on 2026-10-13 (most likely the planner hash-joined the partition); 2,000 rows per slot keep the lookups cheap.
         const codeCheck = await client.query<{ sampled: number; sampled1: number; sampled2: number; sampled3: number; coded: number; mismatched: number }>(
           `WITH s AS (
-             (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 1 LIMIT 7000)
-             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 2 LIMIT 7000)
-             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 3 LIMIT 7000))
+             (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 1 LIMIT 2000)
+             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 2 LIMIT 2000)
+             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 3 LIMIT 2000))
            SELECT count(*)::int AS sampled,
                   count(*) FILTER (WHERE s.slot = 1)::int AS sampled1, count(*) FILTER (WHERE s.slot = 2)::int AS sampled2, count(*) FILTER (WHERE s.slot = 3)::int AS sampled3,
                   count(*) FILTER (WHERE s.broad_category IS NOT NULL)::int AS coded,
-                  count(*) FILTER (WHERE s.broad_category IS DISTINCT FROM CASE s.slot WHEN 1 THEN m.top_clicked_category_1 WHEN 2 THEN m.top_clicked_category_2 ELSE m.top_clicked_category_3 END)::int AS mismatched
-           FROM s JOIN ${partition} m ON m.search_term_id = s.search_term_id AND m.week_end_date = $1::date`,
+                  count(*) FILTER (WHERE s.broad_category IS DISTINCT FROM m.expected)::int AS mismatched
+           FROM s
+           CROSS JOIN LATERAL (
+             SELECT CASE s.slot WHEN 1 THEN m.top_clicked_category_1 WHEN 2 THEN m.top_clicked_category_2 ELSE m.top_clicked_category_3 END AS expected
+             FROM ${partition} m WHERE m.week_end_date = $1::date AND m.search_term_id = s.search_term_id LIMIT 1) m`,
           [currentWeek],
         );
         const codes = codeCheck.rows[0];
