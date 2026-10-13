@@ -1089,9 +1089,9 @@ Before this task: the final whole-diff review (all tasks), `pnpm vitest run` (wh
 
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
-| 0052 applied | | | |
-| One-off fill | | | |
-| Integration | | | |
+| 0052 applied | 2026-10-13 | OK (8 s) | checkActiveJobs quiet (0 runs, 0 imports mid-phase); 3 ALTER/COMMENT statements committed at once; CREATE INDEX CONCURRENTLY 7 s on the direct endpoint, valid; assertions: column on keyword_top_asins and _prev, partial index (broad_category, asin); meta week 2026-10-03 == Explorer week; the canonical index on the live table only; no codes yet |
+| One-off fill | 2026-10-13 | OK: 8,310,634 rows, carried=prev, 349 s (09:36–09:41 UTC) | `TOP_ASINS_WEEK=2026-10-03`, a same-week rebuild from `_prev`; afterwards codes present, the live table holds `keyword_top_asins_broad_category_idx`, `_prev` carries no broad index (normal path), Explorer week unchanged. 349 s vs the backfill's 50–137 s per week into unindexed scratch tables: the pre-0052 live build was never timed, so the third index's own cost is unknown until the first weekly build |
+| Integration | 2026-10-13 | productsQueries 18/18 (cold, run alone first, 09:50 UTC); topAsinsBuild 5/5 (833 s, after one test-side fix) | Broad searches, rows / count statement: Home (largest: 315,122 products, 669,650 pair rows) 0.04 s / 0.38 s, plan walks asin_products_monthly_sold_idx with one index-only probe of the broad index per candidate; Alexa (one product) 0.04 s / 0.02 s, plan starts from the code's ASINs (broad index → asin_products_pkey), never the sort index; Audible (worst case: 52,378 pair rows, 0.5 % sellable) 0.38 s / 0.58 s warm, 241 matches, re-run 0.29 s with 211,728 blocks hit / 20,308 read; the code list 120 codes in 0.04 s; the heaviest ASIN B0DCW38YR7 (1,070 pair rows) 23 codes in 0.012 s; B07X8XSWXP carries Toys, Home. No slow plan: the planner's worst case needs no follow-up. Build test: the scratch INSERT 288 s / 425 s on two runs; the carried-code check 4,420 of 6,000 sampled rows (2,000 per slot) coded, 0 differ from the partition's slot categories; LIKE copies carry the three generated names; the second build carried 8,301,653 pairs. Its first run failed on the check's plain JOIN (the planner scanned the partition past the 600 s statement timeout) → cc72bb6 probes the partition's primary key per sampled row (plan-only EXPLAIN confirmed the nested loop) |
 | Push + deploys | | | |
 | Re-fill (if needed) | | | |
 | Page smoke | | | |
