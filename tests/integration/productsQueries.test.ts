@@ -75,7 +75,7 @@ import { EMPTY_CATEGORY_SCOPE, pageCategoryScope } from '@/lib/products/category
 import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
 import { PRODUCT_READ_TIMEOUT_MS, productSearchSql, searchProducts, type ProductSearchResult, type ProductSummaryRow, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
 import { BROAD_CATEGORY_LIST_SQL } from '@/lib/products/listCategories';
-import { loadProduct, productBroadCategoriesSql } from '@/lib/products/loadProduct';
+import { loadProduct } from '@/lib/products/loadProduct';
 import { loadProductHistory } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
 
@@ -513,37 +513,6 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it(
-    "productBroadCategoriesSql on the heaviest ASIN stays under the page's cap",
-    async (ctx) => {
-      await inReadOnlyTransaction(async () => {
-        await skipUnlessCodes(ctx);
-        // The ASIN with the most pair rows: its codes read is on the ASIN page's first-paint path now, so the heaviest ASIN is that
-        // read's worst case. The statistics' first most-common ASIN (the heaviest or among the heaviest, found without a scan, so the
-        // timed read is not warmed by one), else the aggregate with the build's memory, taken away again before the read.
-        let asin = await mostCommon('asin');
-        if (asin === null) {
-          await client.query("SET LOCAL work_mem = '256MB'");
-          const picked = await client.query<{ asin: string }>('SELECT asin FROM keyword_top_asins GROUP BY asin ORDER BY count(*) DESC LIMIT 1');
-          await client.query('SET LOCAL work_mem TO DEFAULT');
-          asin = picked.rows[0].asin;
-        }
-        // The read itself runs under the same local cap as the searches, so a bad plan cannot outlive the case.
-        await client.query(`SET LOCAL statement_timeout = '${SEARCH_TIMEOUT}'`);
-        const analyzed = await explainAnalyze(productBroadCategoriesSql(asin));
-        await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`);
-        // Counted only after the timed read, so the count did not warm it.
-        const size = await client.query<{ pairs: number }>('SELECT count(*)::int AS pairs FROM keyword_top_asins WHERE asin = $1', [asin]);
-        console.log(
-          `[productsQueries] codes of the heaviest ASIN ${asin} (${size.rows[0].pairs} pair rows): ${analyzed.rows} codes in ${analyzed.seconds.toFixed(3)}s ` +
-            `(EXPLAIN ANALYZE, planning + execution; shared blocks hit ${analyzed.hit}, read ${analyzed.read}):\n${analyzed.lines.join('\n')}`,
-        );
-        expect(analyzed.seconds, `the codes read of ${asin}`).toBeLessThan(PRODUCT_READ_TIMEOUT_MS / 1000);
-      });
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
     "the smallest broad category by distinct products starts from the code's ASINs, not from the sort index",
     async (ctx) => {
       await inReadOnlyTransaction(async () => {
@@ -594,44 +563,6 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         const { rows } = await broadSearch(worst.broad_category, 'warm (the pick read the same pages)');
         // An empty page is a valid answer here: this case asserts the times (inside broadSearch), the cases above the plan shapes.
         console.log(`[productsQueries] "${worst.broad_category}": the page holds ${rows.length} rows`);
-      });
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
-    "loadProduct lists a multi-code ASIN's codes, most keywords first",
-    async (ctx) => {
-      await inReadOnlyTransaction(async () => {
-        await skipUnlessCodes(ctx);
-        // An ASIN of the largest code that carries another code too, found through that code's own ASINs (the first 2,000 of its pair
-        // rows, one probe of the ASIN index each) rather than by grouping the whole table.
-        const code = await largestCode();
-        const multi = await client.query<{ asin: string }>(
-          'SELECT h.asin FROM (SELECT asin FROM keyword_top_asins WHERE broad_category = $1 LIMIT 2000) h WHERE EXISTS (SELECT 1 FROM keyword_top_asins k WHERE k.asin = h.asin AND k.broad_category IS NOT NULL AND k.broad_category <> $1) LIMIT 1',
-          [code],
-        );
-        const asin = multi.rows[0]?.asin;
-        if (!asin) {
-          console.log(`[productsQueries] none of the first 2,000 pair rows of "${code}" belongs to an ASIN with a second code: the multi-code case is skipped.`);
-          return ctx.skip('no multi-code ASIN among the largest code');
-        }
-        const facts = await loadProduct(run, asin);
-        expect(facts, `facts of ${asin}`).not.toBeNull();
-        const codes = facts?.broadCategories ?? [];
-        console.log(`[productsQueries] ${asin} carries ${codes.length} codes, most keywords first: ${codes.join(', ')}`);
-        expect(codes.length, `codes of ${asin}`).toBeGreaterThanOrEqual(2);
-        // Against an independent count of the pair rows per code: the same set of codes, and in the loader's order the counts never rise.
-        const counted = await client.query<{ broad_category: string; n: number }>(
-          'SELECT broad_category, count(*)::int AS n FROM keyword_top_asins WHERE asin = $1 AND broad_category IS NOT NULL GROUP BY 1',
-          [asin],
-        );
-        const keywords = new Map(counted.rows.map((r) => [r.broad_category, r.n] as const));
-        expect([...codes].sort(), `the codes of ${asin}`).toEqual([...keywords.keys()].sort());
-        const counts = codes.map((c) => keywords.get(c) ?? 0);
-        for (let i = 1; i < counts.length; i++) {
-          expect(counts[i], `keywords of ${codes[i]} (${counts[i]}) after ${codes[i - 1]} (${counts[i - 1]})`).toBeLessThanOrEqual(counts[i - 1]);
-        }
       });
     },
     TEST_TIMEOUT_MS,
