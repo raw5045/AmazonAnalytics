@@ -40,11 +40,12 @@ export interface CrosswalkRow {
 }
 
 /**
- * Votes needed to decide: a path's own products, or an ancestor's whole subtree when the path backs off
- * to it. A path's majority matches a product's own vote ~88 % of the time, so 20 votes typically split
- * about 17–3 (85 %): a stray vote or two cannot flip it, while under 20 a handful of single-keyword
- * accidents could decide a leaf; higher, and the backoff loses the fine split a leaf gives (measured
- * 2026-10-14: 5,194 paths with 20+ products of their own hold 86 % of fetched products).
+ * Votes needed to decide: a path's own products, or the whole subtree of the prefix it backs off to
+ * (the path itself first, then each ancestor). A path's majority matches a product's own vote ~88 %
+ * of the time, so 20 votes typically split about 17–3 (85 %): a stray vote or two cannot flip it,
+ * while under 20 a handful of single-keyword accidents could decide a leaf; higher, and the backoff
+ * loses the fine split a leaf gives (measured 2026-10-14: 5,194 paths with 20+ products of their own
+ * hold 86 % of fetched products).
  */
 export const MIN_VOTES = 20;
 

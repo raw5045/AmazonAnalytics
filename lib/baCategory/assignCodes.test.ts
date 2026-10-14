@@ -41,6 +41,13 @@ describe('assignCodes (spec 2026-10-14 §5.2)', () => {
     expect(rows[BINS]).toEqual({ categoryPath: BINS, code: 'Home', sourcePath: BINS, votes: 30, sharePct: 100 });
   });
 
+  it('a bare department with 20+ own products decides by them, not by its subtree', () => {
+    expect(assignCodes([vote(PET, 'Toys', 20), vote(DOG_TOYS, 'Pet Products', 30)], [PET, DOG_TOYS])).toEqual([
+      { categoryPath: PET, code: 'Toys', sourcePath: PET, votes: 20, sharePct: 100 },
+      { categoryPath: DOG_TOYS, code: 'Pet Products', sourcePath: DOG_TOYS, votes: 30, sharePct: 100 },
+    ]);
+  });
+
   it('under the threshold a path borrows its parent: the nearest ancestor with MIN_VOTES votes decides', () => {
     // Toilet paper has 5 votes (Biss); its sibling paper towels has 25 (Health & Personal Care). The parent holds 30.
     const votes = [vote(TOILET, 'Biss', 5), vote(TOWELS, 'Health & Personal Care', 25)];
