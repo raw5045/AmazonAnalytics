@@ -5,7 +5,7 @@ import { asinProducts, baCategoryCrosswalk, keywordTopAsins } from '@/db/schema'
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from './categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
 import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
-import { aliasCols, dbCols } from './testHelpers';
+import { aliasCols, dbCols, notIn } from './testHelpers';
 
 type Sort = ProductFilters['sort'];
 type Dir = ProductFilters['dir'];
@@ -94,7 +94,8 @@ describe('productSearchSql', () => {
     expect(q.rows.values).toEqual(['Home', 50, 0]);
     expect(q.count.text).toContain('x.code = $1::text');
     expect(q.count.values).toEqual(['Home']);
-    expect(dbCols(baCategoryCrosswalk).has('category_path') && dbCols(baCategoryCrosswalk).has('code')).toBe(true);
+    expect(aliasCols(q.rows.text, 'x')).toEqual(new Set(['category_path', 'code']));
+    expect(notIn(aliasCols(q.rows.text, 'x'), dbCols(baCategoryCrosswalk))).toEqual([]);
   });
   it('the broad category predicate follows the category scope and precedes the offer filters', () => {
     const scope: ProductCategoryScope = { dept: 'Tools', subtreePaths: [], exactPaths: [], scoped: false };
@@ -165,6 +166,7 @@ describe('productSearchSql', () => {
     const a = aliasCols(t, 'a');
     expect([...a].filter((c) => !dbCols(asinProducts).has(c))).toEqual([]);
     expect([...aliasCols(t, 'k')].filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
+    expect(notIn(aliasCols(t, 'x'), dbCols(baCategoryCrosswalk))).toEqual([]);
     // `p` is the page subquery: every column the outer query reads from it is one the subquery selects from `a`
     // (sort_key is an alias of the sort's own column).
     const key = KEY_COLUMN.get(sort);

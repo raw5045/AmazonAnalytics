@@ -11,7 +11,8 @@
  *    is about 1.9 MB today, so one entry would sit at the limit; the per-department entries stay
  *    well under it (the largest, Clothing, is roughly 0.5-1 MB);
  *  - listProductBroadCategories: the distinct codes of ba_category_crosswalk (spec 2026-10-14 §7; ~24k
- *    rows, one index scan), read through neonRunner so PRODUCT_READ_TIMEOUT_MS caps it like the page's reads.
+ *    rows, milliseconds whatever the plan), read through neonRunner so PRODUCT_READ_TIMEOUT_MS caps it
+ *    like the page's reads.
  * All three lists are sorted by plain code-unit comparison so the order never depends on the host's
  * ICU data (lib/research/categories.ts sorts the same way). An empty catalog (or crosswalk) gives empty lists.
  * A failed read rejects the whole list (the tools validate category scopes against it, so a
@@ -91,8 +92,8 @@ export const BROAD_CATEGORY_LIST_SQL = 'SELECT DISTINCT code FROM ba_category_cr
 
 /**
  * The codes in code-unit order (the statement's ORDER BY follows the database's collation; re-sorted here).
- * Run through neonRunner, so PRODUCT_READ_TIMEOUT_MS caps the read like every web read: the weekly rebuild
- * truncates the table in a transaction readers queue behind for a moment.
+ * Run through neonRunner, so PRODUCT_READ_TIMEOUT_MS caps the read like every web read (the weekly rebuild
+ * deletes and re-inserts under a lock that admits readers, so none waits on it).
  */
 async function fetchBroadCategoriesSorted(): Promise<string[]> {
   const run = neonRunner(neon(env.DATABASE_URL));

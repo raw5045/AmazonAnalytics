@@ -4,12 +4,11 @@
  * over a `(text, values) => rows` runner (the page wraps neon's client in `neonRunner`; the tools reuse it).
  * The category filter is a ProductCategoryScope built by the caller — see ./categoryPredicate; every
  * other filter is read from ProductFilters (spec 2026-10-12 §4.3).
- * Every predicate rides on a partial index: the 0051 (key, asin) indexes for the range filters and sorts
- * (the base predicate matches their WHERE clause exactly), 0050's asin_products_category_path_idx for
- * the category predicate (see ./categoryPredicate), and 0053's ba_category_crosswalk_code_idx for the
- * broad-category semi-join (one code's paths; the equality probes ride asin_products_category_path_idx).
- * Rating, FBA and Amazon have no index of their own and ride whichever
- * scan the planner picks.
+ * The indexes behind the predicates: the 0051 (key, asin) partial indexes for the range filters and sorts
+ * (the base predicate matches their WHERE clause exactly), 0050's partial asin_products_category_path_idx
+ * for the category predicate (see ./categoryPredicate), and 0053's ba_category_crosswalk_code_idx (a plain
+ * index on the small crosswalk) for the broad-category semi-join. Rating, FBA and Amazon have no index of
+ * their own and ride whichever scan the planner picks.
  *
  * Two rules keep a page cheap on a multi-million-row catalog:
  *  - Page first, count second. The filter, the order and the 50-row page are a subquery (it also
@@ -83,7 +82,7 @@ export function productSearchSql(f: ProductFilters, scope: ProductCategoryScope)
   const category = categoryPredicate(scope, bind);
   if (category !== null) where.push(category);
   // The product's broad category is the code of its Keepa path (spec 2026-10-14 §6): a semi-join against the code's paths.
-  // ba_category_crosswalk_code_idx serves the subquery; asin_products_category_path_idx serves the equality probes.
+  // ba_category_crosswalk_code_idx serves the subquery (the code's paths, or one probe per candidate when a sort index drives); asin_products_category_path_idx can serve the probes into the catalog when the code's paths drive.
   if (f.broadCategory !== null) where.push(`a.category_path IN (SELECT x.category_path FROM ba_category_crosswalk x WHERE x.code = ${bind(f.broadCategory)}::text)`);
   if (f.fba === 'yes') where.push('a.fba_offer_count > 0');
   if (f.fba === 'no') where.push('a.fba_offer_count = 0');
