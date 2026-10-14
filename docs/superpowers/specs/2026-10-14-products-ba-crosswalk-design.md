@@ -22,7 +22,7 @@ Owner's decisions (2026-10-14): one category per product; every product must hav
 | Direct coverage | 5,194 paths have 20+ training products; they hold 928,514 of the 1,076,381 fetched products with a path (86 %; a snapshot a few minutes after the row below, the service was fetching); the rest need the parent-path backoff |
 | Searchable universe | 1,074,610 in-scope active/no-price products have a path; 8,521 (0.8 %) do not (Keepa gave no category) |
 | Size of the result | paths per code at most a few hundred directly (Home 573, Apparel 541, Health & Personal Care 339); products per code under the leaf majority: Apparel 186,593, Home 99,118, Beauty 82,240, Toys 63,702 |
-| Cost of the signal | the per-product vote over one week's slot-1 rows joined to the catalog: 31–40 s on production; the distinct catalog paths: 2.4 s |
+| Cost of the signal | the per-product vote over one week's slot-1 rows joined to the catalog: 31–40 s on production when read from the pair table's slot-1 rows (the 2026-10-14 diagnostics); the builder reads the kwm partition instead (~3.2M wide rows), unmeasured until the first build (§13 step 2 records it); the distinct catalog paths: 2.4 s |
 | Where the weekly build runs | `inngest/functions/importFile.ts`, phase `top_asins_build` right after `keepa_enqueue`, inside `if (!isReplay)`, fail-soft, own `pg.Pool` (max 1) with a 30-minute statement timeout (spec 2026-10-09 §4.1) |
 
 ## 3. Design in one paragraph
@@ -93,7 +93,7 @@ GROUP BY 1, 2;
 SELECT DISTINCT category_path FROM asin_products WHERE category_path IS NOT NULL;
 ```
 
-One vote per product (not per keyword row) so a product with 500 keywords does not outvote a path; `mode()` breaks ties deterministically (the smallest value). The first statement returns ~45k (path, code) rows in 31–40 s; both run under a 30-minute statement timeout inside the import and a 10-minute one in the script.
+One vote per product (not per keyword row) so a product with 500 keywords does not outvote a path; `mode()` breaks ties deterministically (the smallest value). The first statement returns ~45k (path, code) rows (31–40 s measured on the pair-table form; the kwm form is timed at the first build); both run under a 30-minute statement timeout inside the import and in the script.
 
 ### 5.2 Assignment (TypeScript, pure, unit-tested)
 
@@ -110,7 +110,7 @@ One vote per product (not per keyword row) so a product with 500 keywords does n
 
 ### 5.3 Stats returned and logged (coded fields only)
 
-`{ week, paths, direct, backedOff, uncoded, trainingProducts, codes, secs }`; the import logs `[ba-crosswalk] week=… paths=… direct=… backedOff=… uncoded=… codes=…`.
+`{ week, paths, direct, backedOff, uncoded, trainingProducts, codes }` (the duration is the phase's `import_phase_timings` row; the script times itself); the import logs `[ba-crosswalk] week <date>: paths=… direct=… backedOff=… uncoded=… trainingProducts=… codes=…`.
 
 ### 5.4 The import phase `ba_crosswalk_build`
 
@@ -118,7 +118,9 @@ In `inngest/functions/importFile.ts`, right after `top_asins_build` and before `
 
 ### 5.5 The tracked script `scripts/buildBaCrosswalk.ts`
 
-`BA_CROSSWALK_WEEK=YYYY-MM-DD node --env-file=.env.local --import tsx scripts/buildBaCrosswalk.ts` (defaults to the Explorer week from `keyword_current_summary_meta`): one dedicated `pg.Client`, 10-minute statement timeout, prints the stats and the eight largest codes with their product counts. Used for the one-off first build and for a re-run after a Keepa reclassification. Also `BA_CROSSWALK_DRY_RUN=1` runs `computeCrosswalk` only.
+`BA_CROSSWALK_WEEK=YYYY-MM-DD node --env-file=.env.local --import tsx scripts/buildBaCrosswalk.ts` (defaults to the Explorer week from `keyword_current_summary_meta`, which during and right after an import is still the previous week: pass the week explicitly then): a `Pool({ max: 1 })` with one checked-out client as `scripts/buildTopAsinsWeek.ts`, 30-minute statement timeout, prints the stats and the eight largest codes with their product counts. Used for the one-off first build and for a re-run after a Keepa reclassification. Also `BA_CROSSWALK_DRY_RUN=1` runs `computeCrosswalk` only.
+
+> **Amendment (2026-10-14, the reviews of Tasks 3 and 4).** `writeCrosswalk` runs `SET LOCAL lock_timeout = '120s'` right after BEGIN: the TRUNCATE's ACCESS EXCLUSIVE lock would otherwise wait unbounded behind a slow reader and queue every new reader; a 55P03 rolls back, the phase fails soft and the script can be re-run. Inside the same transaction it refuses a week strictly older than the table's `max(week_end_date)` with `ba_crosswalk_older_than_built` (a re-run of the same week is allowed; no force option), so a gap-fill or replacement import of an older week never regresses the live crosswalk. The INSERT is chunked by `WRITE_CHUNK` (10,000 rows) inside the one transaction. Readers through `neonRunner` are READ COMMITTED and see the new rows once the commit lands; a REPEATABLE READ reader could see an empty table during the rebuild (TRUNCATE is not MVCC-safe), and none reads this table today.
 
 ## 6. Filter semantics and SQL
 
@@ -153,7 +155,7 @@ The "Broad category" select is unchanged. Its hint becomes: "Brand Analytics cat
 
 ## 11. Error handling
 
-- Builder: coded errors (`ba_crosswalk_bad_date`, `ba_crosswalk_bad_client`, `ba_crosswalk_no_votes` when the week has no slot-1 rows, which means the week is not imported); fail-soft inside the import; the script exits 1 with the code.
+- Builder: coded errors (`ba_crosswalk_bad_date`, `ba_crosswalk_bad_client`, `ba_crosswalk_no_votes` when the week has no slot-1 rows, which means the week is not imported, `ba_crosswalk_older_than_built` when the table already holds a newer week); fail-soft inside the import (the older-week case is logged as an expected skip, like the pair-table phase's); the script exits 1 with the code.
 - Readers: a missing table (42P01) is a deploy-order error and fails loudly, so 0053 precedes the deploy. The page's list degrades to `[]` on a failed read, the search surfaces the page's error state, the tool rejects, all as today.
 - Never log a DB error's `.message` (`errFields`); never print emails.
 
