@@ -571,7 +571,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
     });
 
     it('an older week is an expected skip, not an error', async () => {
-      const { log, err } = spyConsole();
+      const { log, err, warn } = spyConsole();
       mockBuildCrosswalk.mockRejectedValue(
         new BaCrosswalkError(
           'ba_crosswalk_older_than_built',
@@ -584,8 +584,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(crosswalkLines(log)).toEqual([
         '[ba-crosswalk] skipped: ba_crosswalk_older_than_built (week 2026-04-11)',
       ]);
-      expect(crosswalkLines(err)).toEqual([]);
-      expect(log.mock.calls.flat().join(' ')).not.toContain('2026-04-18'); // the message stays out
+      expect(err).not.toHaveBeenCalled();
+      expect([...log.mock.calls, ...warn.mock.calls].flat().join(' ')).not.toContain('2026-04-18'); // the message stays out
       expect(crosswalkClient.release).toHaveBeenCalledTimes(1);
       expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
