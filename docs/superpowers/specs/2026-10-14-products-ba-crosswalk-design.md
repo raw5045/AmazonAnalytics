@@ -68,9 +68,9 @@ The new readers need the crosswalk table before they deploy (a missing table fai
 
 Two functions, so the computation is testable without writing:
 
-- `computeCrosswalk(client, week)` → `{ rows, stats }`, read-only.
-- `writeCrosswalk(client, rows, week)` → one transaction: `TRUNCATE ba_category_crosswalk` then one `INSERT … SELECT FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::smallint[])` with the week; readers that arrive during the sub-second transaction wait for the commit and see the new rows. Idempotent: a re-run for the same week rewrites the same table.
-- `buildCrosswalk(client, week)` = compute then write; returns the stats. `client` is one dedicated connection, never a Pool (the pair-table build's `top_asins_bad_client` rule, same reason: `SET LOCAL` and the transaction).
+- `computeCrosswalk(client, week)` → `{ rows, stats }`, read-only: both reads run in one `REPEATABLE READ READ ONLY` transaction with `SET LOCAL statement_timeout = '1800s'` and `work_mem = '256MB'` (one snapshot: every voting path is among the catalog paths, so a week with votes always yields rows).
+- `writeCrosswalk(client, rows, week)` → one transaction: `SET LOCAL statement_timeout = '1800s'`, `SET LOCAL lock_timeout = '120s'`, `LOCK TABLE ba_category_crosswalk IN SHARE ROW EXCLUSIVE MODE` (builders serialize; readers are never blocked), the older-week guard under that lock (`max(week_end_date) > $1::date` → `ba_crosswalk_older_than_built`; a re-run of the same week is allowed), `DELETE FROM ba_category_crosswalk`, then the INSERTs chunked by `WRITE_CHUNK` (10,000 rows) via `unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::smallint[])` with the week. Readers keep the previous rows until the commit and never wait. Idempotent for the same week.
+- `buildCrosswalk(client, week)` = compute, write, then a best-effort `VACUUM (ANALYZE) ba_category_crosswalk` after the commit (reclaims the replaced rows, refreshes the statistics and the visibility map); returns the stats. `client` is one dedicated connection, never a Pool: both steps open a transaction and set their limits with `SET LOCAL`, because a pool-level `statement_timeout` does not bind through Neon's pooler (the arc-9 lesson; the sibling builders do the same).
 
 ### 5.1 The training signal (SQL, read-only)
 
@@ -93,11 +93,11 @@ GROUP BY 1, 2;
 SELECT DISTINCT category_path FROM asin_products WHERE category_path IS NOT NULL;
 ```
 
-One vote per product (not per keyword row) so a product with 500 keywords does not outvote a path; `mode()` breaks ties deterministically (the smallest value). The first statement returns ~45k (path, code) rows (31–40 s measured on the pair-table form; the kwm form is timed at the first build); both run under a 30-minute statement timeout inside the import and in the script.
+One vote per product (not per keyword row) so a product with 500 keywords does not outvote a path; `mode()` breaks ties deterministically (the smallest value). The first statement returns ~45k (path, code) rows (31–40 s measured on the pair-table form; the kwm form is timed at the first build); both run inside the read transaction's 30-minute `SET LOCAL statement_timeout` (the pool-level option does not bind through the pooler). The mode's tie-break orders `COLLATE "C"`, the code-unit order `assignCodes` uses.
 
 ### 5.2 Assignment (TypeScript, pure, unit-tested)
 
-`assignCodes(votes: Array<{ path, code, products }>, catalogPaths: string[], minVotes = MIN_VOTES): Array<CrosswalkRow>`:
+`assignCodes(votes: Array<{ path, code, products }>, catalogPaths: string[]): Array<CrosswalkRow>`:
 
 1. Prefix totals: for every vote row, add `products` to the code's count at the path itself and at each of its ancestors (`PATH_SEP` from `lib/categoryBuilder/buildTree` splits the levels: `Health & Household`, `Health & Household › Household Supplies`, …).
 2. For each catalog path, walk from the path itself up to its department (level 1). The first prefix with total votes ≥ `MIN_VOTES` (20) decides: `code` = the code with the most votes there, ties broken by code text ascending; `source_path` = that prefix; `votes` = its total; `share_pct` = round(100 × winner / total).
@@ -112,7 +112,7 @@ One vote per product (not per keyword row) so a product with 500 keywords does n
 
 ### 5.3 Stats returned and logged (coded fields only)
 
-`{ week, paths, direct, backedOff, uncoded, trainingProducts, codes }` (the duration is the phase's `import_phase_timings` row; the script times itself); the import logs `[ba-crosswalk] week <date>: paths=… direct=… backedOff=… uncoded=… trainingProducts=… codes=…`.
+`{ week, paths, direct, backedOff, uncoded, trainingProducts, codes }` (the duration is the phase's `import_phase_timings` row; the script times itself); the import logs `[ba-crosswalk] week <date>: paths=… direct=… backedOff=… uncoded=… trainingProducts=… codes=…`, and an older week as `[ba-crosswalk] skipped: ba_crosswalk_older_than_built (week <date>)`.
 
 ### 5.4 The import phase `ba_crosswalk_build`
 
@@ -120,9 +120,9 @@ In `inngest/functions/importFile.ts`, right after `top_asins_build` and before `
 
 ### 5.5 The tracked script `scripts/buildBaCrosswalk.ts`
 
-`BA_CROSSWALK_WEEK=YYYY-MM-DD node --env-file=.env.local --import tsx scripts/buildBaCrosswalk.ts` (defaults to the Explorer week from `keyword_current_summary_meta`, which during and right after an import is still the previous week: pass the week explicitly then): a `Pool({ max: 1 })` with one checked-out client as `scripts/buildTopAsinsWeek.ts`, 30-minute statement timeout, prints the stats and the eight largest codes with their product counts. Used for the one-off first build and for a re-run after a Keepa reclassification. Also `BA_CROSSWALK_DRY_RUN=1` runs `computeCrosswalk` only.
+`BA_CROSSWALK_WEEK=YYYY-MM-DD node --env-file=.env.local --import tsx scripts/buildBaCrosswalk.ts` (defaults to the Explorer week from `keyword_current_summary_meta`, which during and right after an import is still the previous week: pass the week explicitly then): a `Pool({ max: 1 })` with one checked-out client as `scripts/buildTopAsinsWeek.ts` (the builder's transactions set their own 30-minute limits), prints the stats, the time and the eight largest codes with their product counts; a week older than the built one is refused with a hint to pass that week; a failed summary query after a committed build does not fail the run. Never run it while an import of the same week is in flight (`scripts/checkActiveJobs.ts`): the week's kwm rows land over hours and a partial week would train the crosswalk. Used for the one-off first build and for a re-run after a Keepa reclassification. Also `BA_CROSSWALK_DRY_RUN=1` runs `computeCrosswalk` only.
 
-> **Amendment (2026-10-14, the reviews of Tasks 3 and 4).** `writeCrosswalk` runs `SET LOCAL lock_timeout = '120s'` right after BEGIN: the TRUNCATE's ACCESS EXCLUSIVE lock would otherwise wait unbounded behind a slow reader and queue every new reader; a 55P03 rolls back, the phase fails soft and the script can be re-run. Inside the same transaction it refuses a week strictly older than the table's `max(week_end_date)` with `ba_crosswalk_older_than_built` (a re-run of the same week is allowed; no force option), so a gap-fill or replacement import of an older week never regresses the live crosswalk. The INSERT is chunked by `WRITE_CHUNK` (10,000 rows) inside the one transaction. Readers through `neonRunner` are READ COMMITTED and see the new rows once the commit lands; a REPEATABLE READ reader could see an empty table during the rebuild (TRUNCATE is not MVCC-safe), and none reads this table today.
+> **Amendment (2026-10-14, the reviews of Tasks 3 and 4).** The rebuild does not truncate. It takes `LOCK TABLE ba_category_crosswalk IN SHARE ROW EXCLUSIVE MODE` (builders serialize; readers are never blocked), checks the built week under that lock and refuses a strictly older one with `ba_crosswalk_older_than_built` (a re-run of the same week is allowed; no force option; the import phase logs it as an expected skip), then `DELETE`s and re-inserts in chunks of `WRITE_CHUNK` (10,000 rows), all in one transaction with its own `SET LOCAL statement_timeout = '1800s'` and `lock_timeout = '120s'` (a 55P03 against another builder rolls back; the phase fails soft and the script re-runs). Readers keep the previous rows until the commit and never see an empty table; the ~24k dead rows a week are reclaimed by a best-effort `VACUUM (ANALYZE)` after the commit. The two reads run in one `REPEATABLE READ READ ONLY` transaction with the same `SET LOCAL` limits, because a pool-level `statement_timeout` does not bind through Neon's pooler. So a gap-fill or replacement import of an older week never regresses the live crosswalk, and a by-hand run with the lagging default week (the Explorer week during and right after an import) is refused rather than silently retraining on the previous week.
 
 ## 6. Filter semantics and SQL
 
@@ -173,7 +173,7 @@ The "Broad category" select is unchanged. Its hint becomes: "Brand Analytics cat
 ## 13. Shipping (each step on the owner's go, in order)
 
 1. `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts`, then `APPLY_0053=yes … scripts/applyMigration0053.ts` (creates the table and index; seconds; idempotent).
-2. One-off first build with the new local code: `BA_CROSSWALK_WEEK=2026-10-10 … scripts/buildBaCrosswalk.ts` (about a minute; prints the stats; note them in the Results table). The live site is untouched: the old readers still use the pair-table column.
+2. One-off first build with the new local code: `BA_CROSSWALK_WEEK=2026-10-10 … scripts/buildBaCrosswalk.ts` (minutes: the first timing of the kwm form; prints the stats and the time; note both in the Results table). The live site is untouched: the old readers still use the pair-table column.
 3. Integration: `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept` alone first (cold plans), then `tests/integration/baCrosswalk.test.ts`.
 4. `checkActiveJobs` → bare `git push origin main` → three deploys green (Vercel may need an empty-commit re-trigger).
 5. Smoke, page: the select lists the codes; Pet Products (expect pet products on top); a code + a department; a code + a leaf; `?broad=Nope` → selected, zero rows; the toilet paper ASIN B0FFPF97RV shows "Health & Personal Care"; the medicube B0GHMZXX8Y shows "Beauty". Tools: a `broadCategory` search; a typo returns the codes; `get_product_details.broadCategory`; one Ask AI question.
@@ -191,3 +191,4 @@ The "Broad category" select is unchanged. Its hint becomes: "Brand Analytics cat
 - Paths new to the catalog between builds (no code until the next build); a nightly top-up if it ever matters.
 - The 8,521 fetched products without a Keepa path.
 - Arc 9's keywords-sort limitation under the largest code (spec 2026-10-12 §13) stays as recorded; the predicate change does not address it.
+- A floor on `trainingProducts` (a degenerate report week, e.g. mostly blank categories, must not replace a good crosswalk; ~615k today); product-weighted `direct`/`uncoded` in the phase's log line, so it compares with §2's targets; a shared helper for the three near-identical import hook blocks (`keepa_enqueue`, `top_asins_build`, `ba_crosswalk_build`), as a behaviour-neutral commit after the ship.
