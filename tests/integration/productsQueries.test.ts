@@ -594,7 +594,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         console.log(`[productsQueries] "${code}" within "${leaf}": ${rows.length} rows on the page`);
         // The code's size: a join over all its products, so it runs here, after the timed reads of this case and of the mismatched- and own-department cases above, not in the first case.
         console.log(`[productsQueries] code with the most paths "${code}": ${await productsOf(code)} sellable products`);
-        // A self-decided path has 20+ training products with exactly that path, so its page should not be empty; if this fails, none
+        // A self-decided path has 20+ training products at or below it (own-decided: with exactly that path), so its page should not be empty; if this fails, none
         // of them shows in the default view (no sold badge, or out of scope): pick another leaf by hand, it is not a predicate bug.
         expect(rows.length, `rows of "${code}" inside the leaf "${leaf}"`).toBeGreaterThanOrEqual(1);
         for (const r of rows) expect(r.categoryPath === leaf || r.categoryPath?.startsWith(`${leaf} › `), `${r.asin} under ${leaf}`).toBe(true);
