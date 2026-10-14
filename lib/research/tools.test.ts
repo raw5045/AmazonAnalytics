@@ -69,9 +69,10 @@ describe('RESEARCH_TOOLS', () => {
     expect(details).toContain(`keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}`);
     expect(details).toContain('keywordsTotal counts every keyword, past the cap too');
     expect(details).toContain('weeks in top 3 = consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword');
-    expect(details).toContain('product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side; broadCategory is null');
+    expect(details).toContain('product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side; usually the category is excluded from enrichment; broadCategory is null)');
     expect(details).toContain("with the product's own Brand Analytics category as broadCategory (the code its Keepa category path maps to; null when the path is unmapped)");
     expect(details).not.toContain('every fact is null');
+    expect(details).not.toContain('broadCategories');
     expect(details).toContain('averageRatingX10 = stars × 10');
     expect(details).toContain('prices are in cents');
     for (const d of [search, details]) expect(d.endsWith('Admin accounts only for now.')).toBe(true);

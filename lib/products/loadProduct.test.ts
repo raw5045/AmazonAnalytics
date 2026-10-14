@@ -24,7 +24,7 @@ const FACTS_CARD_COLUMNS = [
   'sales_rank', 'avg30_sales_rank', 'avg90_sales_rank', 'rank_ratio_x100',
   'review_count', 'average_rating_x10', 'last_rating_update', 'monthly_sold', 'keepa_updated_at',
   'new_offer_count', 'fba_offer_count', 'fbm_offer_count', 'amazon_availability',
-  'enrichment_status', 'last_fetched_at', 'fetch_count', 'in_scope', 'best_rank', 'tier',
+  'enrichment_status', 'last_fetched_at', 'fetch_count', 'in_scope', 'best_rank', 'tier', 'broad_category',
 ];
 
 describe('productFactsSql', () => {
@@ -42,6 +42,8 @@ describe('productFactsSql', () => {
   it('names only real columns', () => {
     expect(aliasCols(q.text, 'a').size).toBeGreaterThan(25);
     expect(notIn(aliasCols(q.text, 'a'), dbCols(asinProducts))).toEqual([]);
+  });
+  it("joins the crosswalk by the product's path for its code (spec 2026-10-14 §9)", () => {
     expect(q.text).toContain('x.code AS broad_category FROM asin_products a LEFT JOIN ba_category_crosswalk x ON x.category_path = a.category_path WHERE a.asin = $1');
     expect(aliasCols(q.text, 'x')).toEqual(new Set(['code', 'category_path']));
     expect(notIn(aliasCols(q.text, 'x'), dbCols(baCategoryCrosswalk))).toEqual([]);
@@ -160,9 +162,10 @@ describe('loadProduct', () => {
 
   it('hides every price and the point-in-time facts of a delisted row, keeping the historical ones', async () => {
     // A delisted write keeps the last fetch's facts in the catalog; the reader hides them.
-    const { run } = fakeRun({ facts: [rawRow({ enrichment_status: 'delisted' })] });
+    // The code follows the path, which a delisted row keeps.
+    const { run } = fakeRun({ facts: [rawRow({ enrichment_status: 'delisted', broad_category: 'Home' })] });
     const f = await loadProduct(run, 'B000000001');
-    expect(f).toEqual({ ...ACTIVE, enrichmentStatus: 'delisted', ...nulled([...PRICES, ...POINT_IN_TIME]) });
+    expect(f).toEqual({ ...ACTIVE, enrichmentStatus: 'delisted', broadCategory: 'Home', ...nulled([...PRICES, ...POINT_IN_TIME]) });
     expect(f).toMatchObject({
       title: 'Bamboo Desk Lamp', brand: 'Acme', imageUrl: 'https://m.media-amazon.com/images/I/lamp.jpg', categoryPath: 'Home & Kitchen › Lighting › Desk Lamps',
       listedSince: '2026-08-01', trackingSince: '2026-07-20', keepaUpdatedAt: '2026-10-08',

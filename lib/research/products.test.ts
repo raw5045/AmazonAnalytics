@@ -85,7 +85,7 @@ const keywordRow = (n: number, over: Partial<ProductKeywordRow> = {}): ProductKe
 /** The catalog's departments and category paths, as the cached lists hold them (code-unit order). */
 const DEPARTMENTS = ['Health & Household', 'Pet Supplies'];
 /** The crosswalk's Brand Analytics codes, as the cached list holds them (code-unit order). */
-const BROAD_CODES = ['Apparel', 'Home', 'Pet Supplies'];
+const BROAD_CODES = ['Apparel', 'Home', 'Pet Products'];
 const CATALOG_PATHS = [
   'Health & Household', 'Health & Household › Vitamins', 'Health & Household › Vitamins › Magnesium',
   'Pet Supplies › Cats › Toys', 'Pet Supplies › Dogs › Toys', 'Pet Supplies › Dogs › Toys › Chew Toys',
@@ -222,7 +222,7 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
     expect(err.message).toBe('The product catalog has no departments yet.');
     expect(err.details).toEqual([{ path: 'filters.department', message: 'unknown department' }]);
   });
-  it('a broad category is checked against the crosswalk\'s code list and becomes broadCategory; the scope is untouched (spec 2026-10-12 broad category §9)', async () => {
+  it('a broad category is checked against the crosswalk\'s code list and becomes broadCategory; the scope is untouched (spec 2026-10-14 §7, §10 (arc 9 §9\'s mechanics))', async () => {
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, { filters: { broadCategory: 'Home', department: 'Pet Supplies' } });
     expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies', broadCategory: 'Home' }, { dept: 'Pet Supplies', subtreePaths: [], exactPaths: [], scoped: false });
@@ -230,7 +230,7 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
   });
   it('an unknown broad category fails with the valid codes in the message and the field in details; the list is not read for a search without one', async () => {
     const err = await notAvailable(makeDeps(), { filters: { broadCategory: 'Pets' } });
-    expect(err.message).toBe('"Pets" is not a broad category of the product catalog. Pass one of: Apparel; Home; Pet Supplies.');
+    expect(err.message).toBe('"Pets" is not a broad category of the product catalog. Pass one of: Apparel; Home; Pet Products.');
     expect(err.details).toEqual([{ path: 'filters.broadCategory', message: 'unknown broad category' }]);
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, {});

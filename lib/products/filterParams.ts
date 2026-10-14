@@ -37,7 +37,7 @@ export type ProductFilters = {
   ratioMax: number | null;
   /** One Keepa root department ('Health & Household'): the product's own storefront department, matched at any depth (spec 2026-10-12 §3). */
   dept: string | null;
-  /** One Brand Analytics code ('Home', 'Pet Supplies'): the product's own Brand Analytics category, the code its Keepa category path maps to in ba_category_crosswalk (one per product; spec 2026-10-14 §6). */
+  /** One Brand Analytics code ('Home', 'Pet Products'): the product's own Brand Analytics category, the code its Keepa category path maps to in ba_category_crosswalk (one per product; spec 2026-10-14 §6). */
   broadCategory: string | null;
   /** Leaf picks: each matches the path and everything under it; several combine with OR. */
   leafPaths: string[];

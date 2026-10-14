@@ -276,7 +276,7 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(rules).toContain('current BSR ÷ 30-day average BSR × 100');
     expect(rules).toContain('70 = at least 30 % better');
     expect(rules).toContain('consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword');
-    expect(rules).toContain('inCatalog false: the keywords know the ASIN but there are no product facts (the title may still come from the keyword side; broadCategory is null; usually the category is excluded from enrichment)');
+    expect(rules).toContain('inCatalog false: the keywords know the ASIN but there are no product facts (the title may still come from the keyword side; usually the category is excluded from enrichment; broadCategory is null)');
     expect(rules).not.toContain('every fact is null');
     expect(rules).toContain(`${PRODUCT_PAGE_SIZE} products, page 1 to ${PRODUCT_MAX_PAGE}`);
     expect(rules).toContain(`exact below ${PRODUCT_COUNT_CAP.toLocaleString('en-US')}`);
@@ -296,9 +296,11 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(rules).toContain("filters.department is one of the catalog's storefront departments");
     expect(rules).toContain("not a keyword row's broadCategory");
     expect(rules).toContain("filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory carries it");
-    expect(rules).toContain("the product's own category: the code its Keepa category path maps to, one per product, relearned weekly from the report");
+    expect(rules).toContain("on products it is the product's own category: the code its Keepa category path maps to, one per product, relearned weekly from the weekly Brand Analytics report (null when it has no path or its path is not mapped yet)");
     expect(rules).toContain("get_product_details returns it as product.broadCategory");
-    expect(rules).toContain("A keyword's broadCategory is the category most clicked for that search");
+    expect(rules).toContain("A keyword's broadCategory is the category most clicked for that search, so a product and the keywords it is a top-3 clicked product for usually agree but need not");
+    expect(rules).toContain("An unknown code fails with CATEGORY_NOT_AVAILABLE and the message lists the valid codes");
+    expect(rules).not.toMatch(/broadCategories|several codes|any one matches|most keywords first/);
     expect(rules).toContain('filters.categories is the object search_keywords takes');
     expect(rules).toContain('matches the path and everything under it whatever includeDescendants says');
     expect(rules).toContain('a custom selection matches the paths that custom category stores, exactly');

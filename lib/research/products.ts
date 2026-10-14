@@ -111,7 +111,7 @@ function pathNotAvailable(path: string, at: string): ResearchError {
 }
 
 /**
- * The search's category scope (spec 2026-10-12 §6; the broad category: spec 2026-10-12 broad category §9): the department and the broad category checked
+ * The search's category scope (spec 2026-10-12 §6; the broad category: spec 2026-10-14 §7, §10 (arc 9 §9's mechanics)): the department and the broad category checked
  * against the catalog's department list and the crosswalk's code list (the code travels on the page
  * filters, not the scope);
  * every taxonomy selection as a subtree, whatever includeDescendants says (resolve_categories marks

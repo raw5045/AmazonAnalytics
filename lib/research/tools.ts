@@ -141,7 +141,7 @@ function productDetailsDescription(): string {
     `history.points holds the newest ${PRODUCT_TOOL_HISTORY_POINTS} snapshots, oldest first; first and last are the oldest and newest of the loaded window, for a then-and-now, and pointsTotal counts that window (at most ${PRODUCT_HISTORY_CAP} snapshots).`,
     `keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}, best keyword rank first, each with its slot, click and conversion share percentages, weeksInTop3 and keywordUrl; keywordsTotal counts every keyword, past the cap too.`,
     'weeks in top 3 = consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword (any slot); streakStartedWeek is the first week of that run.',
-    'product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side; broadCategory is null; usually the category is excluded from enrichment) and no history. product.fetched false: in the catalog but not fetched yet, so no product facts or history yet either. NOT_FOUND: no data for that ASIN.',
+    'product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side; usually the category is excluded from enrichment; broadCategory is null) and no history. product.fetched false: in the catalog but not fetched yet, so no product facts or history yet either. NOT_FOUND: no data for that ASIN.',
     'Admin accounts only for now.',
   ].join(' ');
 }

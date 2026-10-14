@@ -64,7 +64,11 @@ const DELISTED: ProductPageFacts = {
   amazonAvailability: null,
 };
 
-/** A catalog row the service has not fetched yet: every fact null, the title from the keyword side. */
+/**
+ * A catalog row the service has not fetched yet: every fact null, the title from the keyword side.
+ * broadCategory is inherited from FULL on purpose (NOT_IN_CATALOG spreads this too): the code stays
+ * set to prove those shapes never show it.
+ */
 const NEVER_FETCHED: ProductPageFacts = {
   ...DELISTED,
   title: 'Magnesium Glycinate Capsules',
@@ -183,6 +187,8 @@ describe('FactsCard — edge states', () => {
     const { container } = render(<FactsCard facts={NEVER_FETCHED} now={NOW} />);
     expect(screen.getByText('Not fetched yet')).toBeInTheDocument();
     expect(screen.queryByText('Brand', { selector: 'dt' })).toBeNull();
+    expect(screen.queryByText('Broad category', { selector: 'dt' })).toBeNull();
+    expect(screen.queryByText('Health & Personal Care')).toBeNull();
     expect(container.querySelector('img')).toBeNull();
     expect(screen.queryByText(/Not in the Keepa catalog/)).toBeNull();
   });

@@ -337,7 +337,7 @@ export const emptyInputSchema = z.strictObject({});
 // Products tools (spec 2026-10-09 §8, §9; admin-only). The search input is the Products page's
 // filter set (lib/products/filters.ts) in a caller's units — US dollars and stars — under names a
 // reader expects; toProductFilters maps it onto ProductFilters (cents, stars × 10, the page's own
-// field names). The three category fields (spec 2026-10-12 §6; broad category spec §9): `department`
+// field names). The three category fields (spec 2026-10-12 §6; spec 2026-10-14 §7, §10 (arc 9 §9's mechanics)): `department`
 // becomes the page's dept, `broadCategory` the page's broadCategory (checked against the crosswalk's
 // code list), `categories` is search_keywords' own object (categoriesSchema above), which
 // lib/research/products.ts resolves into the search's category scope and checks against the product
@@ -388,7 +388,7 @@ const productSearchFiltersSchema = z
       "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not a keyword row's broadCategory. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
     ),
     broadCategory: z.string().trim().min(1).max(PRODUCT_MAX_BROAD_CATEGORY_LENGTH).optional().describe(
-      "One Brand Analytics code, spelled as the Explorer's broad categories ('Home', 'Apparel', 'Biss', 'Pet Products'): the product's own category, the code its Keepa category path maps to (one per product, relearned weekly from the report). Independent of filters.department (the product's Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
+      "One Brand Analytics code, spelled exactly as search_keywords' broadCategory (the Explorer's broad categories) carries it ('Home', 'Apparel', 'Biss', 'Pet Products'): the product's own category, the code its Keepa category path maps to (one per product, relearned weekly from the report). Independent of filters.department (the product's Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
     ),
     categories: categoriesSchema.optional().describe(
       "The object search_keywords takes: selections from resolve_categories (several = OR) and leafPaths. On products a taxonomy selection matches the path and everything under it whatever includeDescendants says (resolve_categories marks keyword-side leaves as having no descendants, but the product catalog files products deeper); a custom selection matches the paths that custom category stores, exactly; leafPaths match exactly. Taxonomy and leaf paths are checked against the product catalog (keyword-side paths almost always exist there); an unknown path or custom id fails with CATEGORY_NOT_AVAILABLE, never an empty page.",
