@@ -275,7 +275,6 @@ describe('assignCodes (spec 2026-10-14 §5.2)', () => {
 
   it('a department under the threshold still decides when it has any vote; one with none gives no row', () => {
     const rows = assignCodes([vote(DOG_TOYS, 'Pet Products', 3)], [DOG_TOYS, `${PET} › Cats`, 'Gift Cards › Restaurants']);
-    // Sorted by path: 'Pet Supplies › Cats' before 'Pet Supplies › Dogs › Toys'.
     expect(rows).toEqual([
       { categoryPath: `${PET} › Cats`, code: 'Pet Products', sourcePath: PET, votes: 3, sharePct: 100 },
       { categoryPath: DOG_TOYS, code: 'Pet Products', sourcePath: PET, votes: 3, sharePct: 100 },
@@ -737,7 +736,7 @@ export async function buildCrosswalk(client: Queryable, week: string): Promise<C
 
 - [ ] **Step 4: Run the tests**
 
-Run: `pnpm vitest run lib/baCategory/buildCrosswalk.test.ts` — Expected: PASS (13 tests).
+Run: `pnpm vitest run lib/baCategory/buildCrosswalk.test.ts` — Expected: PASS (14 tests).
 
 - [ ] **Step 5: Write the tracked script**
 
@@ -2042,7 +2041,9 @@ Fill the Results table below (one docs commit per step is fine), update the arc 
 
 ## Landed shape (deviations from the task texts above; the code is the reference)
 
-- **Task 2:** the plan's test "a department under the threshold still decides…" listed the two rows in the wrong order (the module sorts catalog paths, so `Pet Supplies › Cats` comes before `Pet Supplies › Dogs › Toys`); the implementer fixed the test's expectation, not the module, and the block above now shows the corrected order.
+- **Task 2:** the plan's test "a department under the threshold still decides…" listed the two rows in the wrong order (the module sorts catalog paths, so `Pet Supplies › Cats` comes before `Pet Supplies › Dogs › Toys`); the implementer fixed the test's expectation, not the module, and the block above now shows the corrected order. The spec review's mutation run queued three test-strength items for the nits round (a tie checked in both insertion orders, the `products > 0` guard exercised where it counts, the purity test fed unsorted paths).
+- **Task 3:** Step 4 said 13 tests; the file has 14. With `BA_CROSSWALK_WEEK` unset the script defaults to the Explorer week, which during and right after an import is still the previous week (the phase runs before the summary refresh), so Task 9's one-off and any by-hand run pass the week explicitly.
+- **Task 4:** beyond the task text the implementer extended two older connect-failure chains with the fourth client (otherwise the new phase's connect returned `undefined` and failed soft inside those tests), gave the new describe the sibling's `mockEnqueueWeek` default, and updated the two pool-count comments. Queued for its nits round: a test pinning the crosswalk pool's options like the sibling's, and a human label for `ba_crosswalk_build` in `app/admin/ImportStatusChip.tsx` (`humanPhase()` fell back to the raw name).
 
 ## Self-review (done while writing)
 

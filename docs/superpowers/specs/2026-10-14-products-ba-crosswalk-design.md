@@ -106,7 +106,7 @@ One vote per product (not per keyword row) so a product with 500 keywords does n
 
 **Mixed paths.** Some paths hold products the report files under two codes: `Movies & TV › Movies` is Digital_Video_Download 50 % / Video DVD 44 % (streaming versus disc), `Toys & Games › Dress Up & Pretend Play › Costumes` is Toys 58 % / Apparel 42 %, party packs are Kitchen 51 % / Toys 41 %, cosmetic bags Beauty 44 % / Luggage 36 %. Measured over the 5,196 paths with 20+ votes: 66 % of training products sit in paths with a 90 %+ majority, 21 % in 70–89 %, 10 % in 50–69 %, 3 % in paths with no majority (188 paths, 13,654 products). The rule is the same everywhere: the majority code wins and the minority products take it; `share_pct` records how mixed the path was, so the mixed paths can be listed (`WHERE share_pct < 70`) and judged on real data. A per-product override for products that carry their own report signal is a follow-up (§14), not part of this arc.
 
-`MIN_VOTES = 20`: with 20 votes an 88 % majority is a 17–3 split; lower and single-keyword accidents decide leaves, higher and the backoff loses the fine split the leaf gives (86 % of fetched products match a path with 20+ votes today). A constant with this rationale beside it; not configurable.
+`MIN_VOTES = 20`: with 20 votes an 85 % majority is a 17–3 split; lower and single-keyword accidents decide leaves, higher and the backoff loses the fine split the leaf gives (86 % of fetched products match a path with 20+ votes today). A constant with this rationale beside it; not configurable.
 
 ### 5.3 Stats returned and logged (coded fields only)
 
@@ -114,7 +114,7 @@ One vote per product (not per keyword row) so a product with 500 keywords does n
 
 ### 5.4 The import phase `ba_crosswalk_build`
 
-In `inngest/functions/importFile.ts`, right after `top_asins_build` and before `summary_refresh`, inside `if (!isReplay)`: the same shape as the pair-table phase (own `pg.Pool` max 1, keepalive, error listeners, 30-minute statement timeout, a dedicated client checked out for the build), fail-soft: a failure logs `{ week, stage: 'ba_crosswalk_build', code }` and the import continues with the previous crosswalk in place. Recorded in `import_phase_timings` like every phase (`rows_affected` = paths written).
+In `inngest/functions/importFile.ts`, right after `top_asins_build` and before `summary_refresh`, inside `if (!isReplay)`: the same shape as the pair-table phase (own `pg.Pool` max 1, keepalive, error listeners, 30-minute statement timeout, a dedicated client checked out for the build), fail-soft: a failure logs `{ week, stage: 'connect' | 'build', error, code }` (coded fields only, the shape of the two phases before it) and the import continues with the previous crosswalk in place. Recorded in `import_phase_timings` like every phase (`rows_affected` = paths written).
 
 ### 5.5 The tracked script `scripts/buildBaCrosswalk.ts`
 
