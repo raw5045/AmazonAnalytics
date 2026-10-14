@@ -18,7 +18,7 @@ const VOTE_ROWS = [
 ];
 const PATH_ROWS = [{ path: TOYS }, { path: CATS }, { path: VITAMINS }, { path: GIFT }];
 
-/** Answers by statement head (the first match wins) and records every call in order. */
+/** Answers by statement head (the first match wins, so an override goes before ANSWERS) and records every call in order. */
 function fakeClient(answers: Array<[head: string, answer: { rows?: unknown[]; rowCount?: number; throws?: Error }]> = []) {
   const calls: Array<{ text: string; values?: unknown[] }> = [];
   const client = {
@@ -35,16 +35,21 @@ function fakeClient(answers: Array<[head: string, answer: { rows?: unknown[]; ro
 const ANSWERS: Array<[string, { rows?: unknown[]; rowCount?: number }]> = [
   ['SELECT a.category_path AS path', { rows: VOTE_ROWS }],
   ['SELECT DISTINCT category_path', { rows: PATH_ROWS }],
+  ['SELECT max(week_end_date)', { rows: [{ older: null }] }], // an empty table: no built week
   ['INSERT INTO ba_category_crosswalk', { rowCount: 3 }],
 ];
+/** The read transaction's statement heads, and the write transaction's up to its INSERTs. */
+const READ = ['BEGIN ISOLATION', 'SET LOCAL', 'SET LOCAL', 'SELECT a.category_path', 'SELECT DISTINCT', 'COMMIT'];
+const WRITE_HEAD = ['BEGIN', 'SET LOCAL', 'SET LOCAL', 'LOCK TABLE', 'SELECT max(week_end_date)', 'DELETE FROM'];
 const row = (categoryPath: string, code: string, sourcePath: string, votes: number, sharePct: number): CrosswalkRow => ({ categoryPath, code, sourcePath, votes, sharePct });
+const pool = { totalCount: 0, async query(): Promise<never> { throw new Error('must not run'); } };
 
 describe('votesSql (spec 2026-10-14 §5.1)', () => {
   const q = votesSql(WEEK);
   it("reads the week's slot-1 rows from its year partition, one vote per product (the mode of category #1), joined to the catalog and grouped by path and code", () => {
     expect(q.text).toContain('FROM keyword_weekly_metrics_2026 m');
     expect(q.text).toContain("m.week_end_date = $1::date AND m.top_clicked_product_1_asin ~ '^[A-Z0-9]{10}$' AND m.top_clicked_category_1 IS NOT NULL");
-    expect(q.text).toContain('mode() WITHIN GROUP (ORDER BY m.top_clicked_category_1) AS code');
+    expect(q.text).toContain('mode() WITHIN GROUP (ORDER BY m.top_clicked_category_1 COLLATE "C") AS code');
     expect(q.text).toContain('JOIN asin_products a ON a.asin = v.asin');
     expect(q.text).toContain('WHERE a.category_path IS NOT NULL');
     expect(q.text.trim().endsWith('GROUP BY 1, 2')).toBe(true);
@@ -68,11 +73,12 @@ describe('votesSql (spec 2026-10-14 §5.1)', () => {
 });
 
 describe('computeCrosswalk', () => {
-  it('runs the votes read then the paths read, assigns the codes and counts the stats', async () => {
+  it('runs the votes read then the paths read in one bounded read-only transaction, assigns the codes and counts the stats', async () => {
     const { client, calls, heads } = fakeClient(ANSWERS);
     const { rows, stats } = await computeCrosswalk(client, WEEK);
-    expect(heads()).toEqual(['SELECT a.category_path', 'SELECT DISTINCT']);
-    expect(calls[0].values).toEqual([WEEK]);
+    expect(heads()).toEqual(READ);
+    expect(calls.slice(0, 3).map((c) => c.text)).toEqual(['BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY', "SET LOCAL statement_timeout = '1800s'", "SET LOCAL work_mem = '256MB'"]);
+    expect(calls[3].values).toEqual([WEEK]);
     expect(rows).toEqual([
       row(VITAMINS, 'Health & Personal Care', VITAMINS, 40, 100),
       row(CATS, 'Pet Products', 'Pet Supplies', 32, 94), // no votes of its own: the department decides
@@ -85,10 +91,10 @@ describe('computeCrosswalk', () => {
     await expect(computeCrosswalk(client, '2026/10/10')).rejects.toMatchObject({ name: 'BaCrosswalkError', code: 'ba_crosswalk_bad_date' });
     expect(calls).toHaveLength(0);
   });
-  it('a week with no slot-1 votes is refused (not imported), and the paths read never runs', async () => {
-    const { client, calls } = fakeClient([['SELECT a.category_path AS path', { rows: [] }]]);
+  it('a week with no slot-1 votes is refused (not imported): the paths read never runs and the transaction rolls back', async () => {
+    const { client, heads } = fakeClient([['SELECT a.category_path AS path', { rows: [] }]]);
     await expect(computeCrosswalk(client, WEEK)).rejects.toMatchObject({ code: 'ba_crosswalk_no_votes' });
-    expect(calls).toHaveLength(1);
+    expect(heads()).toEqual(['BEGIN ISOLATION', 'SET LOCAL', 'SET LOCAL', 'SELECT a.category_path', 'ROLLBACK']);
     expect(new BaCrosswalkError('ba_crosswalk_no_votes', 'x').name).toBe('BaCrosswalkError');
   });
 });
@@ -112,36 +118,73 @@ describe('insertSql', () => {
 
 describe('writeCrosswalk', () => {
   const rows = [row(TOYS, 'Pet Products', TOYS, 32, 94), row(CATS, 'Pet Products', 'Pet Supplies', 32, 94), row(VITAMINS, 'Health & Personal Care', VITAMINS, 40, 100)];
-  it('replaces the table in one transaction: BEGIN, TRUNCATE, the INSERTs, COMMIT; returns the rows written', async () => {
-    const { client, heads } = fakeClient([['INSERT INTO ba_category_crosswalk', { rowCount: 3 }]]);
+  const boom = Object.assign(new Error('SECRET'), { code: '23505' });
+  it('replaces the rows in one transaction, under the lock and after the guard; returns the rows written', async () => {
+    const { client, calls, heads } = fakeClient(ANSWERS);
     await expect(writeCrosswalk(client, rows, WEEK)).resolves.toBe(3);
-    expect(heads()).toEqual(['BEGIN', 'TRUNCATE ba_category_crosswalk', 'INSERT INTO', 'COMMIT']);
+    expect(heads()).toEqual([...WRITE_HEAD, 'INSERT INTO', 'COMMIT']);
+    expect(calls.slice(1, 4).map((c) => c.text)).toEqual(["SET LOCAL statement_timeout = '1800s'", "SET LOCAL lock_timeout = '120s'", 'LOCK TABLE ba_category_crosswalk IN SHARE ROW EXCLUSIVE MODE']);
+    expect(calls[4]).toEqual({ text: 'SELECT max(week_end_date) > $1::date AS older FROM ba_category_crosswalk', values: [WEEK] });
+    expect(calls[5].text).toBe('DELETE FROM ba_category_crosswalk');
   });
-  it('chunks the INSERT by WRITE_CHUNK rows', async () => {
+  it('chunks the INSERT by WRITE_CHUNK rows and sums their row counts', async () => {
     expect(WRITE_CHUNK).toBe(10_000);
     const many = Array.from({ length: WRITE_CHUNK + 1 }, (_, i) => row(`P${i}`, 'Home', `P${i}`, 20, 100));
     const { client, calls, heads } = fakeClient([['INSERT INTO ba_category_crosswalk', { rowCount: 1 }]]);
-    await writeCrosswalk(client, many, WEEK);
-    expect(heads()).toEqual(['BEGIN', 'TRUNCATE ba_category_crosswalk', 'INSERT INTO', 'INSERT INTO', 'COMMIT']);
-    expect((calls[2].values as unknown[][])[0]).toHaveLength(WRITE_CHUNK);
-    expect((calls[3].values as unknown[][])[0]).toHaveLength(1);
+    await expect(writeCrosswalk(client, many, WEEK)).resolves.toBe(2);
+    expect(heads()).toEqual([...WRITE_HEAD, 'INSERT INTO', 'INSERT INTO', 'COMMIT']);
+    const inserts = calls.filter((c) => c.text.startsWith('INSERT INTO'));
+    expect((inserts[0].values as unknown[][])[0]).toHaveLength(WRITE_CHUNK);
+    expect((inserts[1].values as unknown[][])[0]).toHaveLength(1);
   });
   it('a failing INSERT rolls back and rethrows the error unchanged', async () => {
-    const boom = Object.assign(new Error('SECRET'), { code: '23505' });
     const { client, heads } = fakeClient([['INSERT INTO ba_category_crosswalk', { throws: boom }]]);
     await expect(writeCrosswalk(client, rows, WEEK)).rejects.toBe(boom);
-    expect(heads()).toEqual(['BEGIN', 'TRUNCATE ba_category_crosswalk', 'INSERT INTO', 'ROLLBACK']);
+    expect(heads()).toEqual([...WRITE_HEAD, 'INSERT INTO', 'ROLLBACK']);
+  });
+  it('a failing ROLLBACK does not mask the original error', async () => {
+    const { client } = fakeClient([['INSERT INTO ba_category_crosswalk', { throws: boom }], ['ROLLBACK', { throws: new Error('connection gone') }]]);
+    await expect(writeCrosswalk(client, rows, WEEK)).rejects.toBe(boom);
+  });
+  it('a lock wait past lock_timeout (55P03) rolls back before anything is deleted', async () => {
+    const timeout = Object.assign(new Error('SECRET'), { code: '55P03' });
+    const { client, heads } = fakeClient([['LOCK TABLE', { throws: timeout }]]);
+    await expect(writeCrosswalk(client, rows, WEEK)).rejects.toBe(timeout);
+    expect(heads()).toEqual(['BEGIN', 'SET LOCAL', 'SET LOCAL', 'LOCK TABLE', 'ROLLBACK']);
+  });
+  it('refuses a week older than the built one, before anything is deleted', async () => {
+    const { client, heads } = fakeClient([['SELECT max(week_end_date)', { rows: [{ older: true }] }]]);
+    await expect(writeCrosswalk(client, rows, WEEK)).rejects.toMatchObject({ name: 'BaCrosswalkError', code: 'ba_crosswalk_older_than_built' });
+    expect(heads()).toEqual(['BEGIN', 'SET LOCAL', 'SET LOCAL', 'LOCK TABLE', 'SELECT max(week_end_date)', 'ROLLBACK']);
+  });
+  it('rebuilds the built week (or writes a newer one)', async () => {
+    const { client, heads } = fakeClient([['SELECT max(week_end_date)', { rows: [{ older: false }] }], ...ANSWERS]);
+    await expect(writeCrosswalk(client, rows, WEEK)).resolves.toBe(3);
+    expect(heads()).toEqual([...WRITE_HEAD, 'INSERT INTO', 'COMMIT']);
+  });
+  it('refuses a Pool before any query', async () => {
+    await expect(writeCrosswalk(pool, rows, WEEK)).rejects.toMatchObject({ code: 'ba_crosswalk_bad_client' });
   });
 });
 
 describe('buildCrosswalk', () => {
   it('refuses a Pool before any query', async () => {
-    const pool = { totalCount: 0, async query() { throw new Error('must not run'); } };
     await expect(buildCrosswalk(pool, WEEK)).rejects.toMatchObject({ code: 'ba_crosswalk_bad_client' });
   });
-  it('computes, writes, analyzes (best-effort) and returns the stats', async () => {
-    const { client, heads } = fakeClient([...ANSWERS, ['ANALYZE', { throws: Object.assign(new Error('late'), { code: '57014' }) }]]);
+  it('computes, writes, vacuums (best-effort) and returns the stats', async () => {
+    const { client, heads } = fakeClient([...ANSWERS, ['VACUUM', { throws: Object.assign(new Error('late'), { code: '57014' }) }]]);
     await expect(buildCrosswalk(client, WEEK)).resolves.toEqual({ week: WEEK, paths: 3, direct: 2, backedOff: 1, uncoded: 1, trainingProducts: 72, codes: 2 });
-    expect(heads()).toEqual(['SELECT a.category_path', 'SELECT DISTINCT', 'BEGIN', 'TRUNCATE ba_category_crosswalk', 'INSERT INTO', 'COMMIT', 'ANALYZE ba_category_crosswalk']);
+    expect(heads()).toEqual([...READ, ...WRITE_HEAD, 'INSERT INTO', 'COMMIT', 'VACUUM (ANALYZE)']);
+  });
+  it('writes nothing when the compute fails', async () => {
+    const { client, heads } = fakeClient([['SELECT a.category_path AS path', { rows: [] }]]);
+    await expect(buildCrosswalk(client, WEEK)).rejects.toMatchObject({ code: 'ba_crosswalk_no_votes' });
+    expect(heads()).toEqual(['BEGIN ISOLATION', 'SET LOCAL', 'SET LOCAL', 'SELECT a.category_path', 'ROLLBACK']);
+  });
+  it('a failed write skips the VACUUM and rethrows', async () => {
+    const boom = Object.assign(new Error('SECRET'), { code: '23505' });
+    const { client, heads } = fakeClient([['INSERT INTO ba_category_crosswalk', { throws: boom }], ...ANSWERS]);
+    await expect(buildCrosswalk(client, WEEK)).rejects.toBe(boom);
+    expect(heads()).toEqual([...READ, ...WRITE_HEAD, 'INSERT INTO', 'ROLLBACK']);
   });
 });
