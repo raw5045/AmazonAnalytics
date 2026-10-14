@@ -12,22 +12,25 @@
  *    the index assertion, and the largest one planned and timed only (its plan may use the sort index
  *    instead; both are correct);
  *  - the broad-category filter (spec 2026-10-14 §6): the product's path must be one of the code's paths
- *    in ba_category_crosswalk. Nine cases, placed before the department and leaf cases (their picks scan
- *    the whole catalog and would warm what these time) and ordered cold first: the code with the most
- *    paths plans on ba_category_crosswalk_code_idx; the code list statement (BROAD_CATEGORY_LIST_SQL,
- *    imported) runs under a 5 s cold bound and matches a distinct count; loadProduct's facts statement
- *    carries the code of the sampled ASIN's path (checked against an independent lookup); the code with
- *    the fewest paths probes asin_products_category_path_idx and never walks the sold sort index; and five
- *    that stay under the cap: a code with a mismatched department (Pet Products in Tools & Home
- *    Improvement: the planner multiplies the two selectivities as if independent and may walk a sort
- *    index across the catalog for matches that barely exist, so it runs before any case that reads Pet
- *    Products' own products), a code with its department (Pet Products in Pet Supplies), the code with the
- *    most paths with a leaf pick (inside the leaf), and, last, the two picks that join the crosswalk to the
- *    catalog: the code with the most paths per sellable product (the planner's worst case: many paths,
- *    few products) and the code with the most products per path (few large paths: a path-driven plan reads
- *    all their products before sorting). Every broad search has its rows and count statements planned
- *    (both plans printed), timed apart under a local cap of twice the page's, re-run with EXPLAIN
- *    (ANALYZE, BUFFERS), and every row of its page checked to map to the code;
+ *    in ba_category_crosswalk. Ten cases, placed before the department and leaf cases (their picks scan
+ *    the whole catalog and would warm what these time) and ordered cold first: the code list statement
+ *    (BROAD_CATEGORY_LIST_SQL, imported; it reads only the crosswalk) runs under a 5 s cold bound and
+ *    matches a distinct count; the code with the most paths plans on ba_category_crosswalk_code_idx and
+ *    its path count is printed; loadProduct's facts statement carries the code of the sampled ASIN's path
+ *    (checked against an independent lookup); the code with the fewest paths probes
+ *    asin_products_category_path_idx and never walks the sold sort index; and six that stay under the cap:
+ *    a code with a mismatched department (Pet Products in Tools & Home Improvement: the planner
+ *    multiplies the two selectivities as if independent and may walk a sort index across the catalog for
+ *    matches that barely exist, so it runs before any case that reads Pet Products' own products, and its
+ *    EXPLAIN ANALYZE must touch under 200,000 blocks, whatever the cache), the code with the most paths
+ *    with its own department (the same independence assumption underestimates that overlap), a code with
+ *    its department (Pet Products in Pet Supplies), the code with the most paths with a leaf pick (inside
+ *    the leaf), and, last, the two picks that join the crosswalk to the catalog: the code with the most
+ *    paths per sellable product (the planner's worst case: many paths, few products) and the code with
+ *    the most products per path (few large paths: a path-driven plan reads all their products before
+ *    sorting). Every broad search has its rows and count statements planned (both plans printed), timed
+ *    apart under a local cap of twice the page's, re-run with EXPLAIN (ANALYZE, BUFFERS), and every row
+ *    of its page checked to map to the code;
  *  - the option lists: the department and distinct-path counts among the rows the page can show; the
  *    estimated size of the largest per-department cache entry, which must stay well under Next's 2 MB
  *    limit; and the plan of the per-department list statement for the largest department, printed.
@@ -53,7 +56,7 @@
  *    has no week they are skipped with a note ("reverse table not built yet");
  *  - migration 0053 applied (checked up front: the file fails at once when ba_category_crosswalk is
  *    missing) and the crosswalk built once (scripts/buildBaCrosswalk.ts, spec 2026-10-14 §13 step 2):
- *    until it holds a row the nine broad cases skip with a note ("crosswalk not built");
+ *    until it holds a row the ten broad cases skip with a note ("crosswalk not built");
  *  - a custom category with stored paths (any account's; only its paths are read) for the two
  *    custom-category cases: when there is none they are skipped ("no custom category to test with");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
@@ -64,6 +67,12 @@
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/baCrosswalk.test.ts --disableConsoleIntercept
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts --disableConsoleIntercept
+ * In the documented run (spec 2026-10-14 §13: step 2's build, then this file) the catalog is not cold either:
+ * the build's catalog-paths read scans the whole heap minutes earlier. The risky cases (the mismatched
+ * department above all) are therefore judged by the work their EXPLAIN (ANALYZE, BUFFERS) re-run prints
+ * (blocks hit + read, the sort-index node's rows), which does not depend on the cache, not by their times
+ * alone. For the coldest index reading, run the mismatched-department case alone first:
+ *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "mismatched department" --disableConsoleIntercept
  */
 import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
@@ -129,6 +138,9 @@ function outline(node: PlanNode, depth = 0): string[] {
   const line = [node['Node Type'], node['Scan Direction'], on, `rows=${node['Plan Rows']}`, actual].filter(Boolean).join(' ');
   return [`${'  '.repeat(depth)}${line}`, ...(node.Plans ?? []).flatMap((child) => outline(child, depth + 1))];
 }
+
+/** What explainAnalyze reports for a statement it ran: the outline (actual rows and loops), the rows of the top node, the server's planning + execution seconds, and the shared blocks the whole statement hit and read. */
+interface AnalyzedPlan { lines: string[]; rows: number; seconds: number; hit: number; read: number }
 
 /** What every keyword row must carry, whatever the ASIN. */
 function expectKeywordRows(result: ProductKeywordsResult): void {
@@ -197,7 +209,10 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     return { root: plan[0].Plan, lines: outline(plan[0].Plan), seconds };
   }
 
-  /** An ASIN for the loader cases: the first row of the owner's search, else of the default view. */
+  /**
+   * An ASIN for the loader cases: the first row of the owner's search, else of the default view. The owner's-search case records its
+   * first row in `sample`, so this runs that search again only when that case did not run or matched nothing.
+   */
   async function sampleAsin(): Promise<{ asin: string; from: string }> {
     if (sample) return sample;
     for (const [from, filters] of [['the owner search', OWNER_SEARCH], ['the default view', PRODUCT_DEFAULTS]] as const) {
@@ -225,7 +240,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
    * analyzes the table), else a count over the 24k-row table. Neither touches the catalog, so the search timed next is not
    * warmed by the pick.
    */
-  async function largestCode(): Promise<string> {
+  async function codeWithMostPaths(): Promise<string> {
     const stat = await client.query<{ v: string | null }>(
       "SELECT (most_common_vals::text::text[])[1] AS v FROM pg_stats WHERE schemaname = current_schema() AND tablename = 'ba_category_crosswalk' AND attname = 'code'",
     );
@@ -250,7 +265,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
    * the top node produced, and the blocks it hit in and read into the shared buffers (reads = misses in shared buffers; Neon's local
    * file cache may still serve them). The outline carries each node's actual rows and loops.
    */
-  async function explainAnalyze(q: SqlStatement): Promise<{ lines: string[]; rows: number; seconds: number; hit: number; read: number }> {
+  async function explainAnalyze(q: SqlStatement): Promise<AnalyzedPlan> {
     const res = await client.query<{ 'QUERY PLAN': unknown }>(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${q.text}`, q.values);
     const raw = res.rows[0]['QUERY PLAN'];
     const plan = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Array<{ Plan: PlanNode; 'Planning Time': number; 'Execution Time': number }>;
@@ -273,9 +288,10 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
    * whose loop counts tell a probe of the crosswalk per candidate (a nested-loop walk of the sort index) from one read of the
    * code's paths (the path-set-first plan), which a plain plan outline cannot; the local cap stays on through that re-run, so a
    * bad plan cannot outlive the case there either. Last, every row of the page is checked to map to the code, whatever plan
-   * served it.
+   * served it. It returns the planned outline, the page's rows and the re-run's result (`analyzed`), whose blocks hit + read are a
+   * verdict that does not depend on the cache.
    */
-  async function broadSearch(code: string, note?: string, scope: ProductCategoryScope = EMPTY_CATEGORY_SCOPE): Promise<{ lines: string[]; rows: ProductSummaryRow[] }> {
+  async function broadSearch(code: string, note?: string, scope: ProductCategoryScope = EMPTY_CATEGORY_SCOPE): Promise<{ lines: string[]; rows: ProductSummaryRow[]; analyzed: AnalyzedPlan }> {
     const cap = PRODUCT_READ_TIMEOUT_MS / 1000;
     const filters: ProductFilters = { ...PRODUCT_DEFAULTS, broadCategory: code };
     const q = productSearchSql(filters, scope);
@@ -338,7 +354,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     expect(without.rows[0].n, `rows of the "${code}" page whose path does not map to the code`).toBe(0);
     expect(seconds.rows, `rows statement of the "${code}" search (the page's cap is ${cap}s)`).toBeLessThan(cap);
     expect(seconds.count, `count statement of the "${code}" search (the page's cap is ${cap}s)`).toBeLessThan(cap);
-    return { lines: planned.lines, rows: result.rows };
+    return { lines: planned.lines, rows: result.rows, analyzed };
   }
 
   it(
@@ -372,25 +388,12 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         const seconds = (performance.now() - started) / 1000;
         console.log(`[productsQueries] owner search ran in ${seconds.toFixed(2)}s: ${result.rows.length} rows on page ${result.page}, ${result.total}${result.totalIsCapped ? '+' : ''} matches`);
         if (result.rows.length === 0) console.log('[productsQueries] the owner search matched nothing; the loader cases fall back to the default view.');
+        // The loader cases sample this page's first row (sampleAsin reads `sample` first), so they do not run the search, and its count, again.
+        if (result.rows[0]) sample = { asin: result.rows[0].asin, from: 'the owner search' };
 
         expect(result.rows.length, 'rows on the page').toBeLessThanOrEqual(PRODUCT_PAGE_SIZE);
         for (const row of result.rows) expect(row.asin, 'asin of a result row').toHaveLength(10);
         expect(result.total, 'total matches').toBeGreaterThanOrEqual(result.rows.length);
-      });
-    },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
-    'the code with the most paths under the default sort plans on the crosswalk index and every row maps to the code',
-    async (ctx) => {
-      await inReadOnlyTransaction(async () => {
-        await skipUnlessCodes(ctx);
-        const code = await largestCode();
-        const { lines, rows } = await broadSearch(code);
-        expect(lines.join('\n'), `the plan of the "${code}" search`).toContain(CROSSWALK_INDEX);
-        expect(rows.length, `rows on the "${code}" page`).toBeGreaterThanOrEqual(1);
-        expect(rows.length, `rows on the "${code}" page`).toBeLessThanOrEqual(PRODUCT_PAGE_SIZE);
       });
     },
     TEST_TIMEOUT_MS,
@@ -414,6 +417,24 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it(
+    'the code with the most paths under the default sort plans on the crosswalk index and every row maps to the code',
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        await skipUnlessCodes(ctx);
+        const code = await codeWithMostPaths();
+        const { lines, rows } = await broadSearch(code);
+        // The code's size, from the crosswalk alone (no catalog read), for the Results table ("most paths: X (N)").
+        const size = await client.query<{ n: number }>('SELECT count(*)::int AS n FROM ba_category_crosswalk WHERE code = $1', [code]);
+        console.log(`[productsQueries] code with the most paths "${code}": ${size.rows[0].n} paths`);
+        expect(lines.join('\n'), `the plan of the "${code}" search`).toContain(CROSSWALK_INDEX);
+        expect(rows.length, `rows on the "${code}" page`).toBeGreaterThanOrEqual(1);
+        expect(rows.length, `rows on the "${code}" page`).toBeLessThanOrEqual(PRODUCT_PAGE_SIZE);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
     "loadProduct carries the code of the sampled ASIN's path, as an independent lookup of the crosswalk gives it",
     async (ctx) => {
       await inReadOnlyTransaction(async () => {
@@ -429,6 +450,8 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
           [asin],
         );
         console.log(`[productsQueries] ${asin} (${from}): path ${facts?.categoryPath ?? 'none'} → broadCategory ${facts?.broadCategory ?? 'null'} in ${seconds.toFixed(3)}s`);
+        // A path with no crosswalk row reads null on both sides of the check below; say so, so that a pass on null = null is not mistaken for a mapped one.
+        if ((facts?.categoryPath ?? null) !== null && (expected.rows[0]?.code ?? null) === null) console.log(`[productsQueries] ${asin}: path present but unmapped (the check compared null with null)`);
         expect(facts, `facts of ${asin}`).not.toBeNull();
         expect(facts?.broadCategory ?? null, `the code of ${asin}`).toBe(expected.rows[0]?.code ?? null);
         expect(seconds, `the facts read of ${asin}`).toBeLessThan(PRODUCT_READ_TIMEOUT_MS / 1000);
@@ -451,7 +474,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         expect(plan, `the plan of the "${code}" search must not walk the sold sort index`).not.toContain('asin_products_monthly_sold_idx');
         const products = await productsOf(code);
         console.log(`[productsQueries] "${code}": ${products} sellable products`);
-        expect(rows.length, `rows on the page of "${code}"`).toBeLessThanOrEqual(Math.max(products, 0));
+        expect(rows.length, `rows on the page of "${code}"`).toBeLessThanOrEqual(products);
       });
     },
     TEST_TIMEOUT_MS,
@@ -465,7 +488,10 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         // The planner multiplies the code's and the department's selectivities as if they were independent, so for a code that barely
         // occurs in the department it may walk a sort index across the catalog looking for matches that hardly exist: the likeliest cold
         // case to pass the page's cap, so it runs before the cases that read the catalog (any that reads Pet Products' own products, and
-        // the two picks that join the crosswalk to it); the code picks above it read only the crosswalk.
+        // the two picks that join the crosswalk to it); the code picks above it read only the crosswalk. The three searches executed
+        // above it (the owner's, the largest code's and the fewest-paths code's) read the catalog too, and in the documented run the build
+        // of spec §13 step 2 scanned the whole heap minutes earlier, so the verdict is the work the EXPLAIN ANALYZE re-run prints (the
+        // blocks checked at the end), not the time. For the coldest index reading run this case alone first (-t "mismatched department").
         const present = await client.query<{ pets: boolean; tools: boolean }>(
           `SELECT EXISTS (SELECT 1 FROM ba_category_crosswalk WHERE code = 'Pet Products') AS pets,
                   EXISTS (SELECT 1 FROM asin_products WHERE in_scope AND starts_with(category_path, 'Tools & Home Improvement › ')) AS tools`,
@@ -474,11 +500,44 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
           console.log(`[productsQueries] ${present.rows[0]?.pets ? 'no path under Tools & Home Improvement' : 'no Pet Products code'}: the mismatched-department case is skipped.`);
           return ctx.skip('no Pet Products code or no path under Tools & Home Improvement');
         }
-        const scope: ProductCategoryScope = { dept: 'Tools & Home Improvement', subtreePaths: [], exactPaths: [], scoped: false };
-        const { rows } = await broadSearch('Pet Products', 'with a mismatched department', scope);
+        const scope = pageCategoryScope({ ...PRODUCT_DEFAULTS, dept: 'Tools & Home Improvement' }, []);
+        const { rows, analyzed } = await broadSearch('Pet Products', 'with a mismatched department', scope);
         // An empty page is a valid answer here: this case asserts the times (inside broadSearch) and the department of every row, and prints the plans.
         console.log(`[productsQueries] Pet Products in Tools & Home Improvement: the page holds ${rows.length} rows`);
         for (const r of rows) expect(r.categoryPath === 'Tools & Home Improvement' || r.categoryPath?.startsWith('Tools & Home Improvement › '), `department of ${r.asin}`).toBe(true);
+        // The cache-independent verdict. A walk of the sold index across the whole catalog touches about one block per product with the
+        // badge (hundreds of thousands of blocks); a department- or path-driven plan touches tens of thousands. The bound is to be
+        // recalibrated from the numbers printed above (shared blocks hit + read) at the first run.
+        expect(analyzed.hit + analyzed.read, 'blocks the mismatched search touched (cache-independent)').toBeLessThan(200_000);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'the code with the most paths, with its own department (picked from the crosswalk), stays under the cap and inside the department',
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        await skipUnlessCodes(ctx);
+        // The planner multiplies the code's and the department's selectivities as if they were independent and underestimates this
+        // overlap (most of the code's products sit in its own department), which pushes it toward reading every product of the code in
+        // the department before the top-N sort. Picked from the crosswalk alone (no catalog read), so the pick does not warm the search.
+        const code = await codeWithMostPaths();
+        const picked = await client.query<{ dept: string; paths: number }>(
+          "SELECT split_part(category_path, ' › ', 1) AS dept, count(*)::int AS paths FROM ba_category_crosswalk WHERE code = $1 GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1",
+          [code],
+        );
+        const own = picked.rows[0];
+        if (!own) {
+          console.log(`[productsQueries] "${code}" has no path in the crosswalk: the own-department case is skipped.`);
+          return ctx.skip(`no crosswalk path for "${code}"`);
+        }
+        const { dept, paths } = own;
+        console.log(`[productsQueries] "${code}": its own department is "${dept}" (${paths} of its paths)`);
+        const { rows } = await broadSearch(code, 'with its own department', pageCategoryScope({ ...PRODUCT_DEFAULTS, dept }, []));
+        console.log(`[productsQueries] "${code}" in "${dept}": ${rows.length} rows on the page`);
+        expect(rows.length, `rows of "${code}" in "${dept}"`).toBeGreaterThanOrEqual(1);
+        for (const r of rows) expect(r.categoryPath === dept || r.categoryPath?.startsWith(`${dept} › `), `department of ${r.asin}`).toBe(true);
       });
     },
     TEST_TIMEOUT_MS,
@@ -496,7 +555,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
           console.log('[productsQueries] no Pet Supplies path maps to Pet Products: the department case is skipped.');
           return ctx.skip('no Pet Products path under Pet Supplies');
         }
-        const scope: ProductCategoryScope = { dept: 'Pet Supplies', subtreePaths: [], exactPaths: [], scoped: false };
+        const scope = pageCategoryScope({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies' }, []);
         const { rows } = await broadSearch('Pet Products', 'with the Pet Supplies department', scope);
         console.log(`[productsQueries] Pet Products in Pet Supplies: ${rows.length} rows on the page`);
         expect(rows.length).toBeGreaterThanOrEqual(1);
@@ -511,19 +570,25 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     async (ctx) => {
       await inReadOnlyTransaction(async () => {
         await skipUnlessCodes(ctx);
-        // Picked from the crosswalk alone (no catalog read), so the pick does not warm the timed search.
-        const code = await largestCode();
+        // Picked from the crosswalk alone (no catalog read), so the pick does not warm the timed search. It runs after the department
+        // cases, so the pages it reads are warm (hence the note on its search).
+        const code = await codeWithMostPaths();
         const picked = await client.query<{ category_path: string }>(
           `SELECT category_path FROM ba_category_crosswalk WHERE code = $1 AND source_path = category_path AND category_path LIKE '% › % › %'
            ORDER BY votes DESC, category_path LIMIT 1`,
           [code],
         );
         const leaf = picked.rows[0]?.category_path;
-        if (!leaf) return ctx.skip(`no self-decided path of "${code}" three levels deep`);
-        const { rows } = await broadSearch(code, `with the leaf "${leaf}"`, pageCategoryScope({ ...PRODUCT_DEFAULTS, leafPaths: [leaf] }, []));
+        if (!leaf) {
+          console.log(`[productsQueries] no self-decided path of "${code}" three levels deep: the leaf case is skipped.`);
+          return ctx.skip(`no self-decided path of "${code}" three levels deep`);
+        }
+        const { rows } = await broadSearch(code, 'warm (after the department cases)', pageCategoryScope({ ...PRODUCT_DEFAULTS, leafPaths: [leaf] }, []));
         console.log(`[productsQueries] "${code}" within "${leaf}": ${rows.length} rows on the page`);
         // The code's size: a join over all its products, so it runs here, after the timed reads of this case and of the mismatched-department case above, not in the first case.
         console.log(`[productsQueries] code with the most paths "${code}": ${await productsOf(code)} sellable products`);
+        // A self-decided path has 20+ training products at or below it, so its page should not be empty.
+        expect(rows.length, `rows of "${code}" inside the leaf "${leaf}"`).toBeGreaterThanOrEqual(1);
         for (const r of rows) expect(r.categoryPath === leaf || r.categoryPath?.startsWith(`${leaf} › `), `${r.asin} under ${leaf}`).toBe(true);
       });
     },

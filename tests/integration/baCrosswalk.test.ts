@@ -12,12 +12,14 @@
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/baCrosswalk.test.ts --disableConsoleIntercept
  * Preconditions: migration 0053 applied (the table may be empty: only kwm and the catalog are read);
  * the Explorer week imported; prefer a quiet hour (the votes read aggregates the week's slot-1 rows of
- * the kwm partition: minutes cold; the time is printed beside the first build's, Task 9 step 2).
+ * the kwm partition: minutes cold); compare it with the first build's time (Task 9 step 2). The plans
+ * come first: the EXPLAIN case runs before the compute, so the votes plan is printed before a read that
+ * cannot be cancelled starts.
  *
  * Cancellation: computeCrosswalk's own transaction sets statement_timeout (1800 s) and work_mem but no
- * client_connection_check_interval, so a Ctrl-C, a kill or the 10-minute test timeout during the votes
- * read does not stop that statement: it keeps running on the server up to its 1800 s limit. The checks and
- * EXPLAINs after it run in the wrapper, which carries the 10 s connection check and a 300 s timeout.
+ * client_connection_check_interval, so a Ctrl-C or a kill during the votes read does not stop that
+ * statement: it keeps running on the server up to its 1800 s limit. The checks and EXPLAINs run in the
+ * wrapper, which carries the 10 s connection check and a 300 s timeout.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
@@ -26,6 +28,7 @@ import { MIN_VOTES, prefixesOf } from '@/lib/baCategory/assignCodes';
 
 const RUN = !!process.env.RUN_INTEGRATION;
 const TEST_TIMEOUT_MS = 10 * 60_000;
+const COMPUTE_TEST_TIMEOUT_MS = 31 * 60_000; // above computeCrosswalk's own 1800 s statement_timeout
 const HOOK_TIMEOUT_MS = 2 * 60_000;
 const TOILET_PAPER = 'Health & Household › Household Supplies › Tissues, Toilet Paper & Sprays › Toilet Paper';
 
@@ -61,12 +64,33 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
     try {
       await client.query("SET LOCAL statement_timeout = '300s'");
       await client.query("SET LOCAL client_connection_check_interval = '10s'");
+      // The compute's own work_mem, so the EXPLAINs show the compute's own plans.
       await client.query("SET LOCAL work_mem = '256MB'");
       await fn();
     } finally {
       await client.query('ROLLBACK').catch(() => undefined);
     }
   }
+
+  // First on purpose: planning is cheap, and the plans print before the compute starts a read that cannot be cancelled.
+  it(
+    'the two statements plan on the partition and the catalog (plans printed, not executed)',
+    async () => {
+      await inReadOnlyTransaction(async () => {
+        const votes = votesSql(week);
+        const votesPlan = await client.query<{ 'QUERY PLAN': string }>(`EXPLAIN (FORMAT TEXT) ${votes.text}`, votes.values);
+        const votesLines = votesPlan.rows.map((r) => r['QUERY PLAN']);
+        console.log(`[baCrosswalk] votes plan:\n${votesLines.join('\n')}`);
+        expect(votesLines.join('\n')).toContain(`keyword_weekly_metrics_${week.slice(0, 4)}`);
+        expect(votesLines.join('\n')).toContain('asin_products');
+        const pathsPlan = await client.query<{ 'QUERY PLAN': string }>(`EXPLAIN (FORMAT TEXT) ${CATALOG_PATHS_SQL}`);
+        const pathsLines = pathsPlan.rows.map((r) => r['QUERY PLAN']);
+        console.log(`[baCrosswalk] paths plan:\n${pathsLines.join('\n')}`);
+        expect(pathsLines.join('\n')).toContain('asin_products');
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
 
   it(
     'computes the Explorer week: each catalog path at most once, sources are the path or an ancestor, shares in range, coverage, the two known paths',
@@ -107,6 +131,13 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
         console.log(`[baCrosswalk] sellable products with a path: ${total}; decided by their own path ${((100 * direct) / total).toFixed(1)}%; without a code ${((100 * uncoded) / total).toFixed(2)}%`);
         expect(direct / total, 'share of sellable products decided by their own path').toBeGreaterThanOrEqual(0.8);
         expect(uncoded / total, 'share of sellable products without a code').toBeLessThan(0.01);
+        // The mixed paths (spec §5.2: the winner holds under 70 % of the votes): the per-product override of spec §14 stands or falls with
+        // how many sellable products sit in them.
+        const mixed = rows.filter((r) => r.sharePct < 70);
+        const mixedPaths = new Set(mixed.map((r) => r.categoryPath));
+        let mixedProducts = 0;
+        for (const w of weights.rows) if (mixedPaths.has(w.category_path)) mixedProducts += w.n;
+        console.log(`[baCrosswalk] mixed paths (share < 70 %): ${mixed.length} paths, ${mixedProducts} sellable products (${((100 * mixedProducts) / total).toFixed(1)} %)`);
         // Two known paths (spec §2).
         const toilet = byPath.get(TOILET_PAPER);
         console.log(`[baCrosswalk] toilet paper: ${JSON.stringify(toilet)}`);
@@ -128,25 +159,6 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
         expect(petMapped / petTotal, 'share of Pet Supplies products in a path mapped to Pet Products').toBeGreaterThanOrEqual(0.8);
       });
     },
-    TEST_TIMEOUT_MS,
-  );
-
-  it(
-    'the two statements plan on the partition and the catalog (plans printed, not executed)',
-    async () => {
-      await inReadOnlyTransaction(async () => {
-        const votes = votesSql(week);
-        const votesPlan = await client.query<{ 'QUERY PLAN': string }>(`EXPLAIN (FORMAT TEXT) ${votes.text}`, votes.values);
-        const votesLines = votesPlan.rows.map((r) => r['QUERY PLAN']);
-        console.log(`[baCrosswalk] votes plan:\n${votesLines.slice(0, 16).join('\n')}`);
-        expect(votesLines.join('\n')).toContain(`keyword_weekly_metrics_${week.slice(0, 4)}`);
-        expect(votesLines.join('\n')).toContain('asin_products');
-        const pathsPlan = await client.query<{ 'QUERY PLAN': string }>(`EXPLAIN (FORMAT TEXT) ${CATALOG_PATHS_SQL}`);
-        const pathsLines = pathsPlan.rows.map((r) => r['QUERY PLAN']);
-        console.log(`[baCrosswalk] paths plan:\n${pathsLines.slice(0, 8).join('\n')}`);
-        expect(pathsLines.join('\n')).toContain('asin_products');
-      });
-    },
-    TEST_TIMEOUT_MS,
+    COMPUTE_TEST_TIMEOUT_MS,
   );
 });
