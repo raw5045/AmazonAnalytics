@@ -22,7 +22,7 @@
  *    a code with a mismatched department (Pet Products in Tools & Home Improvement: the planner
  *    multiplies the two selectivities as if independent and may walk a sort index across the catalog for
  *    matches that barely exist, so it runs before any case that reads Pet Products' own products, and its
- *    EXPLAIN ANALYZE must touch under 200,000 blocks, whatever the cache), the code with the most paths
+ *    EXPLAIN ANALYZE must touch under 400,000 buffer accesses, whatever the cache), the code with the most paths
  *    with its own department (the same independence assumption underestimates that overlap), a code with
  *    its department (Pet Products in Pet Supplies), the code with the most paths with a leaf pick (inside
  *    the leaf), and, last, the two picks that join the crosswalk to the catalog: the code with the most
@@ -505,10 +505,13 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         // An empty page is a valid answer here: this case asserts the times (inside broadSearch) and the department of every row, and prints the plans.
         console.log(`[productsQueries] Pet Products in Tools & Home Improvement: the page holds ${rows.length} rows`);
         for (const r of rows) expect(r.categoryPath === 'Tools & Home Improvement' || r.categoryPath?.startsWith('Tools & Home Improvement › '), `department of ${r.asin}`).toBe(true);
-        // The cache-independent verdict. A walk of the sold index across the whole catalog touches about one block per product with the
-        // badge (hundreds of thousands of blocks); a department- or path-driven plan touches tens of thousands. The bound is to be
-        // recalibrated from the numbers printed above (shared blocks hit + read) at the first run.
-        expect(analyzed.hit + analyzed.read, 'blocks the mismatched search touched (cache-independent)').toBeLessThan(200_000);
+        // The cache-independent verdict, in buffer accesses (EXPLAIN's shared blocks hit + read count every access, not distinct
+        // blocks). Measured 2026-10-14: the sold index holds 768,076 entries with the badge, so a walk across the catalog that finds
+        // almost nothing fetches at least one heap block per entry (780,000+ accesses); Tools & Home Improvement holds 63,590 rows
+        // (38,650 in the default view), so a department-driven plan with a hashed crosswalk touches about 65,000–130,000, a nested-loop
+        // probe per row up to ~260,000, and a crosswalk-driven plan about Pet Products' own products (~50,000). The bound sits between
+        // the two shapes; recalibrate it from the numbers printed above if the catalog changes shape.
+        expect(analyzed.hit + analyzed.read, 'buffer accesses of the mismatched search (cache-independent)').toBeLessThan(400_000);
       });
     },
     TEST_TIMEOUT_MS,
