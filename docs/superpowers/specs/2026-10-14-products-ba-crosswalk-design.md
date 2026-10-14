@@ -134,6 +134,8 @@ a.category_path IN (SELECT x.category_path FROM ba_category_crosswalk x WHERE x.
 
 AND-ed with everything else (department, leaf picks, custom categories, the numeric filters). A semi-join against at most a few hundred paths from `ba_category_crosswalk_code_idx`; `asin_products_category_path_idx` (text_pattern_ops) serves equality probes. The integration test records the plans for the largest code (Apparel), a mid code and the smallest code, each alone and with a department, cold first, and bounds every statement under the page's 30 s cap. Documented fallback if a cold case misbehaves: fetch the code's paths first (cached an hour beside the code list) and bind them as `= ANY($n::text[])`, the form arc 8 measured up to 2,000 paths.
 
+> **Amendment (2026-10-14, Task 8 as landed).** The integration cases are the ten broad cases recorded in the plan's Task 8 landed-shape bullet: the code list; the code with the most paths; the facts join; the code with the fewest paths; a mismatched department (Pet Products in Tools & Home Improvement, with a cache-independent verdict: the EXPLAIN ANALYZE re-run's buffer accesses under 400,000); the most-paths code with its own department; Pet Products in Pet Supplies; the most-paths code with a leaf pick; the most paths per sellable product; the most products per path. There is no mid code.
+
 Products with no path (0.8 %) never match a code; a product whose path arrived after the last build and is not yet in the crosswalk (a path new to the catalog) matches no code until the next weekly build.
 
 ## 7. The list of codes
@@ -164,11 +166,13 @@ The "Broad category" select is unchanged. Its hint becomes: "Brand Analytics cat
 ## 12. Testing
 
 - `assignCodes`: backoff level by level; the 20 threshold at exactly 20; ties by code text; a department under 20 still decides; a path with no votes anywhere gets no row; `share_pct` rounding; prefix splitting with ` › ` and a path of depth 10.
-- `computeCrosswalk` / `writeCrosswalk`: SQL pins (partition name from the week, the regex, `mode()`), the transaction shape (TRUNCATE + one INSERT with unnest, in one transaction), stats.
+- `computeCrosswalk` / `writeCrosswalk`: SQL pins (partition name from the week, the regex, `mode()`), the transaction shape (SET LOCAL limits, LOCK … SHARE ROW EXCLUSIVE, the older-week guard, DELETE, INSERTs chunked by WRITE_CHUNK, one transaction; VACUUM (ANALYZE, TRUNCATE false) after the COMMIT), stats.
 - The inngest phase: order after `top_asins_build` and before `summary_refresh`, the pool shape, fail-soft, skipped on replay (extend `importFile.test.ts`'s existing pattern).
 - Readers: `searchProducts` predicate pin + binds; `listCategories` SQL pin; `loadProduct` facts join; FactsCard singular line; ProductFilterPanel hint; contracts (`broadCategory` scalar), `tools.ts` descriptions, `catalog.ts` rule + version, service tests.
 - Pair table: `buildWeek.ts` / `backfill.ts` back to eight columns, `BROAD_INDEX` / `PREV_BROAD_GUARD` and the index-name model test removed; `db/schema/keywordTopAsins.ts` without the column; the integration carried-code check removed.
 - Integration (owner's go only, read-only against production): `tests/integration/productsQueries.test.ts` broad cases rewritten (largest / mid / smallest code, each alone and with a department, a code + a leaf; cold first; plans printed; every statement under 30 s); a new `tests/integration/baCrosswalk.test.ts` running `computeCrosswalk` for the Explorer week without writing: every catalog path at most once, `source_path` is the path or an ancestor, `share_pct` within 0–100, `direct` ≥ 80 % of paths' products, `uncoded` under 1 %, and the two example paths (Pet Supplies' majority Pet Products; the toilet paper path → Health & Personal Care).
+
+> **Amendment (2026-10-14, Task 8 as landed).** See §6's amendment: ten broad cases, no mid code; the full list, the order and the review rounds are in the plan's Task 8 landed-shape bullet.
 
 ## 13. Shipping (each step on the owner's go, in order)
 

@@ -1951,7 +1951,7 @@ Run: `APPLY_0053=yes node --env-file=.env.local --import tsx scripts/applyMigrat
 
 - [ ] **Step 3: Integration, on the owner's go**
 
-`RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept -t "mismatched department"` first for the coldest index reading, then the whole file (read the printed plans: the largest code must plan on `ba_category_crosswalk_code_idx`, the smallest on `asin_products_category_path_idx`; every statement under 30 s; step 2's build has warmed the catalog heap by then, so the risky cases are judged by the printed EXPLAIN ANALYZE blocks hit + read and the sort-index node's rows, not by the clock; recalibrate the 400,000-access bound from the printed numbers if it trips), then `RUN_INTEGRATION=1 pnpm vitest run tests/integration/baCrosswalk.test.ts --disableConsoleIntercept` (the compute case re-runs the votes read: minutes; its timeout is 31 minutes; a Ctrl-C writes nothing but leaves the votes statement running on the server for up to its 1800 s limit, there being no client_connection_check_interval), then `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts --disableConsoleIntercept` (the pair-table build with eight columns against the live schema, 0052's column still present). A slow cold case is a spec follow-up (§6's `= ANY(paths)` fallback), not a blocker, if the other cases are fast.
+`RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept -t "mismatched department"` first for the coldest index reading, then the whole file (read the printed plans: the largest code must plan on `ba_category_crosswalk_code_idx`, the smallest on `asin_products_category_path_idx`; every statement under 30 s; step 2's build has warmed the catalog heap by then, so the risky cases are judged by the printed EXPLAIN ANALYZE blocks hit + read and the sort-index node's rows, not by the clock; recalibrate the 400,000-access bound from the printed numbers if it trips), then `RUN_INTEGRATION=1 pnpm vitest run tests/integration/baCrosswalk.test.ts --disableConsoleIntercept` (the compute case re-runs the votes read: minutes; its timeout is 31 minutes; a Ctrl-C writes nothing but leaves the votes statement running on the server for up to its 1800 s limit, there being no client_connection_check_interval), then `RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts --disableConsoleIntercept` (the pair-table build with eight columns against the live schema, 0052's column still present). A slow cold case is a spec follow-up (§6's `= ANY(paths)` fallback), not a blocker, if the other cases are fast. Gate before step 4: step 2 exited 0 and printed its stats line (`paths=… direct=… backedOff=… uncoded=… trainingProducts=… codes=…`), and step 3 printed no `crosswalk not built yet: skipped` line (all ten broad cases self-skip on an empty table, so a failed step 2 can still give a green step 3, and a push on an empty table would cache an empty code list for up to an hour); otherwise stop. The runs are read-only per file; the shared teardown (`tests/integration/globalSetup.ts`) still sweeps orphaned synthetic test users, a no-op when there are none.
 
 - [ ] **Step 4: Push and deploys**
 
@@ -1963,7 +1963,7 @@ Page: `/products?broad=Pet+Products` (pet products on top; the select shows the 
 
 - [ ] **Step 6: Apply 0054 (only after step 4's three deploys are green; no import and no backfill run in flight; a rollback to the arc-9 code afterwards needs 0052 re-applied first)**
 
-Write the untracked `scripts/applyMigration0054.ts`:
+First hard-reload any Products or ASIN tab opened before the deploy: with Vercel's skew protection on (a dashboard setting; nothing in the repo turns it on), an old tab keeps routing to the arc-9 deployment, which would hit 42703 once the column is gone. Then write the untracked `scripts/applyMigration0054.ts`:
 
 ```ts
 // scripts/applyMigration0054.ts (UNTRACKED — run only on the owner's go, AFTER the deploy that stops reading the column is green)
@@ -2021,7 +2021,7 @@ Run: `APPLY_0054=yes node --env-file=.env.local --import tsx scripts/applyMigrat
 
 - [ ] **Step 7: Results, docs, memory**
 
-Fill the Results table below (one docs commit per step is fine), update the arc memory, and at the next import (week ending 2026-10-17, run 2026-10-20) check `import_phase_timings` for `ba_crosswalk_build` and that `SELECT max(week_end_date) FROM ba_category_crosswalk` advanced.
+Fill the Results table below (one docs commit per step is fine), update the arc memory, and at the next import (week ending 2026-10-17, run 2026-10-20) check `import_phase_timings` for `ba_crosswalk_build` and that `SELECT max(week_end_date) FROM ba_category_crosswalk` advanced. If the push slipped past that import (the old worker ran it without the phase), run step 2 again with `BA_CROSSWALK_WEEK=2026-10-17` after the deploy and check the phase at the following import instead. Post-0054 cleanup, one behaviour-neutral commit: drop the `hasBroadColumn` branches in `tests/integration/topAsinsBuild.test.ts`; optionally rename the facts alias `x.code AS broad_category` in `lib/products/loadProduct.ts` so that `git grep broad_category` only ever means the retired column.
 
 #### Results
 
