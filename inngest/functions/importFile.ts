@@ -22,6 +22,7 @@ import { refreshKeywordCurrentSummary } from './refreshSummary';
 import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
 import { enqueueWeek, EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { buildTopAsinsWeek, TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
+import { buildCrosswalk } from '@/lib/baCategory/buildCrosswalk';
 import { errFields } from '@/lib/ask/logSafe';
 
 export interface ImportFileInput {
@@ -1104,6 +1105,57 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
         },
         // rows_affected = rows written; null marks a failed or skipped build.
         (r) => (r ? r.rows : null),
+      );
+
+      // ----------------------------------------------------------------
+      // Brand Analytics crosswalk (spec 2026-10-14 §5.4): relearn the Keepa
+      // path → code mapping from this week's report, right after the pair
+      // table and BEFORE the long summary refresh. Fail-soft, like the two
+      // phases above: a failure never fails the import — the previous
+      // crosswalk stays in place and scripts/buildBaCrosswalk.ts re-runs
+      // it by hand. Same replay rule: a historical week must not relearn it.
+      // ----------------------------------------------------------------
+      await timePhase(
+        file.id,
+        'ba_crosswalk_build',
+        async () => {
+          const crosswalkPool = new Pool({
+            connectionString: env.DATABASE_URL,
+            max: 1,
+            statement_timeout: 1_800_000,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10_000,
+            connectionTimeoutMillis: 20_000,
+          });
+          // Dropped-socket guards, as in the hand-off above.
+          crosswalkPool.on('error', () => undefined);
+          let stage: 'connect' | 'build' = 'connect';
+          try {
+            const client = await crosswalkPool.connect();
+            stage = 'build';
+            try {
+              client.on('error', () => undefined);
+              const r = await buildCrosswalk(client, weekEndDate);
+              console.log(
+                `[ba-crosswalk] week ${weekEndDate}: paths=${r.paths} direct=${r.direct} backedOff=${r.backedOff} uncoded=${r.uncoded} trainingProducts=${r.trainingProducts} codes=${r.codes}`,
+              );
+              return r;
+            } finally {
+              client.release();
+            }
+          } catch (e) {
+            const { error, code } = errFields(e);
+            console.error(
+              '[ba-crosswalk] failed (import continues)',
+              JSON.stringify({ week: weekEndDate, stage, error, code }),
+            );
+            return null;
+          } finally {
+            await crosswalkPool.end();
+          }
+        },
+        // rows_affected = paths written; null marks a failed build.
+        (r) => (r ? r.paths : null),
       );
     }
 
