@@ -14,6 +14,7 @@ Owner's condition: no noticeable slowdown of the weekly refresh. Measured answer
 |---|---|
 | Weekly refresh, last three imports | 7–8 h in total: `kwm_insert` 3.2–3.4 h, `summary_refresh` 3.5–4.5 h, `copy_to_staging` ~3 min, `search_terms_upsert` ~8 min |
 | The reverse-table build (`lib/topAsins/buildWeek.ts`) | one INSERT of the week's three slots with the streak carry, then a rename swap; 50–137 s per week in the backfill, fail-soft inside the import |
+| The first import-time build with the code (week 2026-10-10, run 2026-10-13; measured after shipping) | 372 s for 9,454,143 rows with the three indexes, beside `keepa_enqueue` at 374 s; the import's wall time did not move (8.1 h vs 8.2 h the week before, with 13.8 % more report rows) |
 | `keyword_top_asins` today | 8,310,634 rows; heap 669 MB, pkey 320 MB, asin index 516 MB (1.5 GB total); `_prev` retained alongside |
 | The code the report gives per clicked product (`top_clicked_category_{1,2,3}` on the kwm row) | slot 1: 2,775,289 ASIN rows, every one coded; slot 2: 2,771,791 rows, 2,058,433 coded (74 %); slot 3: 2,763,554 rows, 1,297,118 coded (47 %); codes average 9 characters, longest 32 |
 | Distinct codes | 120 across the three slots; 102 on slot 1 (what the Explorer's `listCategories` shows — it reads the keyword's number-one product's code); 18 appear only on slot-2/3 products (`Ebook`, `Magazines`, `Household_Essentials`, `Designer_Fashion`, …) |
