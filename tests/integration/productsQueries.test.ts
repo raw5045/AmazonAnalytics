@@ -266,7 +266,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
 
   /**
    * One broad-category search under the default sort (spec 2026-10-14 §6); `note` says how warm it runs, when that is known, and
-   * `scope` adds a department (the default adds none). Both statements are planned (EXPLAIN, so the plans print even if the count
+   * `scope` adds a department or a leaf pick (the default adds none). Both statements are planned (EXPLAIN, so the plans print even if the count
    * later aborts the transaction). The search runs for real through searchProducts under a local SEARCH_TIMEOUT, with its rows
    * statement and its count statement timed apart (they run back to back on this one connection, while the page runs them in
    * parallel with a cap each) and each held to the page's cap. The rows statement is then re-run with EXPLAIN (ANALYZE, BUFFERS),
@@ -388,8 +388,6 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         await skipUnlessCodes(ctx);
         const code = await largestCode();
         const { lines, rows } = await broadSearch(code);
-        // Counted only after the timed read, so the join did not warm it.
-        console.log(`[productsQueries] code with the most paths "${code}": ${await productsOf(code)} sellable products`);
         expect(lines.join('\n'), `the plan of the "${code}" search`).toContain(CROSSWALK_INDEX);
         expect(rows.length, `rows on the "${code}" page`).toBeGreaterThanOrEqual(1);
         expect(rows.length, `rows on the "${code}" page`).toBeLessThanOrEqual(PRODUCT_PAGE_SIZE);
@@ -524,6 +522,8 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         if (!leaf) return ctx.skip(`no self-decided path of "${code}" three levels deep`);
         const { rows } = await broadSearch(code, `with the leaf "${leaf}"`, pageCategoryScope({ ...PRODUCT_DEFAULTS, leafPaths: [leaf] }, []));
         console.log(`[productsQueries] "${code}" within "${leaf}": ${rows.length} rows on the page`);
+        // The code's size: a join over all its products, so it runs here, after the timed reads of this case and of the mismatched-department case above, not in the first case.
+        console.log(`[productsQueries] code with the most paths "${code}": ${await productsOf(code)} sellable products`);
         for (const r of rows) expect(r.categoryPath === leaf || r.categoryPath?.startsWith(`${leaf} › `), `${r.asin} under ${leaf}`).toBe(true);
       });
     },
