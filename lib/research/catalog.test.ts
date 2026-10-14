@@ -296,7 +296,7 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(rules).toContain("filters.department is one of the catalog's storefront departments");
     expect(rules).toContain("not a keyword row's broadCategory");
     expect(rules).toContain("filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory carries it");
-    expect(rules).toContain("on products it is the product's own category: the code its Keepa category path maps to, one per product, relearned weekly from the weekly Brand Analytics report (null when it has no path or its path is not mapped yet)");
+    expect(rules).toContain("on products it is the product's own category: the code its Keepa category path maps to, one per product, relearned weekly from the Brand Analytics report (null when the product has no path or its path is not mapped yet)");
     expect(rules).toContain("get_product_details returns it as product.broadCategory");
     expect(rules).toContain("A keyword's broadCategory is the category most clicked for that search, so a product and the keywords it is a top-3 clicked product for usually agree but need not");
     expect(rules).toContain("An unknown code fails with CATEGORY_NOT_AVAILABLE and the message lists the valid codes");
