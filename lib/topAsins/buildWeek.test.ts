@@ -29,11 +29,12 @@ describe('buildTopAsinsStatements', () => {
       expect(st.insert.values).toEqual([WEEK]);
     }
   });
-  it("carries the slot's Brand Analytics code: top_clicked_category_<slot> AS broad_category in each slot select, selected last (spec 2026-10-12 broad category §4)", () => {
+  it('carries no code: the slot selects name the five slot columns only (the crosswalk replaced the per-row code, spec 2026-10-14 §4.2)', () => {
     for (const st of everyMode) {
-      for (const slot of [1, 2, 3]) expect(st.insert.text).toContain(`top_clicked_product_${slot}_conversion_share AS conversion_share, top_clicked_category_${slot} AS broad_category`);
-      expect(st.insert.text).toMatch(/\$1::date,\s+p\.broad_category\s+FROM \(/);
-      expect(st.insert.text).toContain('week_end_date, broad_category)');
+      for (const slot of [1, 2, 3]) expect(st.insert.text).toContain(`top_clicked_product_${slot}_conversion_share AS conversion_share\n`);
+      expect(st.insert.text).not.toContain('broad_category');
+      expect(st.insert.text).not.toContain('top_clicked_category');
+      expect(st.insert.text).toContain('week_end_date)');
     }
   });
   it('carries the streak from the carry table: prev + 1, else 1 with this week as the start', () => {
@@ -59,7 +60,7 @@ describe('buildTopAsinsStatements', () => {
     // Carrying from nothing (a same-week rebuild without _prev, a forced rewind): no join, no carry table, every pair starts at 1 on this week.
     for (const st of carryingNothing) {
       expect(st.insert.text).not.toMatch(/JOIN|DISTINCT|prev|FROM keyword_top_asins/);
-      expect(st.insert.text).toMatch(/p\.conversion_share,\s+1,\s+\$1::date,\s+\$1::date,\s+p\.broad_category\s+FROM \(/);
+      expect(st.insert.text).toMatch(/p\.conversion_share,\s+1,\s+\$1::date,\s+\$1::date\s+FROM \(/);
     }
   });
   it('builds into _next, shaped like the current table', () => {
@@ -70,28 +71,24 @@ describe('buildTopAsinsStatements', () => {
       'DROP TABLE IF EXISTS keyword_top_asins_prev',
       'ALTER TABLE keyword_top_asins RENAME TO keyword_top_asins_prev',
       'ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx',
-      'ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx',
       'ALTER TABLE keyword_top_asins_prev RENAME CONSTRAINT keyword_top_asins_pkey TO keyword_top_asins_prev_pkey',
       PREV_COMMENT,
       'ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins',
       CURRENT_COMMENT,
       'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx',
-      'ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx',
       'ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey',
     ]);
   });
-  it('same-week rebuild: drops the stale current table, promotes _next with its comment, and names _prev only in the broad-index guard', () => {
+  it('same-week rebuild: drops the stale current table and promotes _next with its comment; nothing names _prev', () => {
     for (const st of [sameWeekPrev, sameWeekNone]) {
       expect(swapOf(st)).toEqual([
         'DROP TABLE keyword_top_asins',
-        'ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx',
         'ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins',
         CURRENT_COMMENT,
         'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx',
-        'ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx',
         'ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey',
       ]);
-      expect(swapOf(st).filter((t) => t.includes('keyword_top_asins_prev'))).toEqual(['ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx']);
+      expect(swapOf(st).filter((t) => t.includes('keyword_top_asins_prev'))).toEqual([]);
     }
   });
   it('forced rewind: drops _prev and the newer current table, promotes _next with its comment, and leaves no _prev', () => {
@@ -101,98 +98,10 @@ describe('buildTopAsinsStatements', () => {
       'ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins',
       CURRENT_COMMENT,
       'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx',
-      'ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx',
       'ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey',
     ]);
     // The only statement naming _prev drops it: nothing renames to or comments it.
     expect(swapOf(rewind).filter((t) => t.includes('keyword_top_asins_prev'))).toEqual(['DROP TABLE IF EXISTS keyword_top_asins_prev']);
-  });
-  it('tolerates the drifted names an old-code build leaves between the apply of 0052 and the deploy: both broad-index renames are IF EXISTS, and the same-week swap first moves a canonical name off _prev', () => {
-    for (const st of everyMode) {
-      for (const t of swapOf(st).filter((t) => t.includes('broad_category'))) expect(t).toMatch(/^ALTER INDEX IF EXISTS /);
-    }
-    const sameWeek = swapOf(sameWeekPrev);
-    expect(sameWeek.indexOf('ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx')).toBe(sameWeek.indexOf('DROP TABLE keyword_top_asins') + 1);
-    expect(swapOf(rewind).some((t) => t.endsWith('RENAME TO keyword_top_asins_prev_broad_category_idx'))).toBe(false);
-  });
-  describe('index-name model: the swaps never fail over a drifted name and converge on the canonical names', () => {
-    const LIVE = 'keyword_top_asins';
-    const PREV = 'keyword_top_asins_prev';
-    const C = 'keyword_top_asins_broad_category_idx';
-    const P = 'keyword_top_asins_prev_broad_category_idx';
-    const pgError = (code: string) => Object.assign(new Error(code), { code });
-    /**
-     * Which table holds which broad index (names are schema-wide), from the state right after 0052: the live table holds C and
-     * there is no _prev. A rename onto a taken name fails (42P07), one from a missing name fails (42P01) unless IF EXISTS. Only the
-     * statements that move a table or a broad index are modelled: the swap's comments, primary keys and asin index never touch one.
-     */
-    function model() {
-      const tables = new Map<string, Set<string>>([[LIVE, new Set([C])]]);
-      const holder = (index: string) => [...tables].find(([, indexes]) => indexes.has(index))?.[0];
-      const rules: [RegExp, (m: RegExpMatchArray) => void][] = [
-        // LIKE ... INCLUDING ALL names each copied index <table>_<columns>_idx, then ...idx1, idx2 while the name is taken anywhere.
-        [/^CREATE TABLE (\w+) \(LIKE (\w+) INCLUDING ALL\)$/, (m) => {
-          const copies = new Set<string>();
-          for (let i = 0; i < (tables.get(m[2])?.size ?? 0); i += 1) {
-            let name = `${m[1]}_broad_category_asin_idx`;
-            for (let n = 1; holder(name) || copies.has(name); n += 1) name = `${m[1]}_broad_category_asin_idx${n}`;
-            copies.add(name);
-          }
-          tables.set(m[1], copies);
-        }],
-        [/^DROP TABLE (IF EXISTS )?(\w+)$/, (m) => { if (!tables.delete(m[2]) && !m[1]) throw pgError('42P01'); }],
-        [/^ALTER TABLE (\w+) RENAME TO (\w+)$/, (m) => {
-          const indexes = tables.get(m[1]);
-          if (!indexes) throw pgError('42P01');
-          if (tables.has(m[2])) throw pgError('42P07');
-          tables.delete(m[1]);
-          tables.set(m[2], indexes);
-        }],
-        [/^ALTER INDEX (IF EXISTS )?(\w+) RENAME TO (\w+)$/, (m) => {
-          const at = holder(m[2]);
-          if (!at) { if (m[1]) return; throw pgError('42P01'); }
-          if (holder(m[3])) throw pgError('42P07');
-          tables.get(at)?.delete(m[2]);
-          tables.get(at)?.add(m[3]);
-        }],
-      ];
-      const apply = (text: string) => {
-        for (const [re, run] of rules) {
-          const m = text.match(re);
-          if (m) return run(m);
-        }
-        throw new Error(`the index-name model does not know: ${text.slice(0, 90)}`);
-      };
-      return { build(statements: string[]) { statements.forEach(apply); return { live: [...(tables.get(LIVE) ?? [])], prev: [...(tables.get(PREV) ?? [])] }; } };
-    }
-    /** What a build sends the model: its CREATE ... LIKE and the swap's table and broad-index statements; an old-code build has no broad-index ones. */
-    const feed = (st: typeof advance, oldCode = false) =>
-      [st.createNext.text, ...swapOf(st)].filter((t) => /^(?:CREATE TABLE|DROP TABLE|ALTER TABLE \w+ RENAME TO )/.test(t) || (!oldCode && t.includes('broad_category')));
-    const BUILDS = { 'old-code advance': feed(advance, true), advance: feed(advance), 'same-week': feed(sameWeekPrev), rewind: feed(rewind) };
-    const WALKS: (keyof typeof BUILDS)[][] = [
-      ['old-code advance', 'same-week', 'same-week', 'advance'], // an import lands between the apply of 0052 and the deploy, then the one-off fill runs twice
-      ['old-code advance', 'old-code advance', 'advance', 'advance', 'advance'], // two imports land in that window
-      ['old-code advance', 'advance', 'same-week'], // the promote renames the table just retired to _prev, and the guard cleans it up
-      ['advance', 'advance', 'advance', 'same-week', 'same-week', 'rewind'], // steady state
-    ];
-    for (const steps of WALKS) {
-      it(steps.join(' → '), () => {
-        const m = model();
-        let before = [C];
-        const after = steps.map((step) => {
-          const now = m.build(BUILDS[step]); // throws on any rename that would fail
-          expect(now.live).toHaveLength(1); // one broad index on the live table after every build
-          if (step === 'advance' && before[0] === C) expect(now.prev).toEqual([P]); // an advance from a canonical live table names _prev's index at once
-          before = now.live;
-          return now;
-        });
-        const lastOld = steps.lastIndexOf('old-code advance');
-        if (lastOld >= 0) expect(after[lastOld + 2].live).toEqual([C]); // canonical within two new-code builds of the last old-code one
-        const end = after[after.length - 1];
-        expect(end.live).toEqual([C]);
-        expect(end.prev).toEqual(steps[steps.length - 1] === 'rewind' ? [] : [P]); // a rewind leaves no _prev
-      });
-    }
   });
   it("the current table's comment is migration 0051's text, so the swap cannot drift from it", () => {
     // Resolved against this file, not the working directory. The base sits in a variable on purpose: Vite rewrites a literal
@@ -203,11 +112,11 @@ describe('buildTopAsinsStatements', () => {
   });
   it('names only real columns', () => {
     for (const st of everyMode) {
-      const kwmCols = new Set([...st.insert.text.matchAll(/\b(top_clicked_product_[123]_(?:asin|click_share|conversion_share)|top_clicked_category_[123]|search_term_id|week_end_date)\b/g)].map((m) => m[1]));
-      expect(kwmCols.size).toBe(14);
+      const kwmCols = new Set([...st.insert.text.matchAll(/\b(top_clicked_product_[123]_(?:asin|click_share|conversion_share)|search_term_id|week_end_date)\b/g)].map((m) => m[1]));
+      expect(kwmCols.size).toBe(11);
       expect([...kwmCols].filter((c) => !dbCols(keywordWeeklyMetrics).has(c))).toEqual([]);
       const insertCols = st.insert.text.slice(st.insert.text.indexOf('(') + 1, st.insert.text.indexOf(')')).split(',').map((c) => c.trim());
-      expect(insertCols).toHaveLength(9);
+      expect(insertCols).toHaveLength(8);
       expect(insertCols.filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
     }
     // The carry subselect names reverse-table columns; the meta upsert names meta columns.
@@ -221,6 +130,9 @@ describe('buildTopAsinsStatements', () => {
     // Bound to the build's row count: no placeholder anywhere.
     expect(record.values).toEqual([WEEK, 7]);
     expect(advance.meta(123).values).toEqual([WEEK, 123]);
+  });
+  it('no swap statement touches a broad-category index (0054 drops the column and its index outside the build)', () => {
+    for (const st of everyMode) expect(swapOf(st).some((t) => t.includes('broad_category'))).toBe(false);
   });
   it('rejects a malformed week (the partition name is interpolated into SQL)', () => {
     const plans = [undefined, { carryFrom: 'prev', sameWeek: true } as const, { carryFrom: 'none', sameWeek: true } as const, { carryFrom: 'none', sameWeek: false, rewind: true } as const];
@@ -280,13 +192,11 @@ describe('buildTopAsinsWeek', () => {
     'DROP TABLE IF', // the older _prev
     'ALTER TABLE keyword_top_asins', // current -> _prev
     'ALTER INDEX keyword_top_asins_asin_idx',
-    'ALTER INDEX IF', // the broad-category index, to _prev's name
     'ALTER TABLE keyword_top_asins_prev', // its primary key
     'COMMENT ON TABLE', // _prev's
     'ALTER TABLE keyword_top_asins_next', // _next -> current
     'COMMENT ON TABLE', // current's
     'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx',
-    'ALTER INDEX IF', // _next's broad-category index, to the canonical name
     'ALTER TABLE keyword_top_asins', // its primary key
     'INSERT INTO keyword_top_asins_meta',
     'COMMIT',
@@ -303,11 +213,9 @@ describe('buildTopAsinsWeek', () => {
     'INSERT INTO keyword_top_asins_next',
     'SET LOCAL lock_timeout',
     'DROP TABLE keyword_top_asins', // the stale current table; the _prev table is never dropped or renamed
-    'ALTER INDEX IF', // the guard: moves a canonical broad-index name off _prev (a no-op unless an old-code build left one there)
     'ALTER TABLE keyword_top_asins_next', // _next -> current
     'COMMENT ON TABLE', // current's
     'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx',
-    'ALTER INDEX IF', // _next's broad-category index, to the canonical name
     'ALTER TABLE keyword_top_asins', // its primary key
     'INSERT INTO keyword_top_asins_meta',
     'COMMIT',
@@ -327,7 +235,6 @@ describe('buildTopAsinsWeek', () => {
     'ALTER TABLE keyword_top_asins_next', // _next -> current
     'COMMENT ON TABLE', // current's
     'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx',
-    'ALTER INDEX IF', // _next's broad-category index, to the canonical name (no guard: _prev is dropped)
     'ALTER TABLE keyword_top_asins', // its primary key
     'INSERT INTO keyword_top_asins_meta',
     'COMMIT',
@@ -381,7 +288,7 @@ describe('buildTopAsinsWeek', () => {
     // The meta row records the week and the inserted row count, not a placeholder.
     expect(c.args[c.calls.indexOf('INSERT INTO keyword_top_asins_meta')]).toEqual([WEEK, 7]);
   });
-  it('same-week rebuild: carries from _prev, drops the stale current table, keeps the _prev table (only the broad-index guard may rename its index)', async () => {
+  it('same-week rebuild: carries from _prev, drops the stale current table, keeps the _prev table untouched', async () => {
     const c = fakeClient({ [K.meta]: metaAt(WEEK), [K.probe]: prevPresent(true), [K.insert]: inserted(6) });
     const r = await buildTopAsinsWeek(c, WEEK);
     expect(r).toEqual({ rows: 6, previousWeek: WEEK, carriedFrom: 'prev' });
@@ -389,7 +296,7 @@ describe('buildTopAsinsWeek', () => {
     expect(c.texts[5]).toBe("SELECT to_regclass('keyword_top_asins_prev') IS NOT NULL AS present");
     const insertAt = c.calls.indexOf('INSERT INTO keyword_top_asins_next');
     expect(c.texts[insertAt]).toMatch(/FROM keyword_top_asins_prev ORDER BY/);
-    expect(c.texts.slice(insertAt + 1).filter((t) => t.includes('keyword_top_asins_prev'))).toEqual(['ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx']); // after the insert only the broad-index guard names _prev
+    expect(c.texts.slice(insertAt + 1).filter((t) => t.includes('keyword_top_asins_prev'))).toEqual([]); // nothing after the insert names _prev
     expect(executedSwap(c, 'DROP TABLE keyword_top_asins')).toEqual(buildTopAsinsStatements(WEEK, { carryFrom: 'prev', sameWeek: true }).swap.map((x) => x.text));
     expect(c.args[c.calls.indexOf('INSERT INTO keyword_top_asins_meta')]).toEqual([WEEK, 6]);
   });

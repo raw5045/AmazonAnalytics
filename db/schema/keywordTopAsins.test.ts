@@ -5,11 +5,11 @@ import { getTableColumns } from 'drizzle-orm';
 import { getTableConfig } from 'drizzle-orm/pg-core';
 import { keywordTopAsins, keywordTopAsinsMeta, asinProducts } from '@/db/schema';
 
-describe('keyword_top_asins schema (migrations 0051 and 0052)', () => {
+describe('keyword_top_asins schema (migration 0051)', () => {
   it('mirrors the migration columns', () => {
     const cols = Object.values(getTableColumns(keywordTopAsins)).map((c) => c.name).sort();
     expect(cols).toEqual(
-      ['asin', 'broad_category', 'click_share', 'conversion_share', 'search_term_id', 'slot', 'streak_started_week', 'week_end_date', 'weeks_in_top3'].sort(),
+      ['asin', 'click_share', 'conversion_share', 'search_term_id', 'slot', 'streak_started_week', 'week_end_date', 'weeks_in_top3'].sort(),
     );
     const meta = Object.values(getTableColumns(keywordTopAsinsMeta)).map((c) => c.name).sort();
     expect(meta).toEqual(['built_at', 'row_count', 'singleton', 'week_end_date'].sort());
@@ -64,8 +64,7 @@ describe('migration 0051 SQL text', () => {
   });
 
   it('creates the reverse table and its meta row exactly as the drizzle mirrors declare them', () => {
-    // 0051 created eight columns; 0052 (below) added broad_category, so the mirror is the union.
-    expect([...declared(createTable('keyword_top_asins')), 'broad_category'].sort()).toEqual(mirror(getTableColumns(keywordTopAsins)));
+    expect(declared(createTable('keyword_top_asins'))).toEqual(mirror(getTableColumns(keywordTopAsins)));
     expect(declared(createTable('keyword_top_asins_meta'))).toEqual(mirror(getTableColumns(keywordTopAsinsMeta)));
     expect(flat).toContain('PRIMARY KEY (search_term_id, slot)');
     expect(flat).toContain('CREATE INDEX IF NOT EXISTS keyword_top_asins_asin_idx ON keyword_top_asins (asin, search_term_id)');
@@ -78,36 +77,25 @@ describe('migration 0051 SQL text', () => {
   });
 });
 
-describe('migration 0052 SQL text', () => {
+describe('migration 0054 SQL text (drops 0052\'s column, spec 2026-10-14 §4.2)', () => {
   const MARKER = '--> statement-breakpoint';
-  const raw = readFileSync('db/migrations/0052_top_asins_broad_category.sql', 'utf8');
+  const raw = readFileSync('db/migrations/0054_drop_top_asins_broad_category.sql', 'utf8');
   const chunks = raw.split(MARKER);
   const statements = chunks.map((s) => s.replace(/^\s*--.*$/gm, '').trim()).filter((s) => s.length > 0);
-  const flat = statements.join(' ').replace(/\s+/g, ' ');
 
-  it('has 4 statements, one per chunk, split by 3 breakpoints', () => {
-    expect(chunks).toHaveLength(4);
-    expect(statements).toHaveLength(4);
-    for (const s of statements) expect(s.match(/^(ALTER|COMMENT|CREATE)\b/gm) ?? []).toHaveLength(1);
+  it('has 2 statements, one per chunk', () => {
+    expect(chunks).toHaveLength(2);
+    expect(statements).toEqual([
+      'ALTER TABLE keyword_top_asins DROP COLUMN IF EXISTS broad_category;',
+      'ALTER TABLE IF EXISTS keyword_top_asins_prev DROP COLUMN IF EXISTS broad_category;',
+    ]);
   });
-  it('adds the nullable code column to the live table and, when it exists, to _prev (the retained build stays shaped like the live one)', () => {
-    expect(statements[0]).toBe('ALTER TABLE keyword_top_asins ADD COLUMN IF NOT EXISTS broad_category varchar(255);');
-    expect(statements[2]).toBe('ALTER TABLE IF EXISTS keyword_top_asins_prev ADD COLUMN IF NOT EXISTS broad_category varchar(255);');
-    expect(getTableColumns(keywordTopAsins).broadCategory.name).toBe('broad_category');
-    expect(getTableColumns(keywordTopAsins).broadCategory.notNull).toBe(false);
+  it('the mirror no longer declares the column or its index', () => {
+    expect(Object.values(getTableColumns(keywordTopAsins)).map((c) => c.name)).not.toContain('broad_category');
+    expect(getTableConfig(keywordTopAsins).indexes.map((i) => i.config.name)).toEqual(['keyword_top_asins_asin_idx']);
   });
-  it('describes the column as the per-slot report code, any-of per product', () => {
-    expect(statements[1]).toContain('top_clicked_category_<slot>');
-    expect(statements[1]).toContain('any-of');
-  });
-  it('indexes (broad_category, asin) over the coded rows only, under the canonical name the swap renames', () => {
-    expect(flat).toContain('CREATE INDEX IF NOT EXISTS keyword_top_asins_broad_category_idx ON keyword_top_asins (broad_category, asin) WHERE broad_category IS NOT NULL');
-  });
-  it('the mirror declares varchar(255) and the partial (broad_category, asin) index', () => {
-    const cfg = getTableConfig(keywordTopAsins);
-    expect(cfg.columns.find((c) => c.name === 'broad_category')?.getSQLType()).toBe('varchar(255)');
-    const idx = cfg.indexes.find((i) => i.config.name === 'keyword_top_asins_broad_category_idx');
-    expect(idx?.config.columns.map((c) => (c as { name: string }).name)).toEqual(['broad_category', 'asin']);
-    expect(idx?.config.where).toBeDefined();
+  it('says the drop takes the partial index with it and comes after the deploy', () => {
+    expect(raw).toContain('drops keyword_top_asins_broad_category_idx');
+    expect(raw).toContain('AFTER the deploy');
   });
 });

@@ -131,11 +131,11 @@ describe('backfillWeekStatements', () => {
     expect(insert.text).not.toContain('keyword_top_asins_next');
   });
   it('names only real columns', () => {
-    const kwmCols = new Set([...insert.text.matchAll(/\b(top_clicked_product_[123]_(?:asin|click_share|conversion_share)|top_clicked_category_[123]|search_term_id|week_end_date)\b/g)].map((m) => m[1]));
-    expect(kwmCols.size).toBe(14);
+    const kwmCols = new Set([...insert.text.matchAll(/\b(top_clicked_product_[123]_(?:asin|click_share|conversion_share)|search_term_id|week_end_date)\b/g)].map((m) => m[1]));
+    expect(kwmCols.size).toBe(11);
     expect([...kwmCols].filter((c) => !dbCols(keywordWeeklyMetrics).has(c))).toEqual([]);
     const insertCols = insert.text.slice(insert.text.indexOf('(') + 1, insert.text.indexOf(')')).split(',').map((c) => c.trim());
-    expect(insertCols).toHaveLength(9);
+    expect(insertCols).toHaveLength(8);
     expect(insertCols.filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
   });
   it('rejects a malformed week (the partition name is interpolated into SQL)', () => {
@@ -201,7 +201,7 @@ describe('finalizeStatements', () => {
     expect(norm(f.createNext.text)).toBe('CREATE TABLE keyword_top_asins_next (LIKE keyword_top_asins INCLUDING ALL)');
     expect(norm(f.fillNext.text)).toBe('INSERT INTO keyword_top_asins_next SELECT * FROM keyword_top_asins_bf');
   });
-  it('keeps the previous week walked as keyword_top_asins_prev: the old one dropped, the new one SELECT * from _bf_prev (all nine columns, like a build-made _prev), with the comment a build gives it', () => {
+  it('keeps the previous week walked as keyword_top_asins_prev: the old one dropped, the new one SELECT * from _bf_prev (all eight columns, like a build-made _prev), with the comment a build gives it', () => {
     const buildComment = buildSwapOf(undefined).find((t) => t.startsWith('COMMENT ON TABLE keyword_top_asins_prev'));
     expect(buildComment).toBeDefined();
     expect(f.prev.map((s) => norm(s.text))).toEqual([
@@ -213,13 +213,10 @@ describe('finalizeStatements', () => {
   it("swaps like a build's same-week rebuild: drop the live table, promote _next under the canonical names, with the table comment", () => {
     expect(f.swap.map((s) => norm(s.text))).toEqual(buildSwapOf({ carryFrom: 'none', sameWeek: true }));
     expect(f.swap.map((s) => norm(s.text))[0]).toBe('DROP TABLE keyword_top_asins');
-    expect(f.swap).toHaveLength(7);
+    expect(f.swap).toHaveLength(5);
   });
-  it("renames the third index (broad_category, asin) by the name LIKE gives it on _next, IF EXISTS, after the asin index", () => {
-    const texts = f.swap.map((s) => norm(s.text));
-    const asin = texts.indexOf('ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx');
-    expect(asin).toBeGreaterThanOrEqual(0);
-    expect(texts[asin + 1]).toBe('ALTER INDEX IF EXISTS keyword_top_asins_next_broad_category_asin_idx RENAME TO keyword_top_asins_broad_category_idx');
+  it('renames nothing but the asin index and the primary key (no broad-category index since spec 2026-10-14 §4.2)', () => {
+    expect(f.swap.map((s) => norm(s.text)).some((t) => t.includes('broad_category'))).toBe(false);
   });
   it("writes the build's own meta upsert: the last week and the copied row count, bound at run time", () => {
     const built = buildTopAsinsStatements(WEEK).meta(7);
@@ -374,11 +371,9 @@ const FINALIZE_TX_TAGS = [
   'DROP TABLE keyword_top_asins_bf_prev',
   'SET LOCAL lock_timeout', // only now: it bounds the live table's lock wait, not the copy or the wait behind a build
   'DROP TABLE keyword_top_asins', // the swap: the live table is locked from here to COMMIT
-  'ALTER INDEX IF', // the build's broad-index guard (a no-op here: _prev was rebuilt without indexes)
   'ALTER TABLE keyword_top_asins_next',
   'COMMENT ON TABLE',
   'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx',
-  'ALTER INDEX IF', // _next's broad-category index, to the canonical name
   'ALTER TABLE keyword_top_asins',
   'COMMIT',
 ];
@@ -648,7 +643,7 @@ describe('runBackfill: where each week ends up', () => {
         return undefined;
       }],
       [/^ALTER TABLE (\w+) RENAME CONSTRAINT /, (m) => { held(m[1]); return undefined; }],
-      [/^ALTER INDEX (?:IF EXISTS )?\w+ RENAME TO \w+$/, () => undefined],
+      [/^ALTER INDEX \w+ RENAME TO \w+$/, () => undefined],
       [/^COMMENT ON TABLE (\w+) IS '(.*)'$/, (m) => { held(m[1]); comments.set(m[1], m[2]); return undefined; }],
       [/^INSERT INTO keyword_top_asins_bf \(/, (_m, v) => {
         const rows = rowsByWeek[String(v[0])] ?? 1;

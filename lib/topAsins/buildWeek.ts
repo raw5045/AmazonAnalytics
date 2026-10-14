@@ -8,10 +8,6 @@
  * after COMMIT on its own: a failure there is reported on the result (analyzeError), never thrown,
  * because the swap is done.
  *
- * Each row also carries `broad_category`, the report's code for that clicked product
- * (`top_clicked_category_<slot>` of the same kwm row; migration 0052), so the Products page can filter by the
- * Explorer's broad categories; the swap renames its partial index like the asin index.
- *
  * Builds serialize. The transaction (explicitly READ COMMITTED: under REPEATABLE READ the meta read
  * would see a snapshot from before the lock wait) takes the exclusive advisory lock TOP_ASINS_LOCK_KEY
  * before it reads the meta row, so two builds (the import hook and a manual script) queue instead of
@@ -32,8 +28,7 @@
  *    this week, so carrying from it would add the week twice. Carry from _prev (the week before)
  *    instead, or from nothing when _prev is missing (every pair then starts at 1; carrying from the
  *    current table minus its week would be exact for pairs present in both versions, but the simple
- *    rule is kept), and swap by dropping the stale current table and keeping the _prev table (only
- *    PREV_BROAD_GUARD may rename its broad index). Idempotent.
+ *    rule is kept), and swap by dropping the stale current table and keeping the _prev table. Idempotent.
  *  - A week older than the meta week is refused unless forced. A forced rewind carries nothing:
  *    every streak restarts at 1, and the weeks after it must be rebuilt forward. Its swap drops
  *    both the newer current table and _prev, since a _prev left over would be a build NEWER than
@@ -61,8 +56,7 @@ export type TopAsinsCarryFrom = 'current' | 'prev' | 'none';
  * How a build relates to the tables it replaces; the swap follows from it.
  *  - advance: carry from the current build and keep it as _prev (the older _prev is retired);
  *  - same-week rebuild: carry from _prev or from nothing (carrying from the stale table would count the week
- *    twice), drop the stale current table, keep the _prev table (only PREV_BROAD_GUARD may rename its broad
- *    index);
+ *    twice), drop the stale current table, keep the _prev table;
  *  - forced rewind: carry nothing and drop both the newer current table and _prev (a _prev left over would
  *    be a build newer than the week rebuilt).
  */
@@ -104,7 +98,7 @@ export function kwmPartitionFor(week: string): string {
 /** The three slot selects over one week of the partition. */
 export function slotSelect(partition: string, slot: 1 | 2 | 3): string {
   return `SELECT search_term_id, top_clicked_product_${slot}_asin AS asin, ${slot}::smallint AS slot,
-                 top_clicked_product_${slot}_click_share AS click_share, top_clicked_product_${slot}_conversion_share AS conversion_share, top_clicked_category_${slot} AS broad_category
+                 top_clicked_product_${slot}_click_share AS click_share, top_clicked_product_${slot}_conversion_share AS conversion_share
           FROM ${partition}
           WHERE week_end_date = $1::date AND top_clicked_product_${slot}_asin ~ ${ASIN_RE}`;
 }
@@ -115,22 +109,20 @@ export function slotSelect(partition: string, slot: 1 | 2 | 3): string {
  * no join, every pair starts at 1 on this week.
  */
 function insertText(partition: string, carryFrom: TopAsinsCarryFrom): string {
-  const head = `INSERT INTO keyword_top_asins_next (search_term_id, asin, slot, click_share, conversion_share, weeks_in_top3, streak_started_week, week_end_date, broad_category)
+  const head = `INSERT INTO keyword_top_asins_next (search_term_id, asin, slot, click_share, conversion_share, weeks_in_top3, streak_started_week, week_end_date)
              SELECT p.search_term_id, p.asin, p.slot, p.click_share, p.conversion_share,`;
   const slots = `(${slotSelect(partition, 1)} UNION ALL ${slotSelect(partition, 2)} UNION ALL ${slotSelect(partition, 3)}) p`;
   if (carryFrom === 'none') {
     return `${head}
                     1,
                     $1::date,
-                    $1::date,
-                    p.broad_category
+                    $1::date
              FROM ${slots}`;
   }
   return `${head}
                     COALESCE(prev.weeks_in_top3, 0) + 1,
                     COALESCE(prev.streak_started_week, $1::date),
-                    $1::date,
-                    p.broad_category
+                    $1::date
              FROM ${slots}
              LEFT JOIN (
                SELECT DISTINCT ON (search_term_id, asin) search_term_id, asin, weeks_in_top3, streak_started_week
@@ -140,30 +132,13 @@ function insertText(partition: string, carryFrom: TopAsinsCarryFrom): string {
 }
 
 /**
- * The broad-category index's names: canonical on the live table, _prev's after an advance, LIKE's on _next (spec
- * 2026-10-12 broad category §4). After an old-code build the live table holds the name LIKE generates, so on the next
- * advance that name sits on the table just retired to _prev while _next's copy got a numeric suffix, and the IF
- * EXISTS promote renames the WRONG table's index: no failure, and the next build's guard or DROP cleans it up.
- */
-const BROAD_INDEX = { current: 'keyword_top_asins_broad_category_idx', prev: 'keyword_top_asins_prev_broad_category_idx', next: 'keyword_top_asins_next_broad_category_asin_idx' } as const;
-/**
- * Moves a canonical broad-index name off _prev, where an old-code build leaves it (its swap carried the index
- * along unrenamed; index names are schema-wide), so the promote below can take the name. A no-op after a new-code
- * advance, which renamed it already. On a same-week rebuild it must follow the DROP of the current table: before
- * it, the guard would find the live table's own canonical index and collide (42P07) with _prev's name.
- */
-const PREV_BROAD_GUARD = `ALTER INDEX IF EXISTS ${BROAD_INDEX.current} RENAME TO ${BROAD_INDEX.prev}`;
-
-/**
- * The rename swap. LIKE ... INCLUDING ALL names the copy's primary key `<table>_pkey` and its other indexes
- * `<table>_<columns>_idx`, so _next's are the three literals below; they are renamed to the canonical names
- * (RENAME CONSTRAINT on a primary key renames its index too). The broad-index renames tolerate the drift an
- * old-code build leaves (see PREV_BROAD_GUARD). Each table gets its comment (a renamed table would otherwise
- * carry the other's).
- *  - advance: retires the old _prev, then renames the current table and its three names to _prev, which frees
+ * The rename swap. LIKE ... INCLUDING ALL names the copy's primary key `<table>_pkey` and its other index
+ * `<table>_<columns>_idx`, so _next's are the two literals below; they are renamed to the canonical names
+ * (RENAME CONSTRAINT on a primary key renames its index too). Each table gets its comment (a renamed table
+ * would otherwise carry the other's).
+ *  - advance: retires the old _prev, then renames the current table and its two names to _prev, which frees
  *    the canonical names for _next;
- *  - same-week rebuild: drops the stale current table and leaves _prev alone, except that PREV_BROAD_GUARD
- *    moves a canonical broad-index name off it;
+ *  - same-week rebuild: drops the stale current table and leaves _prev alone;
  *  - forced rewind: drops _prev as well, so no build newer than the rewound week survives.
  */
 function swapStatements(plan: TopAsinsBuildPlan): SqlStatement[] {
@@ -171,16 +146,14 @@ function swapStatements(plan: TopAsinsBuildPlan): SqlStatement[] {
     sql('ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins'),
     sql(CURRENT_COMMENT),
     sql('ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx'),
-    sql(`ALTER INDEX IF EXISTS ${BROAD_INDEX.next} RENAME TO ${BROAD_INDEX.current}`),
     sql('ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey'),
   ];
   if ('rewind' in plan) return [sql('DROP TABLE IF EXISTS keyword_top_asins_prev'), sql('DROP TABLE keyword_top_asins'), ...promoteNext];
-  if (plan.sameWeek) return [sql('DROP TABLE keyword_top_asins'), sql(PREV_BROAD_GUARD), ...promoteNext];
+  if (plan.sameWeek) return [sql('DROP TABLE keyword_top_asins'), ...promoteNext];
   return [
     sql('DROP TABLE IF EXISTS keyword_top_asins_prev'),
     sql('ALTER TABLE keyword_top_asins RENAME TO keyword_top_asins_prev'),
     sql('ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx'),
-    sql(PREV_BROAD_GUARD), // on an advance the current table has just become _prev: its proper rename
     sql('ALTER TABLE keyword_top_asins_prev RENAME CONSTRAINT keyword_top_asins_pkey TO keyword_top_asins_prev_pkey'),
     sql(PREV_COMMENT),
     ...promoteNext,

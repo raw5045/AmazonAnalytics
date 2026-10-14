@@ -4,9 +4,6 @@
  * touching the real tables. It proves what the fake-client unit tests cannot:
  *  - the advance INSERT (partition name, ASIN regex, the three-slot UNION ALL, the DISTINCT ON streak
  *    carry) runs on this database and yields the rows the week's partition promises;
- *  - the carried broad_category equals the partition's slot category (checked on a sample of the first
- *    scratch table's rows, taken per slot so slots 2 and 3 are covered too: the code travels from the
- *    same kwm row, spec 2026-10-12 broad category §4);
  *  - the carry arithmetic: a second build that carries from the first scratch table adds one week to
  *    every pair the two share, keeps its streak start, and starts a pair the first lacked at 1;
  *  - the object names the rename swap relies on (what LIKE ... INCLUDING ALL generates, what the live
@@ -33,8 +30,8 @@
  *    of its statements as the test sees them, and stops nothing on the server.
  *
  * Preconditions (owner-run only, never in CI):
- *  - migrations 0051 and 0052 applied (the scratch tables copy keyword_top_asins, so the broad_category
- *    column and its index must exist); the reverse-table backfill done for meaningful numbers (an empty
+ *  - migration 0051 applied (0052's column may or may not still exist: the build no longer names it, and
+ *    0054 drops it after the deploy); the reverse-table backfill done for meaningful numbers (an empty
  *    keyword_top_asins still runs: the checks that need rows assert what they can and log a note);
  *  - no import running (the week's partition must be quiet). An import that reaches its build phase
  *    meanwhile waits at the advisory lock until the case ends, so prefer a quiet hour;
@@ -74,12 +71,13 @@ const NAMES_PROBE = 'keyword_top_asins_itest2';
  */
 const CARRY_SAMPLE_KEYWORDS = 3000;
 
-/** The names LIKE ... INCLUDING ALL gives a copy called `table`: its primary key, its (asin, search_term_id) index and its (broad_category, asin) index. */
+/** The names LIKE ... INCLUDING ALL gives a copy called `table`: its primary key and its (asin, search_term_id) index. */
 const generatedNames = (table: string) => ({
   pkey: `${table}_pkey`,
   asinIndex: `${table}_asin_search_term_id_idx`,
-  broadIndex: `${table}_broad_category_asin_idx`,
 });
+/** Whether 0052's column is still on the live table: the build no longer names it, and 0054 drops it after the deploy. */
+const BROAD_COLUMN_SQL = "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'keyword_top_asins' AND column_name = 'broad_category') AS ok";
 
 /**
  * The build's INSERT text aimed at scratch tables: `target` replaces keyword_top_asins_next; with
@@ -122,6 +120,8 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
   /** keyword_top_asins_meta.week_end_date: null until the first build. */
   let metaWeek: string | null = null;
   let realTableEmpty = true;
+  /** Whether 0052's broad_category column is still on the live table (the scratch copies then carry it, and its partial index, too). */
+  let hasBroadColumn = false;
 
   beforeAll(async () => {
     // keepAlive: the scratch builds are minutes of silence on the socket, as in the build's own callers.
@@ -133,10 +133,8 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
       "SELECT to_regclass('keyword_top_asins') IS NOT NULL AND to_regclass('keyword_top_asins_meta') IS NOT NULL AS ok",
     );
     if (!tables.rows[0]?.ok) throw new Error('migration 0051 is not applied (keyword_top_asins or keyword_top_asins_meta is missing)');
-    const column = await client.query<{ ok: boolean }>(
-      "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'keyword_top_asins' AND column_name = 'broad_category') AS ok",
-    );
-    if (!column.rows[0]?.ok) throw new Error('migration 0052 is not applied (keyword_top_asins has no broad_category column)');
+    hasBroadColumn = (await client.query<{ ok: boolean }>(BROAD_COLUMN_SQL)).rows[0]?.ok === true;
+    console.log(`[topAsinsBuild] 0052's broad_category column ${hasBroadColumn ? 'still exists (0054 not applied yet)' : 'is gone (0054 applied)'}`);
     const kcs = await client.query<{ week: string }>('SELECT current_week_end_date::text AS week FROM keyword_current_summary_meta WHERE singleton');
     if (!kcs.rows[0]) throw new Error('keyword_current_summary_meta has no row: the explorer week is unknown');
     currentWeek = kcs.rows[0].week;
@@ -265,37 +263,6 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
           expect(stats.carried, 'pairs that carried a streak from the live table').toBeGreaterThan(0);
         }
 
-        // The code travels from the same kwm row (spec 2026-10-12 broad category §4): per slot, equal to that slot's category. The sample is
-        // taken per slot: one unordered LIMIT over the whole table would most likely return slot-1 rows only (the INSERT writes them first)
-        // and leave the CASE branches for slots 2 and 3 unchecked. The partition is probed once per sampled row through its primary key
-        // (week_end_date, search_term_id): a LATERAL subquery with LIMIT 1 cannot be pulled up into the join tree, so the only plan is a
-        // nested loop with one index lookup per row (the key is unique, so the LIMIT drops nothing). A plain JOIN ran past the 600 s
-        // statement timeout on 2026-10-13 (most likely the planner hash-joined the partition); 2,000 rows per slot keep the lookups cheap.
-        const codeCheck = await client.query<{ sampled: number; sampled1: number; sampled2: number; sampled3: number; coded: number; mismatched: number }>(
-          `WITH s AS (
-             (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 1 LIMIT 2000)
-             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 2 LIMIT 2000)
-             UNION ALL (SELECT search_term_id, slot, broad_category FROM ${SCRATCH} WHERE slot = 3 LIMIT 2000))
-           SELECT count(*)::int AS sampled,
-                  count(*) FILTER (WHERE s.slot = 1)::int AS sampled1, count(*) FILTER (WHERE s.slot = 2)::int AS sampled2, count(*) FILTER (WHERE s.slot = 3)::int AS sampled3,
-                  count(*) FILTER (WHERE s.broad_category IS NOT NULL)::int AS coded,
-                  count(*) FILTER (WHERE s.broad_category IS DISTINCT FROM m.expected)::int AS mismatched
-           FROM s
-           CROSS JOIN LATERAL (
-             SELECT CASE s.slot WHEN 1 THEN m.top_clicked_category_1 WHEN 2 THEN m.top_clicked_category_2 ELSE m.top_clicked_category_3 END AS expected
-             FROM ${partition} m WHERE m.week_end_date = $1::date AND m.search_term_id = s.search_term_id LIMIT 1) m`,
-          [currentWeek],
-        );
-        const codes = codeCheck.rows[0];
-        console.log(`[topAsinsBuild] codes: ${codes.coded} of ${codes.sampled} sampled rows (slots 1/2/3: ${codes.sampled1}/${codes.sampled2}/${codes.sampled3}) carry a broad_category, ${codes.mismatched} differ from the partition`);
-        expect(codes.sampled, 'sampled rows').toBeGreaterThan(0);
-        // A slot the partition has well-formed ASINs for (n1/n2/n3, counted above) must be in the sample, or its branch of the CASE went unchecked.
-        if (n1 > 0) expect(codes.sampled1, 'slot-1 rows in the sample').toBeGreaterThan(0);
-        if (n2 > 0) expect(codes.sampled2, 'slot-2 rows in the sample').toBeGreaterThan(0);
-        if (n3 > 0) expect(codes.sampled3, 'slot-3 rows in the sample').toBeGreaterThan(0);
-        expect(codes.mismatched, 'rows whose broad_category differs from the kwm slot category').toBe(0);
-        expect(codes.coded, 'coded rows in the sample (every slot-1 row has a code)').toBeGreaterThan(0);
-
         // Carry arithmetic, on this database's own data: build again, carrying from the first scratch table.
         // A fresh TEMP table has no statistics (the real one is analyzed after every build).
         await client.query(`ANALYZE ${SCRATCH}`);
@@ -355,7 +322,9 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         await client.query(`CREATE TEMP TABLE ${NAMES_PROBE} (LIKE keyword_top_asins INCLUDING ALL)`);
         const copy = await objectNames(NAMES_PROBE);
         const generated = generatedNames(NAMES_PROBE);
-        expect(copy.indexes, 'indexes of the scratch copy').toEqual([generated.asinIndex, generated.broadIndex, generated.pkey].sort());
+        // While 0052's column is still on the live table, LIKE copies its partial index too, under the name it generates.
+        const expectedIndexes = [generated.asinIndex, generated.pkey, ...(hasBroadColumn ? [`${NAMES_PROBE}_broad_category_asin_idx`] : [])].sort();
+        expect(copy.indexes, 'indexes of the scratch copy').toEqual(expectedIndexes);
         expect(copy.constraints.filter((c) => c.contype === 'p').map((c) => c.conname), 'primary key of the scratch copy').toEqual([generated.pkey]);
         const checks = copy.constraints.filter((c) => c.contype === 'c');
         expect(checks, 'CHECK constraints of the scratch copy').toHaveLength(2);
@@ -363,10 +332,9 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         expect(checks.some((c) => /\bweeks_in_top3\b/.test(c.def)), 'a CHECK on weeks_in_top3').toBe(true);
 
         // The names the advance swap renames FROM on the live table (to _prev), which must exist for the next build's swap to run.
-        // The broad index's rename is IF EXISTS, so a drifted name would not fail a swap; but after migration 0052 and the one-off
-        // fill the live table must carry the canonical one (an old-code build leaves the name LIKE generated).
+        // The live table may still carry 0052's partial index under any name until 0054 runs; the swap never touches it.
         const live = await objectNames('keyword_top_asins');
-        expect(live.indexes, 'indexes of keyword_top_asins').toEqual(expect.arrayContaining(['keyword_top_asins_pkey', 'keyword_top_asins_asin_idx', 'keyword_top_asins_broad_category_idx']));
+        expect(live.indexes, 'indexes of keyword_top_asins').toEqual(expect.arrayContaining(['keyword_top_asins_pkey', 'keyword_top_asins_asin_idx']));
         expect(live.constraints.map((c) => c.conname), 'constraints of keyword_top_asins').toContain('keyword_top_asins_pkey');
       });
     },
@@ -380,14 +348,13 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
     expect(dropPrev, 'the swap drops the old _prev').toBeGreaterThanOrEqual(0);
     expect(swap.indexOf('ALTER TABLE keyword_top_asins RENAME TO keyword_top_asins_prev'), 'the swap renames the current table to _prev, after dropping the old one').toBeGreaterThan(dropPrev);
     expect(swap).toContain('ALTER INDEX keyword_top_asins_asin_idx RENAME TO keyword_top_asins_prev_asin_idx');
-    expect(swap).toContain('ALTER INDEX IF EXISTS keyword_top_asins_broad_category_idx RENAME TO keyword_top_asins_prev_broad_category_idx');
     expect(swap).toContain('ALTER TABLE keyword_top_asins_prev RENAME CONSTRAINT keyword_top_asins_pkey TO keyword_top_asins_prev_pkey');
     // Promote: the literals are the naming rule (proved above on a scratch copy) applied to keyword_top_asins_next.
     const next = generatedNames('keyword_top_asins_next');
     expect(swap).toContain('ALTER TABLE keyword_top_asins_next RENAME TO keyword_top_asins');
     expect(swap).toContain(`ALTER INDEX ${next.asinIndex} RENAME TO keyword_top_asins_asin_idx`);
-    expect(swap).toContain(`ALTER INDEX IF EXISTS ${next.broadIndex} RENAME TO keyword_top_asins_broad_category_idx`);
     expect(swap).toContain(`ALTER TABLE keyword_top_asins RENAME CONSTRAINT ${next.pkey} TO keyword_top_asins_pkey`);
+    expect(swap.some((t) => t.includes('broad_category')), 'no swap statement names the retired column').toBe(false);
   });
 
   it(
