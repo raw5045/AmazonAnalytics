@@ -97,6 +97,10 @@ describe('computeCrosswalk', () => {
     expect(heads()).toEqual(['BEGIN ISOLATION', 'SET LOCAL', 'SET LOCAL', 'SELECT a.category_path', 'ROLLBACK']);
     expect(new BaCrosswalkError('ba_crosswalk_no_votes', 'x').name).toBe('BaCrosswalkError');
   });
+  it('a failing ROLLBACK does not mask the original error', async () => {
+    const { client } = fakeClient([['SELECT a.category_path AS path', { rows: [] }], ['ROLLBACK', { throws: new Error('connection gone') }]]);
+    await expect(computeCrosswalk(client, WEEK)).rejects.toMatchObject({ code: 'ba_crosswalk_no_votes' });
+  });
 });
 
 describe('insertSql', () => {

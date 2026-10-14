@@ -13,7 +13,8 @@
  * Careful: .env.local's DATABASE_URL points at PRODUCTION — the write replaces the live table's rows in one
  * transaction (readers keep the previous rows until the commit). The votes read scans the week's kwm rows and
  * may take several minutes (not yet timed on kwm). Never run it while an import of the same week is in flight
- * (scripts/checkActiveJobs.ts): its kwm rows land over hours, and a partial week would train the crosswalk.
+ * (the import-status chip in the /admin header shows a live one): its kwm rows land over hours, and a partial
+ * week would train the crosswalk.
  */
 import { Pool } from 'pg';
 import { BaCrosswalkError, buildCrosswalk, computeCrosswalk } from '@/lib/baCategory/buildCrosswalk';
