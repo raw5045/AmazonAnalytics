@@ -8,7 +8,7 @@
  * REPEATABLE READ, READ ONLY transaction; assignCodes decides one code per path. writeCrosswalk: under a
  * self-exclusive table lock, refuses a week older than the built one, then DELETE + INSERT in one
  * transaction (readers keep the previous rows until COMMIT, then see the new ones; nothing is ever
- * half-written). buildCrosswalk = both, then a best-effort VACUUM (ANALYZE); re-running a week is idempotent.
+ * half-written). buildCrosswalk = both, then a best-effort VACUUM (ANALYZE, TRUNCATE false); re-running a week is idempotent.
  *
  * `client` must be ONE dedicated connection (never a Pool): both steps are transactions. Each sets its own
  * limits with SET LOCAL: the pool's statement_timeout does not bind through Neon's pooler.

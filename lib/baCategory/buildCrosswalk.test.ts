@@ -176,9 +176,10 @@ describe('buildCrosswalk', () => {
     await expect(buildCrosswalk(pool, WEEK)).rejects.toMatchObject({ code: 'ba_crosswalk_bad_client' });
   });
   it('computes, writes, vacuums (best-effort) and returns the stats', async () => {
-    const { client, heads } = fakeClient([...ANSWERS, ['VACUUM', { throws: Object.assign(new Error('late'), { code: '57014' }) }]]);
+    const { client, calls, heads } = fakeClient([...ANSWERS, ['VACUUM', { throws: Object.assign(new Error('late'), { code: '57014' }) }]]);
     await expect(buildCrosswalk(client, WEEK)).resolves.toEqual({ week: WEEK, paths: 3, direct: 2, backedOff: 1, uncoded: 1, trainingProducts: 72, codes: 2 });
     expect(heads()).toEqual([...READ, ...WRITE_HEAD, 'INSERT INTO', 'COMMIT', 'VACUUM (ANALYZE,']);
+    expect(calls[calls.length - 1].text).toBe('VACUUM (ANALYZE, TRUNCATE false) ba_category_crosswalk');
   });
   it('writes nothing when the compute fails', async () => {
     const { client, heads } = fakeClient([['SELECT a.category_path AS path', { rows: [] }]]);

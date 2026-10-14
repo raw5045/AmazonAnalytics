@@ -513,7 +513,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         // (38,650 in the default view), so a department-driven plan with a hashed crosswalk touches about 65,000–130,000, a nested-loop
         // probe per row up to ~260,000, and a crosswalk-driven plan about Pet Products' own products (~50,000). The bound sits between
         // the two shapes; recalibrate it from the numbers printed above if the catalog changes shape. A sold walk that fills the page
-        // early (100+ matches with the badge inside the department) would pass the bound too; the printed plan shows the shape.
+        // early (50+ matches, a full page, with the badge inside the department) would pass the bound too; the printed plan shows the shape.
         expect(analyzed.hit + analyzed.read, 'buffer accesses of the mismatched search (the BUFFERS keys were read)').toBeGreaterThan(0);
         expect(analyzed.hit + analyzed.read, 'buffer accesses of the mismatched search (cache-independent)').toBeLessThan(400_000);
       });
