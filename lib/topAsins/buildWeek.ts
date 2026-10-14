@@ -28,7 +28,7 @@
  *    this week, so carrying from it would add the week twice. Carry from _prev (the week before)
  *    instead, or from nothing when _prev is missing (every pair then starts at 1; carrying from the
  *    current table minus its week would be exact for pairs present in both versions, but the simple
- *    rule is kept), and swap by dropping the stale current table and keeping the _prev table. Idempotent.
+ *    rule is kept), and swap by dropping the stale current table, leaving _prev alone. Idempotent.
  *  - A week older than the meta week is refused unless forced. A forced rewind carries nothing:
  *    every streak restarts at 1, and the weeks after it must be rebuilt forward. Its swap drops
  *    both the newer current table and _prev, since a _prev left over would be a build NEWER than
@@ -55,8 +55,8 @@ export type TopAsinsCarryFrom = 'current' | 'prev' | 'none';
 /**
  * How a build relates to the tables it replaces; the swap follows from it.
  *  - advance: carry from the current build and keep it as _prev (the older _prev is retired);
- *  - same-week rebuild: carry from _prev or from nothing (carrying from the stale table would count the week
- *    twice), drop the stale current table, keep the _prev table;
+ *  - same-week rebuild: carry from _prev or from nothing, drop the stale current table, leave _prev alone
+ *    (carrying from the stale table would count the week twice);
  *  - forced rewind: carry nothing and drop both the newer current table and _prev (a _prev left over would
  *    be a build newer than the week rebuilt).
  */

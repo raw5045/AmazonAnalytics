@@ -217,6 +217,10 @@ describe('finalizeStatements', () => {
   });
   it('renames nothing but the asin index and the primary key (no broad-category index since spec 2026-10-14 §4.2)', () => {
     expect(f.swap.map((s) => norm(s.text)).some((t) => t.includes('broad_category'))).toBe(false);
+    expect(f.swap.map((s) => norm(s.text)).filter((t) => /^ALTER (INDEX|TABLE \w+ RENAME CONSTRAINT)/.test(t))).toEqual([
+      'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx RENAME TO keyword_top_asins_asin_idx',
+      'ALTER TABLE keyword_top_asins RENAME CONSTRAINT keyword_top_asins_next_pkey TO keyword_top_asins_pkey',
+    ]);
   });
   it("writes the build's own meta upsert: the last week and the copied row count, bound at run time", () => {
     const built = buildTopAsinsStatements(WEEK).meta(7);

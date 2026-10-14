@@ -72,10 +72,7 @@ const NAMES_PROBE = 'keyword_top_asins_itest2';
 const CARRY_SAMPLE_KEYWORDS = 3000;
 
 /** The names LIKE ... INCLUDING ALL gives a copy called `table`: its primary key and its (asin, search_term_id) index. */
-const generatedNames = (table: string) => ({
-  pkey: `${table}_pkey`,
-  asinIndex: `${table}_asin_search_term_id_idx`,
-});
+const generatedNames = (table: string) => ({ pkey: `${table}_pkey`, asinIndex: `${table}_asin_search_term_id_idx` });
 /** Whether 0052's column is still on the live table: the build no longer names it, and 0054 drops it after the deploy. */
 const BROAD_COLUMN_SQL = "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'keyword_top_asins' AND column_name = 'broad_category') AS ok";
 
@@ -343,7 +340,7 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
 
   it('the advance swap retires the current table to _prev and renames _next by the generated names (statement text only, never executed)', () => {
     const swap = buildTopAsinsStatements(currentWeek).swap.map((s) => s.text);
-    // Retire: drop the old _prev, then the current table (and its indexes and primary key) becomes _prev.
+    // Retire: drop the old _prev, then the current table (and its index and primary key) becomes _prev.
     const dropPrev = swap.indexOf('DROP TABLE IF EXISTS keyword_top_asins_prev');
     expect(dropPrev, 'the swap drops the old _prev').toBeGreaterThanOrEqual(0);
     expect(swap.indexOf('ALTER TABLE keyword_top_asins RENAME TO keyword_top_asins_prev'), 'the swap renames the current table to _prev, after dropping the old one').toBeGreaterThan(dropPrev);

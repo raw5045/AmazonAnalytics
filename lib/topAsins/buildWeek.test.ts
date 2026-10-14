@@ -31,7 +31,7 @@ describe('buildTopAsinsStatements', () => {
   });
   it('carries no code: the slot selects name the five slot columns only (the crosswalk replaced the per-row code, spec 2026-10-14 §4.2)', () => {
     for (const st of everyMode) {
-      for (const slot of [1, 2, 3]) expect(st.insert.text).toContain(`top_clicked_product_${slot}_conversion_share AS conversion_share\n`);
+      for (const slot of [1, 2, 3]) expect(st.insert.text).toMatch(new RegExp(`top_clicked_product_${slot}_conversion_share AS conversion_share\\s+FROM `));
       expect(st.insert.text).not.toContain('broad_category');
       expect(st.insert.text).not.toContain('top_clicked_category');
       expect(st.insert.text).toContain('week_end_date)');
@@ -212,7 +212,7 @@ describe('buildTopAsinsWeek', () => {
     'CREATE TABLE keyword_top_asins_next',
     'INSERT INTO keyword_top_asins_next',
     'SET LOCAL lock_timeout',
-    'DROP TABLE keyword_top_asins', // the stale current table; the _prev table is never dropped or renamed
+    'DROP TABLE keyword_top_asins', // the stale current table; _prev is never named again
     'ALTER TABLE keyword_top_asins_next', // _next -> current
     'COMMENT ON TABLE', // current's
     'ALTER INDEX keyword_top_asins_next_asin_search_term_id_idx',
