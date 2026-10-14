@@ -163,7 +163,10 @@ export async function buildCrosswalk(client: Queryable, week: string): Promise<C
   const { rows, stats } = await computeCrosswalk(client, week); // refuses a Pool and a malformed week before any query
   await writeCrosswalk(client, rows, week);
   // Best-effort, after the COMMIT: reclaims the replaced rows and refreshes the planner statistics and the
-  // visibility map (the code index's index-only scans); autovacuum covers a miss.
-  await client.query('VACUUM (ANALYZE) ba_category_crosswalk').catch(() => undefined);
+  // visibility map (the code index's index-only scans); autovacuum covers a miss. TRUNCATE false = no page-trim lock:
+  // a plain VACUUM may briefly take ACCESS EXCLUSIVE to trim empty pages off the end of the table (it backs off when a
+  // reader arrives, but "readers never wait" should be absolute), and trimming buys nothing on a table that swings
+  // between 1x and 2x its size every week.
+  await client.query('VACUUM (ANALYZE, TRUNCATE false) ba_category_crosswalk').catch(() => undefined);
   return stats;
 }
