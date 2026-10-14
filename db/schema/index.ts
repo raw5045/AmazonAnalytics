@@ -37,3 +37,4 @@ export * from './asinProducts';
 export * from './asinSnapshots';
 export * from './keepaServiceStatus';
 export * from './keywordTopAsins';
+export * from './baCategoryCrosswalk';
