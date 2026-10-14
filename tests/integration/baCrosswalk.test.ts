@@ -1,11 +1,11 @@
 // tests/integration/baCrosswalk.test.ts
 /**
- * computeCrosswalk (lib/baCategory/buildCrosswalk.ts) against production, READ-ONLY (spec 2026-10-14 §12):
- * the votes statement and the paths statement run for the Explorer week through computeCrosswalk, which
- * runs on the client directly (it opens its own REPEATABLE READ READ ONLY transaction and commits it; it
- * never writes), then the checks and the EXPLAINs run inside a BEGIN READ ONLY … ROLLBACK wrapper
- * (writeCrosswalk is never called; the real table is never written). The assignment is checked for
- * shape, coverage and two known paths, and the two statements are planned.
+ * computeCrosswalk (lib/baCategory/buildCrosswalk.ts) against production, READ-ONLY (spec 2026-10-14 §12),
+ * in two cases. First the votes statement and the paths statement are planned (EXPLAIN inside a BEGIN READ
+ * ONLY … ROLLBACK wrapper). Then they run for the Explorer week through computeCrosswalk, on the client
+ * directly (it opens its own REPEATABLE READ READ ONLY transaction and commits it; it never writes), and
+ * the assignment is checked for shape, coverage and two known paths inside the wrapper (writeCrosswalk is
+ * never called; the real table is never written).
  *
  * Run on the owner's go only, never in CI, and AFTER productsQueries.test.ts: this file scans the catalog
  * (the votes join, the paths read, the coverage count), which would warm the pages that file times cold:
@@ -129,8 +129,6 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
           else if (r.sourcePath === r.categoryPath) direct += w.n;
         }
         console.log(`[baCrosswalk] sellable products with a path: ${total}; decided by their own path ${((100 * direct) / total).toFixed(1)}%; without a code ${((100 * uncoded) / total).toFixed(2)}%`);
-        expect(direct / total, 'share of sellable products decided by their own path').toBeGreaterThanOrEqual(0.8);
-        expect(uncoded / total, 'share of sellable products without a code').toBeLessThan(0.01);
         // The mixed paths (spec §5.2: the winner holds under 70 % of the votes): the per-product override of spec §14 stands or falls with
         // how many sellable products sit in them.
         const mixed = rows.filter((r) => r.sharePct < 70);
@@ -138,6 +136,8 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
         let mixedProducts = 0;
         for (const w of weights.rows) if (mixedPaths.has(w.category_path)) mixedProducts += w.n;
         console.log(`[baCrosswalk] mixed paths (share < 70 %): ${mixed.length} paths, ${mixedProducts} sellable products (${((100 * mixedProducts) / total).toFixed(1)} %)`);
+        expect(direct / total, 'share of sellable products decided by their own path').toBeGreaterThanOrEqual(0.8);
+        expect(uncoded / total, 'share of sellable products without a code').toBeLessThan(0.01);
         // Two known paths (spec §2).
         const toilet = byPath.get(TOILET_PAPER);
         console.log(`[baCrosswalk] toilet paper: ${JSON.stringify(toilet)}`);

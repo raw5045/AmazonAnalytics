@@ -61,9 +61,9 @@
  *    custom-category cases: when there is none they are skipped ("no custom category to test with");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
  *
- * Run (owner's go, Git Bash), the products file first and alone (its timings must be cold: the crosswalk
- * test scans the catalog and the build test's carry sorts the whole live pair table), then the crosswalk
- * test, then the build test:
+ * Run (owner's go, Git Bash), the products file first and alone (its timings must be as cold as the run allows:
+ * the crosswalk test scans the catalog and the build test's carry sorts the whole live pair table), then the
+ * crosswalk test, then the build test:
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/baCrosswalk.test.ts --disableConsoleIntercept
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/topAsinsBuild.test.ts --disableConsoleIntercept
@@ -489,9 +489,10 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         // occurs in the department it may walk a sort index across the catalog looking for matches that hardly exist: the likeliest cold
         // case to pass the page's cap, so it runs before the cases that read the catalog (any that reads Pet Products' own products, and
         // the two picks that join the crosswalk to it); the code picks above it read only the crosswalk. The three searches executed
-        // above it (the owner's, the largest code's and the fewest-paths code's) read the catalog too, and in the documented run the build
-        // of spec §13 step 2 scanned the whole heap minutes earlier, so the verdict is the work the EXPLAIN ANALYZE re-run prints (the
-        // blocks checked at the end), not the time. For the coldest index reading run this case alone first (-t "mismatched department").
+        // above it (the owner's, the most-paths code's and the fewest-paths code's) read the catalog too, and in the documented run the
+        // build of spec §13 step 2 scanned the whole heap minutes earlier, so the verdict rests on the work the EXPLAIN ANALYZE re-run
+        // prints (the buffer accesses checked at the end), not on the time alone. For the coldest index reading run this case alone
+        // first (-t "mismatched department").
         const present = await client.query<{ pets: boolean; tools: boolean }>(
           `SELECT EXISTS (SELECT 1 FROM ba_category_crosswalk WHERE code = 'Pet Products') AS pets,
                   EXISTS (SELECT 1 FROM asin_products WHERE in_scope AND starts_with(category_path, 'Tools & Home Improvement › ')) AS tools`,
@@ -502,7 +503,8 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         }
         const scope = pageCategoryScope({ ...PRODUCT_DEFAULTS, dept: 'Tools & Home Improvement' }, []);
         const { rows, analyzed } = await broadSearch('Pet Products', 'with a mismatched department', scope);
-        // An empty page is a valid answer here: this case asserts the times (inside broadSearch) and the department of every row, and prints the plans.
+        // An empty page is a valid answer here: this case asserts the times (inside broadSearch), the department of every row and the
+        // buffer accesses of the EXPLAIN ANALYZE re-run (below), and prints the plans.
         console.log(`[productsQueries] Pet Products in Tools & Home Improvement: the page holds ${rows.length} rows`);
         for (const r of rows) expect(r.categoryPath === 'Tools & Home Improvement' || r.categoryPath?.startsWith('Tools & Home Improvement › '), `department of ${r.asin}`).toBe(true);
         // The cache-independent verdict, in buffer accesses (EXPLAIN's shared blocks hit + read count every access, not distinct
@@ -510,7 +512,9 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         // almost nothing fetches at least one heap block per entry (780,000+ accesses); Tools & Home Improvement holds 63,590 rows
         // (38,650 in the default view), so a department-driven plan with a hashed crosswalk touches about 65,000–130,000, a nested-loop
         // probe per row up to ~260,000, and a crosswalk-driven plan about Pet Products' own products (~50,000). The bound sits between
-        // the two shapes; recalibrate it from the numbers printed above if the catalog changes shape.
+        // the two shapes; recalibrate it from the numbers printed above if the catalog changes shape. A sold walk that fills the page
+        // early (100+ matches with the badge inside the department) would pass the bound too; the printed plan shows the shape.
+        expect(analyzed.hit + analyzed.read, 'buffer accesses of the mismatched search (the BUFFERS keys were read)').toBeGreaterThan(0);
         expect(analyzed.hit + analyzed.read, 'buffer accesses of the mismatched search (cache-independent)').toBeLessThan(400_000);
       });
     },
@@ -569,7 +573,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it(
-    'the code with the most paths, with a leaf pick (its best-voted self-decided path, three levels or deeper), stays under the cap and inside the leaf',
+    'the code with the most paths, with a leaf pick (its best-voted self-decided path, three levels or deeper), returns rows inside the leaf and stays under the cap',
     async (ctx) => {
       await inReadOnlyTransaction(async () => {
         await skipUnlessCodes(ctx);
@@ -588,9 +592,10 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         }
         const { rows } = await broadSearch(code, 'warm (after the department cases)', pageCategoryScope({ ...PRODUCT_DEFAULTS, leafPaths: [leaf] }, []));
         console.log(`[productsQueries] "${code}" within "${leaf}": ${rows.length} rows on the page`);
-        // The code's size: a join over all its products, so it runs here, after the timed reads of this case and of the mismatched-department case above, not in the first case.
+        // The code's size: a join over all its products, so it runs here, after the timed reads of this case and of the mismatched- and own-department cases above, not in the first case.
         console.log(`[productsQueries] code with the most paths "${code}": ${await productsOf(code)} sellable products`);
-        // A self-decided path has 20+ training products at or below it, so its page should not be empty.
+        // A self-decided path has 20+ training products with exactly that path, so its page should not be empty; if this fails, none
+        // of them shows in the default view (no sold badge, or out of scope): pick another leaf by hand, it is not a predicate bug.
         expect(rows.length, `rows of "${code}" inside the leaf "${leaf}"`).toBeGreaterThanOrEqual(1);
         for (const r of rows) expect(r.categoryPath === leaf || r.categoryPath?.startsWith(`${leaf} › `), `${r.asin} under ${leaf}`).toBe(true);
       });
