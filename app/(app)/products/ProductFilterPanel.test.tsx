@@ -63,6 +63,7 @@ describe('ProductFilterPanel controls', () => {
     expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS]);
     expect(control('Broad category')).toHaveDisplayValue('All broad categories');
     expect(optionTexts('Broad category')).toEqual(['All broad categories', ...BROAD]);
+    expect(screen.getByText("Brand Analytics category, as on the Explorer, mapped from the product's Keepa category. One per product.")).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Leaf' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(screen.getByRole('group', { name: 'Leaf categories' })).getByLabelText('Add leaf category')).toBeInTheDocument();

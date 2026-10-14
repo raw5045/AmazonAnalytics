@@ -1,7 +1,7 @@
 // lib/products/searchProducts.test.ts
 import { describe, it, expect } from 'vitest';
 import { neon, neonConfig, type NeonQueryFunction } from '@neondatabase/serverless';
-import { asinProducts, keywordTopAsins } from '@/db/schema';
+import { asinProducts, baCategoryCrosswalk, keywordTopAsins } from '@/db/schema';
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from './categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
 import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
@@ -88,24 +88,24 @@ describe('productSearchSql', () => {
     expect(q.rows.text).not.toContain('category_path =');
     expect(q.rows.values).toEqual([50, 0]);
   });
-  it('broadCategory is a semi-join on the pair table: EXISTS over keyword_top_asins by ASIN and code, the semi-join keyword_top_asins_broad_category_idx is built for (spec 2026-10-12 broad category §5)', () => {
+  it("broadCategory is a semi-join on the crosswalk: the product's path must be one of the code's paths (spec 2026-10-14 §6)", () => {
     const q = productSearchSql({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' }, EMPTY_CATEGORY_SCOPE);
-    expect(q.rows.text).toContain('EXISTS (SELECT 1 FROM keyword_top_asins k WHERE k.asin = a.asin AND k.broad_category = $1::text) AND a.monthly_sold IS NOT NULL');
+    expect(q.rows.text).toContain('a.category_path IN (SELECT x.category_path FROM ba_category_crosswalk x WHERE x.code = $1::text) AND a.monthly_sold IS NOT NULL');
     expect(q.rows.values).toEqual(['Home', 50, 0]);
-    expect(q.count.text).toContain('k.broad_category = $1::text');
+    expect(q.count.text).toContain('x.code = $1::text');
     expect(q.count.values).toEqual(['Home']);
-    expect(dbCols(keywordTopAsins).has('broad_category')).toBe(true);
+    expect(dbCols(baCategoryCrosswalk).has('category_path') && dbCols(baCategoryCrosswalk).has('code')).toBe(true);
   });
   it('the broad category predicate follows the category scope and precedes the offer filters', () => {
     const scope: ProductCategoryScope = { dept: 'Tools', subtreePaths: [], exactPaths: [], scoped: false };
     const q = productSearchSql({ ...PRODUCT_DEFAULTS, dept: 'Tools', broadCategory: 'Home', fba: 'no' }, scope);
     expect(q.rows.text).toContain(
-      '(a.category_path = $1::text OR starts_with(a.category_path, $2::text)) AND EXISTS (SELECT 1 FROM keyword_top_asins k WHERE k.asin = a.asin AND k.broad_category = $3::text) AND a.fba_offer_count = 0',
+      '(a.category_path = $1::text OR starts_with(a.category_path, $2::text)) AND a.category_path IN (SELECT x.category_path FROM ba_category_crosswalk x WHERE x.code = $3::text) AND a.fba_offer_count = 0',
     );
     expect(q.rows.values).toEqual(['Tools', 'Tools › ', 'Home', 50, 0]);
   });
   it('no predicate and no bind for a null broad category', () => {
-    expect(productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE).rows.text).not.toContain('broad_category');
+    expect(productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE).rows.text).not.toContain('ba_category_crosswalk');
     expect(productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE).rows.values).toEqual([50, 0]);
   });
   it('a scoped selection with no paths matches nothing, in the rows and the count', () => {

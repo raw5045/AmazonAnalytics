@@ -74,7 +74,7 @@ describe('the loaders', () => {
     neonMock.answer = (text, values) => {
       if (text.includes('DISTINCT category_root')) return DEPARTMENT_ROWS;
       if (text.includes('DISTINCT category_path')) return PATH_ROWS[values[0] as string] ?? [];
-      if (text.includes('WITH RECURSIVE codes')) return BROAD_ROWS;
+      if (text.includes('SELECT DISTINCT code FROM ba_category_crosswalk')) return BROAD_ROWS;
       return [];
     };
   });
@@ -112,19 +112,16 @@ describe('the loaders', () => {
     await expect(listProductCategoryPaths()).rejects.toBe(failure);
   });
 
-  it('lists the codes present on the pair table by a loose index scan (one probe per code), in code-unit order', async () => {
+  it('lists the distinct codes of the crosswalk, in code-unit order (spec 2026-10-14 §7)', async () => {
     await expect(listProductBroadCategories()).resolves.toEqual(['Home', 'Misc SDP', 'Toys', 'apparel']);
-    // One neonRunner batch: the page's statement timeout first (its 30 s value is pinned in searchProducts.test.ts), then the list statement, which has no holes.
+    // One neonRunner batch: the page's statement timeout first (its 30 s value is pinned in searchProducts.test.ts), then the list statement.
     expect(neonMock.queries).toHaveLength(2);
     expect(neonMock.queries[0]).toEqual({ text: `SET LOCAL statement_timeout = ${PRODUCT_READ_TIMEOUT_MS}`, values: [] });
-    expect(neonMock.queries[1].values).toEqual([]);
-    expect(neonMock.queries[1].text).toBe(BROAD_CATEGORY_LIST_SQL.replace(/\s+/g, ' ').trim());
-    expect(neonMock.queries[1].text).toBe(
-      'WITH RECURSIVE codes AS ( (SELECT broad_category AS code FROM keyword_top_asins WHERE broad_category IS NOT NULL ORDER BY broad_category LIMIT 1) UNION ALL SELECT (SELECT k.broad_category FROM keyword_top_asins k WHERE k.broad_category > c.code ORDER BY k.broad_category LIMIT 1) FROM codes c WHERE c.code IS NOT NULL ) SELECT code FROM codes WHERE code IS NOT NULL',
-    );
+    expect(neonMock.queries[1]).toEqual({ text: BROAD_CATEGORY_LIST_SQL, values: [] });
+    expect(BROAD_CATEGORY_LIST_SQL).toBe('SELECT DISTINCT code FROM ba_category_crosswalk ORDER BY code');
   });
 
-  it('an empty pair table gives an empty code list; a failed read rejects (never an empty list cached for an hour)', async () => {
+  it('an empty crosswalk gives an empty code list; a failed read rejects (never an empty list cached for an hour)', async () => {
     neonMock.answer = () => [];
     await expect(listProductBroadCategories()).resolves.toEqual([]);
     neonMock.answer = () => { throw Object.assign(new Error('cold'), { code: '57014' }); };

@@ -6,8 +6,9 @@
  * other filter is read from ProductFilters (spec 2026-10-12 §4.3).
  * Every predicate rides on a partial index: the 0051 (key, asin) indexes for the range filters and sorts
  * (the base predicate matches their WHERE clause exactly), 0050's asin_products_category_path_idx for
- * the category predicate (see ./categoryPredicate), and 0052's keyword_top_asins_broad_category_idx for
- * the broad-category semi-join. Rating, FBA and Amazon have no index of their own and ride whichever
+ * the category predicate (see ./categoryPredicate), and 0053's ba_category_crosswalk_code_idx for the
+ * broad-category semi-join (one code's paths; the equality probes ride asin_products_category_path_idx).
+ * Rating, FBA and Amazon have no index of their own and ride whichever
  * scan the planner picks.
  *
  * Two rules keep a page cheap on a multi-million-row catalog:
@@ -81,9 +82,9 @@ export function productSearchSql(f: ProductFilters, scope: ProductCategoryScope)
   // The category filter comes from the scope alone (spec 2026-10-12 §4.1); f's own category fields are the URL's, not the query's.
   const category = categoryPredicate(scope, bind);
   if (category !== null) where.push(category);
-  // Any-of over the product's pair rows this week (spec 2026-10-12 broad category §5): a semi-join the planner
-  // serves through keyword_top_asins_broad_category_idx (= $n implies IS NOT NULL, the index's predicate).
-  if (f.broadCategory !== null) where.push(`EXISTS (SELECT 1 FROM keyword_top_asins k WHERE k.asin = a.asin AND k.broad_category = ${bind(f.broadCategory)}::text)`);
+  // The product's broad category is the code of its Keepa path (spec 2026-10-14 §6): a semi-join against the code's paths.
+  // ba_category_crosswalk_code_idx serves the subquery; asin_products_category_path_idx serves the equality probes.
+  if (f.broadCategory !== null) where.push(`a.category_path IN (SELECT x.category_path FROM ba_category_crosswalk x WHERE x.code = ${bind(f.broadCategory)}::text)`);
   if (f.fba === 'yes') where.push('a.fba_offer_count > 0');
   if (f.fba === 'no') where.push('a.fba_offer_count = 0');
   if (f.amazon === 'yes') where.push('a.amazon_availability >= 0');

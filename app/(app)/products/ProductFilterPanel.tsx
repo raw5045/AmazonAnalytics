@@ -212,7 +212,7 @@ export function ProductFilterPanel({
   filters: ProductFilters;
   /** The catalog's root departments (lib/products/listCategories). */
   departments: string[];
-  /** The Brand Analytics codes on the pair table (lib/products/listCategories), the Broad category select's options. */
+  /** The Brand Analytics codes of the crosswalk (lib/products/listCategories), the Broad category select's options. */
   broadCategories: string[];
   /** The catalog's distinct category paths, the typeahead's options. */
   leafCategories: string[];
@@ -457,7 +457,7 @@ export function ProductFilterPanel({
                   </option>
                 ))}
               </select>
-              <p className={HINT}>Brand Analytics code, as on the Explorer, from this week&apos;s keywords where the product was a top-3 click. A product can have several.</p>
+              <p className={HINT}>Brand Analytics category, as on the Explorer, mapped from the product&apos;s Keepa category. One per product.</p>
             </Field>
 
             <Field label="Leaf categories" groupId="pf-leaf-categories">

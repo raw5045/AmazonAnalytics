@@ -10,11 +10,10 @@
  *    refuses entries over 2 MB (it warns and skips in production, throws in dev) and the full list
  *    is about 1.9 MB today, so one entry would sit at the limit; the per-department entries stay
  *    well under it (the largest, Clothing, is roughly 0.5-1 MB);
- *  - listProductBroadCategories: the codes on keyword_top_asins, one index probe each (a loose index
- *    scan; see BROAD_CATEGORY_LIST_SQL below), read through neonRunner so PRODUCT_READ_TIMEOUT_MS caps
- *    it like the page's reads.
+ *  - listProductBroadCategories: the distinct codes of ba_category_crosswalk (spec 2026-10-14 §7; ~24k
+ *    rows, one index scan), read through neonRunner so PRODUCT_READ_TIMEOUT_MS caps it like the page's reads.
  * All three lists are sorted by plain code-unit comparison so the order never depends on the host's
- * ICU data (lib/research/categories.ts sorts the same way). An empty catalog (or pair table) gives empty lists.
+ * ICU data (lib/research/categories.ts sorts the same way). An empty catalog (or crosswalk) gives empty lists.
  * A failed read rejects the whole list (the tools validate category scopes against it, so a
  * partial list would turn a transient error into a false CATEGORY_NOT_AVAILABLE); never catch
  * inside a cached function, or an empty list is cached for an hour.
@@ -84,23 +83,16 @@ export async function listProductCategoryPaths(): Promise<string[]> {
 }
 
 /**
- * The Brand Analytics codes present on the keyword→ASIN pair table (spec 2026-10-12 broad category §6): what the
- * Products page's broad filter can match (120 today; the Explorer's slot-1 list has 102). A loose index scan:
- * one probe of keyword_top_asins_broad_category_idx per code, whatever the table size. The text is also a
- * key part of the cache below, so an edit to it starts a new entry (the callback does not inline it).
+ * The Brand Analytics codes the crosswalk maps paths to (spec 2026-10-14 §7): what the Products page's broad
+ * filter can match. Empty until the first build. The text is also a key part of the cache below, so an edit
+ * to it starts a new entry (the callback does not inline it).
  */
-export const BROAD_CATEGORY_LIST_SQL = `WITH RECURSIVE codes AS (
-  (SELECT broad_category AS code FROM keyword_top_asins WHERE broad_category IS NOT NULL ORDER BY broad_category LIMIT 1)
-  UNION ALL
-  SELECT (SELECT k.broad_category FROM keyword_top_asins k WHERE k.broad_category > c.code ORDER BY k.broad_category LIMIT 1)
-  FROM codes c WHERE c.code IS NOT NULL
-)
-SELECT code FROM codes WHERE code IS NOT NULL`;
+export const BROAD_CATEGORY_LIST_SQL = 'SELECT DISTINCT code FROM ba_category_crosswalk ORDER BY code';
 
 /**
- * The codes in code-unit order (the recursion walks the index in the database's collation; re-sorted here).
- * Run through neonRunner, so PRODUCT_READ_TIMEOUT_MS caps the read like every web read of keyword_top_asins:
- * a reader holds a lock the weekly table swap waits on (120 s at most), so a stuck one must not outlive it.
+ * The codes in code-unit order (the statement's ORDER BY follows the database's collation; re-sorted here).
+ * Run through neonRunner, so PRODUCT_READ_TIMEOUT_MS caps the read like every web read: the weekly rebuild
+ * truncates the table in a transaction readers queue behind for a moment.
  */
 async function fetchBroadCategoriesSorted(): Promise<string[]> {
   const run = neonRunner(neon(env.DATABASE_URL));
