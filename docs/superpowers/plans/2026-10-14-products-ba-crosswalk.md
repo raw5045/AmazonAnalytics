@@ -275,9 +275,10 @@ describe('assignCodes (spec 2026-10-14 §5.2)', () => {
 
   it('a department under the threshold still decides when it has any vote; one with none gives no row', () => {
     const rows = assignCodes([vote(DOG_TOYS, 'Pet Products', 3)], [DOG_TOYS, `${PET} › Cats`, 'Gift Cards › Restaurants']);
+    // Sorted by path: 'Pet Supplies › Cats' before 'Pet Supplies › Dogs › Toys'.
     expect(rows).toEqual([
-      { categoryPath: DOG_TOYS, code: 'Pet Products', sourcePath: PET, votes: 3, sharePct: 100 },
       { categoryPath: `${PET} › Cats`, code: 'Pet Products', sourcePath: PET, votes: 3, sharePct: 100 },
+      { categoryPath: DOG_TOYS, code: 'Pet Products', sourcePath: PET, votes: 3, sharePct: 100 },
     ]);
   });
 
@@ -2038,6 +2039,10 @@ Fill the Results table below (one docs commit per step is fine), update the arc 
 | First import with the phase | | | |
 
 ---
+
+## Landed shape (deviations from the task texts above; the code is the reference)
+
+- **Task 2:** the plan's test "a department under the threshold still decides…" listed the two rows in the wrong order (the module sorts catalog paths, so `Pet Supplies › Cats` comes before `Pet Supplies › Dogs › Toys`); the implementer fixed the test's expectation, not the module, and the block above now shows the corrected order.
 
 ## Self-review (done while writing)
 
