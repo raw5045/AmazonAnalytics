@@ -1,7 +1,7 @@
 /**
  * Streamed history and keywords sections for the ASIN page (spec 2026-10-09 §6.2, §6.3).
  *
- * The page awaits only the facts (the primary-key read and the codes read, in parallel) so the
+ * The page awaits only the facts (the primary-key read, which carries the path's code) so the
  * title band and the facts card paint first; these two reads stream in behind <Suspense>. Like the
  * keyword page's StreamedSections and TopProductsSection, each section awaits its own read inside
  * a try/catch and fails soft, and NO client error boundary wraps their <Suspense> (that would

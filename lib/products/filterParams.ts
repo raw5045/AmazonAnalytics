@@ -18,7 +18,7 @@ export const MAX_CATEGORY_PATH_LENGTH = 256;
 export const PRODUCT_MAX_LEAF_PATHS = 2000;
 /** Custom-category ids a URL may carry (`custom`, comma-separated), the Explorer's MAX_CUSTOM_CATEGORY_IDS. */
 export const PRODUCT_MAX_CUSTOM_IDS = 50;
-/** The widest `broad` value a URL may carry: keyword_top_asins.broad_category is varchar(255). */
+/** The widest `broad` value a URL may carry: ba_category_crosswalk.code is varchar(255), the same bound as the report column top_clicked_category_1 it is learned from. */
 export const PRODUCT_MAX_BROAD_CATEGORY_LENGTH = 255;
 
 /** The validated filters. ./filters' productFiltersSchema infers exactly this type (pinned in filters.test.ts). */
@@ -37,7 +37,7 @@ export type ProductFilters = {
   ratioMax: number | null;
   /** One Keepa root department ('Health & Household'): the product's own storefront department, matched at any depth (spec 2026-10-12 §3). */
   dept: string | null;
-  /** One Brand Analytics code ('Home', 'Pet Supplies'): the weekly report filed the product under it on at least one keyword where it was a top-3 clicked product this week; a product can carry several codes and any one matches (spec 2026-10-12 broad category §5). */
+  /** One Brand Analytics code ('Home', 'Pet Supplies'): the product's own Brand Analytics category, the code its Keepa category path maps to in ba_category_crosswalk (one per product; spec 2026-10-14 §6). */
   broadCategory: string | null;
   /** Leaf picks: each matches the path and everything under it; several combine with OR. */
   leafPaths: string[];

@@ -226,9 +226,9 @@ describe('buildGuide', () => {
 
 describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
   it('is absent unless asked for, and then carries the rules and the caps', () => {
-    expect(GUIDE_VERSION).toBe(5);
+    expect(GUIDE_VERSION).toBe(6);
     const off = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS });
-    expect(off.guideVersion).toBe(5);
+    expect(off.guideVersion).toBe(6);
     expect(off.workspace).toBeUndefined();
     const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: { ...DEFAULT_LIMITS, writesPerDay: 42 }, workspace: true });
     expect(on.workspace).toEqual({ rules: WORKSPACE_RULES, caps: { savedViews: 5, customCategories: 25, watchedKeywords: 100, leavesPerCategory: 12000, writesPerDay: 42 } });
@@ -276,7 +276,7 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(rules).toContain('current BSR ÷ 30-day average BSR × 100');
     expect(rules).toContain('70 = at least 30 % better');
     expect(rules).toContain('consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword');
-    expect(rules).toContain('inCatalog false: the keywords know the ASIN but there are no product facts (the title and broadCategories may still come from the keyword side; usually the category is excluded from enrichment)');
+    expect(rules).toContain('inCatalog false: the keywords know the ASIN but there are no product facts (the title may still come from the keyword side; broadCategory is null; usually the category is excluded from enrichment)');
     expect(rules).not.toContain('every fact is null');
     expect(rules).toContain(`${PRODUCT_PAGE_SIZE} products, page 1 to ${PRODUCT_MAX_PAGE}`);
     expect(rules).toContain(`exact below ${PRODUCT_COUNT_CAP.toLocaleString('en-US')}`);
@@ -295,10 +295,10 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     const rules = rulesText();
     expect(rules).toContain("filters.department is one of the catalog's storefront departments");
     expect(rules).toContain("not a keyword row's broadCategory");
-    expect(rules).toContain("filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory and a keyword row's broadCategory carry it");
-    expect(rules).toContain("the product's own code on that row, which can differ from the keyword's broadCategory");
-    expect(rules).toContain('get_product_details returns the product\'s codes as broadCategories');
-    expect(rules).toContain("(get_product_details lists the product's keywords and its codes)");
+    expect(rules).toContain("filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory carries it");
+    expect(rules).toContain("the product's own category: the code its Keepa category path maps to, one per product, relearned weekly from the report");
+    expect(rules).toContain("get_product_details returns it as product.broadCategory");
+    expect(rules).toContain("A keyword's broadCategory is the category most clicked for that search");
     expect(rules).toContain('filters.categories is the object search_keywords takes');
     expect(rules).toContain('matches the path and everything under it whatever includeDescendants says');
     expect(rules).toContain('a custom selection matches the paths that custom category stores, exactly');

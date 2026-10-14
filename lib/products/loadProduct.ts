@@ -1,9 +1,9 @@
 // lib/products/loadProduct.ts
 /**
- * The ASIN page's facts card (spec 2026-10-09 §6.1): one catalog row by ASIN, plus a title from
- * the keyword side when the catalog has none (an ASIN the Keepa service has not fetched yet), plus
- * the ASIN's Brand Analytics codes from the reverse table, most keywords first (spec 2026-10-12
- * broad category §8).
+ * The ASIN page's facts card (spec 2026-10-09 §6.1): one catalog row by ASIN, with the Brand
+ * Analytics code its category path maps to (a LEFT JOIN on ba_category_crosswalk, spec 2026-10-14
+ * §9), plus a title from the keyword side when the catalog has none (an ASIN the Keepa service has
+ * not fetched yet).
  *
  * The catalog KEEPS every fact on a delisted row (the service's delisted write leaves them in
  * place); this reader hides them, as mapEnrichedProducts (lib/explorer/fetchKeywordDetail.ts) does
@@ -14,9 +14,9 @@
  * delisted rows too.
  *
  * An ASIN can be in the keyword tables without being in the catalog (the enqueue leaves some
- * categories out). The loader then returns a stub with `inCatalog: false` and no catalog facts (it
- * still carries the codes), so the page can say "Not in the Keepa catalog" and still list the
- * keywords. Null means neither table has it.
+ * categories out). The loader then returns a stub with `inCatalog: false` and no catalog facts (no
+ * path, so no code), so the page can say "Not in the Keepa catalog" and still list the keywords.
+ * Null means neither table has it.
  */
 import type { AsinEnrichmentStatus } from '@/db/schema';
 import type { SqlRunner, SqlStatement } from './searchProducts';
@@ -61,7 +61,7 @@ export interface ProductFacts {
   /**
    * False for a stub: an ASIN the keyword tables know but the catalog has no row for (e.g. an
    * excluded category). Every catalog fact is then null (counts 0, inScope false, tier 0; only the
-   * keyword-side title and broadCategories can be set); the page says "Not in the Keepa catalog".
+   * keyword-side title can be set); the page says "Not in the Keepa catalog".
    */
   inCatalog: boolean;
   /** False until the service has fetched the ASIN once (last_fetched_at is null): the facts above are then all null. */
@@ -74,8 +74,8 @@ export interface ProductFacts {
   bestRank: number | null;
   /** The service's refresh tier, 1 or 2 (1 = refreshed more often); 0 on a stub. */
   tier: number;
-  /** The Brand Analytics codes of the ASIN's pair rows this week, most keywords first; [] when it has none or none coded (spec 2026-10-12 broad category §8). */
-  broadCategories: string[];
+  /** The Brand Analytics code of the product's Keepa path (ba_category_crosswalk, spec 2026-10-14 §9); null when the path is unmapped or the product has no path. */
+  broadCategory: string | null;
 }
 
 const FACTS_COLUMNS = `a.asin, a.title, a.brand, a.image_url, a.category_path,
@@ -87,9 +87,9 @@ const FACTS_COLUMNS = `a.asin, a.title, a.brand, a.image_url, a.category_path,
   a.new_offer_count, a.fba_offer_count, a.fbm_offer_count, a.amazon_availability,
   a.enrichment_status::text AS enrichment_status, a.last_fetched_at, a.fetch_count, a.in_scope, a.best_rank, a.tier`;
 
-/** One catalog row by primary key. The only predicate is the ASIN. */
+/** One catalog row by primary key, with its path's Brand Analytics code (a LEFT JOIN: an unmapped path reads null). The only predicate is the ASIN. */
 export function productFactsSql(asin: string): SqlStatement {
-  return { text: `SELECT ${FACTS_COLUMNS} FROM asin_products a WHERE a.asin = $1`, values: [asin] };
+  return { text: `SELECT ${FACTS_COLUMNS}, x.code AS broad_category FROM asin_products a LEFT JOIN ba_category_crosswalk x ON x.category_path = a.category_path WHERE a.asin = $1`, values: [asin] };
 }
 
 /**
@@ -115,16 +115,6 @@ LIMIT 1`,
 /** Is the ASIN in the reverse table at all? Decides between a stub and a 404 when the catalog has no row. */
 export function productTrackedSql(asin: string): SqlStatement {
   return { text: 'SELECT 1 FROM keyword_top_asins k WHERE k.asin = $1 LIMIT 1', values: [asin] };
-}
-
-/** The ASIN's codes on the pair table, most keywords first (ties by code), through keyword_top_asins_asin_idx. */
-export function productBroadCategoriesSql(asin: string): SqlStatement {
-  return {
-    text: `SELECT k.broad_category FROM keyword_top_asins k
-WHERE k.asin = $1 AND k.broad_category IS NOT NULL
-GROUP BY k.broad_category ORDER BY count(*) DESC, k.broad_category`,
-    values: [asin],
-  };
 }
 
 interface FactsRow {
@@ -159,6 +149,7 @@ interface FactsRow {
   in_scope: boolean;
   best_rank: number | null;
   tier: number;
+  broad_category: string | null;
 }
 
 const nonBlank = (s: string | null | undefined): string | null => (typeof s === 'string' && s.trim() !== '' ? s : null);
@@ -168,7 +159,7 @@ const isoTimestamp = (v: Date | string): string | null => {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
-function toFacts(r: FactsRow, title: string | null, broadCategories: string[]): ProductFacts {
+function toFacts(r: FactsRow, title: string | null): ProductFacts {
   const status = r.enrichment_status ?? null;
   const ifActive = (v: number | null | undefined): number | null => (status === 'active' ? (v ?? null) : null);
   const unlessDelisted = (v: number | null | undefined): number | null => (status === 'delisted' ? null : (v ?? null));
@@ -207,12 +198,12 @@ function toFacts(r: FactsRow, title: string | null, broadCategories: string[]): 
     inScope: r.in_scope,
     bestRank: r.best_rank ?? null,
     tier: r.tier,
-    broadCategories,
+    broadCategory: nonBlank(r.broad_category),
   };
 }
 
-/** What the page gets for an ASIN the keyword tables know but the catalog does not: no catalog facts at all, only the keyword side's title and codes. */
-function untrackedStub(asin: string, title: string | null, broadCategories: string[]): ProductFacts {
+/** What the page gets for an ASIN the keyword tables know but the catalog does not: no catalog facts at all, only the keyword side's title (no path, so no code). */
+function untrackedStub(asin: string, title: string | null): ProductFacts {
   return {
     asin, title, brand: null, imageUrl: null, categoryPath: null, listedSince: null, trackingSince: null,
     currentPriceCents: null, avg30PriceCents: null, avg90PriceCents: null, avg180PriceCents: null, avg365PriceCents: null,
@@ -220,7 +211,7 @@ function untrackedStub(asin: string, title: string | null, broadCategories: stri
     reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
     monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
     enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
-    broadCategories,
+    broadCategory: null,
   };
 }
 
@@ -231,27 +222,16 @@ async function keywordSideTitle(run: SqlRunner, asin: string): Promise<string | 
 }
 
 /**
- * The facts for one ASIN: the primary-key read and the codes read, together (the codes come from
- * the reverse table whether or not the catalog has a row), plus the keyword-side title read only
- * when the row has no title. With no catalog row, one more read checks the reverse table: an ASIN
- * found there is a stub (`inCatalog: false`) that still carries its codes; null, which the page
- * answers with a 404, means neither table has the ASIN. That check is skipped when the codes came
- * back non-empty: they already prove the ASIN is on the reverse table.
+ * The facts for one ASIN: the primary-key read (which carries the path's code), plus the
+ * keyword-side title read only when the row has no title. With no catalog row, one more read checks
+ * the reverse table: an ASIN found there is a stub (`inCatalog: false`, no path, so no code); null,
+ * which the page answers with a 404, means neither table has the ASIN.
  */
 export async function loadProduct(run: SqlRunner, asin: string): Promise<ProductFacts | null> {
   const facts = productFactsSql(asin);
-  const codes = productBroadCategoriesSql(asin);
-  const [rows, codeRows] = await Promise.all([
-    run(facts.text, facts.values) as Promise<FactsRow[]>,
-    run(codes.text, codes.values) as Promise<Array<{ broad_category: string }>>,
-  ]);
-  const broadCategories = codeRows.map((r) => r.broad_category);
-  const row = rows[0];
-  if (row) return toFacts(row, nonBlank(row.title) ?? (await keywordSideTitle(run, asin)), broadCategories);
-  // A code is a pair row for this ASIN, so the tracked probe would only repeat it.
-  if (broadCategories.length === 0) {
-    const tracked = productTrackedSql(asin);
-    if (((await run(tracked.text, tracked.values)) as unknown[]).length === 0) return null;
-  }
-  return untrackedStub(asin, await keywordSideTitle(run, asin), broadCategories);
+  const row = ((await run(facts.text, facts.values)) as FactsRow[])[0];
+  if (row) return toFacts(row, nonBlank(row.title) ?? (await keywordSideTitle(run, asin)));
+  const tracked = productTrackedSql(asin);
+  if (((await run(tracked.text, tracked.values)) as unknown[]).length === 0) return null;
+  return untrackedStub(asin, await keywordSideTitle(run, asin));
 }

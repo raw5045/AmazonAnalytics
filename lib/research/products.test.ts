@@ -59,7 +59,7 @@ const catalogFacts: CatalogProductFacts = {
   reviewCount: 812, averageRatingX10: 45, lastRatingUpdate: '2026-10-01',
   monthlySold: 2000, keepaUpdatedAt: '2026-10-08', newOfferCount: 4, fbaOfferCount: 3, fbmOfferCount: 1, amazonAvailability: -1,
   enrichmentStatus: 'active', inCatalog: true, fetched: true, lastFetchedAt: '2026-10-08T06:00:00.000Z', fetchCount: 9, inScope: true, bestRank: 1234, tier: 1,
-  broadCategories: [],
+  broadCategory: null,
 };
 /** What loadProduct returns for an ASIN the keyword tables know but the catalog has no row for. */
 const stubFacts: CatalogProductFacts = {
@@ -68,7 +68,7 @@ const stubFacts: CatalogProductFacts = {
   salesRank: null, avg30SalesRank: null, avg90SalesRank: null, rankRatioX100: null, reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
   monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
   enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
-  broadCategories: [],
+  broadCategory: null,
 };
 
 const point = (fetchedAt: string, over: Partial<HistoryPoint> = {}): HistoryPoint => ({
@@ -84,7 +84,7 @@ const keywordRow = (n: number, over: Partial<ProductKeywordRow> = {}): ProductKe
 
 /** The catalog's departments and category paths, as the cached lists hold them (code-unit order). */
 const DEPARTMENTS = ['Health & Household', 'Pet Supplies'];
-/** The pair table's Brand Analytics codes, as the cached list holds them (code-unit order). */
+/** The crosswalk's Brand Analytics codes, as the cached list holds them (code-unit order). */
 const BROAD_CODES = ['Apparel', 'Home', 'Pet Supplies'];
 const CATALOG_PATHS = [
   'Health & Household', 'Health & Household › Vitamins', 'Health & Household › Vitamins › Magnesium',
@@ -222,7 +222,7 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
     expect(err.message).toBe('The product catalog has no departments yet.');
     expect(err.details).toEqual([{ path: 'filters.department', message: 'unknown department' }]);
   });
-  it('a broad category is checked against the pair table\'s code list and becomes broadCategory; the scope is untouched (spec 2026-10-12 broad category §9)', async () => {
+  it('a broad category is checked against the crosswalk\'s code list and becomes broadCategory; the scope is untouched (spec 2026-10-12 broad category §9)', async () => {
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, { filters: { broadCategory: 'Home', department: 'Pet Supplies' } });
     expect(deps.search).toHaveBeenCalledWith({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies', broadCategory: 'Home' }, { dept: 'Pet Supplies', subtreePaths: [], exactPaths: [], scoped: false });
@@ -230,15 +230,15 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
   });
   it('an unknown broad category fails with the valid codes in the message and the field in details; the list is not read for a search without one', async () => {
     const err = await notAvailable(makeDeps(), { filters: { broadCategory: 'Pets' } });
-    expect(err.message).toBe('"Pets" is not a broad category of this week\'s clicked products. Pass one of: Apparel; Home; Pet Supplies.');
+    expect(err.message).toBe('"Pets" is not a broad category of the product catalog. Pass one of: Apparel; Home; Pet Supplies.');
     expect(err.details).toEqual([{ path: 'filters.broadCategory', message: 'unknown broad category' }]);
     const deps = makeDeps();
     await searchProductsForTool(deps, admin, {});
     expect(deps.broadCategories).not.toHaveBeenCalled();
   });
-  it('with no codes on the pair table yet, says so instead of listing none', async () => {
+  it('with no codes in the crosswalk yet, says so instead of listing none', async () => {
     const err = await notAvailable(makeDeps({ broadCategories: vi.fn(async () => []) }), { filters: { broadCategory: 'Home' } });
-    expect(err.message).toBe('No broad categories are available yet: this week\'s keyword-to-product table carries no codes.');
+    expect(err.message).toBe('No broad categories are available yet: the Keepa-to-Brand-Analytics crosswalk has not been built.');
     expect(err.details).toEqual([{ path: 'filters.broadCategory', message: 'unknown broad category' }]);
   });
   it('a blank broad category is INVALID_FILTERS, before reserving', async () => {
@@ -349,7 +349,7 @@ describe('productDetailsForTool', () => {
       ],
       keywordsTotal: 7,
     });
-    expect(out.product.broadCategories).toEqual([]);
+    expect(out.product.broadCategory).toBeNull();
     expect(deps.facts).toHaveBeenCalledWith(ASIN);
     expect(deps.history).toHaveBeenCalledWith(ASIN);
     expect(deps.keywords).toHaveBeenCalledWith(ASIN, PRODUCT_TOOL_KEYWORDS_CAP);
@@ -360,10 +360,10 @@ describe('productDetailsForTool', () => {
     expect(deps.record).toHaveBeenCalledWith(admin, 1);
   });
 
-  it('returns the facts\' broadCategories as the loader gives them (most keywords first)', async () => {
-    const deps = makeDeps({ facts: vi.fn(async () => ({ ...catalogFacts, broadCategories: ['Home', 'Pet Supplies'] })) });
+  it("returns the facts' broadCategory as the loader gives it (the code of the product's Keepa path)", async () => {
+    const deps = makeDeps({ facts: vi.fn(async () => ({ ...catalogFacts, broadCategory: 'Health & Personal Care' })) });
     const res = await productDetailsForTool(deps, admin, { asin: ASIN });
-    expect(res.product.broadCategories).toEqual(['Home', 'Pet Supplies']);
+    expect(res.product.broadCategory).toBe('Health & Personal Care');
   });
 
   it('answers a stub (keyword tables only, no catalog row) normally: inCatalog false, no history read, keywords as usual', async () => {

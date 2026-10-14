@@ -1,22 +1,20 @@
 // lib/products/loadProduct.test.ts
 import { describe, it, expect } from 'vitest';
-import { asinProducts, asinSnapshots, keywordTopAsins, keywordCurrentSummary } from '@/db/schema';
-import { loadProduct, productBroadCategoriesSql, productFactsSql, productFallbackTitleSql, productTrackedSql, type ProductFacts } from './loadProduct';
+import { asinProducts, asinSnapshots, baCategoryCrosswalk, keywordTopAsins, keywordCurrentSummary } from '@/db/schema';
+import { loadProduct, productFactsSql, productFallbackTitleSql, productTrackedSql, type ProductFacts } from './loadProduct';
 import { loadProductHistory, productHistorySql, PRODUCT_HISTORY_CAP, type HistoryPoint } from './loadProductHistory';
 import { aliasCols, dbCols, notIn, recordingRow, recordingRunner, selectNames } from './testHelpers';
 
-/** Answers the four statements loadProduct can issue from fixed rows; anything else is a bug. */
-function fakeRun(results: { facts?: unknown[]; codes?: unknown[]; tracked?: unknown[]; fallback?: unknown[] }) {
+/** Answers the three statements loadProduct can issue from fixed rows; anything else is a bug. */
+function fakeRun(results: { facts?: unknown[]; tracked?: unknown[]; fallback?: unknown[] }) {
   return recordingRunner((text) => {
     if (text === productFactsSql('x').text) return results.facts ?? [];
-    if (text === productBroadCategoriesSql('x').text) return results.codes ?? [];
     if (text === productTrackedSql('x').text) return results.tracked ?? [];
     if (text === productFallbackTitleSql('x').text) return results.fallback ?? [];
     throw new Error(`unexpected statement: ${text.slice(0, 60)}`);
   });
 }
 const FACTS_TEXT = productFactsSql('x').text;
-const CODES_TEXT = productBroadCategoriesSql('x').text;
 const TRACKED_TEXT = productTrackedSql('x').text;
 const FALLBACK_TEXT = productFallbackTitleSql('x').text;
 
@@ -44,6 +42,9 @@ describe('productFactsSql', () => {
   it('names only real columns', () => {
     expect(aliasCols(q.text, 'a').size).toBeGreaterThan(25);
     expect(notIn(aliasCols(q.text, 'a'), dbCols(asinProducts))).toEqual([]);
+    expect(q.text).toContain('x.code AS broad_category FROM asin_products a LEFT JOIN ba_category_crosswalk x ON x.category_path = a.category_path WHERE a.asin = $1');
+    expect(aliasCols(q.text, 'x')).toEqual(new Set(['code', 'category_path']));
+    expect(notIn(aliasCols(q.text, 'x'), dbCols(baCategoryCrosswalk))).toEqual([]);
   });
 });
 
@@ -82,20 +83,6 @@ describe('productTrackedSql', () => {
   });
 });
 
-describe('productBroadCategoriesSql', () => {
-  const q = productBroadCategoriesSql('B000000004');
-  it("lists the ASIN's codes, most keywords first, ties by code (spec 2026-10-12 broad category §8)", () => {
-    expect(q.text.replace(/\s+/g, ' ')).toBe(
-      'SELECT k.broad_category FROM keyword_top_asins k WHERE k.asin = $1 AND k.broad_category IS NOT NULL GROUP BY k.broad_category ORDER BY count(*) DESC, k.broad_category',
-    );
-    expect(q.values).toEqual(['B000000004']);
-  });
-  it('names only real columns', () => {
-    expect(aliasCols(q.text, 'k')).toEqual(new Set(['asin', 'broad_category']));
-    expect(notIn(aliasCols(q.text, 'k'), dbCols(keywordTopAsins))).toEqual([]);
-  });
-});
-
 /** A fully populated catalog row, as the facts statement returns it. */
 const rawRow = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
   asin: 'B000000001', title: 'Bamboo Desk Lamp', brand: 'Acme', image_url: 'https://m.media-amazon.com/images/I/lamp.jpg',
@@ -105,6 +92,7 @@ const rawRow = (over: Record<string, unknown> = {}): Record<string, unknown> => 
   review_count: 120, average_rating_x10: 44, last_rating_update: '2026-10-01',
   monthly_sold: 1000, keepa_updated_at: '2026-10-08', new_offer_count: 4, fba_offer_count: 3, fbm_offer_count: 1, amazon_availability: -1,
   enrichment_status: 'active', last_fetched_at: new Date('2026-10-08T14:03:21.123Z'), fetch_count: 7, in_scope: true, best_rank: 812, tier: 1,
+  broad_category: null,
   ...over,
 });
 
@@ -116,7 +104,7 @@ const ACTIVE: ProductFacts = {
   reviewCount: 120, averageRatingX10: 44, lastRatingUpdate: '2026-10-01',
   monthlySold: 1000, keepaUpdatedAt: '2026-10-08', newOfferCount: 4, fbaOfferCount: 3, fbmOfferCount: 1, amazonAvailability: -1,
   enrichmentStatus: 'active', inCatalog: true, fetched: true, lastFetchedAt: '2026-10-08T14:03:21.123Z', fetchCount: 7, inScope: true, bestRank: 812, tier: 1,
-  broadCategories: [],
+  broadCategory: null,
 };
 const PRICES = ['currentPriceCents', 'avg30PriceCents', 'avg90PriceCents', 'avg180PriceCents', 'avg365PriceCents'];
 const POINT_IN_TIME = ['salesRank', 'avg30SalesRank', 'avg90SalesRank', 'rankRatioX100', 'monthlySold', 'newOfferCount', 'fbaOfferCount', 'fbmOfferCount', 'amazonAvailability'];
@@ -134,10 +122,10 @@ const NEVER_FETCHED: ProductFacts = {
   reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
   monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
   enrichmentStatus: null, inCatalog: true, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: true, bestRank: 4321, tier: 2,
-  broadCategories: [],
+  broadCategory: null,
 };
 
-/** An ASIN only the keyword side knows (the catalog has no row for it, e.g. an excluded category): no catalog facts at all (the keyword side's title and codes can still be set). */
+/** An ASIN only the keyword side knows (the catalog has no row for it, e.g. an excluded category): no catalog facts at all (only the keyword side's title can be set). */
 const UNTRACKED: ProductFacts = {
   asin: 'B000000003', title: null, brand: null, imageUrl: null, categoryPath: null, listedSince: null, trackingSince: null,
   currentPriceCents: null, avg30PriceCents: null, avg90PriceCents: null, avg180PriceCents: null, avg365PriceCents: null,
@@ -145,15 +133,15 @@ const UNTRACKED: ProductFacts = {
   reviewCount: null, averageRatingX10: null, lastRatingUpdate: null,
   monthlySold: null, keepaUpdatedAt: null, newOfferCount: null, fbaOfferCount: null, fbmOfferCount: null, amazonAvailability: null,
   enrichmentStatus: null, inCatalog: false, fetched: false, lastFetchedAt: null, fetchCount: 0, inScope: false, bestRank: null, tier: 0,
-  broadCategories: [],
+  broadCategory: null,
 };
 
 describe('loadProduct', () => {
   it('maps an active row: camelCase, dates as strings, the fetch time as an ISO string', async () => {
     const { run, calls } = fakeRun({ facts: [rawRow()] });
     await expect(loadProduct(run, 'B000000001')).resolves.toEqual(ACTIVE);
-    expect(calls).toHaveLength(2); // facts and codes; the catalog has the title: no keyword-side read
-    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT]);
+    expect(calls).toHaveLength(1); // the facts statement alone; the catalog has the title: no keyword-side read
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT]);
     expect(calls[0].values).toEqual(['B000000001']);
   });
 
@@ -190,8 +178,8 @@ describe('loadProduct', () => {
   it('reads a never-fetched catalog row: in the catalog, fetched false, no facts, the title from the keyword side', async () => {
     const { run, calls } = fakeRun({ facts: [NEVER_FETCHED_RAW], fallback: [{ title: 'Keyword Side Title' }] });
     await expect(loadProduct(run, 'B000000002')).resolves.toEqual({ ...NEVER_FETCHED, title: 'Keyword Side Title' });
-    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT, FALLBACK_TEXT]); // a catalog row never needs the tracked probe (the codes read still queries the reverse table)
-    expect(calls.map((c) => c.values)).toEqual([['B000000002'], ['B000000002'], ['B000000002']]);
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, FALLBACK_TEXT]); // a catalog row never needs the tracked probe
+    expect(calls.map((c) => c.values)).toEqual([['B000000002'], ['B000000002']]);
   });
 
   it('keeps a null title when the keyword side has none either (the page shows the bare ASIN)', async () => {
@@ -202,14 +190,14 @@ describe('loadProduct', () => {
   it('treats a blank catalog title as missing', async () => {
     const { run, calls } = fakeRun({ facts: [rawRow({ title: '   ' })], fallback: [{ title: 'Keyword Side Title' }] });
     expect((await loadProduct(run, 'B000000001'))?.title).toBe('Keyword Side Title');
-    expect(calls).toHaveLength(3); // facts, codes, and the keyword-side title
+    expect(calls).toHaveLength(2); // facts and the keyword-side title
   });
 
   it('reads an ASIN the catalog lacks but the reverse table has as a stub: not in the catalog, no facts, the keyword-side title', async () => {
     const { run, calls } = fakeRun({ facts: [], tracked: [{ '?column?': 1 }], fallback: [{ title: 'Keyword Side Title' }] });
     await expect(loadProduct(run, 'B000000003')).resolves.toEqual({ ...UNTRACKED, title: 'Keyword Side Title' });
-    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT, TRACKED_TEXT, FALLBACK_TEXT]);
-    expect(calls.map((c) => c.values)).toEqual([['B000000003'], ['B000000003'], ['B000000003'], ['B000000003']]);
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, TRACKED_TEXT, FALLBACK_TEXT]);
+    expect(calls.map((c) => c.values)).toEqual([['B000000003'], ['B000000003'], ['B000000003']]);
   });
 
   it('keeps a null title on the stub when the keyword side has none (the ASIN is only in slots 2 or 3, or its title is empty)', async () => {
@@ -220,38 +208,21 @@ describe('loadProduct', () => {
   it('returns null only for an ASIN that is in neither table, without looking for a title', async () => {
     const { run, calls } = fakeRun({ facts: [], tracked: [] });
     await expect(loadProduct(run, 'B0NOTFOUND')).resolves.toBeNull();
-    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT, TRACKED_TEXT]);
+    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, TRACKED_TEXT]);
   });
 
-  it('carries the codes, most keywords first, on a catalog row and on a stub', async () => {
-    const codes = [{ broad_category: 'Home' }, { broad_category: 'Pet Supplies' }];
-    await expect(loadProduct(fakeRun({ facts: [rawRow()], codes }).run, 'B000000001')).resolves.toEqual({ ...ACTIVE, broadCategories: ['Home', 'Pet Supplies'] });
-    // A code is a pair row for the ASIN: no tracked probe (its default empty answer here would turn the stub into null).
-    const { run, calls } = fakeRun({ facts: [], codes, fallback: [] });
-    await expect(loadProduct(run, 'B000000003')).resolves.toEqual({ ...UNTRACKED, broadCategories: ['Home', 'Pet Supplies'] });
-    expect(calls.map((c) => c.text)).toEqual([FACTS_TEXT, CODES_TEXT, FALLBACK_TEXT]);
-  });
-
-  it('starts the facts and codes reads together, not one after the other', async () => {
-    const events: string[] = [];
-    const run = async (text: string) => {
-      if (text === FACTS_TEXT) {
-        events.push('facts:start');
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        events.push('facts:end');
-        return [rawRow()];
-      }
-      events.push('codes:start');
-      return [];
-    };
-    await expect(loadProduct(run, 'B000000001')).resolves.toEqual(ACTIVE);
-    // The codes read starts while the facts read is still pending: a sequential loader would log it last.
-    expect(events).toEqual(['facts:start', 'codes:start', 'facts:end']);
+  it("carries the code of the product's path from the crosswalk join; null when the path is unmapped or there is no path (spec 2026-10-14 §9)", async () => {
+    await expect(loadProduct(fakeRun({ facts: [rawRow({ broad_category: 'Health & Personal Care' })] }).run, 'B000000001')).resolves.toEqual({ ...ACTIVE, broadCategory: 'Health & Personal Care' });
+    await expect(loadProduct(fakeRun({ facts: [rawRow({ broad_category: null })] }).run, 'B000000001')).resolves.toEqual(ACTIVE);
+    await expect(loadProduct(fakeRun({ facts: [rawRow({ broad_category: '  ' })] }).run, 'B000000001')).resolves.toEqual(ACTIVE);
+    // A stub has no path, so no code.
+    const { run } = fakeRun({ facts: [], tracked: [{ '?column?': 1 }], fallback: [] });
+    await expect(loadProduct(run, 'B000000003')).resolves.toEqual(UNTRACKED);
   });
 
   it('reads exactly the columns the facts statement selects', async () => {
     const { row, read } = recordingRow(rawRow());
-    await loadProduct(async (text) => (text === CODES_TEXT ? [] : [row]), 'B000000001');
+    await loadProduct(async () => [row], 'B000000001');
     const selected = selectNames(productFactsSql('B000000001').text);
     expect(notIn(read, selected)).toEqual([]); // read but never selected: it would silently map to null
     expect(notIn(selected, read)).toEqual([]); // selected but never read: wasted

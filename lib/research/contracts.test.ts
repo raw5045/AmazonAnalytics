@@ -527,7 +527,7 @@ describe('productSearchInputSchema (the search_products input)', () => {
       "One of the catalog's Keepa root departments, spelled exactly ('Health & Household', 'Pet Supplies'): the product's own storefront department, not a keyword row's broadCategory. Matches the department at any depth. An unknown name fails with CATEGORY_NOT_AVAILABLE and the valid names.",
     );
     expect(filters.broadCategory.description).toBe(
-      "One Brand Analytics code, spelled as a keyword row's broadCategory carries it ('Home', 'Apparel', 'Biss', 'Pet Supplies'): the weekly report filed the product under it on at least one keyword where it was a top-3 clicked product this week (the product's own code on that row, which can differ from the keyword's broadCategory; a product can carry several codes and any one matches). Independent of filters.department (the product's own Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
+      "One Brand Analytics code, spelled as the Explorer's broad categories ('Home', 'Apparel', 'Biss', 'Pet Products'): the product's own category, the code its Keepa category path maps to (one per product, relearned weekly from the report). Independent of filters.department (the product's Keepa storefront department); both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the valid codes.",
     );
     // On products every taxonomy selection is a subtree: resolve_categories hands keyword-side leaves back with includeDescendants false.
     expect(filters.categories.description).toBe(

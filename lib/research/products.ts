@@ -36,7 +36,7 @@ const DETAILS_ROWS = 1;
 
 /**
  * The data side of the products tools: the four Products page loaders, plus the three a search's
- * category scope is checked against, plus the pair table's code list the broad category is checked
+ * category scope is checked against, plus the crosswalk's code list the broad category is checked
  * against. `defaultProductsDeps` wires production; tests inject stubs.
  */
 export interface ProductLoaders {
@@ -49,7 +49,7 @@ export interface ProductLoaders {
   departments: () => Promise<string[]>;
   /** The catalog's distinct category paths (lib/products/listCategories, cached an hour): a search's taxonomy and leaf paths are checked against them. */
   categoryPaths: () => Promise<string[]>;
-  /** The Brand Analytics codes on the pair table (lib/products/listCategories, cached an hour): a search's broadCategory must be one of them. */
+  /** The Brand Analytics codes of the crosswalk (lib/products/listCategories, cached an hour): a search's broadCategory must be one of them. */
   broadCategories: () => Promise<string[]>;
   /** The actor's own custom categories by id; unknown and foreign ids are absent (lib/research/categories.ts loadCustomRows). */
   customRows: (userId: string, ids: string[]) => Promise<CustomRow[]>;
@@ -112,7 +112,7 @@ function pathNotAvailable(path: string, at: string): ResearchError {
 
 /**
  * The search's category scope (spec 2026-10-12 §6; the broad category: spec 2026-10-12 broad category §9): the department and the broad category checked
- * against the catalog's department list and the pair table's code list (the code travels on the page
+ * against the catalog's department list and the crosswalk's code list (the code travels on the page
  * filters, not the scope);
  * every taxonomy selection as a subtree, whatever includeDescendants says (resolve_categories marks
  * keyword-side leaves as having no descendants, but the product catalog files products deeper); custom
@@ -139,8 +139,8 @@ export async function resolveProductCategoryScope(deps: ScopeDeps, actor: Resear
     const codes = await deps.broadCategories();
     if (!codes.includes(broad)) {
       const message = codes.length === 0
-        ? 'No broad categories are available yet: this week\'s keyword-to-product table carries no codes.'
-        : `"${broad}" is not a broad category of this week's clicked products. Pass one of: ${codes.join('; ')}.`;
+        ? 'No broad categories are available yet: the Keepa-to-Brand-Analytics crosswalk has not been built.'
+        : `"${broad}" is not a broad category of the product catalog. Pass one of: ${codes.join('; ')}.`;
       throw new ResearchError('CATEGORY_NOT_AVAILABLE', message, { details: [{ path: 'filters.broadCategory', message: 'unknown broad category' }] });
     }
   }

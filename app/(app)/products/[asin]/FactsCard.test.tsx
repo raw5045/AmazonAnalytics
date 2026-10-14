@@ -40,7 +40,7 @@ const FULL: ProductPageFacts = {
   inScope: true,
   bestRank: 523,
   tier: 1,
-  broadCategories: ['Home', 'Pet Supplies'],
+  broadCategory: 'Health & Personal Care',
   inCatalog: true,
 };
 
@@ -100,7 +100,7 @@ describe('FactsCard — a full active row', () => {
     render(<FactsCard facts={FULL} now={NOW} />);
     expect(fact('Brand')).toHaveTextContent('Acme Labs');
     expect(fact('Category')).toHaveTextContent(CATEGORY);
-    expect(fact('Broad categories')).toHaveTextContent('Home, Pet Supplies');
+    expect(fact('Broad category')).toHaveTextContent('Health & Personal Care');
     expect(fact('Listed since')).toHaveTextContent('2026-04-12 · 180 days');
     expect(fact('Tracking since')).toHaveTextContent('2026-04-15');
     expect(fact('Price')).toHaveTextContent('$19.99');
@@ -159,9 +159,9 @@ describe('FactsCard — a full active row', () => {
     expect(fact('Status')).toHaveTextContent('fetched 2026-10-08 (1 fetch)');
   });
 
-  it('a product with no coded keyword rows reads a dash for its broad categories', () => {
-    render(<FactsCard facts={{ ...FULL, broadCategories: [] }} now={NOW} />);
-    expect(fact('Broad categories')).toHaveTextContent(/^—$/);
+  it('a product whose path is unmapped reads a dash for its broad category', () => {
+    render(<FactsCard facts={{ ...FULL, broadCategory: null }} now={NOW} />);
+    expect(fact('Broad category')).toHaveTextContent(/^—$/);
   });
 });
 
