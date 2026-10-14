@@ -185,6 +185,8 @@ function humanPhase(phase: string): string {
       return 'Keepa queue';
     case 'top_asins_build':
       return 'Top ASINs';
+    case 'ba_crosswalk_build':
+      return 'Broad categories';
     case 'summary_refresh':
       return 'rebuilding summary';
     default:

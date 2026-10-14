@@ -118,6 +118,7 @@ vi.mock('@/inngest/client', () => ({
 import { processFileImport } from './importFile';
 import { EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
+import { BaCrosswalkError } from '@/lib/baCategory/buildCrosswalk';
 
 function createFakeCopyStream() {
   const lines: string[] = [];
@@ -182,6 +183,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
     const { stream } = createFakeCopyStream();
     return { query: vi.fn(() => stream), release: vi.fn() };
   };
+  const POOLS = 4; // the COPY pool + one per hook phase
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -216,9 +218,15 @@ describe('processFileImport — keepa_enqueue hook', () => {
       .mockReset()
       .mockResolvedValue({ rows: 3, previousWeek: null, carriedFrom: 'none' });
     // A successful crosswalk build by default, so the phase after the pair table adds no stray failure line.
-    mockBuildCrosswalk
-      .mockReset()
-      .mockResolvedValue({ week: '2026-04-11', paths: 0, direct: 0, backedOff: 0, uncoded: 0, trainingProducts: 0, codes: 0 });
+    mockBuildCrosswalk.mockReset().mockResolvedValue({
+      week: '2026-04-11',
+      paths: 0,
+      direct: 0,
+      backedOff: 0,
+      uncoded: 0,
+      trainingProducts: 0,
+      codes: 0,
+    });
   });
 
   afterEach(() => {
@@ -229,6 +237,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
   const spyConsole = () => ({
     log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
     err: vi.spyOn(console, 'error').mockImplementation(() => undefined),
+    warn: vi.spyOn(console, 'warn').mockImplementation(() => undefined),
   });
   const keepaLines = (spy: { mock: { calls: unknown[][] } }) =>
     spy.mock.calls.map((args) => args.join(' ')).filter((line) => line.includes('[keepa-enqueue]'));
@@ -258,10 +267,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
     expect(hookClient.on.mock.invocationCallOrder[0]).toBeLessThan(
       mockEnqueueWeek.mock.invocationCallOrder[0],
     );
-    expect(mockPoolOn).toHaveBeenCalledTimes(4); // the COPY pool's guard + the three hook pools'
+    expect(mockPoolOn).toHaveBeenCalledTimes(POOLS); // the COPY pool's guard + the three hook pools'
     expect(mockPoolOn).toHaveBeenNthCalledWith(2, 'error', expect.any(Function)); // the Keepa hook's
     expect(hookClient.release).toHaveBeenCalledTimes(1);
-    expect(mockPoolEnd).toHaveBeenCalledTimes(4); // the COPY pool + the three hook pools
+    expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS); // the COPY pool + the three hook pools
     expect(keepaLines(log)).toEqual([
       '[keepa-enqueue] week 2026-04-11: inserted=5 updated=7 retired=2 vacuumed=false vacuumError=57014',
     ]);
@@ -283,7 +292,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
     ]);
     expect([...log.mock.calls, ...err.mock.calls].flat().join(' ')).not.toContain('SECRET');
     expect(hookClient.release).toHaveBeenCalledTimes(1);
-    expect(mockPoolEnd).toHaveBeenCalledTimes(4);
+    expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
     expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
     expect(enqueueTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
   });
@@ -307,7 +316,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
     expect(keepaLines(err)).toEqual([
       '[keepa-enqueue] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
     ]);
-    expect(mockPoolEnd).toHaveBeenCalledTimes(4);
+    expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
     expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
     expect(enqueueTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
   });
@@ -380,10 +389,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(topAsinsClient.on.mock.invocationCallOrder[0]).toBeLessThan(
         mockBuildTopAsinsWeek.mock.invocationCallOrder[0],
       );
-      expect(mockPoolOn).toHaveBeenCalledTimes(4); // the COPY pool's guard + the three hook pools'
-      expect(mockPoolOn).toHaveBeenLastCalledWith('error', expect.any(Function)); // the crosswalk phase's
+      expect(mockPoolOn).toHaveBeenCalledTimes(POOLS); // the COPY pool's guard + the three hook pools'
+      expect(mockPoolOn).toHaveBeenNthCalledWith(3, 'error', expect.any(Function)); // this phase's
       expect(topAsinsClient.release).toHaveBeenCalledTimes(1);
-      expect(mockPoolEnd).toHaveBeenCalledTimes(4); // the COPY pool + the three hook pools
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS); // the COPY pool + the three hook pools
       expect(topAsinsLines(log)).toEqual([
         '[top-asins] week 2026-04-11: rows=21 previous=2026-04-04 carried=current analyzeError=57014',
       ]);
@@ -425,7 +434,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       ]);
       expect([...log.mock.calls, ...err.mock.calls].flat().join(' ')).not.toContain('SECRET');
       expect(topAsinsClient.release).toHaveBeenCalledTimes(1);
-      expect(mockPoolEnd).toHaveBeenCalledTimes(4);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
       expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
     });
@@ -464,7 +473,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(topAsinsLines(err)).toEqual([
         '[top-asins] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
       ]);
-      expect(mockPoolEnd).toHaveBeenCalledTimes(4);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
       expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
     });
@@ -498,7 +507,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       await processFileImport({ uploadedFileId: 'f1' });
 
       // Pools are built in order: the COPY pool, the Keepa hook's, this phase's, the crosswalk phase's.
-      expect(mockPoolCtor).toHaveBeenCalledTimes(4);
+      expect(mockPoolCtor).toHaveBeenCalledTimes(POOLS);
       expect(mockPoolCtor.mock.calls[2][0]).toMatchObject({
         connectionString: 'postgres://test:test@localhost:5432/test',
         max: 1,
@@ -518,7 +527,9 @@ describe('processFileImport — keepa_enqueue hook', () => {
     });
 
     const crosswalkLines = (spy: { mock: { calls: unknown[][] } }) =>
-      spy.mock.calls.map((args) => args.join(' ')).filter((line) => line.includes('[ba-crosswalk]'));
+      spy.mock.calls
+        .map((args) => args.join(' '))
+        .filter((line) => line.includes('[ba-crosswalk]'));
     const crosswalkTimings = () =>
       insertValues.mock.calls
         .map(([row]) => row as { phase?: string; rowsAffected?: number | null })
@@ -526,45 +537,139 @@ describe('processFileImport — keepa_enqueue hook', () => {
 
     it('builds the imported week once, after the pair table and before the summary refresh, logs the stats and cleans up', async () => {
       const { log } = spyConsole();
-      mockBuildCrosswalk.mockResolvedValue({ week: '2026-04-11', paths: 23968, direct: 5194, backedOff: 18774, uncoded: 0, trainingProducts: 614676, codes: 118 });
+      mockBuildCrosswalk.mockResolvedValue({
+        week: '2026-04-11',
+        paths: 23968,
+        direct: 5194,
+        backedOff: 18774,
+        uncoded: 0,
+        trainingProducts: 614676,
+        codes: 118,
+      });
 
       await processFileImport({ uploadedFileId: 'f1' });
 
       expect(mockBuildCrosswalk).toHaveBeenCalledTimes(1);
       expect(mockBuildCrosswalk).toHaveBeenCalledWith(crosswalkClient, '2026-04-11');
-      expect(mockBuildTopAsinsWeek.mock.invocationCallOrder[0]).toBeLessThan(mockBuildCrosswalk.mock.invocationCallOrder[0]);
-      expect(mockBuildCrosswalk.mock.invocationCallOrder[0]).toBeLessThan(mockRefreshSummary.mock.invocationCallOrder[0]);
+      expect(mockBuildTopAsinsWeek.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBuildCrosswalk.mock.invocationCallOrder[0],
+      );
+      expect(mockBuildCrosswalk.mock.invocationCallOrder[0]).toBeLessThan(
+        mockRefreshSummary.mock.invocationCallOrder[0],
+      );
       expect(crosswalkClient.on).toHaveBeenCalledWith('error', expect.any(Function));
+      expect(crosswalkClient.on.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBuildCrosswalk.mock.invocationCallOrder[0],
+      );
+      expect(mockPoolOn).toHaveBeenNthCalledWith(4, 'error', expect.any(Function)); // this phase's
       expect(crosswalkClient.release).toHaveBeenCalledTimes(1);
-      expect(mockPoolEnd).toHaveBeenCalledTimes(4);
-      expect(crosswalkLines(log)).toEqual(['[ba-crosswalk] week 2026-04-11: paths=23968 direct=5194 backedOff=18774 uncoded=0 trainingProducts=614676 codes=118']);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
+      expect(crosswalkLines(log)).toEqual([
+        '[ba-crosswalk] week 2026-04-11: paths=23968 direct=5194 backedOff=18774 uncoded=0 trainingProducts=614676 codes=118',
+      ]);
       expect(crosswalkTimings()).toEqual([expect.objectContaining({ rowsAffected: 23968 })]);
     });
 
-    it('a failure logs only the week, stage, error name and code; the import completes with a null timing row', async () => {
+    it('an older week is an expected skip, not an error', async () => {
       const { log, err } = spyConsole();
-      mockBuildCrosswalk.mockRejectedValue(Object.assign(new Error('SECRET failed query params'), { name: 'error', code: '57014' }));
+      mockBuildCrosswalk.mockRejectedValue(
+        new BaCrosswalkError(
+          'ba_crosswalk_older_than_built',
+          'week 2026-04-11 is older than the built week 2026-04-18',
+        ),
+      );
 
-      await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({ rowsImported: expect.any(Number) });
+      await processFileImport({ uploadedFileId: 'f1' });
 
-      expect(crosswalkLines(err)).toEqual(['[ba-crosswalk] failed (import continues) {"week":"2026-04-11","stage":"build","error":"error","code":"57014"}']);
-      expect([...log.mock.calls, ...err.mock.calls].flat().join(' ')).not.toContain('SECRET');
+      expect(crosswalkLines(log)).toEqual([
+        '[ba-crosswalk] skipped: ba_crosswalk_older_than_built (week 2026-04-11)',
+      ]);
+      expect(crosswalkLines(err)).toEqual([]);
+      expect(log.mock.calls.flat().join(' ')).not.toContain('2026-04-18'); // the message stays out
       expect(crosswalkClient.release).toHaveBeenCalledTimes(1);
-      expect(mockPoolEnd).toHaveBeenCalledTimes(4);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
+      expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(crosswalkTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+
+    it('a build error other than the older-week skip is a failure, logged by its code only', async () => {
+      const { err } = spyConsole();
+      mockBuildCrosswalk.mockRejectedValue(
+        new BaCrosswalkError('ba_crosswalk_no_votes', 'SECRET week 2026-04-11 has no slot-1 rows'),
+      );
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(crosswalkLines(err)).toEqual([
+        '[ba-crosswalk] failed (import continues) {"week":"2026-04-11","stage":"build","error":"BaCrosswalkError","code":"ba_crosswalk_no_votes"}',
+      ]);
+      expect(err.mock.calls.flat().join(' ')).not.toContain('SECRET');
+      expect(crosswalkTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+
+    it('opens its own pool: one connection, 30-minute statement timeout, keepalive, 20 s connect timeout', async () => {
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      // Pools are built in order: the COPY pool, the Keepa hook's, the top-ASINs phase's, this one.
+      expect(mockPoolCtor).toHaveBeenCalledTimes(POOLS);
+      expect(mockPoolCtor.mock.calls[3][0]).toMatchObject({
+        connectionString: 'postgres://test:test@localhost:5432/test',
+        max: 1,
+        statement_timeout: 1_800_000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10_000,
+        connectionTimeoutMillis: 20_000,
+      });
+    });
+
+    it('replay runs (skipRefresh) never build the crosswalk', async () => {
+      await processFileImport({ uploadedFileId: 'f1', skipRefresh: true });
+
+      expect(mockBuildCrosswalk).not.toHaveBeenCalled();
+      expect(crosswalkTimings()).toEqual([]);
+    });
+
+    it('a failure logs only the week, stage, error name and code; the import completes with a null timing row', async () => {
+      const { log, err, warn } = spyConsole();
+      mockBuildCrosswalk.mockRejectedValue(
+        Object.assign(new Error('SECRET failed query params'), { name: 'error', code: '57014' }),
+      );
+
+      await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({
+        rowsImported: expect.any(Number),
+      });
+
+      expect(crosswalkLines(err)).toEqual([
+        '[ba-crosswalk] failed (import continues) {"week":"2026-04-11","stage":"build","error":"error","code":"57014"}',
+      ]);
+      expect(
+        [...log.mock.calls, ...err.mock.calls, ...warn.mock.calls].flat().join(' '),
+      ).not.toContain('SECRET');
+      expect(crosswalkClient.release).toHaveBeenCalledTimes(1);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
       expect(crosswalkTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
     });
 
     it('a connect failure is logged at the connect stage', async () => {
       const { err } = spyConsole();
-      mockPoolConnect.mockReset().mockResolvedValueOnce(copyClient()).mockResolvedValueOnce(hookClient).mockResolvedValueOnce(topAsinsClient)
+      mockPoolConnect
+        .mockReset()
+        .mockResolvedValueOnce(copyClient())
+        .mockResolvedValueOnce(hookClient)
+        .mockResolvedValueOnce(topAsinsClient)
         .mockRejectedValueOnce(Object.assign(new Error('SECRET'), { code: 'ECONNRESET' }));
 
       await processFileImport({ uploadedFileId: 'f1' });
 
-      expect(crosswalkLines(err)).toEqual(['[ba-crosswalk] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNRESET"}']);
+      expect(crosswalkLines(err)).toEqual([
+        '[ba-crosswalk] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNRESET"}',
+      ]);
+      expect(err.mock.calls.flat().join(' ')).not.toContain('SECRET');
       expect(mockBuildCrosswalk).not.toHaveBeenCalled();
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(crosswalkTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
     });
   });
 });

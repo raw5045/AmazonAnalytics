@@ -22,7 +22,7 @@ import { refreshKeywordCurrentSummary } from './refreshSummary';
 import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
 import { enqueueWeek, EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { buildTopAsinsWeek, TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
-import { buildCrosswalk } from '@/lib/baCategory/buildCrosswalk';
+import { buildCrosswalk, BaCrosswalkError } from '@/lib/baCategory/buildCrosswalk';
 import { errFields } from '@/lib/ask/logSafe';
 
 export interface ImportFileInput {
@@ -1113,7 +1113,9 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       // table and BEFORE the long summary refresh. Fail-soft, like the two
       // phases above: a failure never fails the import — the previous
       // crosswalk stays in place and scripts/buildBaCrosswalk.ts re-runs
-      // it by hand. Same replay rule: a historical week must not relearn it.
+      // it by hand. Same replay rule, and the builder refuses a week older
+      // than the built one (an expected skip): a historical week must not
+      // relearn it.
       // ----------------------------------------------------------------
       await timePhase(
         file.id,
@@ -1144,17 +1146,23 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
               client.release();
             }
           } catch (e) {
-            const { error, code } = errFields(e);
-            console.error(
-              '[ba-crosswalk] failed (import continues)',
-              JSON.stringify({ week: weekEndDate, stage, error, code }),
-            );
+            if (e instanceof BaCrosswalkError && e.code === 'ba_crosswalk_older_than_built') {
+              // A late re-import of an older week: the crosswalk keeps the
+              // newer week's mapping. Expected, not a failure.
+              console.log(`[ba-crosswalk] skipped: ${e.code} (week ${weekEndDate})`);
+            } else {
+              const { error, code } = errFields(e);
+              console.error(
+                '[ba-crosswalk] failed (import continues)',
+                JSON.stringify({ week: weekEndDate, stage, error, code }),
+              );
+            }
             return null;
           } finally {
             await crosswalkPool.end();
           }
         },
-        // rows_affected = paths written; null marks a failed build.
+        // rows_affected = paths written; null marks a failed or skipped build.
         (r) => (r ? r.paths : null),
       );
     }
