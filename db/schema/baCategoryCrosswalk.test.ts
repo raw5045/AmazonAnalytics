@@ -11,7 +11,6 @@ describe('ba_category_crosswalk schema (migration 0053, spec 2026-10-14 §4.1)',
   // The apply script splits on the marker; comment-only lines are not SQL.
   const chunks = raw.split(MARKER);
   const statements = chunks.map((s) => s.replace(/^\s*--.*$/gm, '').trim()).filter((s) => s.length > 0);
-  const flat = statements.join(' ').replace(/\s+/g, ' ');
   // Column definitions are the two-space-indented lowercase lines of a CREATE TABLE body.
   const declared = (body: string) => [...body.matchAll(/^ {2}([a-z][a-z0-9_]*) /gm)].map((m) => m[1]).sort();
 
@@ -25,23 +24,26 @@ describe('ba_category_crosswalk schema (migration 0053, spec 2026-10-14 §4.1)',
     const create = statements[0];
     expect(create.startsWith('CREATE TABLE IF NOT EXISTS ba_category_crosswalk (')).toBe(true);
     expect(declared(create)).toEqual(Object.values(getTableColumns(baCategoryCrosswalk)).map((c) => c.name).sort());
-    expect(create).toContain('category_path text PRIMARY KEY');
-    expect(create).toContain('code varchar(255) NOT NULL');
-    expect(create).toContain('source_path text NOT NULL');
-    expect(create).toContain('votes integer NOT NULL');
-    expect(create).toContain('share_pct smallint NOT NULL');
-    expect(create).toContain('week_end_date date NOT NULL');
-    expect(create).toContain('built_at timestamptz NOT NULL DEFAULT now()');
+    // Whitespace collapsed: a fresh worktree checks this file out with CRLF (core.autocrlf, no .gitattributes).
+    expect(create.replace(/\s+/g, ' ')).toBe(
+      'CREATE TABLE IF NOT EXISTS ba_category_crosswalk ( category_path text PRIMARY KEY, code varchar(255) NOT NULL, ' +
+        'source_path text NOT NULL, votes integer NOT NULL, share_pct smallint NOT NULL, week_end_date date NOT NULL, ' +
+        'built_at timestamptz NOT NULL DEFAULT now() );',
+    );
   });
 
   it("indexes (code, category_path): the search predicate's subquery and the code list", () => {
-    expect(flat).toContain('CREATE INDEX IF NOT EXISTS ba_category_crosswalk_code_idx ON ba_category_crosswalk (code, category_path)');
+    expect(statements[1]).toBe('CREATE INDEX IF NOT EXISTS ba_category_crosswalk_code_idx ON ba_category_crosswalk (code, category_path);');
     const cfg = getTableConfig(baCategoryCrosswalk);
     const idx = cfg.indexes.find((i) => i.config.name === 'ba_category_crosswalk_code_idx');
     expect(idx?.config.columns.map((c) => (c as { name: string }).name)).toEqual(['code', 'category_path']);
     expect(cfg.columns.find((c) => c.name === 'category_path')?.primary).toBe(true);
-    expect(cfg.columns.find((c) => c.name === 'code')?.getSQLType()).toBe('varchar(255)');
-    expect(cfg.columns.find((c) => c.name === 'share_pct')?.getSQLType()).toBe('smallint');
+    const shape = Object.fromEntries(cfg.columns.map((c) => [c.name, [c.getSQLType(), c.notNull, c.hasDefault]]));
+    expect(shape).toEqual({
+      category_path: ['text', true, false], code: ['varchar(255)', true, false], source_path: ['text', true, false],
+      votes: ['integer', true, false], share_pct: ['smallint', true, false], week_end_date: ['date', true, false],
+      built_at: ['timestamp with time zone', true, true],
+    });
   });
 
   it('says what the table is and that the build relearns it weekly', () => {
