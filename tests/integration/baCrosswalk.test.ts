@@ -7,11 +7,17 @@
  * (writeCrosswalk is never called; the real table is never written). The assignment is checked for
  * shape, coverage and two known paths, and the two statements are planned.
  *
- * Run on the owner's go only, never in CI:
+ * Run on the owner's go only, never in CI, and AFTER productsQueries.test.ts: this file scans the catalog
+ * (the votes join, the paths read, the coverage count), which would warm the pages that file times cold:
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/baCrosswalk.test.ts --disableConsoleIntercept
  * Preconditions: migration 0053 applied (the table may be empty: only kwm and the catalog are read);
  * the Explorer week imported; prefer a quiet hour (the votes read aggregates the week's slot-1 rows of
- * the kwm partition: minutes cold; this test records the first timing).
+ * the kwm partition: minutes cold; the time is printed beside the first build's, Task 9 step 2).
+ *
+ * Cancellation: computeCrosswalk's own transaction sets statement_timeout (1800 s) and work_mem but no
+ * client_connection_check_interval, so a Ctrl-C, a kill or the 10-minute test timeout during the votes
+ * read does not stop that statement: it keeps running on the server up to its 1800 s limit. The checks and
+ * EXPLAINs after it run in the wrapper, which carries the 10 s connection check and a 300 s timeout.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
@@ -69,7 +75,7 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
       const started = performance.now();
       const { rows, stats } = await computeCrosswalk(client, week);
       const seconds = (performance.now() - started) / 1000;
-      console.log(`[baCrosswalk] week ${week}: ${JSON.stringify(stats)} in ${seconds.toFixed(1)}s (the first timing of the kwm form)`);
+      console.log(`[baCrosswalk] week ${week}: ${JSON.stringify(stats)} in ${seconds.toFixed(1)}s (compare with the first build's time)`);
       await inReadOnlyTransaction(async () => {
         expect(stats.paths, 'paths').toBe(rows.length);
         expect(stats.direct + stats.backedOff, 'direct + backedOff').toBe(stats.paths);
@@ -82,7 +88,9 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
           // A path that decided itself below the department level had the threshold.
           if (r.sourcePath === r.categoryPath && prefixesOf(r.categoryPath).length > 1) expect(r.votes, `votes of ${r.categoryPath}`).toBeGreaterThanOrEqual(MIN_VOTES);
         }
-        // Coverage weighted by the products the page can show (spec §2: 86 % decided by their own path, under 1 % without a code).
+        // Coverage weighted by the products the page can show that have a Keepa path (the 0.8 % without one never get a code and are
+        // not counted): spec §2 puts 86 % in paths with 20+ votes of their own; "without a code" is a path whose department has no
+        // vote, expected near 0 (spec §12 bounds it under 1 %).
         const weights = await client.query<{ category_path: string; n: number }>(
           "SELECT category_path, count(*)::int AS n FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_path IS NOT NULL GROUP BY 1",
         );
@@ -103,11 +111,21 @@ describe.skipIf(!RUN)('BA crosswalk compute (integration, read-only)', () => {
         const toilet = byPath.get(TOILET_PAPER);
         console.log(`[baCrosswalk] toilet paper: ${JSON.stringify(toilet)}`);
         expect(toilet?.code, 'the toilet paper path').toBe('Health & Personal Care');
-        const pet = rows.filter((r) => r.categoryPath === 'Pet Supplies' || r.categoryPath.startsWith('Pet Supplies › '));
-        const petProducts = pet.filter((r) => r.code === 'Pet Products').length;
-        console.log(`[baCrosswalk] Pet Supplies: ${petProducts} of ${pet.length} paths map to Pet Products`);
-        expect(pet.length, 'Pet Supplies paths').toBeGreaterThan(0);
-        expect(petProducts / pet.length, 'Pet Supplies paths mapped to Pet Products').toBeGreaterThanOrEqual(0.8);
+        const underPetSupplies = (path: string): boolean => path === 'Pet Supplies' || path.startsWith('Pet Supplies › ');
+        const pet = rows.filter((r) => underPetSupplies(r.categoryPath));
+        const petPathsMapped = pet.filter((r) => r.code === 'Pet Products').length;
+        console.log(`[baCrosswalk] Pet Supplies: ${petPathsMapped} of ${pet.length} paths map to Pet Products`);
+        // Weighted by the sellable products of each path (the weights read above), as spec §2 states it: Pet Products for 97 % of the department's products.
+        let petTotal = 0;
+        let petMapped = 0;
+        for (const w of weights.rows) {
+          if (!underPetSupplies(w.category_path)) continue;
+          petTotal += w.n;
+          if (byPath.get(w.category_path)?.code === 'Pet Products') petMapped += w.n;
+        }
+        console.log(`[baCrosswalk] Pet Supplies: ${petMapped} of ${petTotal} sellable products sit in a path that maps to Pet Products`);
+        expect(petTotal, 'sellable products under Pet Supplies').toBeGreaterThan(0);
+        expect(petMapped / petTotal, 'share of Pet Supplies products in a path mapped to Pet Products').toBeGreaterThanOrEqual(0.8);
       });
     },
     TEST_TIMEOUT_MS,
