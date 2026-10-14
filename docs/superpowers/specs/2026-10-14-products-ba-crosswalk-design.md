@@ -104,6 +104,8 @@ One vote per product (not per keyword row) so a product with 500 keywords does n
 3. If no prefix reaches 20 (a department with fewer than 20 training products), the department's majority still decides when it has at least one vote.
 4. A path whose department has no vote at all gets no row: the product shows no category. Expected to be rare (the 33 departments in the training set cover every department with sellable products; measured in the integration test).
 
+**Mixed paths.** Some paths hold products the report files under two codes: `Movies & TV › Movies` is Digital_Video_Download 50 % / Video DVD 44 % (streaming versus disc), `Toys & Games › Dress Up & Pretend Play › Costumes` is Toys 58 % / Apparel 42 %, party packs are Kitchen 51 % / Toys 41 %, cosmetic bags Beauty 44 % / Luggage 36 %. Measured over the 5,196 paths with 20+ votes: 66 % of training products sit in paths with a 90 %+ majority, 21 % in 70–89 %, 10 % in 50–69 %, 3 % in paths with no majority (188 paths, 13,654 products). The rule is the same everywhere: the majority code wins and the minority products take it; `share_pct` records how mixed the path was, so the mixed paths can be listed (`WHERE share_pct < 70`) and judged on real data. A per-product override for products that carry their own report signal is a follow-up (§14), not part of this arc.
+
 `MIN_VOTES = 20`: with 20 votes an 88 % majority is a 17–3 split; lower and single-keyword accidents decide leaves, higher and the backoff loses the fine split the leaf gives (86 % of fetched products match a path with 20+ votes today). A constant with this rationale beside it; not configurable.
 
 ### 5.3 Stats returned and logged (coded fields only)
@@ -179,6 +181,7 @@ The "Broad category" select is unchanged. Its hint becomes: "Brand Analytics cat
 ## 14. Out of scope / follow-ups
 
 - Training on several weeks (more paths with 20+ votes, stabler majorities); today one week is simple and fresh.
+- A per-product override for mixed paths: a product that is product #1 somewhere has its own vote; where it disagrees with its path's code, a small side table (asin → code, only the disagreeing products, rebuilt with the crosswalk) could win at read time (`coalesce(override, path code)`), at the cost of a two-table predicate and products in one path no longer sharing a code. Decide after seeing the mixed paths in production (`share_pct < 70`).
 - Admin overrides (a manual mapping for a path) and showing the mapping's confidence on the facts card.
 - The reverse crosswalk (Brand Analytics code → Keepa department) for an Explorer department filter on keywords.
 - Paths new to the catalog between builds (no code until the next build); a nightly top-up if it ever matters.
