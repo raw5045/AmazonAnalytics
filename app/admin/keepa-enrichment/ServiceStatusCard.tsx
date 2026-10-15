@@ -38,7 +38,7 @@ export function ServiceStatusCard({ overview, error, now }: { overview: KeepaSer
   if (!overview) {
     return (
       <CardShell>
-        <p className="mt-1 text-sm text-red-700">{`Service status unavailable (${error ?? 'unknown'})`}</p>
+        <p className="mt-1 text-sm text-red-700">{`Could not load (${error ?? 'unknown'})`}</p>
       </CardShell>
     );
   }
@@ -61,7 +61,7 @@ export function ServiceStatusCard({ overview, error, now }: { overview: KeepaSer
     ['Oldest tier-1 fetch', ageLabel(counts.oldestTier1FetchedAt, now)],
     ['Tier 1 stale (fetched > 8 days ago)', fmt(counts.tier1Stale)],
     ['Tier 2 in scope / never fetched', `${fmt(counts.tier2InScope)} / ${fmt(counts.tier2NeverFetched)}`],
-    ['Fetched last 24 h', `${fmt(counts.fetchedLast24h)} · 7-day average ${fmt(Math.round(counts.fetchedLast7d / 7))} per day`],
+    ['Fetched last 24 h', `${fmt(counts.fetchedLast24h)} · 7-day avg ${fmt(Math.round(counts.fetchedLast7d / 7))}/day`],
     ['Unused capacity, 7 days', `${fmt(unused)} of ${fmt(weeklyCapacity)} (${pct}%)`],
     ['Tokens', status && status.tokensLeft !== null && status.refillRate !== null ? `${fmt(status.tokensLeft)} left · refills ${fmt(status.refillRate)}/min` : 'unknown'],
     ['Claimed right now', fmt(counts.claimed)],

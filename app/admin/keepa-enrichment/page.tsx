@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
  * import-time job's full-refresh button and run list went with the job (arc 11); the service refreshes
  * every tier-1 product on its own 7-day cycle. The route path stays /admin/keepa-enrichment.
  */
-export default async function KeepaEnrichmentAdminPage() {
+export default async function KeepaServiceAdminPage() {
   // Page-level gate, mirroring app/admin/ask-ai/page.tsx: Next 16 renders layouts and pages in
   // parallel, and a client-sent Next-Router-State-Tree can claim the /admin layout already ran, so
   // app/admin/layout.tsx's requireAdmin() is not a guaranteed gate on its own (vendored docs,
@@ -41,9 +41,8 @@ export default async function KeepaEnrichmentAdminPage() {
     <div className="max-w-3xl">
       <h1 className="text-2xl font-semibold">Keepa service</h1>
       <p className="mt-2 text-gray-600">
-        Always-on enrichment on its own Railway service: every tier-1 product is refreshed on a 7-day
-        cycle and new products are fetched within a day of the weekly import. The watcher emails when the
-        service is down or stalled.
+        Refreshes every tier-1 product on a 7-day cycle and fetches new products usually within a day of each
+        weekly import; the watcher emails when the service is down or stalled.
       </p>
       <ServiceStatusCard overview={overview} error={overviewError} now={new Date()} />
     </div>

@@ -25,6 +25,7 @@ describe('ServiceStatusCard', () => {
   it('shows every row with its value next to its label', () => {
     render(<ServiceStatusCard overview={overview} now={NOW} />);
     expect(screen.getByRole('heading', { name: 'Service status' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Service status' })).toBeInTheDocument();
     expect(screen.getByText(/Target: no tier-1 ASIN fetched more than 8 days ago \(delisted ones recheck monthly\)\./)).toBeInTheDocument();
     expect(valueOf('Heartbeat')).toBe('2 min ago');
     expect(valueOf('Booted')).toBe('4 h ago');
@@ -39,7 +40,7 @@ describe('ServiceStatusCard', () => {
     expect(valueOf('Oldest tier-1 fetch')).toBe('3 days');
     expect(valueOf('Tier 1 stale (fetched > 8 days ago)')).toBe('0');
     expect(valueOf('Tier 2 in scope / never fetched')).toBe('1,307,312 / 1,239,033');
-    expect(valueOf('Fetched last 24 h')).toBe('160,000 · 7-day average 128,571 per day');
+    expect(valueOf('Fetched last 24 h')).toBe('160,000 · 7-day avg 128,571/day');
     expect(valueOf('Unused capacity, 7 days')).toBe('360,000 of 1,260,000 (29%)');
     expect(valueOf('Tokens')).toBe('180 left · refills 250/min');
     expect(valueOf('Claimed right now')).toBe('100');
@@ -47,6 +48,13 @@ describe('ServiceStatusCard', () => {
     expect(valueOf('Tier 1 in error backoff')).toBe('3');
     expect(valueOf('New lane last drained')).toBe('1 day ago');
     expect(valueOf('Explorer sync last fired')).toBe('never');
+  });
+
+  it('rounds the 7-day average to whole products per day, zero included', () => {
+    const { rerender } = render(<ServiceStatusCard overview={{ ...overview, counts: { ...COUNTS, fetchedLast24h: 0, fetchedLast7d: 0 } }} now={NOW} />);
+    expect(valueOf('Fetched last 24 h')).toBe('0 · 7-day avg 0/day');
+    rerender(<ServiceStatusCard overview={{ ...overview, counts: { ...COUNTS, fetchedLast7d: 900_003 } }} now={NOW} />);
+    expect(valueOf('Fetched last 24 h')).toBe('160,000 · 7-day avg 128,572/day'); // 128,571.86 rounds up
   });
 
   it('shows placeholders for the status rows when the service has never reported, and capacity at the default refill rate', () => {
@@ -89,7 +97,7 @@ describe('ServiceStatusCard', () => {
   it('degrades to the heading and one line when the overview could not be loaded', () => {
     render(<ServiceStatusCard overview={null} error="42P01" now={NOW} />);
     expect(screen.getByRole('heading', { name: 'Service status' })).toBeInTheDocument();
-    expect(screen.getByText('Service status unavailable (42P01)')).toBeInTheDocument();
+    expect(screen.getByText('Could not load (42P01)')).toBeInTheDocument();
     expect(screen.queryByText('Heartbeat')).toBeNull();
   });
 });
