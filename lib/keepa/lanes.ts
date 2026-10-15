@@ -20,7 +20,10 @@ export const BATCH_SIZE = 100;
 export const TOKENS_PER_ASIN = 2;
 /** Assumed until Keepa reports the rate (the subscription's rate per the free /token call, 2026-10-05). */
 export const DEFAULT_REFILL_RATE_PER_MIN = 250;
-/** Tokens left in the bucket after each batch, as a cushion (for an ad-hoc script on the same key, say). A constant offset, so throughput is unchanged. */
+/**
+ * Tokens left in the bucket after each batch, as a cushion (for an ad-hoc script on the same key,
+ * say). A constant offset, so throughput is unchanged.
+ */
 export const TOKEN_RESERVE = 50;
 /** A paced request fires this long after Keepa's announced refill, so it lands after it. */
 export const REFILL_MARGIN_MS = 500;

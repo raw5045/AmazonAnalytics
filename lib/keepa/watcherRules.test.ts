@@ -252,7 +252,7 @@ describe('syncCouldFire', () => {
   it('when false, the explorer week cannot change a decision, so the watcher may skip reading it', () => {
     const grid = [null, min(3), min(500)].flatMap((laneNewDrainedAt) =>
       [null, min(2), min(120), min(7 * 60)].flatMap((syncFiredAt) =>
-        [base.et, NIGHT, { ...NIGHT, hour: 5, minute: 59 }, { ...NIGHT, hour: 6, minute: 0 }].flatMap((et) =>
+        [base.et, NIGHT, { ...NIGHT, hour: 2, minute: 0 }, { ...NIGHT, hour: 5, minute: 59 }, { ...NIGHT, hour: 6, minute: 0 }].flatMap((et) =>
           [null, NIGHT.dateKey].flatMap((nightlySyncDate) =>
             [min(2), min(25 * 60)].map((lastBatchAt): WatcherInput => ({ ...base, laneNewDrainedAt, syncFiredAt, et, nightlySyncDate, lastBatchAt })),
           ),
