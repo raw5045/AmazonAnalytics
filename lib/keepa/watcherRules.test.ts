@@ -263,8 +263,10 @@ describe('syncCouldFire', () => {
     for (const i of grid) {
       const behind = decideWatcherActions({ ...i, explorerCaughtUp: false });
       const caughtUp = decideWatcherActions({ ...i, explorerCaughtUp: true });
-      if (!syncCouldFire(i)) expect(behind, JSON.stringify(i)).toEqual(caughtUp);
-      else if (JSON.stringify(behind) !== JSON.stringify(caughtUp)) differing += 1;
+      if (!syncCouldFire(i)) {
+        expect(behind, JSON.stringify(i)).toEqual(caughtUp);
+        expect(heldReasons({ ...i, explorerCaughtUp: false }), JSON.stringify(i)).toEqual(heldReasons({ ...i, explorerCaughtUp: true }));
+      } else if (JSON.stringify(behind) !== JSON.stringify(caughtUp)) differing += 1;
     }
     expect(differing).toBeGreaterThan(0);
   });

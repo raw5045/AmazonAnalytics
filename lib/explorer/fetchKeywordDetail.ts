@@ -168,8 +168,8 @@ export interface KeywordDetail {
   /** Up to 52 rows, oldest first. (Page renderer reverses for display.) */
   history: KeywordDetailHistoryRow[];
   /**
-   * Keepa-enriched product data for the current week's top-3 ASINs (source
-   * per enrichedProductsFor), keyed by ASIN. Empty when the keyword is
+   * Keepa-enriched product data for the current week's top-3 ASINs (from the
+   * asin_products catalog; see enrichedProductsFor), keyed by ASIN. Empty when the keyword is
    * dormant (no current week) or when none of the top-3 ASINs have been
    * enriched yet (e.g. ASINs in the excluded-category scope).
    */
@@ -218,7 +218,10 @@ export interface KeywordProducts {
    * Used to populate TopProductsTable (slots 2 & 3 aren't in kcs).
    */
   currentWeekProductSlots: CurrentWeekProductSlot[];
-  /** Keepa-enriched data for the current week's top-3 ASINs (source per enrichedProductsFor), keyed by ASIN. */
+  /**
+   * Keepa-enriched data for the current week's top-3 ASINs (from the asin_products catalog; see
+   * enrichedProductsFor), keyed by ASIN.
+   */
   enrichedProductsByAsin: Record<string, EnrichedProduct>;
 }
 

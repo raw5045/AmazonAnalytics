@@ -1,8 +1,9 @@
 /**
  * Detached background worker that refreshes kcs Keepa aggregate
  * columns (lowest_price_cents, highest_price_cents, least_reviews,
- * most_reviews, top_clicked_leaf_category, top_clicked_category_path)
- * + the category-path facets table — without doing a full kcs rebuild.
+ * most_reviews, avg_price_cents, avg_reviews, top_clicked_leaf_category,
+ * top_clicked_category_path) + the category-path facets table — without
+ * doing a full kcs rebuild.
  *
  * Triggered by `keepa/aggregates-sync-requested`, which is fired by:
  *   - the Keepa service watcher (inngest/functions/keepaServiceWatcher.ts):
@@ -18,7 +19,7 @@
  *      no_price or delisted (priced only when active; same row choice as
  *      the main refresh job's stageEnrichedAsins)
  *   2. UPDATE kcs rows in place — touches all 3.9M rows but only
- *      ~5 cols. Earlier full backfill clocked at ~67 min; subsequent
+ *      8 columns. Earlier full backfill clocked at ~67 min; subsequent
  *      runs should be faster (warm pages).
  *   3. Rebuild leaf-category facets for the current snapshot_version
  *

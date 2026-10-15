@@ -3,8 +3,9 @@
  * snapshot_version (a weekly refresh mints a new snapshot_version, transparently
  * rebuilding the cache).
  *
- * Reads the in-scope rows of the asin_products catalog (no week); the week stays
- * in the cache key so a weekly refresh rebuilds the tree.
+ * Reads the in-scope rows of the asin_products catalog (no week). Each builder's snapshot-version
+ * and week arguments are cache-key parts only: a refresh mints a new snapshot_version (even on a
+ * same-week rebuild), and between refreshes REVALIDATE bounds how far the tree trails the catalog.
  *
  * Everything is computed in SQL at the granularity the UI needs — root
  * departments, the children at a path, or the leaves under a path — so we never
@@ -51,7 +52,7 @@ function toSortedLevel(
 // ---- Root departments (initial page render) ----
 
 const buildCachedRoots = unstable_cache(
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- both arguments are cache-key parts only
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- cache-key parts only
   async (_sv: string, _wk: string): Promise<LightNode[]> => {
     const sql = neon(env.DATABASE_URL);
     const rows = (await sql`

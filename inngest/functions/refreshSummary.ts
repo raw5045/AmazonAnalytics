@@ -259,8 +259,8 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     await stageLatestPerTerm(client);
 
     // 1a. Stage Keepa-enriched (price/reviews/leaf-category) data for
-    //     every top-3 ASIN at the current week. Joined into the INSERT
-    //     below to populate the new aggregate columns.
+    //     every top-3 ASIN of the active terms (the catalog's current row).
+    //     Joined into the INSERT below to populate the new aggregate columns.
     await stageEnrichedAsins(client);
 
     // 2. rank_at_offset(N) for N in {1, 4, 13, 26, 52} weeks ago.
@@ -743,15 +743,14 @@ export function stageEnrichedAsinsSql(): { text: string; values: unknown[] } {
  * (one per slot) without re-scanning the full source table for
  * each lookup.
  *
- * The catalog keeps one row per ASIN, so there is no earlier active week
- * to fall back to: no_price rows (out of stock; facts refreshed) and delisted rows (facts kept
- * from the last fetch) are staged too, so their reviews and category still reach kcs,
- * but the price comes through only for active rows. Rows with no outcome yet or only errors
- * are left out.
+ * The catalog keeps one current row per ASIN. no_price rows (out of stock; facts refreshed) and
+ * delisted rows (facts kept from the last fetch) are staged alongside active ones, so their
+ * reviews and category still reach kcs; the price comes through only for active rows. Rows with
+ * no outcome yet or only errors are left out.
  */
 async function stageEnrichedAsins(client: PoolClient): Promise<void> {
-  // Split into 2 separate calls — pg won't accept a multi-statement
-  // string with bound params (treated as a prepared statement).
+  // The CREATE … AS comes from the pure builder above (pinned in enrichedSourceSql.test.ts);
+  // the index follows.
   const stage = stageEnrichedAsinsSql();
   await client.query(stage.text, stage.values);
   await client.query(`CREATE INDEX ON asin_enriched_current (asin)`);

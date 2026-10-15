@@ -298,13 +298,12 @@ interface CatalogRow {
  * Facets for a snapshot are rewritten IN PLACE, not immutable per version:
  * `worker/kcsKeepaSyncJobs.ts` Phase 3 does
  * `DELETE FROM keyword_current_summary_leaf_category_facets WHERE snapshot_version = $1` and
- * re-INSERTs under the SAME snapshot_version after every Keepa aggregate sync (fired by the
- * service watcher). So past the TTL,
- * this always rebuilds from the rows the statement just returned — even when `snapshot_version`
- * is unchanged from what's cached — instead of reusing the old catalog object; a corrected
- * top_clicked_category_path from that run is picked up within one TTL window instead of being
- * masked by a same-version cache hit. Building from ~11k facets is a few ms, so the unconditional
- * rebuild costs nothing measurable.
+ * re-INSERTs under the SAME snapshot_version after every Keepa aggregate sync (fired by the service
+ * watcher). So past the TTL, this always rebuilds from the rows the statement just returned — even
+ * when `snapshot_version` is unchanged from what's cached — instead of reusing the old catalog
+ * object; a corrected top_clicked_category_path from that run is picked up within one TTL window
+ * instead of being masked by a same-version cache hit. Building from ~11k facets is a few ms, so
+ * the unconditional rebuild costs nothing measurable.
  *
  * No meta row at all (the kill switch: the meta table truncated) always throws DATA_UNAVAILABLE.
  * A meta row whose LEFT JOIN found no facets (`category_path IS NULL`) is ambiguous between two

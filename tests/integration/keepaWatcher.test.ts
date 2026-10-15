@@ -126,7 +126,8 @@ describe.skipIf(!RUN)('Keepa watcher tick (integration)', () => {
       const tickNow = new Date();
       const f = fakes();
       const texts: string[] = [];
-      // No pending drain and tonight's sync already stamped, so neither sync branch can fire: the actions are the alarm pair alone (or none while an enqueue holds its lock).
+      // No pending drain and tonight's sync already stamped, so neither sync branch can fire: the
+      // actions are the alarm pair alone (or none while an enqueue holds its lock).
       await inRolledBackTick(
         `UPDATE keepa_service_status
          SET down_alarm_sent_at = NULL, stall_alarm_sent_at = NULL, sync_fired_at = NULL,

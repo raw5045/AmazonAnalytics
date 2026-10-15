@@ -15,6 +15,9 @@ import {
  * the app (every reader uses the asin_products catalog and asin_snapshots, seeded from this table on
  * 2026-10-06 and backfilled for its post-seed fetches). 24 weeks, 2026-05-02 → 2026-10-10, ~5.5 GB.
  * Kept as raw history; dropping or exporting it is a separate decision (spec 2026-10-15 §9).
+ * Not dead code: the asin_enrichment_status enum and the AsinEnrichmentStatus type below are live
+ * (asin_products, asin_snapshots and the product pages use them via db/schema), so move them
+ * before this file goes.
  *
  * Per-(asin, week) snapshot of Keepa-sourced product data.
  *
@@ -22,7 +25,7 @@ import {
  * at (week_end_date, search_term_id) → up to 3 ASINs → up to 3
  * asin_weekly_data rows at the same week_end_date.
  *
- * We enrich at most once per ASIN per week. Two weeks later, the row
+ * Each ASIN was enriched at most once per week. Two weeks later, the row
  * for that ASIN at the new week exists alongside the old one — the
  * "current" view is `ORDER BY week_end_date DESC LIMIT 1` per ASIN,
  * the trajectory is just every row.

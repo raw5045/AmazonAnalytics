@@ -118,9 +118,9 @@ describe('mapEnrichedProducts', () => {
     });
   });
 
-  it('maps the catalog-only fields, null when a weekly row lacks them', () => {
-    const weekly = mapEnrichedProducts([row('active')]).B0A;
-    expect([weekly.monthlySold, weekly.keepaUpdatedAt, weekly.fbaOfferCount, weekly.avg90SalesRank]).toEqual([null, null, null, null]);
+  it('maps the catalog fields, null when a row lacks them', () => {
+    const bare = mapEnrichedProducts([row('active')]).B0A;
+    expect([bare.monthlySold, bare.keepaUpdatedAt, bare.fbaOfferCount, bare.avg90SalesRank]).toEqual([null, null, null, null]);
     const catalog = mapEnrichedProducts([
       row('active', {
         monthly_sold: 1000,
