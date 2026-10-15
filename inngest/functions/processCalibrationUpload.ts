@@ -2,7 +2,7 @@
  * Inngest orchestrator for combined calibration uploads (BA + POE
  * and/or SQP).
  *
- * Thin orchestrator (same pattern as enrichKeepaForWeek v2):
+ * Thin orchestrator (same pattern as processMonthlySfr):
  *   1. step.run('start-job') — dispatches the detached pipeline
  *   2. step.waitForEvent('calibration/processed', timeout: 1h)
  *   3. step.run('send-email') — fires the result-summary email

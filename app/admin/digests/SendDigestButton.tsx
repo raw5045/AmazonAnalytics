@@ -7,8 +7,8 @@ import { useRouter } from 'next/navigation';
 type Phase = 'idle' | 'firing' | 'sent' | 'failed';
 
 /**
- * Send / Retry / Resume button for the current week's digest. Mirrors
- * KeepaEnrichmentButton's idle/firing/sent/failed pattern. The rendering
+ * Send / Retry / Resume button for the current week's digest. Moves through an
+ * idle/firing/sent/failed pattern (the Phase type above). The rendering
  * depends on the current run status:
  *   - null / undefined        → "Send digest" (fresh send, retry=false)
  *   - 'sent_with_failures'     → "Retry failures" (retry=true)

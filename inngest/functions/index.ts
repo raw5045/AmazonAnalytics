@@ -1,7 +1,6 @@
 import { rubricUploadedFn } from './rubric';
 import { validateFileFn } from './validate';
 import { importBatchFn } from './importBatch';
-import { enrichKeepaForWeek } from './enrichKeepaForWeek';
 import { processMonthlySfr } from './processMonthlySfr';
 import { processCalibrationUpload } from './processCalibrationUpload';
 import { syncKcsKeepaAggregates } from './syncKcsKeepaAggregates';
@@ -21,7 +20,6 @@ export const functions = [
   rubricUploadedFn,
   validateFileFn,
   importBatchFn,
-  enrichKeepaForWeek,
   processMonthlySfr,
   processCalibrationUpload,
   syncKcsKeepaAggregates,

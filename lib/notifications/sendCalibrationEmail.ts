@@ -1,7 +1,7 @@
 /**
  * Send the calibration-upload outcome email via Resend.
  *
- * Same fail-soft pattern as sendImportEmail / sendEnrichmentEmail:
+ * Same fail-soft pattern as sendImportEmail:
  * missing RESEND_API_KEY → log + return; Resend API error → log +
  * return; admin lookup failure → log + return. Never crashes the
  * Inngest run.

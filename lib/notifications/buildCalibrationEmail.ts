@@ -1,6 +1,6 @@
 /**
  * Pure function: produce the subject/text/html for the calibration-
- * upload completion email. Three outcomes mirror buildEnrichmentEmail:
+ * upload completion email. Three outcomes:
  *
  *   completed (green ✓):  full pipeline succeeded — BA + POE/SQP
  *                          ingested; when the upload included an SQP

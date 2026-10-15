@@ -95,8 +95,8 @@ export const importBatchFn = inngest.createFunction(
     // RowExclusiveLock on the kwm_2026 partition past the 60-min
     // mark, with the orchestrator already calling it orphaned.
     //
-    // Same false-positive pattern fixed earlier in enrichKeepaForWeek
-    // (task #7 of the keepa work). Trust ONLY explicit DB status
+    // Same false-positive pattern fixed earlier in the old Keepa enrichment
+    // orchestrator (task #7 of the keepa work). Trust ONLY explicit DB status
     // (validation_status='imported' or 'import_failed') + the
     // poll-budget timeout. The worker's CAS-style mark_imported
     // already protects against status corruption if the worker won

@@ -245,6 +245,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
     insertValues.mock.calls
       .map(([row]) => row as { phase?: string; rowsAffected?: number | null })
       .filter((row) => row.phase === 'keepa_enqueue');
+  const sentEventNames = () =>
+    mockInngestSend.mock.calls.map(([e]) => (e as { name: string }).name);
 
   it('enqueues the imported week once, before the summary refresh, and cleans up', async () => {
     const { log } = spyConsole();
@@ -275,6 +277,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
       '[keepa-enqueue] week 2026-04-11: inserted=5 updated=7 retired=2 vacuumed=false vacuumError=57014',
     ]);
     expect(enqueueTimings()).toEqual([expect.objectContaining({ rowsAffected: 12 })]);
+    // Arc 11 retired the import-time Keepa job: a completed import sends no enrichment event.
+    expect(sentEventNames()).not.toContain('keepa.enrich-week-requested');
   });
 
   it('a database failure logs only the week, stage, error name and code; the import completes', async () => {

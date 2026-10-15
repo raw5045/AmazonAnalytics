@@ -12,7 +12,7 @@
  *
  * Used by:
  *   - scripts/countEnrichableAsins.ts — scope-funnel diagnostic
- *   - inngest/functions/enrichKeepaForWeek.ts — candidate filtering
+ *   - lib/keepa/enqueueWeek.ts — candidate filtering (the keepa_enqueue import phase)
  *   - scripts/backfillKeepaCurrentWeek.ts — dev smoke test
  *
  * Update procedure: edit the set below. If you remove an entry,

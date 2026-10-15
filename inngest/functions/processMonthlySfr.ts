@@ -1,7 +1,7 @@
 /**
  * Inngest orchestrator for monthly BA SFR uploads from the in-app UI.
  *
- * Thin orchestrator (same shape as enrichKeepaForWeek's v2):
+ * Thin orchestrator (detached worker job + completion event):
  *   1. step.run('start-job') — spawns detached Promise on the worker
  *   2. step.waitForEvent('monthly-sfr/processed', timeout: 1h)
  *   3. Logs completion (could send email later; v1 just logs)

@@ -1,8 +1,8 @@
 /**
  * Detached background runner for monthly BA SFR uploads from the in-app
- * upload UI. Mirrors the pattern in worker/jobs.ts (CSV imports) and
- * worker/keepaJobs.ts (Keepa enrichment) — Inngest function dispatches
- * a Promise that does the actual work outside step.run's HTTP timeout.
+ * upload UI. Mirrors the pattern in worker/jobs.ts (CSV imports) — Inngest
+ * function dispatches a Promise that does the actual work outside
+ * step.run's HTTP timeout.
  *
  * Flow:
  *   1. User uploads file via /admin/upload-monthly-sfr
