@@ -23,7 +23,7 @@
 | `lib/keepa/readSource.ts` (+ test), `lib/explorer/fetchKeywordDetail.ts`, `lib/explorer/enrichedProductsQuery.test.ts`, `lib/categoryBuilder/loadTree.ts`, `inngest/functions/refreshSummary.ts`, `inngest/functions/enrichedSourceSql.test.ts`, `worker/kcsKeepaSyncJobs.ts`, `lib/keepa/watcherRules.ts` (+ test), `inngest/functions/keepaServiceWatcher.ts` (+ test), `tests/integration/keepaWatcher.test.ts`, `lib/research/categories.ts`, `db/schema/asinWeeklyData.ts`, `db/schema/keepaEnrichmentRuns.ts` | Task 5: one source; the archive comments |
 | `docs/superpowers/plans/2026-10-15-keepa-old-job-retirement.md` | this plan; Task 6's Results table |
 
-Facts verified while planning (2026-10-15): `.env.example` does not list `KEEPA_READ_SOURCE` (nothing to change there; the spec's §3.3 is amended in Task 6's docs commit); the watcher's tick log carries no source field — the flag lives in `WatcherTickDeps.readSource`, `WatcherInput.readSource` and the two sync guards, which Task 5 removes; `lib/keepa/types.ts` also exports `AsinEnrichmentStatus`, used by the product pages, so Task 3 trims that file to that type instead of deleting it; the card's heading is already "Keepa service", so Task 2 renames it "Service status" under the page's new "Keepa service" heading.
+Facts verified while planning (2026-10-15): `.env.example` does not list `KEEPA_READ_SOURCE` (nothing to change there; the spec's §3.3 is amended in Task 6's docs commit); the watcher's tick log carries no source field — the flag lives in `WatcherTickDeps.readSource`, `WatcherInput.readSource` and the two sync guards, which Task 5 removes; `lib/keepa/types.ts` turned out to have no importers once the job was gone (the product pages take `AsinEnrichmentStatus` from `db/schema`), so Task 3's review round deleted it, as the spec says; the card's heading is already "Keepa service", so Task 2 renames it "Service status" under the page's new "Keepa service" heading.
 
 ---
 
@@ -311,7 +311,7 @@ Replace the whole of `lib/keepa/types.ts` with:
 export type AsinEnrichmentStatus = 'active' | 'no_price' | 'delisted' | 'error';
 ```
 
-Then: `git grep -n "keepaJobs\|enrichKeepaForWeek\|sendEnrichmentEmail\|buildEnrichmentEmail\|lib/keepa/client\|lib/keepa/parse'\|fire-full\|KeepaEnrichmentButton\|EnrichmentRow\|KeepaProductResponse" -- app lib inngest worker services scripts tests db` must print nothing outside docs; fix any hit (a stale import or comment) before continuing.
+Then: `git grep -n "keepaJobs\|enrichKeepaForWeek\|sendEnrichmentEmail\|buildEnrichmentEmail\|lib/keepa/client\|lib/keepa/parse'\|fire-full\|KeepaEnrichmentButton\|EnrichmentRow\|KeepaProductResponse" -- app lib inngest worker services scripts tests db` must show no import hits; comment-only hits may remain in the files Tasks 4 and 5 own (`services/keepa/store.ts`, `worker/kcsKeepaSyncJobs.ts`, the two archive schema files) and in the applied migrations' COMMENT literals; fix any other hit (a stale import or comment) before continuing.
 
 - [ ] **Step 5: Run the gates**
 
@@ -332,7 +332,7 @@ git commit -m "chore(keepa): retire the old import-time enrichment job — no ev
 ### Task 4: The service and the watcher stop deferring to the old job
 
 **Files:**
-- Modify: `services/keepa/loop.ts` (lines 44, 82–83, 97–98, 86, 129–162, 213–225, 276–285), `services/keepa/loop.test.ts` (the fake store at line 53, the seven old-job cases at lines 84–215), `services/keepa/store.ts:35-41`, `services/keepa/pgStore.ts:277-292`, `services/keepa/pgStore.test.ts:299-306`, `services/keepa/index.ts` (the `'yielded'` branch, if any), `services/keepa/README.md` (lines 21, 23, 30, 55–57)
+- Modify: `services/keepa/loop.ts` (lines 40–44, 82–83, 97–98, 86, 129–162, 213–225, 256–258, 276–285), `services/keepa/loop.test.ts` (the fake store at line 53, the seven old-job cases at lines 84–215), `services/keepa/store.ts:35-41`, `services/keepa/pgStore.ts:277-292`, `services/keepa/pgStore.test.ts:299-306`, `services/keepa/index.ts` (the `'yielded'` branch, if any), `services/keepa/README.md` (lines 21, 23, 30, 55–57), `lib/keepa/lanes.ts:23-26` (the `TOKEN_RESERVE` doc comment), `tests/integration/keepaService.test.ts:146-149` (the `oldJobRunning` case; the file self-skips without `RUN_INTEGRATION` and is never run here)
 - Modify: `lib/keepa/watcherRules.ts` (the `oldJobRecentlyLive` input, `stallHeld`, the `old_job_recent` reason), `lib/keepa/watcherRules.test.ts` (base input line 24, the cases at lines 130–150 and 313), `inngest/functions/keepaServiceWatcher.ts:104-115` and the input field, `inngest/functions/keepaServiceWatcher.test.ts` (the `oldJob` harness option and the cases at lines 198–207)
 
 - [ ] **Step 1: Write the failing tests**
@@ -372,13 +372,15 @@ Expected: the new loop case fails (`'probe'` precedes `'claim'`; `makeStore` lac
 - [ ] **Step 3: Remove the guard from the service loop**
 
 In `services/keepa/loop.ts`:
-- delete line 44 `export const OLD_JOB_YIELD_SLEEP_MS = 60_000;`
+- delete lines 40–44: the doc comment and `export const OLD_JOB_YIELD_SLEEP_MS = 60_000;`
 - in `LoopState` delete the comment and field `yieldingToOldJob: boolean;` (lines 82–83) and in `initialState()` the line `yieldingToOldJob: false,`
 - `export type IterationResult = 'batch' | 'idle' | 'yielded' | 'keepa_error' | 'db_error' | 'threw';` → drop `'yielded'`
 - delete the whole `probeOldJob` function with its doc comment (lines 129–153) and the whole `releaseOwnClaimsQuietly` function with its doc comment (lines 155–162)
 - delete the pre-claim block (lines 213–225): the comment `// Before claiming: while an old enrichment run is live, idle …`, `const beforeClaim = await probeOldJob(deps, state);`, and the two `if` statements that follow it, up to and including `return 'yielded';` and its closing `}`
 - inside the retry loop delete the comment block starting `// Before EVERY request: an old run may have started …` and the lines `const beforeFetch = await probeOldJob(deps, state);`, `if (beforeFetch === 'db_error') return 'db_error';`, and the `if (beforeFetch === 'old_job') { await releaseOwnClaimsQuietly(deps); return 'yielded'; }` block (lines 276–285), so the loop body begins at `try { reply = await deps.keepa.fetchBatch(asins); }`.
-- `grep -n "yielded\|old_job\|OldJob" services/keepa/loop.ts` must print nothing.
+- lines 256–258 (the pacing comment that names the old job's two-token calls during the shadow week): reword to `// Pace on Keepa's once-a-minute refill and leave TOKEN_RESERVE in the bucket after the batch as a margin against Keepa's own rounding.` keeping the rest of that comment's content; give `lib/keepa/lanes.ts:23-26` (the `TOKEN_RESERVE` doc comment) the same rationale (`/** Tokens left in the bucket after a batch as a margin against Keepa's own rounding. */`-style, matching the file's comment style).
+- `tests/integration/keepaService.test.ts`: delete the case at lines 146–149 that calls `store.oldJobRunning()` (and any helper only it used); do not run the file.
+- `grep -n "yielded\|old_job\|OldJob\|shadow week" services/keepa/loop.ts lib/keepa/lanes.ts tests/integration/keepaService.test.ts` must print nothing.
 
 In `services/keepa/store.ts` delete the doc comment and the method `oldJobRunning(): Promise<boolean>;` (lines 35–41). In `services/keepa/pgStore.ts` delete the `async oldJobRunning()` method with its comment (lines 277–292). In `services/keepa/index.ts`, if any branch handles the `'yielded'` iteration result (search `'yielded'`), remove that branch (the loop no longer returns it).
 
@@ -396,13 +398,13 @@ In `inngest/functions/keepaServiceWatcher.ts`: delete the comment block and the 
 
 - [ ] **Step 5: Run the gates**
 
-Run: `pnpm typecheck && pnpm vitest run services/keepa lib/keepa inngest/functions/keepaServiceWatcher.test.ts && pnpm exec eslint services/keepa/loop.ts services/keepa/loop.test.ts services/keepa/store.ts services/keepa/pgStore.ts services/keepa/pgStore.test.ts services/keepa/index.ts lib/keepa/watcherRules.ts lib/keepa/watcherRules.test.ts inngest/functions/keepaServiceWatcher.ts inngest/functions/keepaServiceWatcher.test.ts`
-Expected: tsc exits 0 (the type-level removal of `oldJobRunning` and `oldJobRecentlyLive` has no remaining user); every suite green; eslint silent. `git grep -n "oldJobRunning\|oldJobRecentlyLive\|old_job\|keepa_enrichment_runs" -- services lib inngest worker app` prints nothing (the schema file `db/schema/keepaEnrichmentRuns.ts` may still name the table; that is the archive).
+Run: `pnpm typecheck && pnpm vitest run services/keepa lib/keepa inngest/functions/keepaServiceWatcher.test.ts && pnpm exec eslint services/keepa/loop.ts services/keepa/loop.test.ts services/keepa/store.ts services/keepa/pgStore.ts services/keepa/pgStore.test.ts services/keepa/index.ts lib/keepa/watcherRules.ts lib/keepa/watcherRules.test.ts inngest/functions/keepaServiceWatcher.ts inngest/functions/keepaServiceWatcher.test.ts lib/keepa/lanes.ts tests/integration/keepaService.test.ts`
+Expected: tsc exits 0 (once the integration test's case is deleted, `oldJobRunning` and `oldJobRecentlyLive` have no remaining user); every suite green; eslint silent. `git grep -n "oldJobRunning\|oldJobRecentlyLive\|old_job\|keepa_enrichment_runs" -- services lib inngest worker app` prints nothing (the schema file `db/schema/keepaEnrichmentRuns.ts` may still name the table; that is the archive).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add services/keepa/loop.ts services/keepa/loop.test.ts services/keepa/store.ts services/keepa/pgStore.ts services/keepa/pgStore.test.ts services/keepa/README.md lib/keepa/watcherRules.ts lib/keepa/watcherRules.test.ts inngest/functions/keepaServiceWatcher.ts inngest/functions/keepaServiceWatcher.test.ts
+git add services/keepa/loop.ts services/keepa/loop.test.ts services/keepa/store.ts services/keepa/pgStore.ts services/keepa/pgStore.test.ts services/keepa/README.md lib/keepa/watcherRules.ts lib/keepa/watcherRules.test.ts inngest/functions/keepaServiceWatcher.ts inngest/functions/keepaServiceWatcher.test.ts lib/keepa/lanes.ts tests/integration/keepaService.test.ts
 git commit -m "chore(keepa): the service no longer yields to the old job and the watcher no longer holds its stall alarm for it" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
@@ -414,7 +416,7 @@ git commit -m "chore(keepa): the service no longer yields to the old job and the
 
 **Files:**
 - Delete: `lib/keepa/readSource.ts`, `lib/keepa/readSource.test.ts`
-- Modify: `lib/explorer/fetchKeywordDetail.ts:230-290` (`enrichedProductsFor`), `lib/explorer/enrichedProductsQuery.test.ts` (the `enrichedProductsFor` describe), `lib/categoryBuilder/loadTree.ts` (header + the three builders), `inngest/functions/refreshSummary.ts:717-795` (`stageEnrichedAsinsSql`, `stageEnrichedAsins`), `inngest/functions/enrichedSourceSql.test.ts`, `worker/kcsKeepaSyncJobs.ts:38,47-83,134-141`, `lib/keepa/watcherRules.ts` (`readSource` in `WatcherInput`, the sync guards, `syncCouldFire`, `heldReasons`), `lib/keepa/watcherRules.test.ts`, `inngest/functions/keepaServiceWatcher.ts` (`WatcherTickDeps.readSource`, the call sites), `inngest/functions/keepaServiceWatcher.test.ts`, `tests/integration/keepaWatcher.test.ts` (the `readSource` argument in three calls), `lib/research/categories.ts:18`, `db/schema/asinWeeklyData.ts` (header), `db/schema/keepaEnrichmentRuns.ts` (header)
+- Modify: `lib/explorer/fetchKeywordDetail.ts:230-290` (`enrichedProductsFor`), `lib/explorer/enrichedProductsQuery.test.ts` (the `enrichedProductsFor` describe), `lib/categoryBuilder/loadTree.ts` (header + the three builders), `inngest/functions/refreshSummary.ts:717-795` (`stageEnrichedAsinsSql`, `stageEnrichedAsins`), `inngest/functions/enrichedSourceSql.test.ts`, `worker/kcsKeepaSyncJobs.ts:7-17,38,47-83,134-141`, `lib/keepa/watcherRules.ts` (`readSource` in `WatcherInput`, the sync guards, `syncCouldFire`, `heldReasons`), `lib/keepa/watcherRules.test.ts`, `inngest/functions/keepaServiceWatcher.ts` (`WatcherTickDeps.readSource`, the call sites), `inngest/functions/keepaServiceWatcher.test.ts`, `tests/integration/keepaWatcher.test.ts` (the `readSource` argument in three calls), `lib/research/categories.ts:18`, `db/schema/asinWeeklyData.ts` (header), `db/schema/keepaEnrichmentRuns.ts` (header)
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -537,7 +539,7 @@ export function stageEnrichedAsinsSql(): { text: string; values: unknown[] } {
 
 `stageEnrichedAsins(client, currentWeekEndDate)` becomes `stageEnrichedAsins(client)` calling `stageEnrichedAsinsSql()` (update its one caller and drop the now-unused parameter); its doc comment keeps only the catalog paragraph (`The catalog keeps one row per ASIN … Rows with no outcome yet or only errors are left out.`), the weekly paragraphs go. Remove the `keepaReadSource` / `KeepaReadSource` imports.
 
-`worker/kcsKeepaSyncJobs.ts`: remove line 38's import; `enrichedSyncSourceSql(source, cw)` becomes `enrichedSyncSourceSql()` returning only the catalog statement (the doc comment names the catalog only); at the call site `const source = keepaReadSource(); const phase1 = enrichedSyncSourceSql(source, cw);` becomes `const phase1 = enrichedSyncSourceSql();` and the log line becomes `` log(`phase=1 done: ${cnt[0].n} active/no_price/delisted catalog rows`); `` (the `cw` variable stays if other phases use it; otherwise remove it and its read).
+`worker/kcsKeepaSyncJobs.ts`: remove line 38's import; `enrichedSyncSourceSql(source, cw)` becomes `enrichedSyncSourceSql()` returning only the catalog statement (the doc comment names the catalog only); at the call site `const source = keepaReadSource(); const phase1 = enrichedSyncSourceSql(source, cw);` becomes `const phase1 = enrichedSyncSourceSql();` and the log line becomes `` log(`phase=1 done: ${cnt[0].n} active/no_price/delisted catalog rows`); `` (the `cw` variable stays if other phases use it; otherwise remove it and its read). The file header (lines 7–17) still lists the deleted job as a trigger and names `worker/keepaJobs.ts`: keep only the watcher bullet, without "under KEEPA_READ_SOURCE=products only", and make line 17 read "Mirrors the worker/calibrationJobs.ts pattern:".
 
 `lib/keepa/watcherRules.ts`: remove the `import type { KeepaReadSource } from './readSource';` line and the `readSource: KeepaReadSource;` field; in `decideWatcherActions` replace `if (i.readSource === 'products') { … }` by its body (the sync branches run unconditionally); `syncCouldFire` becomes
 
@@ -551,7 +553,7 @@ with its doc comment losing `catalog reads on,`; in `heldReasons` replace `if (i
 
 `inngest/functions/keepaServiceWatcher.ts`: remove the `readSource` import line and the `readSource: KeepaReadSource;` field of `WatcherTickDeps`; `const { now, readSource } = deps;` → `const { now } = deps;`; the `syncCouldFire({ readSource, … })` call loses `readSource,`; the `WatcherInput` literal loses `readSource,`; the handler's deps literal loses `readSource: keepaReadSource(),`.
 
-`lib/research/categories.ts:18`: `so no separate `asin_weekly_data` tree walk is needed` → `so no separate catalog tree walk is needed`.
+`lib/research/categories.ts:18`: `so no separate `asin_weekly_data` tree walk is needed` → `so no separate catalog tree walk is needed`; line 301: "after every Keepa enrichment run" → "after every Keepa aggregate sync (worker/kcsKeepaSyncJobs.ts, fired by the service watcher)".
 
 `db/schema/asinWeeklyData.ts`: insert at the top of the table's doc comment (before `Per-(asin, week) snapshot of Keepa-sourced product data.`):
 
@@ -587,7 +589,7 @@ Not a subagent task: the controller runs it with the owner, in the spec's order 
 
 - [ ] **Step 0: Final whole-diff review + the spec amendment**
 
-Before anything ships: a read-only final review of the arc's range (`pnpm vitest run` whole suite, `pnpm typecheck`, `pnpm build`, the leftover greps of Tasks 3–5, the Keepa service's `services/keepa/index.ts` boot path). Then a docs commit amending the spec: §3.2 "the `readSource` field of its log line" → "its `readSource` dependency and the two sync guards"; §3.3 "`.env.example` loses the variable" → "`.env.example` never listed it (verified)"; §3.1 "`lib/keepa/types.ts`" → "trimmed to `AsinEnrichmentStatus`, which the product pages use"; §5 the fetched row → `` `${fmt(counts.fetchedLast24h)} · 7-day avg ${fmt(Math.round(counts.fetchedLast7d / 7))}/day` `` and the degraded line `Could not load (code)` (the longer row text wrapped at the card's 355 px column; the old degraded line read like a down service under the renamed heading).
+Before anything ships: a read-only final review of the arc's range (`pnpm vitest run` whole suite, `pnpm typecheck`, `pnpm build`, the leftover greps of Tasks 3–5, the Keepa service's `services/keepa/index.ts` boot path). Then a docs commit amending the spec: §3.2 "the `readSource` field of its log line" → "its `readSource` dependency and the two sync guards"; §3.3 "`.env.example` loses the variable" → "`.env.example` never listed it (verified)"; §5 the fetched row → `` `${fmt(counts.fetchedLast24h)} · 7-day avg ${fmt(Math.round(counts.fetchedLast7d / 7))}/day` `` and the degraded line `Could not load (code)` (the longer row text wrapped at the card's 355 px column; the old degraded line read like a down service under the renamed heading).
 
 - [ ] **Step 1: Backfill**
 
@@ -600,7 +602,7 @@ Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (th
 
 - [ ] **Step 3: Smoke**
 
-The admin page `/admin/keepa-enrichment`: heading "Keepa service", the card (heading "Service status") with `Fetched last 24 h: N · 7-day avg M/day`, no button, no run list. A keyword page (the "kindle" page, rank 4) still lists its top clicked products with prices; the Category Builder still loads (perf line under a second warm). `scripts/checkKeepaService1010.ts`: the service heartbeat fresh after its redeploy, batches landing, 0 errors. Then the owner may delete `KEEPA_READ_SOURCE` from Vercel and the Railway worker (after a green day; nothing reads it).
+The admin page `/admin/keepa-enrichment`: heading "Keepa service", the card (heading "Service status") with `Fetched last 24 h: N · 7-day avg M/day`, no button, no run list. A keyword page (the "kindle" page, rank 4) still lists its top clicked products with prices; the Category Builder still loads (perf line under a second warm). `scripts/checkKeepaService1010.ts`: the service heartbeat fresh after its redeploy, batches landing, 0 errors. Then the owner may delete `KEEPA_READ_SOURCE` from Vercel and the Railway worker (after a green day; nothing reads it) and `KEEPA_API_KEY` from the Railway worker (only the Keepa service and local scripts read it now). Check `scripts/checkActiveJobs.ts` still prints 0 Keepa runs: it counts `status = 'running'` rows of the archive table, and with the boot-time reclaim gone a row stranded by the deploy would never flip; if one does, switch that probe to a heartbeat window (`heartbeat_at > now() - interval '10 minutes'`).
 
 - [ ] **Step 4: The 2026-10-20 import**
 
