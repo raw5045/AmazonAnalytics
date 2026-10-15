@@ -73,7 +73,7 @@ const CARRY_SAMPLE_KEYWORDS = 3000;
 
 /** The names LIKE ... INCLUDING ALL gives a copy called `table`: its primary key and its (asin, search_term_id) index. */
 const generatedNames = (table: string) => ({ pkey: `${table}_pkey`, asinIndex: `${table}_asin_search_term_id_idx` });
-/** Whether 0052's column is still on the live table: the build no longer names it, and 0054 drops it after the deploy. */
+/** 0052's column must be gone (0054 applied 2026-10-15): the build no longer names it, and a scratch copy must not carry its partial index. */
 const BROAD_COLUMN_SQL = "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'keyword_top_asins' AND column_name = 'broad_category') AS ok";
 
 /**
@@ -117,8 +117,6 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
   /** keyword_top_asins_meta.week_end_date: null until the first build. */
   let metaWeek: string | null = null;
   let realTableEmpty = true;
-  /** Whether 0052's broad_category column is still on the live table (the scratch copies then carry it, and its partial index, too). */
-  let hasBroadColumn = false;
 
   beforeAll(async () => {
     // keepAlive: the scratch builds are minutes of silence on the socket, as in the build's own callers.
@@ -130,8 +128,7 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
       "SELECT to_regclass('keyword_top_asins') IS NOT NULL AND to_regclass('keyword_top_asins_meta') IS NOT NULL AS ok",
     );
     if (!tables.rows[0]?.ok) throw new Error('migration 0051 is not applied (keyword_top_asins or keyword_top_asins_meta is missing)');
-    hasBroadColumn = (await client.query<{ ok: boolean }>(BROAD_COLUMN_SQL)).rows[0]?.ok === true;
-    console.log(`[topAsinsBuild] 0052's broad_category column ${hasBroadColumn ? 'still exists (0054 not applied yet)' : 'is gone (0054 applied)'}`);
+    if ((await client.query<{ ok: boolean }>(BROAD_COLUMN_SQL)).rows[0]?.ok === true) throw new Error('migration 0054 is not applied (keyword_top_asins still has broad_category)');
     const kcs = await client.query<{ week: string }>('SELECT current_week_end_date::text AS week FROM keyword_current_summary_meta WHERE singleton');
     if (!kcs.rows[0]) throw new Error('keyword_current_summary_meta has no row: the explorer week is unknown');
     currentWeek = kcs.rows[0].week;
@@ -319,8 +316,7 @@ describe.skipIf(!RUN)('Top-ASINs reverse-table build (integration)', () => {
         await client.query(`CREATE TEMP TABLE ${NAMES_PROBE} (LIKE keyword_top_asins INCLUDING ALL)`);
         const copy = await objectNames(NAMES_PROBE);
         const generated = generatedNames(NAMES_PROBE);
-        // While 0052's column is still on the live table, LIKE copies its partial index too, under the name it generates.
-        const expectedIndexes = [generated.asinIndex, generated.pkey, ...(hasBroadColumn ? [`${NAMES_PROBE}_broad_category_asin_idx`] : [])].sort();
+        const expectedIndexes = [generated.asinIndex, generated.pkey].sort();
         expect(copy.indexes, 'indexes of the scratch copy').toEqual(expectedIndexes);
         expect(copy.constraints.filter((c) => c.contype === 'p').map((c) => c.conname), 'primary key of the scratch copy').toEqual([generated.pkey]);
         const checks = copy.constraints.filter((c) => c.contype === 'c');
