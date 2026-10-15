@@ -4,7 +4,7 @@
  * Thin orchestrator (detached worker job + completion event):
  *   1. step.run('start-job') — spawns detached Promise on the worker
  *   2. step.waitForEvent('monthly-sfr/processed', timeout: 1h)
- *   3. Logs completion (could send email later; v1 just logs)
+ *   3. step.run('send-email') — the result email (send-email-timeout on a 1h timeout)
  *
  * The real work (download from R2, stream-parse, dedup, INSERT) lives
  * in worker/monthlySfrJobs.ts and runs entirely outside step.run's

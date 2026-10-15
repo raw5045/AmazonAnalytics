@@ -13,11 +13,10 @@
  * Used by:
  *   - scripts/countEnrichableAsins.ts — scope-funnel diagnostic
  *   - lib/keepa/enqueueWeek.ts — candidate filtering (the keepa_enqueue import phase)
- *   - scripts/backfillKeepaCurrentWeek.ts — dev smoke test
  *
  * Update procedure: edit the set below. If you remove an entry,
- * previously-skipped ASINs in that category will be picked up on the
- * next weekly enrichment cycle (no migration needed).
+ * previously-skipped ASINs in that category will be picked up at the
+ * next import's keepa_enqueue phase (no migration needed).
  */
 export const EXCLUDED_CATEGORIES: ReadonlySet<string> = new Set([
   // ----- Digital (non-physical) -----

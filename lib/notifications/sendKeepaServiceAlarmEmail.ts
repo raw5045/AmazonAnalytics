@@ -1,6 +1,6 @@
 // lib/notifications/sendKeepaServiceAlarmEmail.ts
 /**
- * Send a Keepa service watcher email to every admin. Fail-soft, mirroring sendEnrichmentEmail:
+ * Send a Keepa service watcher email to every admin. Fail-soft, mirroring sendImportEmail:
  * no key → skip; Resend error / thrown / recipient lookup failed → log coded fields and return.
  * Resolves true only when Resend accepted the send: the watcher stamps an alarm as sent only then,
  * so a failed send is retried on the next tick.

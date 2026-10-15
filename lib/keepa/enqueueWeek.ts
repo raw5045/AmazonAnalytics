@@ -2,8 +2,8 @@
 /**
  * Enqueue a week's top-3 ASINs for the Keepa service (spec 2026-10-05 §6.1).
  *
- * One upsert over the week's kwm partition: every well-formed top-3 ASIN of the week (same
- * category exclusions as the old enrichment) gets its best keyword rank, the scope week, its
+ * One upsert over the week's kwm partition: every well-formed top-3 ASIN of the week (the
+ * exclusions in lib/keepa/categoryExclusions.ts) gets its best keyword rank, the scope week, its
  * tier (1 = rank ≤ TIER1_MAX_RANK, weekly; 2 = the rest) and in_scope = true. Brand-new ASINs
  * start never-fetched and due now. An ASIN moving from tier 2 to tier 1 that was fetched before
  * is pulled forward to a weekly due date. Then every row not seen this week is flagged out of

@@ -1,9 +1,10 @@
 /**
  * Inngest orchestrator for the post-enrichment Keepa-aggregate sync.
  *
- * Triggered by `keepa/aggregates-sync-requested` (fired automatically
- * from enrichKeepaForWeek when an enrichment run completes
- * successfully). The orchestrator spawns the detached worker in
+ * Triggered by `keepa/aggregates-sync-requested` (fired by the Keepa
+ * service watcher, inngest/functions/keepaServiceWatcher.ts: once the
+ * never-fetched lane drains after an import, and nightly from 03:30 ET).
+ * The orchestrator spawns the detached worker in
  * worker/kcsKeepaSyncJobs.ts, then waits for the
  * `keepa/aggregates-sync.completed` event to report results.
  *
@@ -11,8 +12,7 @@
  * lifecycle (~5-67 min depending on cache warmth), so it's not subject
  * to Inngest's HTTP step timeout.
  *
- * Concurrency keyed on weekEndDate: at most one sync per week in
- * flight, mirroring the enrichment orchestrator's safety guard.
+ * Concurrency keyed on weekEndDate: at most one sync per week in flight.
  */
 import { inngest } from '../client';
 import { startKcsKeepaSyncJob } from '@/worker/kcsKeepaSyncJobs';
