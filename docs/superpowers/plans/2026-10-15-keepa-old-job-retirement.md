@@ -37,11 +37,14 @@ Facts verified while planning (2026-10-15): `.env.example` does not list `KEEPA_
 ```ts
 // scripts/backfillSnapshotsFromWeekly1015.ts (UNTRACKED — run only on the owner's go; spec 2026-10-15 §2.1)
 /**
- * Copies the old import-time job's post-seed fetches (enriched_at on or after 2026-10-06, the day after
- * the arc-6 seed) from asin_weekly_data into asin_snapshots with the seed's own statement
- * (scripts/applyMigration0050.ts, seed 3/4). Idempotent: ON CONFLICT DO NOTHING against the snapshot
- * table's primary key (asin, fetched_at). Prints the count of post-seed fetches with no snapshot before
- * and after; accept the run when the after-count is 0 and the inserted count equals the before-count.
+ * Copies the old import-time job's post-seed fetches from asin_weekly_data into asin_snapshots with the
+ * seed's own statement (scripts/applyMigration0050.ts, seed 3/4). The cutoff, enriched_at on or after
+ * 2026-10-06 00:00, is the start of the day the arc-6 seed ran (~18:40 UTC): the window overlaps the seed
+ * on purpose, since those fetches already have snapshots and ON CONFLICT skips them, while a cutoff after
+ * the seed would lose fetches. Run it with no import and no old-job run in flight
+ * (scripts/checkActiveJobs.ts clean). Idempotent: ON CONFLICT DO NOTHING against the snapshot table's
+ * primary key (asin, fetched_at). Prints the count of post-seed fetches with no snapshot before and after;
+ * accept the run when the after-count is 0 and the inserted count equals the before-count.
  * Run: BACKFILL_SNAPSHOTS=yes node --env-file=.env.local --import tsx scripts/backfillSnapshotsFromWeekly1015.ts
  */
 import { Client } from 'pg';
@@ -58,13 +61,27 @@ if (!process.env.DATABASE_URL) { console.error('Refusing to run: DATABASE_URL is
 const code = (e: unknown) => (e as { code?: string })?.code ?? (e instanceof Error ? e.name : 'unknown');
 
 (async () => {
-  const c = new Client({ connectionString: process.env.DATABASE_URL });
+  const t0 = Date.now(); const log = (m: string) => console.log(`[${((Date.now() - t0) / 1000).toFixed(1)}s] ${m}`);
+  const c = new Client({ connectionString: process.env.DATABASE_URL, keepAlive: true, keepAliveInitialDelayMillis: 10_000 });
   c.on('error', () => undefined);
   await c.connect();
+  const countMissing = async (): Promise<number> => {
+    await c.query('BEGIN READ ONLY');
+    try {
+      await c.query("SET LOCAL statement_timeout = '600s'");
+      const n = (await c.query<{ missing: number }>(MISSING_SQL, [SEED_CUTOFF])).rows[0].missing;
+      await c.query('COMMIT');
+      return n;
+    } catch (e) {
+      await c.query('ROLLBACK').catch(() => undefined);
+      throw e;
+    }
+  };
   try {
-    await c.query("SET statement_timeout = '600s'");
-    const before = (await c.query<{ missing: number }>(MISSING_SQL, [SEED_CUTOFF])).rows[0].missing;
-    console.log(`post-seed fetches without a snapshot before: ${before}`);
+    const before = await countMissing();
+    log(`post-seed fetches without a snapshot before: ${before}`);
+    if (before === 0) log('nothing to copy (already backfilled)');
+    log('copying post-seed fetches into asin_snapshots (three scans of the archive table: a minute or more each is normal)');
     await c.query('BEGIN');
     let inserted: number;
     try {
@@ -82,13 +99,16 @@ const code = (e: unknown) => (e as { code?: string })?.code ?? (e instanceof Err
       );
       inserted = r.rowCount ?? 0;
       await c.query('COMMIT');
+      log(`committed: ${inserted} snapshot rows inserted`);
     } catch (e) {
       await c.query('ROLLBACK').catch(() => undefined);
       throw e;
     }
-    const after = (await c.query<{ missing: number }>(MISSING_SQL, [SEED_CUTOFF])).rows[0].missing;
-    console.log(`inserted ${inserted} snapshot rows; post-seed fetches without a snapshot after: ${after}`);
-    console.log(after === 0 && inserted === before ? 'backfill accepted' : 'CHECK: counts do not match (re-run is safe)');
+    const after = await countMissing();
+    log(`inserted ${inserted} snapshot rows; post-seed fetches without a snapshot after: ${after}`);
+    const accepted = after === 0 && inserted === before;
+    log(accepted ? 'backfill accepted' : 'CHECK: counts do not match (re-run is safe; if an import or the old Keepa job is running, re-run after it finishes)');
+    if (!accepted) process.exitCode = 1;
   } finally {
     await c.end();
   }
@@ -602,4 +622,4 @@ After the first import that runs on the new code: `SELECT count(*) FROM keepa_en
 
 Deviations from the plan as executed are recorded here, task by task, during execution.
 
-- **Task 1:** landed as written (untracked, byte-identical to the plan; eslint + typecheck clean; never run). The spec review confirmed the cutoff is safe (the seed ran after midnight 2026-10-06: every post-cutoff fetch that already has a snapshot got it from the seed) and corrected the Results expectation: the before-count is ≤ 20,835, since the diag's figure included delisted fetches the seed never copied; a late push means re-running the backfill after the deploy (Task 6 step 1 says so now).
+- **Task 1:** landed as written (untracked, byte-identical to the plan; eslint + typecheck clean; never run). The spec review confirmed the cutoff is safe (the seed ran after midnight 2026-10-06: every post-cutoff fetch that already has a snapshot got it from the seed) and corrected the Results expectation: the before-count is ≤ 20,835, since the diag's figure included delisted fetches the seed never copied; a late push means re-running the backfill after the deploy (Task 6 step 1 says so now). The quality round then made the two counts run in their own READ ONLY transactions with `SET LOCAL statement_timeout` (a session-level SET before BEGIN goes through Neon's transaction-mode pooler and lingers on a shared server connection), added the elapsed-seconds logger, a "copying…" line, the committed count right after COMMIT, "nothing to copy" when the before-count is 0, exit code 1 on a mismatch, keepAlive on the client, and corrected the header: the seed ran 2026-10-06 ~18:40 UTC, so the cutoff is the start of that day and overlaps the seed on purpose. The plan's code block above is the final file.
