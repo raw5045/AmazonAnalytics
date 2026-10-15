@@ -1957,11 +1957,11 @@ Run: `APPLY_0053=yes node --env-file=.env.local --import tsx scripts/applyMigrat
 
 `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts` → bare `git push origin main` (its own Bash call) → watch with `gh api repos/raw5045/AmazonAnalytics/commits/<sha>/status --jq '"overall: \(.state)", (.statuses[] | "\(.context): \(.state) @ \(.updated_at)")'` until `Vercel`, `amazon-analytics-worker - AmazonAnalytics` and `amazon-analytics-worker - keepa-importer` are success (Vercel may need an empty-commit re-trigger on the owner's go).
 
-- [ ] **Step 5: Smoke (the owner signed in as admin; Claude drives the built-in browser for the page part on the owner's go)**
+- [x] **Step 5: Smoke (the owner signed in as admin; Claude drives the built-in browser for the page part on the owner's go)**
 
 Page: `/products?broad=Pet+Products` (pet products on top; the select shows the codes, the new hint); `Pet Products` + the department `Pet Supplies`; a code + a leaf pick; `?broad=Nope` → "Nope" selected, zero rows; the ASIN page of B0FFPF97RV shows "Broad category: Health & Personal Care"; B0GHMZXX8Y shows "Beauty"; Reset; the Explorer unchanged. Tools (the owner, in a fresh Claude chat): a `broadCategory` search; a typo returns the codes; `get_product_details` shows one `broadCategory`; one Ask AI question using the filter. The code list is cached an hour: a code list that still looks old within an hour of step 2 is the cache, not a bug.
 
-- [ ] **Step 6: Apply 0054 (only after step 4's three deploys are green; no import and no backfill run in flight; a rollback to the arc-9 code afterwards needs 0052 re-applied first)**
+- [x] **Step 6: Apply 0054 (only after step 4's three deploys are green; no import and no backfill run in flight; a rollback to the arc-9 code afterwards needs 0052 re-applied first)**
 
 First hard-reload any Products or ASIN tab opened before the deploy: with Vercel's skew protection on (a dashboard setting; nothing in the repo turns it on), an old tab keeps routing to the arc-9 deployment, which would hit 42703 once the column is gone. Then write the untracked `scripts/applyMigration0054.ts`:
 
@@ -2034,8 +2034,8 @@ Fill the Results table below (one docs commit per step is fine), update the arc 
 | Integration (pair-table build) | 2026-10-15 | ok, 5/5 | 690 s: the advance INSERT put 9,454,143 rows into a TEMP scratch table in 410.5 s (valid ASINs per slot 3,156,748 / 3,153,275 / 3,144,120; longest streak 79 weeks); the second build 192.2 s (9,445,163 pairs); 0052's column still present (0054 comes after the deploy); `keyword_top_asins_prev` exists |
 | Push + deploys | 2026-10-15 | ok | checkActiveJobs clean (0 Keepa runs, 0 imports mid-phase); bare `git push origin main` at 10:42 UTC: af5c4b1 → 30aca47 (45 commits); statuses: `amazon-analytics-worker - keepa-importer` success 10:42:02, `Vercel` success 10:42:45, `amazon-analytics-worker - AmazonAnalytics` success 10:44:16 UTC (no re-trigger needed) |
 | Page smoke | 2026-10-15 | PASS | Claude drove the owner's signed-in Chrome (extension): `?broad=Pet+Products` → 10,000+ products, all 50 first-page rows pet products (litter, dog food, treats, pee pads; arc 9 had 3 of 50), the select lists the 49 codes, hint "… mapped from the product's Keepa category. One per product."; `+ dept=Pet+Supplies` → 10,000+, same rows; `broad=Books + leaf Books › Subjects › Religion & Spirituality` → 4 products, all Bibles under the leaf (the first load of a Books search was still loading at 3 s, done by 8 s: the slow shape, as in the integration run); `?broad=Nope` → "Nope" appended and selected, 0 products, the no-match message; B0FFPF97RV → Broad category: Health & Personal Care (one line) beside its Category; B0GHMZXX8Y → Beauty; Reset → `/products`, 10,000+, "All broad categories"; Explorer unchanged (week ending Oct 10, 2026, 10,000+ matches, codes in its Category column). Note: the first Products load after the deploy was slow for the owner (cold function + first queries); later loads 3–8 s |
-| Tools smoke | | | |
-| 0054 applied | | | |
+| Tools smoke | 2026-10-15 | PASS | the owner, in a fresh Claude chat ("Smoke test looks good"); from this session's connector (pre-deploy cached tool list): get_research_guide → guideVersion 6 with the one-category rule, get_product_details B0FFPF97RV → broadCategory "Health & Personal Care" (scalar) |
+| 0054 applied | 2026-10-15 | ok | owner's go after the page smoke and the tools smoke (owner, fresh Claude chat: PASS); checkActiveJobs clean (0 Keepa runs, 0 imports mid-phase, no backfill); `APPLY_0054=yes … scripts/applyMigration0054.ts`: both `DROP COLUMN IF EXISTS` committed on the first attempt (no lock wait); assertions passed: no `broad_category` column or index on either pair table |
 | First import with the phase | | | |
 
 ---
