@@ -104,7 +104,7 @@ export function ProductResultsTable({
             <thead className="bg-[#F8FAFD] text-left text-slate-500">
               <tr>
                 <th className="p-2">Product</th>
-                <th className="p-2" title="The product's Keepa category (leaf); hover a cell for the full path">Category</th>
+                <th className="p-2" title="The product's Keepa leaf category; hover a cell for the full path">Leaf category</th>
                 <SortHeader filters={filters} sort="listed" label="Listed" />
                 <SortHeader filters={filters} sort="sold" label="Monthly sold" align="right" title="Amazon's “bought in past month” badge" />
                 <SortHeader filters={filters} sort="reviews" label="Reviews" align="right" />

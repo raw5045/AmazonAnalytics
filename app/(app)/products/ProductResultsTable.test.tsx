@@ -53,7 +53,7 @@ describe('ProductResultsTable rows', () => {
     renderTable({ filters: { ...PRODUCT_DEFAULTS, age: 180 } });
     const cells = bodyCells();
     expect(cells).toHaveLength(10);
-    expect(screen.getByRole('columnheader', { name: 'Category' })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Leaf category' })).toBeInTheDocument();
     const headers = screen.getAllByRole('columnheader');
     expect(headers).toHaveLength(cells.length);
     expect(headers[1]).toHaveTextContent(/^Category$/);
