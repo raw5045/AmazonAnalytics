@@ -52,8 +52,6 @@ interface FakeOpts {
   kcsWeek?: string | null;
   /** What sendAlarm reports: true = Resend accepted the email. */
   delivered?: boolean;
-  /** An old per-week enrichment run (keepa_enrichment_runs) heartbeat in the last thirty minutes, any status. */
-  oldJob?: boolean;
 }
 
 function orDefault<T>(v: T | undefined, d: T): T {
@@ -70,7 +68,6 @@ function harness(opts: FakeOpts = {}, over: Partial<Pick<WatcherTickDeps, 'now' 
     if (text.includes('FROM keepa_service_status')) return { rows: opts.status === null ? [] : [{ ...healthy, ...opts.status }] };
     if (text.includes(') AS due')) return { rows: [{ due: orDefault(opts.due, true) }] };
     if (text.includes('FROM pg_locks')) return { rows: [{ running: orDefault(opts.running, false) }] };
-    if (text.includes('FROM keepa_enrichment_runs')) return { rows: [{ running: orDefault(opts.oldJob, false) }] };
     if (text.includes('AS scope_week')) {
       return { rows: [{ scope_week: orDefault(opts.scopeWeek, '2026-10-03'), kcs_week: orDefault(opts.kcsWeek, '2026-10-03') }] };
     }
@@ -126,8 +123,9 @@ describe('runWatcherTick', () => {
     for (const col of ['boot_id', 'booted_at', 'heartbeat_at', 'last_batch_at', 'tail_enabled', 'lane_new_drained_at', 'sync_fired_at', 'nightly_sync_date', 'down_alarm_sent_at', 'stall_alarm_sent_at']) {
       expect(h.calls[0].text).toContain(col);
     }
-    // The status row, the due probe, the lock probe and the old-job probe: no weeks query, no writes.
-    expect(h.calls).toHaveLength(4);
+    // The status row, the due probe and the lock probe: no weeks query, no writes.
+    expect(h.calls).toHaveLength(3);
+    expect(h.calls.map((c) => c.text).join('\n')).not.toContain('keepa_enrichment_runs');
     expect(h.sendAlarm).not.toHaveBeenCalled();
     expect(h.sendEvent).not.toHaveBeenCalled();
   });
@@ -191,21 +189,6 @@ describe('runWatcherTick', () => {
     await expect(runWatcherTick(h.client, h.deps)).resolves.toEqual({ ok: true, actions: [] });
     expect(h.sendAlarm).not.toHaveBeenCalled();
     expect(h.updates()).toEqual([]);
-  });
-
-  it("within thirty minutes of an old enrichment run's heartbeat the stall alarm is held, but a down alarm still goes out", async () => {
-    // Tonight's sync already ran, so the log's held list carries only the job.
-    const held = harness({ status: { last_batch_at: ago(180), nightly_sync_date: '2026-10-06' }, oldJob: true });
-    await expect(runWatcherTick(held.client, held.deps)).resolves.toEqual({ ok: true, actions: [] });
-    // Any status: a run marked orphaned or completed can still have the service yielding to it.
-    expect(flat(held.calls[3].text)).toContain("FROM keepa_enrichment_runs WHERE heartbeat_at > now() - interval '30 minutes'");
-    expect(held.calls[3].text).not.toContain('status');
-    expect(held.sendAlarm).not.toHaveBeenCalled();
-    expect(held.updates()).toEqual([]);
-    expect(tickLog().held).toEqual(['old_job_recent']);
-
-    const down = harness({ status: { heartbeat_at: ago(40) }, oldJob: true });
-    await expect(runWatcherTick(down.client, down.deps)).resolves.toEqual({ ok: true, actions: ['email:down', 'stamp:down_alarm_sent_at'] });
   });
 
   it('before the first batch the stall clock runs from boot', async () => {

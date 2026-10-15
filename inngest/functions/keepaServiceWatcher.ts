@@ -102,17 +102,6 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
     lockKeyHalves(ENQUEUE_LOCK_KEY),
   );
   const enqueueRunning = lock[0]?.running ?? false;
-  // Until phase 3 the service yields to the old per-week enrichment job (they share the Keepa token
-  // bucket) until ten minutes past the run's last heartbeat, whatever its status (the orchestrator
-  // can mark a still-running detached job orphaned), and then needs a few minutes for its first
-  // batch. So any run with a heartbeat under thirty minutes old holds the stall alarm. The table
-  // holds one row per run (a few dozen), so the scan is trivial.
-  const { rows: oldJob } = await client.query<{ running: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM keepa_enrichment_runs WHERE heartbeat_at > now() - interval '30 minutes'
-     ) AS running`,
-  );
-  const oldJobRecentlyLive = oldJob[0]?.running ?? false;
   const et = easternClock(now);
   // The scope/explorer weeks matter only to the two sync branches, so they are read only when a
   // sync could fire this tick. Unread weeks count as unknown, which holds every sync — harmless,
@@ -124,7 +113,6 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
     now,
     serviceBooted: s.boot_id !== null,
     enqueueRunning,
-    oldJobRecentlyLive,
     heartbeatAt: s.heartbeat_at,
     lastBatchAt: s.last_batch_at,
     bootedAt: s.booted_at,

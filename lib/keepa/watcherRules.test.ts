@@ -21,7 +21,6 @@ const base: WatcherInput = {
   now: NOW,
   serviceBooted: true,
   enqueueRunning: false,
-  oldJobRecentlyLive: false,
   heartbeatAt: min(1),
   lastBatchAt: min(2),
   bootedAt: min(24 * 60),
@@ -123,33 +122,6 @@ describe('decideWatcherActions', () => {
     expect(decideWatcherActions({ ...base, enqueueRunning: true, heartbeatAt: min(40), laneNewDrainedAt: min(3) })).toEqual([
       { kind: 'sync', reason: 'new_lane_drained' },
       { kind: 'stamp', field: 'sync_fired_at', value: NOW },
-    ]);
-  });
-
-  it('holds the stall alarm while the old enrichment job was live in the last thirty minutes; down detection is unaffected', () => {
-    const job = { ...base, oldJobRecentlyLive: true };
-    expect(decideWatcherActions({ ...job, lastBatchAt: min(180) })).toEqual([]);
-    expect(decideWatcherActions({ ...job, heartbeatAt: min(20) })).toEqual([
-      { kind: 'email', variant: 'down' },
-      { kind: 'stamp', field: 'down_alarm_sent_at', value: NOW, onlyIfSent: 'down' },
-    ]);
-    // A stall alarm already out stays out: the deliberately idle service cannot show a recovery yet.
-    expect(decideWatcherActions({ ...job, lastBatchAt: min(180), stallAlarmSentAt: min(60) })).toEqual([]);
-    // Back up while the job runs: the heartbeat recovery is reported; the held stall stays recorded.
-    expect(decideWatcherActions({ ...job, lastBatchAt: min(180), stallAlarmSentAt: min(60), downAlarmSentAt: min(10) })).toEqual([
-      { kind: 'email', variant: 'recovered' },
-      { kind: 'stamp', field: 'down_alarm_sent_at', value: null },
-    ]);
-  });
-
-  it('a run that just finished is no stall: the hold outlasts it while the service resumes', () => {
-    // The run's status already flipped; last_batch_at is still from before the run started.
-    const justFinished = { ...base, oldJobRecentlyLive: true, lastBatchAt: min(3.5 * 60), dueWorkExists: true };
-    expect(decideWatcherActions(justFinished)).toEqual([]);
-    expect(heldReasons({ ...justFinished, nightlySyncDate: base.et.dateKey })).toEqual(['old_job_recent']);
-    expect(decideWatcherActions({ ...justFinished, oldJobRecentlyLive: false })).toEqual([
-      { kind: 'email', variant: 'stalled' },
-      { kind: 'stamp', field: 'stall_alarm_sent_at', value: NOW, onlyIfSent: 'stalled' },
     ]);
   });
 
@@ -310,7 +282,6 @@ describe('heldReasons', () => {
   it('names suppressed alarms', () => {
     expect(heldReasons({ ...done, serviceBooted: false, laneNewDrainedAt: min(3) })).toEqual(['not_booted']);
     expect(heldReasons({ ...done, enqueueRunning: true })).toEqual(['enqueue_running']);
-    expect(heldReasons({ ...done, oldJobRecentlyLive: true })).toEqual(['old_job_recent']);
   });
 
   it("names why a pending drain or tonight's sync was not sent", () => {
