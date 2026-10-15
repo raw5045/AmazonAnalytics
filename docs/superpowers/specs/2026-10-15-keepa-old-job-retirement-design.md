@@ -12,7 +12,7 @@ Pre-flip facts (2026-10-15, read-only diags): this week's top-3 products covered
 
 ## 2. History is kept
 
-The arc-6 seed (`scripts/applyMigration0050.ts`, 2026-10-05) copied every distinct genuine fetch of `asin_weekly_data` (`DISTINCT ON (asin, enriched_at)`, status active or no_price) into `asin_snapshots`. Today `asin_snapshots` holds 3,220,892 snapshots over 1,601,284 ASINs, the oldest from 2026-05-15; the product page's history charts and `get_product_details.history` read it. The weekly table's 3,327,650 rows are 1,892,945 distinct fetches plus carry-forward copies. After the seed the old job wrote 41,346 more fetches; 20,835 of them have no snapshot at their fetch time (its last run, after the 2026-10-10 import).
+The arc-6 seed (`scripts/applyMigration0050.ts`, dated 2026-10-05 and run 2026-10-06 ~18:40 UTC) copied every distinct genuine fetch of `asin_weekly_data` (`DISTINCT ON (asin, enriched_at)`, status active or no_price) into `asin_snapshots`. Today `asin_snapshots` holds 3,220,892 snapshots over 1,601,284 ASINs, the oldest from 2026-05-15; the product page's history charts and `get_product_details.history` read it. The weekly table's 3,327,650 rows are 1,892,945 distinct fetches plus carry-forward copies. After the seed the old job wrote 41,346 more fetches; 20,835 of them have no snapshot at their fetch time (its last run, after the 2026-10-10 import).
 
 ### 2.1 Backfill (step 1 of the ship order, before any code is removed)
 
@@ -48,12 +48,12 @@ Every deletion takes its tests along. Paths are exact.
 ### 3.2 The guards
 
 - `services/keepa/loop.ts`: `probeOldJob`, the `yieldingToOldJob` state, the `yield_old_job` / `resume_after_old_job` log events and the two call sites (before claim, before fetch); `services/keepa/store.ts` `oldJobRunning`; `services/keepa/pgStore.ts` its implementation (the `keepa_enrichment_runs` heartbeat probe); `loop.test.ts` (six yield cases) and `pgStore.test.ts` follow.
-- `lib/keepa/watcherRules.ts`: `oldJobRecentlyLive` and the held reason `old_job_recent`; `inngest/functions/keepaServiceWatcher.ts`: the `keepa_enrichment_runs` heartbeat read and the `readSource` field of its log line; `watcherRules.test.ts`, `keepaServiceWatcher.test.ts`, `tests/integration/keepaWatcher.test.ts` follow. The watcher keeps the enqueue-lock hold, the down/stall alarms and the aggregate-sync firing exactly as they are.
+- `lib/keepa/watcherRules.ts`: `oldJobRecentlyLive` and the held reason `old_job_recent`; `inngest/functions/keepaServiceWatcher.ts`: the `keepa_enrichment_runs` heartbeat read (the tick log never carried a source field; its `readSource` dependency leaves with the two sync guards in §3.3); `watcherRules.test.ts`, `keepaServiceWatcher.test.ts`, `tests/integration/keepaWatcher.test.ts` follow. The watcher keeps the enqueue-lock hold, the down/stall alarms and the aggregate-sync firing exactly as they are.
 - `services/keepa/README.md`: the shared-bucket paragraphs and the `yield_old_job` row.
 
 ### 3.3 The flag and the weekly branches
 
-- `lib/keepa/readSource.ts` + `readSource.test.ts` deleted; `.env.example` loses the variable (the arc-6 spec and plan keep it as history). The owner removes `KEEPA_READ_SOURCE` from Vercel and the Railway worker after the deploy is green (harmless if left: nothing reads it).
+- `lib/keepa/readSource.ts` + `readSource.test.ts` deleted; `.env.example` never listed the variable (verified 2026-10-15; the arc-6 spec and plan keep it as history). The owner removes `KEEPA_READ_SOURCE` from Vercel and the Railway worker after the deploy is green (harmless if left: nothing reads it).
 - `lib/explorer/fetchKeywordDetail.ts` `enrichedProductsFor`: the catalog statement only; `lib/explorer/enrichedProductsQuery.test.ts` pins that statement without a flag stub.
 - `lib/categoryBuilder/loadTree.ts`: the source parameter leaves the three cached builders and their cache keys; the weekly SQL goes; the catalog SQL is unchanged.
 - `inngest/functions/refreshSummary.ts` `stageEnrichedAsinsSql`: catalog only (signature loses the source); `inngest/functions/enrichedSourceSql.test.ts` keeps the catalog pins.
