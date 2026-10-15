@@ -2028,7 +2028,7 @@ Fill the Results table below (one docs commit per step is fine), update the arc 
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
 | 0053 applied | 2026-10-15 | ok | `APPLY_0053=yes … scripts/applyMigration0053.ts`: 3 statements in one transaction (table, index, comment); assertions passed: 7 columns, `ba_category_crosswalk_pkey` + `ba_category_crosswalk_code_idx`, 0 rows; checkActiveJobs before it: 0 Keepa runs, 0 imports mid-phase |
-| One-off build | | | |
+| One-off build | 2026-10-15 | ok | `BA_CROSSWALK_WEEK=2026-10-10`, 166 s (10:13–10:15 UTC, cold); `paths=24273 direct=7663 backedOff=16610 uncoded=3 trainingProducts=649110 codes=49`; by products: Apparel 218,402 · Home 119,384 · Beauty 92,654 · Toys 74,281 · Shoes 60,259 · Health & Personal Care 57,074 · Kitchen 54,668 · Books 52,055; by paths: Books 4,271 · Digital_Ebook_Purchase 1,824 · Automotive 1,568 · Apparel 1,554 · Home 1,484; spot check (`scripts/checkCrosswalk1015.ts`, read-only): the Charmin path → Health & Personal Care (own-decided, 78 votes, 90 %), B0FFPF97RV → Health & Personal Care, B0GHMZXX8Y → Beauty; Pet Products: 527 paths in Pet Supplies, 19 in Patio, Lawn & Garden, 6 in Sports & Outdoors, none in Tools & Home Improvement (the mismatched case will hold an empty page, a valid answer); mixed paths (share < 70): 4,389 of 24,273 (18 %), average share 83.8 %, the largest = `Home & Kitchen › Cleaning Supplies` → Home at 48 % (backed off; §14's per-product override is for these); in-scope products with a path mapped: 1,179,636 of 1,179,640 |
 | Integration (products) | | | |
 | Integration (crosswalk) | | | |
 | Integration (pair-table build) | | | |
