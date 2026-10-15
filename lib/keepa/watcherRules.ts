@@ -218,10 +218,10 @@ export function syncCouldFire(i: Pick<WatcherInput, 'readSource' | 'laneNewDrain
 
 /**
  * Why this tick held something back — for the tick log only; decideWatcherActions decides. Alarms
- * suppressed: not_booted, enqueue_running. A pending drain
- * not synced: sync_gap (under six hours since the last sync) and/or explorer_behind. Tonight's sync
- * owed: nothing before 03:30 ET; inside the window, explorer_behind, or sync_gap (a recent sync's
- * gap closes later in the window); after 05:59 with the date still unstamped, night_missed.
+ * suppressed: not_booted, enqueue_running. A pending drain not synced: sync_gap (under six hours
+ * since the last sync) and/or explorer_behind. Tonight's sync owed: nothing before 03:30 ET; inside
+ * the window, explorer_behind, or sync_gap (a recent sync's gap closes later in the window); after
+ * 05:59 with the date still unstamped, night_missed.
  */
 export function heldReasons(i: WatcherInput): HeldReason[] {
   if (!i.serviceBooted) return ['not_booted'];

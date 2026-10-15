@@ -79,12 +79,11 @@ describe('runIteration', () => {
     expect(deps.sleeps).toEqual([IDLE_SLEEP_MS]);
   });
 
-  it('never probes the old enrichment job: the claim follows the stale release directly', async () => {
+  it('a batch touches the store only to release, claim and write: nothing between the claim and the request', async () => {
     const store = makeStore([[row('B1')]]);
     const deps = makeDeps(store, async (asins) => reply(asins));
     await expect(runIteration(deps, initialState())).resolves.toBe('batch');
-    expect(store.calls.slice(0, 2)).toEqual(['release', 'claim']);
-    expect(deps.logs.map((l) => l.event)).not.toContain('yield_old_job');
+    expect(store.calls).toEqual(['release', 'claim', 'write']);
   });
 
   it('claims, fetches once, parses and writes a batch, then reports it', async () => {

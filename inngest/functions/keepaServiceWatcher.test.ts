@@ -125,7 +125,8 @@ describe('runWatcherTick', () => {
     }
     // The status row, the due probe and the lock probe: no weeks query, no writes.
     expect(h.calls).toHaveLength(3);
-    expect(h.calls.map((c) => c.text).join('\n')).not.toContain('keepa_enrichment_runs');
+    expect(readsWeeks(h.texts())).toBe(false);
+    expect(h.updates()).toEqual([]);
     expect(h.sendAlarm).not.toHaveBeenCalled();
     expect(h.sendEvent).not.toHaveBeenCalled();
   });

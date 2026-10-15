@@ -20,7 +20,7 @@ Variables: `DATABASE_URL` (the worker's value), `KEEPA_API_KEY`; `KEEPA_TAIL_LAN
 
 Every iteration: release claims older than ten minutes → claim up to 100 due ASINs lane by lane (tier-1 never-fetched by rank, tier-1 due oldest first, tier 2 only with the tail on) → wait for tokens → one Keepa request (`rating=1&stats=90`, no history) → parse/validate → one transaction (catalog update, snapshots, claims cleared, status row). Nothing due: heartbeat and a 60-second nap.
 
-Before each batch the loop waits for Keepa's next refill when the balance is short (Keepa adds `refillRate` tokens once a minute; `refillIn` says when) and keeps `TOKEN_RESERVE` (50) tokens in the bucket after a batch as a margin against Keepa's own rounding. Throughput is unchanged: 250 tokens/min.
+Before each batch the loop waits for Keepa's next refill when the balance is short (Keepa adds `refillRate` tokens once a minute; `refillIn` says when) and keeps `TOKEN_RESERVE` (50) tokens in the bucket after a batch as a cushion (for an ad-hoc script on the same key, say). It is a constant offset, so throughput stays at the refill rate: 250 tokens/min.
 
 Status lives in `keepa_service_status`; the admin page `/admin/keepa-enrichment` shows it; the main worker's watcher cron emails on a stale heartbeat or a stall and fires the explorer aggregate sync.
 

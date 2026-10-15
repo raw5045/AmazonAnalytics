@@ -196,9 +196,8 @@ export async function runIteration(deps: LoopDeps, state: LoopState): Promise<It
     return 'idle';
   }
 
-  // Pace on Keepa's once-a-minute refill and leave TOKEN_RESERVE in the bucket after the batch as a
-  // margin against Keepa's own rounding. A refill time already past falls back to the continuous
-  // estimate.
+  // Pace on Keepa's once-a-minute refill and leave TOKEN_RESERVE in the bucket after the batch (a
+  // cushion, see lanes.ts). A refill time already past falls back to the continuous estimate.
   const nowMs = deps.now().getTime();
   const refillInMs = state.refillAt !== null && state.refillAt > nowMs ? state.refillAt - nowMs : null;
   const wait = Math.min(msUntilTokens(state.tokensLeft, state.refillRate, rows.length * TOKENS_PER_ASIN + TOKEN_RESERVE, refillInMs), MAX_TOKEN_WAIT_MS);
