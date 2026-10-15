@@ -1892,7 +1892,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 Not a subagent task: the controller runs it with the owner, in this order (spec §13). Two untracked apply scripts are written at step 1 and step 6 with the content below (never committed). Record every step in the Results table at the end of this task.
 
-- [ ] **Step 1: Apply 0053 (before anything deploys)**
+- [x] **Step 1: Apply 0053 (before anything deploys)**
 
 `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts` (quiet: 0 runs, 0 imports mid-phase), then write the untracked `scripts/applyMigration0053.ts`:
 
@@ -2027,7 +2027,7 @@ Fill the Results table below (one docs commit per step is fine), update the arc 
 
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
-| 0053 applied | | | |
+| 0053 applied | 2026-10-15 | ok | `APPLY_0053=yes … scripts/applyMigration0053.ts`: 3 statements in one transaction (table, index, comment); assertions passed: 7 columns, `ba_category_crosswalk_pkey` + `ba_category_crosswalk_code_idx`, 0 rows; checkActiveJobs before it: 0 Keepa runs, 0 imports mid-phase |
 | One-off build | | | |
 | Integration (products) | | | |
 | Integration (crosswalk) | | | |
