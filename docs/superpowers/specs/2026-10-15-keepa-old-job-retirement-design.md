@@ -76,7 +76,7 @@ Every deletion takes its tests along. Paths are exact.
 - The backfill is the only database write of the arc: one transaction, idempotent, read-only otherwise, run by the owner's go. A failure rolls back and the script is re-run.
 - Removing the guards cannot starve the service: the old job no longer exists after the deploy, and the backfill runs before it. If the owner's go for the push lands after a weekly import has already fired the old event (2026-10-20), that last run completes under the old code or is orphaned by the deploy's worker restart; either way the service resumes within ten minutes of the last heartbeat, as today. The Results table records which.
 - The Railway service redeploys because `/services/keepa/**` and `/lib/keepa/**` change: its in-flight batch is reclaimed by the claim-timeout rule as on every service deploy.
-- Rollback: `git revert` of the arc's commits and a push. The snapshots backfilled stay (correct data). The flag would be read again by the reverted code, so the owner leaves the variables in place until the deploy has been green for a day.
+- Rollback: `git revert` of the arc's commits and a push. The snapshots backfilled stay (correct data). The flag would be read again by the reverted code, so the owner leaves the variables in place until the deploy has been green for a day. If a revert is ever needed after the variables were deleted, first set `KEEPA_READ_SOURCE=products` on Vercel (redeploy) and the Railway worker: the reverted code defaults to the frozen weekly table, which has no rows after 2026-10-10 (an empty Category Builder tree and no product facts on keyword pages).
 
 ## 7. Tests
 
@@ -93,7 +93,7 @@ Every deletion takes its tests along. Paths are exact.
 
 ## 9. Follow-ups (not this arc)
 
-- Decide the archive's fate (export `asin_weekly_data` to R2 as CSV, then drop; or keep) once the snapshot history has covered a full year.
+- Decide the archive's fate (export `asin_weekly_data` to R2 as CSV, then drop; or keep) once the snapshot history has covered a full year; fold a `COMMENT ON TABLE asin_weekly_data` / `keepa_enrichment_runs` ('ARCHIVE since 2026-10-15 …') into that decision, since the applied migrations' comment literals (0022, 0023) still name the old job and this arc has no DDL.
 - A weekly service summary email, if wanted later (the owner may revisit).
 - A throughput alarm in the watcher (24 h fetched under half the 7-day average).
 - Show monthly sold and offer counts on keyword pages (arc 6 §12).
