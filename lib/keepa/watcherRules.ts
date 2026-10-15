@@ -4,7 +4,6 @@
  * (inngest/functions/keepaServiceWatcher.ts) reads the status row, calls this, then performs
  * the actions in order. No I/O here.
  */
-import type { KeepaReadSource } from './readSource';
 
 /**
  * The service's independent heartbeat ticker (startHeartbeat in services/keepa/loop.ts) beats every
@@ -54,7 +53,6 @@ export interface WatcherInput {
   nightlySyncDate: string | null;
   downAlarmSentAt: Date | null;
   stallAlarmSentAt: Date | null;
-  readSource: KeepaReadSource;
   et: EasternClock;
 }
 
@@ -181,39 +179,36 @@ export function decideWatcherActions(i: WatcherInput): WatcherAction[] {
 
   const actions: WatcherAction[] = [...emails.map((variant) => ({ kind: 'email' as const, variant })), ...stamps];
 
-  if (i.readSource === 'products') {
-    // The drained-lane waits (six hours since the last sync, the explorer on the scope week) are
-    // deferrals: the drain stamp stays newer than sync_fired_at, so a later tick fires the sync. A
-    // night whose window passes while the explorer is still on the previous week is skipped (a
-    // pending drain fires after the swap; otherwise the next night syncs).
-    if (drainPending(i) && !syncGapOpen(i) && i.explorerCaughtUp) {
-      actions.push({ kind: 'sync', reason: 'new_lane_drained' }, { kind: 'stamp', field: 'sync_fired_at', value: i.now });
-    } else if (inNightlyWindow(i.et) && nightlyOwed(i) && i.explorerCaughtUp) {
-      if (!syncGapOpen(i)) {
-        actions.push(
-          { kind: 'sync', reason: 'nightly' },
-          { kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey },
-          { kind: 'stamp', field: 'sync_fired_at', value: i.now },
-        );
-      } else if (!gapClosesInWindow(i)) {
-        // A recent sync whose gap cannot close inside the window counts as tonight's: record the
-        // date without a second sync.
-        actions.push({ kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey });
-      }
-      // Otherwise hold: a later tick in the window syncs once the gap has closed.
+  // The drained-lane waits (six hours since the last sync, the explorer on the scope week) are
+  // deferrals: the drain stamp stays newer than sync_fired_at, so a later tick fires the sync. A
+  // night whose window passes while the explorer is still on the previous week is skipped (a
+  // pending drain fires after the swap; otherwise the next night syncs).
+  if (drainPending(i) && !syncGapOpen(i) && i.explorerCaughtUp) {
+    actions.push({ kind: 'sync', reason: 'new_lane_drained' }, { kind: 'stamp', field: 'sync_fired_at', value: i.now });
+  } else if (inNightlyWindow(i.et) && nightlyOwed(i) && i.explorerCaughtUp) {
+    if (!syncGapOpen(i)) {
+      actions.push(
+        { kind: 'sync', reason: 'nightly' },
+        { kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey },
+        { kind: 'stamp', field: 'sync_fired_at', value: i.now },
+      );
+    } else if (!gapClosesInWindow(i)) {
+      // A recent sync whose gap cannot close inside the window counts as tonight's: record the
+      // date without a second sync.
+      actions.push({ kind: 'stamp', field: 'nightly_sync_date', value: i.et.dateKey });
     }
+    // Otherwise hold: a later tick in the window syncs once the gap has closed.
   }
   return actions;
 }
 
 /**
  * Whether either sync branch above could fire this tick, judged without the explorer and scope
- * weeks: catalog reads on, and a drain newer than the last sync or the nightly window. The watcher
- * reads those weeks only when this is true; otherwise the explorerCaughtUp it passes cannot change
- * a decision.
+ * weeks: a drain newer than the last sync or the nightly window. The watcher reads those weeks
+ * only when this is true; otherwise the explorerCaughtUp it passes cannot change a decision.
  */
-export function syncCouldFire(i: Pick<WatcherInput, 'readSource' | 'laneNewDrainedAt' | 'syncFiredAt' | 'et'>): boolean {
-  return i.readSource === 'products' && (drainPending(i) || inNightlyWindow(i.et));
+export function syncCouldFire(i: Pick<WatcherInput, 'laneNewDrainedAt' | 'syncFiredAt' | 'et'>): boolean {
+  return drainPending(i) || inNightlyWindow(i.et);
 }
 
 /**
@@ -227,18 +222,16 @@ export function heldReasons(i: WatcherInput): HeldReason[] {
   if (!i.serviceBooted) return ['not_booted'];
   const held = new Set<HeldReason>();
   if (i.enqueueRunning) held.add('enqueue_running');
-  if (i.readSource === 'products') {
-    if (drainPending(i)) {
-      if (syncGapOpen(i)) held.add('sync_gap');
+  if (drainPending(i)) {
+    if (syncGapOpen(i)) held.add('sync_gap');
+    if (!i.explorerCaughtUp) held.add('explorer_behind');
+  }
+  if (nightlyOwed(i)) {
+    const m = minuteOfDay(i.et);
+    if (m > NIGHTLY_WINDOW.toMinute) held.add('night_missed');
+    else if (m >= NIGHTLY_WINDOW.fromMinute) {
       if (!i.explorerCaughtUp) held.add('explorer_behind');
-    }
-    if (nightlyOwed(i)) {
-      const m = minuteOfDay(i.et);
-      if (m > NIGHTLY_WINDOW.toMinute) held.add('night_missed');
-      else if (m >= NIGHTLY_WINDOW.fromMinute) {
-        if (!i.explorerCaughtUp) held.add('explorer_behind');
-        else if (syncGapOpen(i) && gapClosesInWindow(i)) held.add('sync_gap');
-      }
+      else if (syncGapOpen(i) && gapClosesInWindow(i)) held.add('sync_gap');
     }
   }
   return [...held];

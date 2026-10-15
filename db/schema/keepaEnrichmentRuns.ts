@@ -11,6 +11,9 @@ import {
 import { sql } from 'drizzle-orm';
 
 /**
+ * ARCHIVE since 2026-10-15 (arc 11): the old import-time job's 30 runs (2026-05-19 → 2026-10-13); no
+ * writers, no readers. Kept as history.
+ *
  * One row per Keepa enrichment attempt for a given week.
  *
  * Lifecycle (driven by `worker/keepaJobs.ts`):

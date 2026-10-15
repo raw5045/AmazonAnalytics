@@ -1,8 +1,8 @@
 // lib/explorer/enrichedProductsQuery.test.ts
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { getTableColumns, type Table } from 'drizzle-orm';
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
-import { asinProducts, asinWeeklyData } from '@/db/schema';
+import { asinProducts } from '@/db/schema';
 import { enrichedProductsFor, mapEnrichedProducts, type EnrichedProduct } from './fetchKeywordDetail';
 
 /** A tagged-template stand-in for neon's sql: returns the joined text and the bound values. */
@@ -11,31 +11,20 @@ type Captured = { text: string; values: unknown[] };
 
 /** Every `a.<column>` a statement references. */
 const aliasColumns = (text: string) => new Set([...text.matchAll(/\ba\.([a-z0-9_]+)/g)].map((m) => m[1]));
-/** A statement's SELECT list (between its first SELECT and FROM). */
-const selectList = (text: string) => text.slice(text.indexOf('SELECT'), text.indexOf('FROM'));
 /** A table's database column names, per the drizzle schema. */
 const dbColumns = (table: Table) => new Set(Object.values(getTableColumns(table)).map((c) => c.name));
 const missingFrom = (cols: Set<string>, from: Set<string>) => [...cols].filter((c) => !from.has(c));
 
-/** The statement enrichedProductsFor builds under a KEEPA_READ_SOURCE value ('' = unset). */
-async function statementFor(source: '' | 'products'): Promise<Captured> {
-  vi.stubEnv('KEEPA_READ_SOURCE', source);
+/** The statement enrichedProductsFor builds (one source since arc 11: the catalog). */
+async function statement(): Promise<Captured> {
   return (await enrichedProductsFor(fakeSql, '42')) as unknown as Captured;
 }
 
 describe('enrichedProductsFor', () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  it('reads the per-week table at the keyword\'s current week by default', async () => {
-    const q = await statementFor('');
-    expect(q.text).toContain('FROM asin_weekly_data a');
-    expect(q.text).toContain('a.week_end_date = kcs.current_week_end_date');
-    expect(q.values).toEqual(['42']);
-  });
-
-  it('reads the catalog with the new fields when KEEPA_READ_SOURCE=products', async () => {
-    const q = await statementFor('products');
+  it('reads the catalog with the new fields, no week predicate, skipping rows with no outcome', async () => {
+    const q = await statement();
     expect(q.text).toContain('FROM asin_products a');
+    expect(q.text).not.toContain('asin_weekly_data');
     expect(q.text).not.toContain('a.week_end_date');
     expect(q.text).toContain('a.monthly_sold');
     expect(q.text).toContain('a.fba_offer_count');
@@ -43,13 +32,10 @@ describe('enrichedProductsFor', () => {
     expect(q.values).toEqual(['42']);
   });
 
-  it('names only real columns, and the catalog selects every column the weekly variant does', async () => {
-    const weekly = await statementFor('');
-    const catalog = await statementFor('products');
-    expect(aliasColumns(weekly.text).size).toBeGreaterThan(10);
-    expect(missingFrom(aliasColumns(weekly.text), dbColumns(asinWeeklyData))).toEqual([]);
-    expect(missingFrom(aliasColumns(catalog.text), dbColumns(asinProducts))).toEqual([]);
-    expect(missingFrom(aliasColumns(selectList(weekly.text)), aliasColumns(selectList(catalog.text)))).toEqual([]);
+  it('names only real catalog columns', async () => {
+    const q = await statement();
+    expect(aliasColumns(q.text).size).toBeGreaterThan(10);
+    expect(missingFrom(aliasColumns(q.text), dbColumns(asinProducts))).toEqual([]);
   });
 });
 

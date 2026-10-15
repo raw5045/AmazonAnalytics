@@ -11,6 +11,11 @@ import {
 } from 'drizzle-orm/pg-core';
 
 /**
+ * ARCHIVE since 2026-10-15 (arc 11): no writers (the old import-time job is gone) and never read by
+ * the app (every reader uses the asin_products catalog and asin_snapshots, seeded from this table on
+ * 2026-10-06 and backfilled for its post-seed fetches). 24 weeks, 2026-05-02 → 2026-10-10, ~5.5 GB.
+ * Kept as raw history; dropping or exporting it is a separate decision (spec 2026-10-15 §9).
+ *
  * Per-(asin, week) snapshot of Keepa-sourced product data.
  *
  * Aligns with kwm's weekly cadence so the join is direct: a kwm row

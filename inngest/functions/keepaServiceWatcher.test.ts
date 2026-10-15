@@ -58,7 +58,7 @@ function orDefault<T>(v: T | undefined, d: T): T {
   return v === undefined ? d : v;
 }
 
-function harness(opts: FakeOpts = {}, over: Partial<Pick<WatcherTickDeps, 'now' | 'readSource'>> = {}) {
+function harness(opts: FakeOpts = {}, over: Partial<Pick<WatcherTickDeps, 'now'>> = {}) {
   /** Every interaction in order: `sql:<text>`, `alarm:<variant>`, `event:<name>`. */
   const trace: string[] = [];
   const calls: Array<{ text: string; values: unknown[] | undefined }> = [];
@@ -82,7 +82,7 @@ function harness(opts: FakeOpts = {}, over: Partial<Pick<WatcherTickDeps, 'now' 
     trace.push(`event:${name}`);
     return {};
   });
-  const deps: WatcherTickDeps = { now: NOW, readSource: 'products', sendAlarm, sendEvent, ...over };
+  const deps: WatcherTickDeps = { now: NOW, sendAlarm, sendEvent, ...over };
   return {
     client: { query } as never,
     deps,
@@ -161,10 +161,6 @@ describe('runWatcherTick', () => {
     const drained = harness({ status: { lane_new_drained_at: ago(3) } });
     await runWatcherTick(drained.client, drained.deps);
     expect(readsWeeks(drained.texts())).toBe(true);
-
-    const weekly = harness({ status: { lane_new_drained_at: ago(3) } }, { readSource: 'weekly' });
-    await runWatcherTick(weekly.client, weekly.deps);
-    expect(readsWeeks(weekly.texts())).toBe(false);
 
     const night = harness({}, { now: NIGHT_NOW });
     await runWatcherTick(night.client, night.deps);

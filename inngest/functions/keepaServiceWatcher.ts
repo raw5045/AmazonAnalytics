@@ -19,7 +19,6 @@ import {
   type StampField,
   type WatcherInput,
 } from '@/lib/keepa/watcherRules';
-import { keepaReadSource, type KeepaReadSource } from '@/lib/keepa/readSource';
 import { ENQUEUE_LOCK_KEY } from '@/lib/keepa/lanes';
 import { sendKeepaServiceAlarmEmail } from '@/lib/notifications/sendKeepaServiceAlarmEmail';
 
@@ -45,7 +44,6 @@ const STAMP_SQL: Record<StampField, string> = {
 
 export interface WatcherTickDeps {
   now: Date;
-  readSource: KeepaReadSource;
   sendAlarm: typeof sendKeepaServiceAlarmEmail;
   sendEvent: (name: string, data: Record<string, unknown>) => Promise<unknown>;
 }
@@ -64,7 +62,7 @@ async function readWeeks(client: Queryable): Promise<{ scope: string | null; kcs
 
 /** One watcher tick on a checked-out client: read the status, decide (lib/keepa/watcherRules.ts), act. */
 export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): Promise<WatcherTickResult> {
-  const { now, readSource } = deps;
+  const { now } = deps;
   const { rows } = await client.query<StatusRow>(
     `SELECT boot_id, booted_at, heartbeat_at, last_batch_at, tail_enabled, lane_new_drained_at, sync_fired_at,
             nightly_sync_date::text AS nightly_sync_date, down_alarm_sent_at, stall_alarm_sent_at
@@ -107,7 +105,7 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
   // sync could fire this tick. Unread weeks count as unknown, which holds every sync — harmless,
   // since no sync could fire then. The import enqueues a new week before the ~4.5-hour explorer
   // refresh, and the sync job syncs whatever week the explorer is on, so a sync waits for the swap.
-  const weeks = syncCouldFire({ readSource, laneNewDrainedAt: s.lane_new_drained_at, syncFiredAt: s.sync_fired_at, et }) ? await readWeeks(client) : null;
+  const weeks = syncCouldFire({ laneNewDrainedAt: s.lane_new_drained_at, syncFiredAt: s.sync_fired_at, et }) ? await readWeeks(client) : null;
   const explorerCaughtUp = weeks !== null && isExplorerCaughtUp(weeks.scope, weeks.kcs);
   const input: WatcherInput = {
     now,
@@ -123,7 +121,6 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
     nightlySyncDate: s.nightly_sync_date,
     downAlarmSentAt: s.down_alarm_sent_at,
     stallAlarmSentAt: s.stall_alarm_sent_at,
-    readSource,
     et,
   };
   const delivered = new Set<AlarmVariant>();
@@ -184,7 +181,6 @@ export const keepaServiceWatcherFn = inngest.createFunction(
         // `return await`: the client must stay checked out until the tick has finished.
         return await runWatcherTick(c, {
           now: new Date(),
-          readSource: keepaReadSource(),
           sendAlarm: sendKeepaServiceAlarmEmail,
           sendEvent: (name, data) => inngest.send({ name, data }),
         });

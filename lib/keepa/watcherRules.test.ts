@@ -31,7 +31,6 @@ const base: WatcherInput = {
   nightlySyncDate: null,
   downAlarmSentAt: null,
   stallAlarmSentAt: null,
-  readSource: 'products',
   et: { hour: 8, minute: 0, dateKey: '2026-10-06' },
 };
 const nightlySync = [
@@ -136,11 +135,10 @@ describe('decideWatcherActions', () => {
     expect(decideWatcherActions({ ...firstBatchPending, bootedAt: null })).toEqual([]);
   });
 
-  it('fires the explorer sync once per drained new lane, only when the app reads the catalog', () => {
+  it('fires the explorer sync once per drained new lane', () => {
     const drained = { ...base, laneNewDrainedAt: min(3) };
     expect(decideWatcherActions(drained)).toEqual([{ kind: 'sync', reason: 'new_lane_drained' }, { kind: 'stamp', field: 'sync_fired_at', value: NOW }]);
     expect(decideWatcherActions({ ...drained, syncFiredAt: min(2) })).toEqual([]);
-    expect(decideWatcherActions({ ...drained, readSource: 'weekly' })).toEqual([]);
   });
 
   it('defers the drained-lane sync until six hours after the last sync', () => {
@@ -243,23 +241,20 @@ describe('drainPending and inNightlyWindow', () => {
 });
 
 describe('syncCouldFire', () => {
-  it('is true only with catalog reads and either a drain newer than the last sync or the nightly window', () => {
+  it('is true only with either a drain newer than the last sync or the nightly window', () => {
     expect(syncCouldFire(base)).toBe(false);
     expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3) })).toBe(true);
     expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3), syncFiredAt: min(2) })).toBe(false);
     expect(syncCouldFire({ ...base, et: NIGHT })).toBe(true);
     expect(syncCouldFire({ ...base, et: { ...NIGHT, hour: 6, minute: 0 } })).toBe(false);
-    expect(syncCouldFire({ ...base, readSource: 'weekly', laneNewDrainedAt: min(3), et: NIGHT })).toBe(false);
   });
 
   it('when false, the explorer week cannot change a decision, so the watcher may skip reading it', () => {
-    const grid = (['products', 'weekly'] as const).flatMap((readSource) =>
-      [null, min(3), min(500)].flatMap((laneNewDrainedAt) =>
-        [null, min(2), min(120), min(7 * 60)].flatMap((syncFiredAt) =>
-          [base.et, NIGHT, { ...NIGHT, hour: 5, minute: 59 }, { ...NIGHT, hour: 6, minute: 0 }].flatMap((et) =>
-            [null, NIGHT.dateKey].flatMap((nightlySyncDate) =>
-              [min(2), min(25 * 60)].map((lastBatchAt): WatcherInput => ({ ...base, readSource, laneNewDrainedAt, syncFiredAt, et, nightlySyncDate, lastBatchAt })),
-            ),
+    const grid = [null, min(3), min(500)].flatMap((laneNewDrainedAt) =>
+      [null, min(2), min(120), min(7 * 60)].flatMap((syncFiredAt) =>
+        [base.et, NIGHT, { ...NIGHT, hour: 5, minute: 59 }, { ...NIGHT, hour: 6, minute: 0 }].flatMap((et) =>
+          [null, NIGHT.dateKey].flatMap((nightlySyncDate) =>
+            [min(2), min(25 * 60)].map((lastBatchAt): WatcherInput => ({ ...base, laneNewDrainedAt, syncFiredAt, et, nightlySyncDate, lastBatchAt })),
           ),
         ),
       ),
@@ -294,7 +289,6 @@ describe('heldReasons', () => {
     expect(heldReasons(base)).toEqual(['night_missed']);
     expect(heldReasons({ ...base, et: NIGHT, explorerCaughtUp: false })).toEqual(['explorer_behind']);
     expect(heldReasons({ ...base, et: NIGHT })).toEqual([]);
-    expect(heldReasons({ ...base, readSource: 'weekly' })).toEqual([]);
   });
 });
 

@@ -133,7 +133,7 @@ describe.skipIf(!RUN)('Keepa watcher tick (integration)', () => {
          WHERE singleton`,
         [tickNow],
         async () => {
-          const result = await runWatcherTick(recording(texts), { now: tickNow, readSource: 'weekly', sendAlarm: f.sendAlarm, sendEvent: f.sendEvent });
+          const result = await runWatcherTick(recording(texts), { now: tickNow, sendAlarm: f.sendAlarm, sendEvent: f.sendEvent });
           expect(texts.length).toBeGreaterThanOrEqual(3);
           if (f.alarms.length > 0) {
             expect(result).toEqual({ ok: true, actions: ['email:down', 'stamp:down_alarm_sent_at'] });
@@ -162,7 +162,7 @@ describe.skipIf(!RUN)('Keepa watcher tick (integration)', () => {
          WHERE singleton`,
         [tickNow],
         async () => {
-          const result = await runWatcherTick(recording(texts), { now: tickNow, readSource: 'products', sendAlarm: f.sendAlarm, sendEvent: f.sendEvent });
+          const result = await runWatcherTick(recording(texts), { now: tickNow, sendAlarm: f.sendAlarm, sendEvent: f.sendEvent });
           expect(texts.some((t) => t.includes('AS scope_week'))).toBe(true);
           if (f.events.length > 0) {
             expect(result).toEqual({ ok: true, actions: ['sync:new_lane_drained', 'stamp:sync_fired_at'] });
@@ -195,7 +195,7 @@ describe.skipIf(!RUN)('Keepa watcher tick (integration)', () => {
          WHERE singleton`,
         [tickNow],
         async () => {
-          const result = await runWatcherTick(recording(texts), { now: tickNow, readSource: 'products', sendAlarm: f.sendAlarm, sendEvent: f.sendEvent });
+          const result = await runWatcherTick(recording(texts), { now: tickNow, sendAlarm: f.sendAlarm, sendEvent: f.sendEvent });
           expect(texts.some((t) => t.includes('AS scope_week'))).toBe(true);
           if (f.events.length > 0) {
             expect(result).toEqual({ ok: true, actions: ['sync:nightly', 'stamp:nightly_sync_date', 'stamp:sync_fired_at'] });

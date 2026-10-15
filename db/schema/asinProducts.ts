@@ -4,8 +4,8 @@ import { asinEnrichmentStatusEnum } from './asinWeeklyData';
 
 /**
  * One row per ASIN: current Keepa facts + the Keepa service's queue state.
- * Written by services/keepa (raw SQL); read by the admin card, the watcher and —
- * behind KEEPA_READ_SOURCE=products — the app's readers. Canonical DDL and
+ * Written by services/keepa (raw SQL); read by the admin card, the watcher and
+ * the app's readers (the only Keepa source since arc 11). Canonical DDL and
  * partial-index predicates: db/migrations/0050_keepa_service.sql (spec 2026-10-05 §4.1).
  */
 export const asinProducts = pgTable(

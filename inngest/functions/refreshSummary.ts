@@ -41,7 +41,6 @@ import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
 import { kwmRowToEntry, appendWeek, type ChartSeriesKwmRow } from '@/lib/explorer/chartSeries';
 import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
 import { warmChartSeriesLayers } from '@/lib/explorer/warmSeries';
-import { keepaReadSource, type KeepaReadSource } from '@/lib/keepa/readSource';
 
 /** Terms per chart-series rebuild chunk. Bounds worker memory: each chunk
  *  reads ≤52 kwm rows per term (~10k terms ≈ up to ~520k rows in flight). */
@@ -262,7 +261,7 @@ export async function refreshKeywordCurrentSummary(): Promise<RefreshSummaryResu
     // 1a. Stage Keepa-enriched (price/reviews/leaf-category) data for
     //     every top-3 ASIN at the current week. Joined into the INSERT
     //     below to populate the new aggregate columns.
-    await stageEnrichedAsins(client, currentWeekEndDate);
+    await stageEnrichedAsins(client);
 
     // 2. rank_at_offset(N) for N in {1, 4, 13, 26, 52} weeks ago.
     //    Each offset is the actual_rank in the EXACT week N*7 days before
@@ -714,19 +713,13 @@ const ASINS_OF_LATEST_TERMS = `
         ) all_asins`;
 
 /**
- * The asin_enriched_current statement for a Keepa read source, text and bound values together.
- * Pure, so the choice is pinned against the schema (enrichedSourceSql.test.ts). The weekly
- * variant takes the most recent active row per ASIN at or before the week; the catalog variant
- * takes the one current row per ASIN in status active, no_price or delisted, priced only when
- * active (see stageEnrichedAsins).
+ * The asin_enriched_current statement, text and bound values together (pure, pinned against the
+ * schema in enrichedSourceSql.test.ts): the catalog's one current row per ASIN in status active,
+ * no_price or delisted, priced only when active (see stageEnrichedAsins).
  */
-export function stageEnrichedAsinsSql(
-  source: KeepaReadSource,
-  currentWeekEndDate: string,
-): { text: string; values: unknown[] } {
-  if (source === 'products') {
-    return {
-      text: `
+export function stageEnrichedAsinsSql(): { text: string; values: unknown[] } {
+  return {
+    text: `
     CREATE TEMP TABLE asin_enriched_current ON COMMIT DROP AS
     SELECT
       a.asin,
@@ -739,26 +732,7 @@ export function stageEnrichedAsinsSql(
     WHERE a.enrichment_status IN ('active', 'no_price', 'delisted')
       AND a.asin IN (${ASINS_OF_LATEST_TERMS})
     `,
-      values: [],
-    };
-  }
-  return {
-    text: `
-    CREATE TEMP TABLE asin_enriched_current ON COMMIT DROP AS
-    SELECT DISTINCT ON (a.asin)
-      a.asin,
-      a.current_price_cents,
-      a.review_count,
-      a.average_rating_x10,
-      a.category_leaf,
-      a.category_path
-    FROM asin_weekly_data a
-    WHERE a.week_end_date <= $1::date
-      AND a.enrichment_status = 'active'
-      AND a.asin IN (${ASINS_OF_LATEST_TERMS})
-    ORDER BY a.asin, a.week_end_date DESC
-    `,
-    values: [currentWeekEndDate],
+    values: [],
   };
 }
 
@@ -769,30 +743,16 @@ export function stageEnrichedAsinsSql(
  * (one per slot) without re-scanning the full source table for
  * each lookup.
  *
- * Weekly source (asin_weekly_data). Important timing note: Keepa
- * enrichment for the new week typically takes ~a day after the weekly
- * SFR import. So `refreshSummary`
- * running immediately after import would otherwise see ZERO Keepa
- * rows for the new week, leaving the new kcs columns NULL until the
- * next weekly refresh — a poor UX. To bridge that gap we pick the
- * MOST RECENT enrichment per ASIN at or before the current week
- * (DISTINCT ON + ORDER BY week_end_date DESC). Falls back to last
- * week's prices when this week's haven't landed yet — prices/reviews
- * change slowly enough that this is a much better default than NULL.
- * Only includes enrichment_status = 'active' rows; 'no_price' /
- * 'delisted' / 'error' rows have mostly NULL fields anyway.
- *
- * Under KEEPA_READ_SOURCE=products the catalog's current row replaces the latest-week lookup
- * (spec 2026-10-05 §7). The catalog keeps one row per ASIN, so there is no earlier active week
+ * The catalog keeps one row per ASIN, so there is no earlier active week
  * to fall back to: no_price rows (out of stock; facts refreshed) and delisted rows (facts kept
  * from the last fetch) are staged too, so their reviews and category still reach kcs,
  * but the price comes through only for active rows. Rows with no outcome yet or only errors
  * are left out.
  */
-async function stageEnrichedAsins(client: PoolClient, currentWeekEndDate: string): Promise<void> {
+async function stageEnrichedAsins(client: PoolClient): Promise<void> {
   // Split into 2 separate calls — pg won't accept a multi-statement
   // string with bound params (treated as a prepared statement).
-  const stage = stageEnrichedAsinsSql(keepaReadSource(), currentWeekEndDate);
+  const stage = stageEnrichedAsinsSql();
   await client.query(stage.text, stage.values);
   await client.query(`CREATE INDEX ON asin_enriched_current (asin)`);
 }

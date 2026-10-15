@@ -21,7 +21,6 @@
 import { cache } from 'react';
 import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 import { env } from '@/lib/env';
-import { keepaReadSource } from '@/lib/keepa/readSource';
 import type { SeverityKey } from './types';
 import { pickFitForWeek, predictVolumeFromFit, type FitParams } from '@/lib/analytics/volumeModel';
 import type { FitParamsJson } from '@/db/schema/modelCalibrationRuns';
@@ -81,11 +80,9 @@ export interface KeywordVariantInfo {
 
 /**
  * Keepa-enriched product data for one of the top-3 ASINs on the keyword
- * detail page. Sourced from the `asin_products` catalog when
- * KEEPA_READ_SOURCE=products, else `asin_weekly_data` at the keyword's
- * current week (see enrichedProductsFor). `null` when the ASIN isn't yet
- * enriched (e.g. dormant keyword, or an ASIN that was excluded from
- * enrichment scope).
+ * detail page. Sourced from the `asin_products` catalog (see
+ * enrichedProductsFor). `null` when the ASIN isn't yet enriched (e.g.
+ * dormant keyword, or an ASIN that was excluded from enrichment scope).
  */
 export interface EnrichedProduct {
   asin: string;
@@ -228,16 +225,13 @@ export interface KeywordProducts {
 type NeonSql = NeonQueryFunction<false, false>;
 
 /**
- * Keepa facts for a keyword's top-3 ASINs (≤ 3 rows). Spec 2026-10-05 §7: from the asin_products
- * catalog when KEEPA_READ_SOURCE=products (no week predicate — the catalog holds one current row
- * per ASIN; rows with no outcome yet, enrichment_status NULL, are skipped), otherwise from
- * asin_weekly_data at the keyword's current week. Both shapes map
- * through mapEnrichedProducts (prices only for active rows, no point-in-time facts for delisted
- * ones); the catalog adds the new fields, null under the weekly source.
+ * Keepa facts for a keyword's top-3 ASINs (≤ 3 rows) from the asin_products catalog (spec 2026-10-05
+ * §7; the only source since arc 11): no week predicate, the catalog holds one current row per ASIN;
+ * rows with no outcome yet (enrichment_status NULL) are skipped. Mapped through mapEnrichedProducts
+ * (prices only for active rows, no point-in-time facts for delisted ones).
  */
 export function enrichedProductsFor(sql: NeonSql, searchTermId: string) {
-  if (keepaReadSource() === 'products') {
-    return sql`
+  return sql`
       SELECT
         a.asin, a.title, a.brand, a.image_url,
         a.category_path, a.category_root, a.category_leaf,
@@ -259,27 +253,6 @@ export function enrichedProductsFor(sql: NeonSql, searchTermId: string) {
           kwm.top_clicked_product_3_asin
         ]::text[])
         AND a.enrichment_status IS NOT NULL
-    `;
-  }
-  return sql`
-      SELECT
-        a.asin, a.title, a.brand, a.image_url,
-        a.category_path, a.category_root, a.category_leaf,
-        a.current_price_cents, a.sales_rank, a.review_count, a.average_rating_x10,
-        a.avg30_price_cents, a.avg90_price_cents, a.avg180_price_cents, a.avg365_price_cents,
-        a.enrichment_status::text AS enrichment_status
-      FROM asin_weekly_data a
-      JOIN keyword_current_summary kcs
-        ON kcs.search_term_id = ${searchTermId}
-      JOIN keyword_weekly_metrics kwm
-        ON kwm.search_term_id = kcs.search_term_id
-        AND kwm.week_end_date = kcs.current_week_end_date
-      WHERE a.week_end_date = kcs.current_week_end_date
-        AND a.asin = ANY(ARRAY[
-          kwm.top_clicked_product_1_asin,
-          kwm.top_clicked_product_2_asin,
-          kwm.top_clicked_product_3_asin
-        ]::text[])
     `;
 }
 
@@ -843,8 +816,7 @@ export async function fetchCurrentWeekVariants(
 
 /**
  * Reads the current-week top-3 product ASINs/titles (from kwm) plus their Keepa
- * enrichment via enrichedProductsFor (the asin_products catalog when
- * KEEPA_READ_SOURCE=products, else asin_weekly_data at the current week).
+ * enrichment via enrichedProductsFor (the asin_products catalog).
  * Split out of fetchKeywordChartData and streamed behind <Suspense>: the
  * current-week kwm slice is a single row on the 140M-row table that costs ~2s
  * on a cold page, so off the charts' critical path it no longer delays first
