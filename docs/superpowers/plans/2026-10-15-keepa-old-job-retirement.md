@@ -572,7 +572,7 @@ Before anything ships: a read-only final review of the arc's range (`pnpm vitest
 - [ ] **Step 1: Backfill**
 
 `BACKFILL_SNAPSHOTS=yes node --env-file=.env.local --import tsx scripts/backfillSnapshotsFromWeekly1015.ts`
-Expected: `post-seed fetches without a snapshot before: 20835` (or fewer if the old job did not run again), `inserted N snapshot rows; … after: 0`, `backfill accepted`. A mismatch: re-run (idempotent) and read the counts.
+Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (the 2026-10-15 diag also counted delisted fetches, which the seed and this script skip; a further old-job run before the push raises N), `inserted N snapshot rows; … after: 0`, `backfill accepted`. A mismatch: re-run (idempotent) and read the counts. If the push lands after an import has fired the old job once more (2026-10-20), run this step again after the deploy: the script is idempotent and copies the new run's fetches.
 
 - [ ] **Step 2: Push and deploys**
 
@@ -601,3 +601,5 @@ After the first import that runs on the new code: `SELECT count(*) FROM keepa_en
 ## Landed shape
 
 Deviations from the plan as executed are recorded here, task by task, during execution.
+
+- **Task 1:** landed as written (untracked, byte-identical to the plan; eslint + typecheck clean; never run). The spec review confirmed the cutoff is safe (the seed ran after midnight 2026-10-06: every post-cutoff fetch that already has a snapshot got it from the seed) and corrected the Results expectation: the before-count is ≤ 20,835, since the diag's figure included delisted fetches the seed never copied; a late push means re-running the backfill after the deploy (Task 6 step 1 says so now).

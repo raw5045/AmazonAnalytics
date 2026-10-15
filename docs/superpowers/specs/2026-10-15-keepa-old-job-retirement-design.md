@@ -86,7 +86,7 @@ Every deletion takes its tests along. Paths are exact.
 
 ## 8. Ship order (each step on the owner's explicit go)
 
-1. Backfill: `BACKFILL_SNAPSHOTS=yes node --env-file=.env.local --import tsx scripts/backfillSnapshotsFromWeekly1015.ts` (before-count 20,835 expected; after-count 0).
+1. Backfill: `BACKFILL_SNAPSHOTS=yes node --env-file=.env.local --import tsx scripts/backfillSnapshotsFromWeekly1015.ts` (before-count ≤ 20,835: the diag's figure also counted delisted fetches, which the seed and the script skip; after-count 0). If the push lands after the 2026-10-20 import has fired the old job once more, run the backfill again after the deploy (idempotent).
 2. `scripts/checkActiveJobs.ts` clean → bare `git push origin main` → the three deploys green (the Keepa service redeploys this time).
 3. Smoke (§7). Then the owner deletes `KEEPA_READ_SOURCE` from Vercel and Railway (optional, after a green day).
 4. Results table and memory; the 2026-10-20 import check.
