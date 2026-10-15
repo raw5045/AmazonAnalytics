@@ -28,7 +28,7 @@ const fmt = (n: number) => n.toLocaleString('en-US');
 function CardShell({ children }: { children: ReactNode }) {
   return (
     <section aria-labelledby="keepa-service-heading" className="mt-6 rounded border border-slate-200 bg-slate-50 p-4">
-      <h2 id="keepa-service-heading" className="text-sm font-semibold text-slate-900">Keepa service</h2>
+      <h2 id="keepa-service-heading" className="text-sm font-semibold text-slate-900">Service status</h2>
       {children}
     </section>
   );
@@ -61,7 +61,7 @@ export function ServiceStatusCard({ overview, error, now }: { overview: KeepaSer
     ['Oldest tier-1 fetch', ageLabel(counts.oldestTier1FetchedAt, now)],
     ['Tier 1 stale (fetched > 8 days ago)', fmt(counts.tier1Stale)],
     ['Tier 2 in scope / never fetched', `${fmt(counts.tier2InScope)} / ${fmt(counts.tier2NeverFetched)}`],
-    ['Fetched last 24 h', fmt(counts.fetchedLast24h)],
+    ['Fetched last 24 h', `${fmt(counts.fetchedLast24h)} · 7-day average ${fmt(Math.round(counts.fetchedLast7d / 7))} per day`],
     ['Unused capacity, 7 days', `${fmt(unused)} of ${fmt(weeklyCapacity)} (${pct}%)`],
     ['Tokens', status && status.tokensLeft !== null && status.refillRate !== null ? `${fmt(status.tokensLeft)} left · refills ${fmt(status.refillRate)}/min` : 'unknown'],
     ['Claimed right now', fmt(counts.claimed)],

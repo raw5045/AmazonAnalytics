@@ -40,29 +40,30 @@ describe('KeepaEnrichmentAdminPage', () => {
     expect(overviewMock.load).not.toHaveBeenCalled();
   });
 
-  it('renders the enrichment controls and recent runs for an admin', async () => {
+  it('renders the service page for an admin: one heading, the status card, no controls, no run list', async () => {
     render(await KeepaEnrichmentAdminPage());
-    expect(screen.getByRole('heading', { name: 'Keepa enrichment' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Keepa service' })).toBeInTheDocument();
-    expect(screen.getByText('No runs yet.')).toBeInTheDocument();
-    expect(dbm.select).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('heading', { level: 1, name: 'Keepa service' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Service status' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Manual full refresh' })).toBeNull();
+    expect(screen.queryByText('No runs yet.')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(dbm.select).toHaveBeenCalledTimes(1); // the explorer week only: the run list is gone
     expect(overviewMock.load).toHaveBeenCalledWith(null);
   });
 
   it('reads the explorer week once and hands it to the overview loader', async () => {
-    dbm.select.mockReturnValue({ from: () => ({ limit: async () => [{ currentWeekEndDate: '2026-10-03' }], orderBy: () => ({ limit: async () => [] }) }) });
+    dbm.select.mockReturnValue({ from: () => ({ limit: async () => [{ currentWeekEndDate: '2026-10-03' }] }) });
     render(await KeepaEnrichmentAdminPage());
     expect(overviewMock.load).toHaveBeenCalledWith('2026-10-03');
-    expect(dbm.select).toHaveBeenCalledTimes(2);
+    expect(dbm.select).toHaveBeenCalledTimes(1);
   });
 
-  it('degrades the status card to one line when the overview loader fails, and keeps the rest of the page', async () => {
+  it('degrades the status card to one line when the overview loader fails, and keeps the page', async () => {
     overviewMock.load.mockRejectedValue(Object.assign(new Error('relation "asin_products" does not exist'), { code: '42P01' }));
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     render(await KeepaEnrichmentAdminPage());
     expect(screen.getByText('Service status unavailable (42P01)')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Manual full refresh' })).toBeInTheDocument();
-    expect(screen.getByText('No runs yet.')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Keepa service' })).toBeInTheDocument();
     expect(logged).toHaveBeenCalledWith('[keepa-admin] overview failed', JSON.stringify({ error: 'Error', code: '42P01' }));
     expect(JSON.stringify(logged.mock.calls)).not.toContain('does not exist'); // coded fields only, never the message
     logged.mockRestore();

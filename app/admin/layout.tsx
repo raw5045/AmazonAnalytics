@@ -38,7 +38,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             Calibration upload
           </Link>
           <Link href="/admin/keepa-enrichment" className="hover:underline">
-            Keepa enrichment
+            Keepa service
           </Link>
           <Link href="/admin/digests" className="hover:underline">
             Weekly digests
