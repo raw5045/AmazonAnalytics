@@ -587,7 +587,7 @@ Not a subagent task: the controller runs it with the owner, in the spec's order 
 
 - [ ] **Step 0: Final whole-diff review + the spec amendment**
 
-Before anything ships: a read-only final review of the arc's range (`pnpm vitest run` whole suite, `pnpm typecheck`, `pnpm build`, the leftover greps of Tasks 3–5, the Keepa service's `services/keepa/index.ts` boot path). Then a docs commit amending the spec: §3.2 "the `readSource` field of its log line" → "its `readSource` dependency and the two sync guards"; §3.3 "`.env.example` loses the variable" → "`.env.example` never listed it (verified)"; §3.1 "`lib/keepa/types.ts`" → "trimmed to `AsinEnrichmentStatus`, which the product pages use".
+Before anything ships: a read-only final review of the arc's range (`pnpm vitest run` whole suite, `pnpm typecheck`, `pnpm build`, the leftover greps of Tasks 3–5, the Keepa service's `services/keepa/index.ts` boot path). Then a docs commit amending the spec: §3.2 "the `readSource` field of its log line" → "its `readSource` dependency and the two sync guards"; §3.3 "`.env.example` loses the variable" → "`.env.example` never listed it (verified)"; §3.1 "`lib/keepa/types.ts`" → "trimmed to `AsinEnrichmentStatus`, which the product pages use"; §5 the fetched row → `` `${fmt(counts.fetchedLast24h)} · 7-day avg ${fmt(Math.round(counts.fetchedLast7d / 7))}/day` `` and the degraded line `Could not load (code)` (the longer row text wrapped at the card's 355 px column; the old degraded line read like a down service under the renamed heading).
 
 - [ ] **Step 1: Backfill**
 
@@ -600,7 +600,7 @@ Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (th
 
 - [ ] **Step 3: Smoke**
 
-The admin page `/admin/keepa-enrichment`: heading "Keepa service", the card with `Fetched last 24 h: N · 7-day average M per day`, no button, no run list. A keyword page (the "kindle" page, rank 4) still lists its top clicked products with prices; the Category Builder still loads (perf line under a second warm). `scripts/checkKeepaService1010.ts`: the service heartbeat fresh after its redeploy, batches landing, 0 errors. Then the owner may delete `KEEPA_READ_SOURCE` from Vercel and the Railway worker (after a green day; nothing reads it).
+The admin page `/admin/keepa-enrichment`: heading "Keepa service", the card (heading "Service status") with `Fetched last 24 h: N · 7-day avg M/day`, no button, no run list. A keyword page (the "kindle" page, rank 4) still lists its top clicked products with prices; the Category Builder still loads (perf line under a second warm). `scripts/checkKeepaService1010.ts`: the service heartbeat fresh after its redeploy, batches landing, 0 errors. Then the owner may delete `KEEPA_READ_SOURCE` from Vercel and the Railway worker (after a green day; nothing reads it).
 
 - [ ] **Step 4: The 2026-10-20 import**
 

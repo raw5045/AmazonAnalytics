@@ -69,7 +69,7 @@ Every deletion takes its tests along. Paths are exact.
 ## 5. Admin page and card
 
 - `app/admin/keepa-enrichment/page.tsx`: heading "Keepa service", the `ServiceStatusCard`, nothing else (the "Manual full refresh" section, the button and the "Recent runs" list go; the `keepaEnrichmentRuns` import with them); `page.test.tsx` follows. The route path stays (`/admin/keepa-enrichment`, linked from the admin layout).
-- `app/admin/keepa-enrichment/ServiceStatusCard.tsx`: the row `['Fetched last 24 h', …]` becomes `['Fetched last 24 h', `${fmt(counts.fetchedLast24h)} · 7-day average ${fmt(Math.round(counts.fetchedLast7d / 7))} per day`]`; `ServiceStatusCard.test.tsx` pins the text. `lib/admin/keepaServiceOverview.ts` is unchanged (both counts exist).
+- `app/admin/keepa-enrichment/ServiceStatusCard.tsx`: the row `['Fetched last 24 h', …]` becomes `['Fetched last 24 h', `${fmt(counts.fetchedLast24h)} · 7-day avg ${fmt(Math.round(counts.fetchedLast7d / 7))}/day`]` (amended 2026-10-15: the longer "7-day average M per day" wrapped at the card's 355 px column); the card's h2 reads "Service status" under the page's "Keepa service" heading, and its degraded line reads `Could not load (code)`; `ServiceStatusCard.test.tsx` pins the text. `lib/admin/keepaServiceOverview.ts` is unchanged (both counts exist).
 
 ## 6. Errors and safety
 
