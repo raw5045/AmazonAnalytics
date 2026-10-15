@@ -86,10 +86,10 @@ export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }
             className="h-28 w-28 shrink-0 rounded border border-gray-100 bg-white object-contain"
           />
         )}
-        {/* Dense flow: at two columns the wide Category cell would otherwise leave a hole beside Brand. */}
+        {/* Dense flow: at two columns the wide Leaf category cell would otherwise leave a hole beside Brand. */}
         <dl className="grid min-w-0 flex-1 grid-flow-row-dense grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2 lg:grid-cols-3">
           <Fact label="Brand">{facts.brand ?? DASH}</Fact>
-          <Fact label="Category" wide>
+          <Fact label="Leaf category" wide>
             {facts.categoryPath ?? DASH}
           </Fact>
           <Fact label="Broad category">{facts.broadCategory ?? DASH}</Fact>

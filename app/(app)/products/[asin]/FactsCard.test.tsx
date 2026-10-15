@@ -103,7 +103,7 @@ describe('FactsCard — a full active row', () => {
   it('renders every label with its value and its "as of" dates', () => {
     render(<FactsCard facts={FULL} now={NOW} />);
     expect(fact('Brand')).toHaveTextContent('Acme Labs');
-    expect(fact('Category')).toHaveTextContent(CATEGORY);
+    expect(fact('Leaf category')).toHaveTextContent(CATEGORY);
     expect(fact('Broad category')).toHaveTextContent('Health & Personal Care');
     expect(fact('Listed since')).toHaveTextContent('2026-04-12 · 180 days');
     expect(fact('Tracking since')).toHaveTextContent('2026-04-15');
@@ -177,7 +177,7 @@ describe('FactsCard — edge states', () => {
       expect(fact(label)).toHaveTextContent(/^—$/);
     }
     expect(fact('Brand')).toHaveTextContent('Acme Labs');
-    expect(fact('Category')).toHaveTextContent(CATEGORY);
+    expect(fact('Leaf category')).toHaveTextContent(CATEGORY);
     expect(fact('Listed since')).toHaveTextContent('2026-04-12 · 180 days');
     expect(fact('Reviews')).toHaveTextContent('1,834 · ★ 4.5');
     expect(fact('Status')).toHaveTextContent('fetched 2026-10-08 (12 fetches)');
