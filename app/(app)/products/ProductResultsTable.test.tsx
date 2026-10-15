@@ -56,7 +56,7 @@ describe('ProductResultsTable rows', () => {
     expect(screen.getByRole('columnheader', { name: 'Leaf category' })).toBeInTheDocument();
     const headers = screen.getAllByRole('columnheader');
     expect(headers).toHaveLength(cells.length);
-    expect(headers[1]).toHaveTextContent(/^Category$/);
+    expect(headers[1]).toHaveTextContent(/^Leaf category$/);
 
     const title = within(cells[0]).getByRole('link', { name: 'LED Desk Lamp' });
     // The ASIN page's back link returns to this exact list (its `from`, percent-encoded).
