@@ -126,12 +126,15 @@ describe.skipIf(!RUN)('Keepa watcher tick (integration)', () => {
       const tickNow = new Date();
       const f = fakes();
       const texts: string[] = [];
+      // No pending drain and tonight's sync already stamped, so neither sync branch can fire: the actions are the alarm pair alone (or none while an enqueue holds its lock).
       await inRolledBackTick(
         `UPDATE keepa_service_status
-         SET ${RESET_STAMPS}, boot_id = coalesce(boot_id, 'integration-test'),
+         SET down_alarm_sent_at = NULL, stall_alarm_sent_at = NULL, sync_fired_at = NULL,
+             nightly_sync_date = $2::date, lane_new_drained_at = NULL,
+             boot_id = coalesce(boot_id, 'integration-test'),
              heartbeat_at = $1::timestamptz - interval '40 minutes', last_batch_at = $1::timestamptz - interval '2 minutes'
          WHERE singleton`,
-        [tickNow],
+        [tickNow, easternClock(tickNow).dateKey],
         async () => {
           const result = await runWatcherTick(recording(texts), { now: tickNow, sendAlarm: f.sendAlarm, sendEvent: f.sendEvent });
           expect(texts.length).toBeGreaterThanOrEqual(3);

@@ -104,7 +104,7 @@ export interface EnrichedProduct {
   avg90PriceCents: number | null;
   avg180PriceCents: number | null;
   avg365PriceCents: number | null;
-  // Catalog-only fields: optional, and null under the weekly source (spec 2026-10-05 §4.1).
+  // Catalog fields (spec 2026-10-05 §4.1): optional in the type, always set by mapEnrichedProducts.
   // All but keepaUpdatedAt and listedSince are point-in-time facts, null for a delisted row.
   /** Amazon's "bought in past month" floor (e.g. 100000 = 100K+); null when the badge is absent. */
   monthlySold?: number | null;
@@ -445,8 +445,7 @@ export async function fetchKeywordDetail(
  * last fetch's facts, whose prices are stale. A delisted row also hides its other point-in-time
  * facts (sales rank and its averages, monthly sold, offer counts, Amazon availability); its
  * historical facts (title, brand, image, reviews, rating, category) still map. A no_price row's
- * rank and counts are refreshed on every fetch, so they map. Weekly delisted rows are empty and
- * weekly no_price rows have no current price, so nothing shown changes under the weekly source.
+ * rank and counts are refreshed on every fetch, so they map.
  */
 export function mapEnrichedProducts(
   rows: Array<Record<string, unknown>>,

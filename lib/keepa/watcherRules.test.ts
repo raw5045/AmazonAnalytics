@@ -241,7 +241,7 @@ describe('drainPending and inNightlyWindow', () => {
 });
 
 describe('syncCouldFire', () => {
-  it('is true only with either a drain newer than the last sync or the nightly window', () => {
+  it('is true only for a drain newer than the last sync or inside the nightly window', () => {
     expect(syncCouldFire(base)).toBe(false);
     expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3) })).toBe(true);
     expect(syncCouldFire({ ...base, laneNewDrainedAt: min(3), syncFiredAt: min(2) })).toBe(false);

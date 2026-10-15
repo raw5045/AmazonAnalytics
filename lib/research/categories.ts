@@ -15,7 +15,7 @@ import { getResearchPool } from './pool';
  * - The catalog IS the current snapshot's leaf category facets
  *   (`keyword_current_summary_leaf_category_facets`) plus every parent prefix implied by
  *   those leaf paths — exactly the searchable population, so no separate
- *   catalog tree walk is needed and no resolved path can ever match zero rows.
+ *   `asin_products` tree walk is needed and no resolved path can ever match zero rows.
  * - An empty `categories.selections` + empty `categories.leafPaths` means NO category
  *   scope (search every category) — never a failed lookup. Only a *non-empty* reference
  *   that fails to resolve is an error.
@@ -298,8 +298,8 @@ interface CatalogRow {
  * Facets for a snapshot are rewritten IN PLACE, not immutable per version:
  * `worker/kcsKeepaSyncJobs.ts` Phase 3 does
  * `DELETE FROM keyword_current_summary_leaf_category_facets WHERE snapshot_version = $1` and
- * re-INSERTs under the SAME snapshot_version after every Keepa aggregate sync
- * (worker/kcsKeepaSyncJobs.ts, fired by the service watcher). So past the TTL,
+ * re-INSERTs under the SAME snapshot_version after every Keepa aggregate sync (fired by the
+ * service watcher). So past the TTL,
  * this always rebuilds from the rows the statement just returned — even when `snapshot_version`
  * is unchanged from what's cached — instead of reusing the old catalog object; a corrected
  * top_clicked_category_path from that run is picked up within one TTL window instead of being

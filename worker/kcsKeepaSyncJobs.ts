@@ -32,7 +32,7 @@ import { warmExplorerLanding } from '@/lib/explorer/warmLanding';
 const inflight = new Set<string>();
 
 export interface StartKcsKeepaSyncArgs {
-  /** The Keepa-enrichment week that just completed. Used as the concurrency key. */
+  /** The explorer (kcs) week the watcher requested the sync for. Used as the concurrency key. */
   weekEndDate: string;
 }
 

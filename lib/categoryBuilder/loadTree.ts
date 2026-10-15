@@ -15,7 +15,7 @@
  *  - loadLeavesUnderPath(path): all terminal leaves under a path (the /leaves
  *    route — "Add all of X")
  *
- * Each weekly query is verified byte-identical to the buildTree-based
+ * Each original weekly query was verified byte-identical to the buildTree-based
  * childrenAtPath / leavesAtPath against prod data (see the throwaway
  * scripts/checkCb* probes). The catalog queries keep the original weekly queries'
  * shape, with the week predicate replaced by in_scope (the partial index's

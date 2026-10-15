@@ -27,13 +27,14 @@ import {
  * "current" view is `ORDER BY week_end_date DESC LIMIT 1` per ASIN,
  * the trajectory is just every row.
  *
- * Scope is enforced by the Inngest job (top-3 ASINs at rank ≤ 100K,
+ * Scope was enforced by the Inngest job (top-3 ASINs at rank ≤ 100K,
  * excluded categories filtered out), not by the schema. Keeps the
  * table generic in case we widen scope later.
  *
- * Filled by `inngest/functions/enrichKeepaForWeek.ts` after each kcs
- * refresh. See `db/migrations/0022_asin_weekly_data.sql` for the
- * canonical column docs and the partial-index definitions.
+ * Was filled by the old import-time job (`inngest/functions/enrichKeepaForWeek.ts` →
+ * `worker/keepaJobs.ts`, both deleted in arc 11) after each kcs refresh. See
+ * `db/migrations/0022_asin_weekly_data.sql` for the canonical column docs and the
+ * partial-index definitions.
  */
 export const asinEnrichmentStatusEnum = pgEnum('asin_enrichment_status', [
   'active',

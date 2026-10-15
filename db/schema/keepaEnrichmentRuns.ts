@@ -16,7 +16,7 @@ import { sql } from 'drizzle-orm';
  *
  * One row per Keepa enrichment attempt for a given week.
  *
- * Lifecycle (driven by `worker/keepaJobs.ts`):
+ * Lifecycle while the job ran (driven by `worker/keepaJobs.ts`, deleted in arc 11):
  *   1. Inngest orchestrator INSERTs a row with status='running'.
  *   2. Worker process starts the detached enrichment Promise; updates
  *      total_asins after listScope, heartbeat_at every 60s, and the
