@@ -81,7 +81,7 @@ const code = (e: unknown) => (e as { code?: string })?.code ?? (e instanceof Err
     const before = await countMissing();
     log(`post-seed fetches without a snapshot before: ${before}`);
     if (before === 0) log('nothing to copy (already backfilled)');
-    log('copying post-seed fetches into asin_snapshots (three scans of the archive table: a minute or more each is normal)');
+    log('copying post-seed fetches into asin_snapshots (two more scans of the archive table, the copy and the after-count: a minute or more each is normal)');
     await c.query('BEGIN');
     let inserted: number;
     try {
@@ -592,7 +592,7 @@ Before anything ships: a read-only final review of the arc's range (`pnpm vitest
 - [ ] **Step 1: Backfill**
 
 `BACKFILL_SNAPSHOTS=yes node --env-file=.env.local --import tsx scripts/backfillSnapshotsFromWeekly1015.ts`
-Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (the 2026-10-15 diag also counted delisted fetches, which the seed and this script skip; a further old-job run before the push raises N), `inserted N snapshot rows; … after: 0`, `backfill accepted`. A mismatch: re-run (idempotent) and read the counts. If the push lands after an import has fired the old job once more (2026-10-20), run this step again after the deploy: the script is idempotent and copies the new run's fetches.
+Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (the 2026-10-15 diag also counted delisted fetches, which the seed and this script skip; a further old-job run before the push raises N), `committed: N snapshot rows inserted`, `inserted N snapshot rows; … after: 0`, `backfill accepted` (every line carries an elapsed-seconds prefix; a mismatch prints a CHECK line and exits 1). A mismatch: re-run (idempotent) and read the counts. If the push lands after an import has fired the old job once more (2026-10-20), run this step again after the deploy: the script is idempotent and copies the new run's fetches.
 
 - [ ] **Step 2: Push and deploys**
 
