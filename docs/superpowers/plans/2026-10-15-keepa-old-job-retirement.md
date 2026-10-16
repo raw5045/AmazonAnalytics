@@ -596,7 +596,7 @@ Before anything ships: a read-only final review of the arc's range (`pnpm vitest
 `BACKFILL_SNAPSHOTS=yes node --env-file=.env.local --import tsx scripts/backfillSnapshotsFromWeekly1015.ts`
 Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (the 2026-10-15 diag also counted delisted fetches, which the seed and this script skip; a further old-job run before the push raises N), `committed: N snapshot rows inserted`, `inserted N snapshot rows; … after: 0`, `backfill accepted` (every line carries an elapsed-seconds prefix; a mismatch prints a CHECK line and exits 1). A mismatch: re-run (idempotent) and read the counts. If the push lands after an import has fired the old job once more (2026-10-20), run this step again after the deploy: the script is idempotent and copies the new run's fetches. In that case also re-check the two ARCHIVE headers (`db/schema/asinWeeklyData.ts`: the last week; `db/schema/keepaEnrichmentRuns.ts`: the run count and last date) before the push.
 
-- [ ] **Step 1b (optional, owner's go): the watcher integration file**
+- [x] **Step 1b (optional, owner's go): the watcher integration file**
 
 `RUN_INTEGRATION=1 pnpm vitest run tests/integration/keepaWatcher.test.ts --disableConsoleIntercept` between quarter-hours (the watcher cron runs every 15 minutes); expect 3/3. Its down-alarm case was reseeded in c769763 and has never run against the real schema (by inspection its statement is valid against 0050's status-row columns). Read-only: every tick runs inside a rolled-back transaction.
 
@@ -618,7 +618,7 @@ After the first import that runs on the new code: `SELECT count(*) FROM keepa_en
 |---|---|---|---|
 | Final review | | | |
 | Backfill | 2026-10-16 | accepted | 10:32:42–10:33:26 UTC (43 s); gate clean (0 live runs, 0 imports, the aggregate sync 182 min earlier); `post-seed fetches without a snapshot before: 20835` (= the diag's figure: no post-seed delisted fetches), `committed: 20835 snapshot rows inserted`, `after: 0`, `backfill accepted`, exit 0 |
-| Integration (watcher, optional) | | | |
+| Integration (watcher, optional) | 2026-10-16 | 3/3 | 10:37:52 UTC, 24.9 s, read-only (every tick rolled back; fake senders): the stale-heartbeat tick decided exactly `email:down` + `stamp:down_alarm_sent_at` with no sync action (the reseeded case holds against the real schema); the drained-lane tick `sync:new_lane_drained` + `stamp:sync_fired_at`; the nightly tick `sync:nightly` + both stamps |
 | Push + deploys | | | |
 | Smoke | | | |
 | First import without the old job | | | |
