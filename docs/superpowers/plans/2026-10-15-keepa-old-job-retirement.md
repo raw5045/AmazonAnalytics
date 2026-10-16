@@ -591,7 +591,7 @@ Not a subagent task: the controller runs it with the owner, in the spec's order 
 
 Before anything ships: a read-only final review of the arc's range (`pnpm vitest run` whole suite, `pnpm typecheck`, `pnpm build`, the leftover greps of Tasks 3–5, the Keepa service's `services/keepa/index.ts` boot path). Then a docs commit amending the spec (landed early as d51effd, together with the arc-6 spec's token-reserve note): §3.2 "the `readSource` field of its log line" → "its `readSource` dependency and the two sync guards"; §3.3 "`.env.example` loses the variable" → "`.env.example` never listed it (verified)"; §5 the fetched row → `` `${fmt(counts.fetchedLast24h)} · 7-day avg ${fmt(Math.round(counts.fetchedLast7d / 7))}/day` `` and the degraded line `Could not load (code)` (the longer row text wrapped at the card's 355 px column; the old degraded line read like a down service under the renamed heading).
 
-- [ ] **Step 1: Backfill**
+- [x] **Step 1: Backfill**
 
 `BACKFILL_SNAPSHOTS=yes node --env-file=.env.local --import tsx scripts/backfillSnapshotsFromWeekly1015.ts`
 Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (the 2026-10-15 diag also counted delisted fetches, which the seed and this script skip; a further old-job run before the push raises N), `committed: N snapshot rows inserted`, `inserted N snapshot rows; … after: 0`, `backfill accepted` (every line carries an elapsed-seconds prefix; a mismatch prints a CHECK line and exits 1). A mismatch: re-run (idempotent) and read the counts. If the push lands after an import has fired the old job once more (2026-10-20), run this step again after the deploy: the script is idempotent and copies the new run's fetches. In that case also re-check the two ARCHIVE headers (`db/schema/asinWeeklyData.ts`: the last week; `db/schema/keepaEnrichmentRuns.ts`: the run count and last date) before the push.
@@ -617,7 +617,7 @@ After the first import that runs on the new code: `SELECT count(*) FROM keepa_en
 | Step | Date | Outcome | Notes |
 |---|---|---|---|
 | Final review | | | |
-| Backfill | | | |
+| Backfill | 2026-10-16 | accepted | 10:32:42–10:33:26 UTC (43 s); gate clean (0 live runs, 0 imports, the aggregate sync 182 min earlier); `post-seed fetches without a snapshot before: 20835` (= the diag's figure: no post-seed delisted fetches), `committed: 20835 snapshot rows inserted`, `after: 0`, `backfill accepted`, exit 0 |
 | Integration (watcher, optional) | | | |
 | Push + deploys | | | |
 | Smoke | | | |
