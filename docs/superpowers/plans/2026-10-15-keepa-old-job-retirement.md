@@ -600,7 +600,7 @@ Expected: `post-seed fetches without a snapshot before: N` with N ≤ 20,835 (th
 
 `RUN_INTEGRATION=1 pnpm vitest run tests/integration/keepaWatcher.test.ts --disableConsoleIntercept` between quarter-hours (the watcher cron runs every 15 minutes); expect 3/3. Its down-alarm case was reseeded in c769763 and has never run against the real schema (by inspection its statement is valid against 0050's status-row columns). Read-only: every tick runs inside a rolled-back transaction.
 
-- [ ] **Step 2: Push and deploys**
+- [x] **Step 2: Push and deploys**
 
 `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts` (0 Keepa runs, 0 imports mid-phase) → bare `git push origin main` → watch `gh api repos/raw5045/AmazonAnalytics/commits/<sha>/status --jq '"overall: \(.state)", (.statuses[] | "\(.context): \(.state) @ \(.updated_at)")'` until `Vercel`, `amazon-analytics-worker - AmazonAnalytics` and `amazon-analytics-worker - keepa-importer` are success. This push changes `/services/keepa/**` and `/lib/keepa/**`, so the Keepa service redeploys: its in-flight batch is reclaimed by the 10-minute stale-claim rule, as on every service deploy. Push outside 03:30–06:59 ET and only when the card's "Explorer sync last fired" is more than about 70 minutes old (the gate prints it): the worker restart would kill a watcher-fired aggregate sync mid-UPDATE or between its facet DELETE and INSERT. After the worker deploy is green, sync the Inngest app (`curl -X PUT https://amazonanalytics-production.up.railway.app/api/inngest`, or Apps → Sync in Inngest Cloud) so the dead `enrich-keepa-for-week` function is archived; `GET` the same URL should report 12 functions.
 
@@ -619,7 +619,7 @@ After the first import that runs on the new code: `SELECT count(*) FROM keepa_en
 | Final review | | | |
 | Backfill | 2026-10-16 | accepted | 10:32:42–10:33:26 UTC (43 s); gate clean (0 live runs, 0 imports, the aggregate sync 182 min earlier); `post-seed fetches without a snapshot before: 20835` (= the diag's figure: no post-seed delisted fetches), `committed: 20835 snapshot rows inserted`, `after: 0`, `backfill accepted`, exit 0 |
 | Integration (watcher, optional) | 2026-10-16 | 3/3 | 10:37:52 UTC, 24.9 s, read-only (every tick rolled back; fake senders): the stale-heartbeat tick decided exactly `email:down` + `stamp:down_alarm_sent_at` with no sync action (the reseeded case holds against the real schema); the drained-lane tick `sync:new_lane_drained` + `stamp:sync_fired_at`; the nightly tick `sync:nightly` + both stamps |
-| Push + deploys | | | |
+| Push + deploys | 2026-10-16 | ok | gate at 11:00:39 UTC clean (0 live runs, 0 imports, the aggregate sync 211 min old; after the 06:59 ET window); bare `git push origin main` 3ee2d09 → 644cd05 (28 commits); statuses: Vercel success 11:01:35, `amazon-analytics-worker - keepa-importer` success 11:02:21, `amazon-analytics-worker - AmazonAnalytics` success 11:02:32 UTC; Inngest app synced after the worker deploy (see the smoke row for the function count) |
 | Smoke | | | |
 | First import without the old job | | | |
 
