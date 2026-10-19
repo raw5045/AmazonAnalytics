@@ -31,11 +31,14 @@
  *    sorting). Every broad search has its rows and count statements planned (both plans printed), timed
  *    apart under a local cap of twice the page's, re-run with EXPLAIN (ANALYZE, BUFFERS), and every row
  *    of its page checked to map to the code;
- *  - the option lists: the department and distinct-path counts among the rows the page can show; the
- *    estimated size of the largest per-department cache entry, which must stay well under Next's 2 MB
- *    limit; and the plan of the per-department list statement for the largest department, printed.
- *    The loaders themselves are not called (unstable_cache needs Next's request scope); the counts
- *    and the plan stand in for them;
+ *  - the option lists (spec 2026-10-19 §6), read from product_category_facets (migration 0055): the facets' department,
+ *    path and product counts, the path count cross-checked against the live catalog scope (FACETS_SCOPE_SQL, imported)
+ *    within 5 % (the facets are rebuilt weekly, so they lag it); the estimated sizes of the three largest per-department
+ *    cache entries, the largest well under Next's 2 MB limit; the per-department statement planned for the largest
+ *    department and asserted to read product_category_facets_department_idx with no Sort node (the index delivers path
+ *    order); the departments statement planned; both then run and timed. The loaders themselves are not called
+ *    (unstable_cache needs Next's request scope): their two statements are restated here (listCategories.test.ts pins
+ *    the same text) and stand in for them;
  *  - the ASIN page's loaders (facts, snapshot history, keywords with weeks in top 3) answer for an ASIN
  *    taken from the search; an ASIN the reverse table has but the catalog lacks gets a stub
  *    (inCatalog false); an unknown ASIN has no facts.
@@ -57,6 +60,9 @@
  *  - migration 0053 applied (checked up front: the file fails at once when ba_category_crosswalk is
  *    missing) and the crosswalk built once (scripts/buildBaCrosswalk.ts, spec 2026-10-14 §13 step 2):
  *    until it holds a row the ten broad cases skip with a note ("crosswalk not built");
+ *  - migration 0055 applied (checked up front: the file fails at once when product_category_facets is missing) and the
+ *    facets built once (scripts/buildProductCategoryFacets.ts, spec 2026-10-19 §13 step 3): until the table holds a row
+ *    the option-lists case skips with a note ("facets not built");
  *  - a custom category with stored paths (any account's; only its paths are read) for the two
  *    custom-category cases: when there is none they are skipped ("no custom category to test with");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
@@ -80,6 +86,7 @@ import { EMPTY_CATEGORY_SCOPE, pageCategoryScope, type ProductCategoryScope } fr
 import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
 import { PRODUCT_READ_TIMEOUT_MS, productSearchSql, searchProducts, type ProductSearchResult, type ProductSummaryRow, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
 import { BROAD_CATEGORY_LIST_SQL } from '@/lib/products/listCategories';
+import { FACETS_SCOPE_SQL } from '@/lib/products/buildCategoryFacets';
 import { loadProduct } from '@/lib/products/loadProduct';
 import { loadProductHistory } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
@@ -111,6 +118,14 @@ const PRODUCT_SEARCH_INDEXES = [
 const CATEGORY_PATH_INDEX = 'asin_products_category_path_idx';
 /** The broad-category filter's index (migration 0053): (code, category_path) on the crosswalk; the equality probes ride the category-path index above. */
 const CROSSWALK_INDEX = 'ba_category_crosswalk_code_idx';
+/** The option lists' index (migration 0055): (department, category_path) on product_category_facets. */
+const FACETS_DEPARTMENT_INDEX = 'product_category_facets_department_idx';
+/**
+ * The two statements of lib/products/listCategories.ts (spec 2026-10-19 §6), restated: its cached callbacks inline them (the cache
+ * key covers a callback's source), so there is nothing to import; listCategories.test.ts pins the same text.
+ */
+const DEPARTMENTS_SQL = 'SELECT DISTINCT department FROM product_category_facets ORDER BY department';
+const PATHS_FOR_DEPARTMENT_SQL = 'SELECT category_path FROM product_category_facets WHERE department = $1 ORDER BY category_path';
 
 /** The owner's example search: listed within 180 days, 1,000+ sold a month, at most 300 reviews. */
 const OWNER_SEARCH: ProductFilters = { ...PRODUCT_DEFAULTS, age: 180, soldMin: 1000, reviewsMax: 300 };
@@ -173,6 +188,8 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     if (!tables.rows[0]?.ok) throw new Error('migration 0051 is not applied (keyword_top_asins or keyword_top_asins_meta is missing)');
     const crosswalk = await client.query<{ ok: boolean }>("SELECT to_regclass('ba_category_crosswalk') IS NOT NULL AS ok");
     if (!crosswalk.rows[0]?.ok) throw new Error('migration 0053 is not applied (ba_category_crosswalk is missing)');
+    const facets = await client.query<{ ok: boolean }>("SELECT to_regclass('product_category_facets') IS NOT NULL AS ok");
+    if (!facets.rows[0]?.ok) throw new Error('migration 0055 is not applied (product_category_facets is missing)');
     const meta = await client.query<{ week: string | null }>('SELECT week_end_date::text AS week FROM keyword_top_asins_meta WHERE singleton');
     metaWeek = meta.rows[0]?.week ?? null;
   }, HOOK_TIMEOUT_MS);
@@ -750,29 +767,60 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it(
-    'the option lists: 36-ish departments and about 22.7k distinct paths among the rows the page can show; per-department cache entries stay well under 2 MB',
-    async () => {
+    'the option lists (spec 2026-10-19 §6): the facets hold 36-ish departments and about 23k paths, within 5 % of the live catalog scope; per-department cache entries stay well under 2 MB; the per-department statement is an index read in path order, no sort',
+    async (ctx) => {
       await inReadOnlyTransaction(async () => {
-        const counts = await client.query<{ departments: number; paths: number }>(
-          "SELECT count(DISTINCT category_root)::int AS departments, count(DISTINCT category_path)::int AS paths FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price')",
+        const facets = await client.query<{ departments: number; paths: number; products: number }>(
+          'SELECT count(DISTINCT department)::int AS departments, count(*)::int AS paths, coalesce(sum(product_count), 0)::int AS products FROM product_category_facets',
         );
-        console.log(`[productsQueries] option lists: ${counts.rows[0].departments} departments, ${counts.rows[0].paths} paths`);
-        expect(counts.rows[0].departments).toBeGreaterThanOrEqual(20);
-        expect(counts.rows[0].paths).toBeGreaterThanOrEqual(10_000);
-        // The per-department path list is one unstable_cache entry each (lib/products/listCategories.ts); Next skips entries over
-        // 2 MB, so the largest department's list must stay well under it. est_entry ≈ the JSON size of the cached string[].
-        const sizes = await client.query<{ category_root: string; paths: number; est_entry: number }>(
-          "SELECT category_root, count(*)::int AS paths, sum(length(category_path) + 5)::int AS est_entry FROM (SELECT DISTINCT category_root, category_path FROM asin_products WHERE in_scope AND enrichment_status IN ('active', 'no_price') AND category_path IS NOT NULL) d GROUP BY 1 ORDER BY 3 DESC LIMIT 3",
+        if (facets.rows[0].paths === 0) {
+          console.log('[productsQueries] option lists: product_category_facets is empty (not built yet: scripts/buildProductCategoryFacets.ts) — skipped');
+          return ctx.skip('facets not built');
+        }
+        // The facets lag the live catalog by up to a week (the Keepa service adds paths daily): allow 5 % drift either way.
+        const catalog = await client.query<{ departments: number; paths: number }>(
+          `SELECT count(DISTINCT category_root)::int AS departments, count(DISTINCT category_path)::int AS paths FROM asin_products WHERE ${FACETS_SCOPE_SQL}`,
         );
-        console.log(`[productsQueries] largest department entries: ${sizes.rows.map((r) => `${r.category_root}: ${r.paths} paths ≈ ${r.est_entry} chars`).join('; ')}`);
+        console.log(
+          `[productsQueries] option lists: facets ${facets.rows[0].departments} departments, ${facets.rows[0].paths} paths, ${facets.rows[0].products} products; live catalog ${catalog.rows[0].departments} / ${catalog.rows[0].paths}`,
+        );
+        expect(facets.rows[0].departments, 'departments in the facets').toBeGreaterThanOrEqual(20);
+        expect(facets.rows[0].paths, 'paths in the facets').toBeGreaterThanOrEqual(10_000);
+        expect(Math.abs(facets.rows[0].paths - catalog.rows[0].paths) / catalog.rows[0].paths, "the facets' path count against the live catalog scope's (relative drift)").toBeLessThan(0.05);
+        // Each department's path list is one unstable_cache entry (lib/products/listCategories.ts); Next skips entries over 2 MB,
+        // so the largest must stay well under it. est_entry ≈ the size Next measures (the entry's JSON, whose body is the list's own
+        // JSON): each path's length plus 5, its two escaped quotes and a comma.
+        const sizes = await client.query<{ department: string; paths: number; est_entry: number }>(
+          'SELECT department, count(*)::int AS paths, sum(length(category_path) + 5)::int AS est_entry FROM product_category_facets GROUP BY 1 ORDER BY 3 DESC LIMIT 3',
+        );
+        console.log(`[productsQueries] largest department entries: ${sizes.rows.map((r) => `${r.department}: ${r.paths} paths ≈ ${r.est_entry} chars`).join('; ')}`);
         expect(sizes.rows[0].est_entry, 'the largest department list must stay well under the 2 MB cache limit').toBeLessThan(1_500_000);
-        // The per-department statement the loader runs, planned for the largest department: it is the one statement no unit test plans.
-        const largest = sizes.rows[0].category_root;
-        const { lines, seconds } = await explain({
-          text: "SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price') AND (category_path = $1 OR starts_with(category_path, $2)) ORDER BY category_path",
-          values: [largest, `${largest} › `],
-        });
-        console.log(`[productsQueries] per-department list statement for "${largest}" planned in ${seconds.toFixed(2)}s:\n${lines.join('\n')}`);
+        // The two statements lib/products/listCategories.ts runs, planned (the per-department one for the largest department) and timed.
+        const largest = sizes.rows[0].department;
+        const perDept = await explain({ text: PATHS_FOR_DEPARTMENT_SQL, values: [largest] });
+        // The read is index-only, so the planner prices it low only when the visibility map marks the pages all-visible (the build's
+        // VACUUM marks them). Printed with the plan: a Seq Scan + Sort over few all-visible pages points at that VACUUM, not the readers.
+        const visible = await client.query<{ relpages: number; relallvisible: number }>(
+          "SELECT relpages, relallvisible FROM pg_class WHERE oid = 'product_category_facets'::regclass",
+        );
+        console.log(
+          `[productsQueries] per-department list statement for "${largest}" planned in ${perDept.seconds.toFixed(2)}s ` +
+            `(all-visible pages per the planner: ${visible.rows[0].relallvisible} of ${visible.rows[0].relpages}):\n${perDept.lines.join('\n')}`,
+        );
+        // An index read in path order: a node reads the department index and none sorts, since the index hands back the department's
+        // paths in order (an Incremental Sort's type ends in "Sort" too, so it counts).
+        const nodes = planNodes(perDept.root);
+        expect(nodes.map((n) => n['Index Name']), `indexes in the plan of the per-department statement for "${largest}"`).toContain(FACETS_DEPARTMENT_INDEX);
+        expect(
+          nodes.filter((n) => /Sort$/.test(n['Node Type'])).map((n) => `${n['Node Type']} rows=${n['Plan Rows']}`),
+          `Sort nodes in the plan of the per-department statement for "${largest}"`,
+        ).toEqual([]);
+        const departments = await explain({ text: DEPARTMENTS_SQL, values: [] });
+        console.log(`[productsQueries] departments statement planned in ${departments.seconds.toFixed(2)}s:\n${departments.lines.join('\n')}`);
+        const started = performance.now();
+        await client.query(PATHS_FOR_DEPARTMENT_SQL, [largest]);
+        await client.query(DEPARTMENTS_SQL);
+        console.log(`[productsQueries] both list statements ran in ${((performance.now() - started) / 1000).toFixed(3)}s`);
       });
     },
     TEST_TIMEOUT_MS,
