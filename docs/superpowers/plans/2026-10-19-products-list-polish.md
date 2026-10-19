@@ -480,7 +480,7 @@ export async function buildProductCategoryFacets(client: Queryable): Promise<Fac
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `pnpm vitest run lib/products/buildCategoryFacets.test.ts`
-Expected: PASS (12 tests).
+Expected: PASS (13 tests).
 
 - [ ] **Step 5: Type-check, lint, commit**
 
@@ -2336,7 +2336,7 @@ On `/products`: the perf line renders (`perf · total=… · auth=… · loads=�
 
 - [ ] **Step 5: The 2026-10-20 import**
 
-After the import: `SELECT phase, started_at, duration_ms, rows_affected FROM import_phase_timings WHERE phase IN ('ba_crosswalk_build', 'category_facets_build') ORDER BY started_at DESC LIMIT 4` shows `category_facets_build` right after `ba_crosswalk_build`, a few seconds, rows ≈ 23k; the worker log has one `[category-facets] paths=… departments=… products=…` line; `SELECT max(built_at) FROM product_category_facets` is the import's time. If the phase failed, the previous rows are still there: re-run `scripts/buildProductCategoryFacets.ts` and read the failure's code in the worker log.
+After the import: `SELECT phase, started_at, duration_ms, rows_affected FROM import_phase_timings WHERE phase IN ('ba_crosswalk_build', 'category_facets_build') ORDER BY started_at DESC LIMIT 4` shows `category_facets_build` right after `ba_crosswalk_build`, a few seconds, rows ≈ 23k; the worker log has one `[category-facets] paths=… departments=… products=…` line (the admin chip cannot show hook phases after mark_imported — spec §14); `SELECT max(built_at) FROM product_category_facets` is the import's time. If the phase failed, the previous rows are still there: re-run `scripts/buildProductCategoryFacets.ts` and read the failure's code in the worker log.
 
 - [ ] **Step 6: Results**
 

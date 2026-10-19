@@ -142,7 +142,7 @@ Columns, left to right (sortable = an existing `SortHeader`; nothing new is sort
 3. `node --env-file=.env.local --import tsx scripts/buildProductCategoryFacets.ts` — expect about 23.4k paths, 36 departments, about 1.18M products, a few seconds; cross-check the counts read-only.
 4. `scripts/checkActiveJobs.ts` → bare `git push origin main` → Vercel + Railway worker (+ Keepa service) green.
 5. Smoke in the owner's Chrome: `/products` renders the perf line with a small `loads` step; the typeahead has options and narrows with the department; the column order, the two BSR columns, Rating / Reviews, the checks and Xs, the magnifier; filter → Explorer tab → Products tab returns to the filtered URL.
-6. The 2026-10-20 import: `category_facets_build` appears in the timings after `ba_crosswalk_build` with rows ≈ 23k; the chip shows "Category list" while it runs.
+6. The 2026-10-20 import: `category_facets_build` appears in the timings after `ba_crosswalk_build` with rows ≈ 23k. (The admin chip maps the phase to "Category list", but the chip cannot show any post-import hook phase: its active list drops a file at mark_imported — a pre-existing gap, §14.)
 
 Rollback: reverting the code needs no DDL; the table can stay.
 
@@ -154,3 +154,5 @@ Rollback: reverting the code needs no DDL; the table can stay.
 - Showing `product_count` in the typeahead ("(1,234)"); a typeahead placeholder prop (arc 8 follow-up); unifying the Explorer's category labels with these.
 - A keep-warm tick for the search if the perf panel ever shows cold-search pain; the arc 9 §13 broad + keywords cold sort.
 - The product pages themselves: the owner's next feedback round.
+- The admin import-status chip never shows the hook phases that run after mark_imported (keepa_enqueue, top_asins_build, ba_crosswalk_build, category_facets_build, summary_refresh): the route's active list requires import_started_at, which mark_imported nulls. Fix in the route (a fresh heartbeat + a non-terminal phase), separately.
+- `inngest/functions/importFile.ts` now carries four near-identical pooled hook phases (~220 lines): extract one helper (pool options, socket guards, stage tracking, errFields logging, pool.end() swallowed) and a `connectChain` test helper, as a behaviour-free commit between arcs; the first `processFileImport` describe should also hand out hook clients so it stops printing four stray TypeError lines.
