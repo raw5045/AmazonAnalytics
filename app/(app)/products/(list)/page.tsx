@@ -61,11 +61,14 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
 /**
  * The page's reads, in parallel, each timed on its own, and the moment they finished. The custom-category
  * ids expand (owner-scoped; unknown ids skipped, so an unowned selection scopes to nothing) before the
- * search they scope; the four option lists load alongside. One `loads` step on the timer = the wall time
- * of all five, with the per-read times (and the path list's count and raw size, the payload every load
- * ships) in its note. The clock is read once, here on the server, and passed to the (client) table as a
- * prop: every row's listing age counts to the same instant, and hydration reuses that value instead of
- * reading the browser's clock.
+ * search they scope; the four option lists load alongside. One `loads` step on the timer runs from the
+ * `auth` mark to the last read's settle, so it also holds the parse and the renderer's hop into the
+ * Suspense content (a millisecond or two): loads minus the slowest read is that pre-read gap. The note
+ * carries each read's own time ("search" includes the custom-id expansion it waits for; "paths" awaits
+ * the cached departments read first, so it is never below "departments") and the path list's count and
+ * raw size, the payload every load ships. The clock is read once, here on the server, and passed to the
+ * (client) table as a prop: every row's listing age counts to the same instant, and hydration reuses that
+ * value instead of reading the browser's clock.
  */
 async function loadProductsPage(filters: ProductFilters, userId: string, timer: HandlerTimer) {
   const sql = neon(env.DATABASE_URL);

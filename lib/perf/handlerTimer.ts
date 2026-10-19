@@ -2,7 +2,8 @@
  * Tiny server-handler timer feeding the admin <PerfPanel>. Keeps the impure
  * Date.now() reads in a plain module (out of page render bodies, where
  * react-hooks/purity flags them) and DRYs the per-step measurement: call
- * mark() after each await, then hand totalMs()/steps to PerfPanel.
+ * mark() after each await, then hand totalMs()/steps to PerfPanel. timed()
+ * wraps one promise for reads that run in parallel.
  */
 export interface PerfStep {
   /** Short name shown in the summary and (with a ↳ prefix) the detail row. */
@@ -38,7 +39,8 @@ export function startHandlerTimer(): HandlerTimer {
 
 /**
  * One promise's settle time, for reads that run in parallel (mark() measures sequential steps): resolves to
- * the value and the ms it took; a rejection passes through, untimed.
+ * the value and the ms from this call to its settle (create the promise right before calling); a rejection
+ * passes through, untimed.
  */
 export async function timed<T>(p: Promise<T>): Promise<{ value: T; ms: number }> {
   const t0 = Date.now();
