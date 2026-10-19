@@ -48,54 +48,78 @@ function renderTable({
 /** The cells of body row `i` (0-based), in column order. */
 const bodyCells = (i = 0) => within(screen.getAllByRole('row')[i + 1]).getAllByRole('cell');
 
-describe('ProductResultsTable rows', () => {
-  it('formats one full row', () => {
+describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
+  it('formats one full row in the thirteen columns', () => {
     renderTable({ filters: { ...PRODUCT_DEFAULTS, age: 180 } });
     const cells = bodyCells();
-    expect(cells).toHaveLength(10);
-    expect(screen.getByRole('columnheader', { name: 'Leaf category' })).toBeInTheDocument();
+    expect(cells).toHaveLength(13);
     const headers = screen.getAllByRole('columnheader');
-    expect(headers).toHaveLength(cells.length);
-    expect(headers[1]).toHaveTextContent(/^Leaf category$/);
+    expect(headers).toHaveLength(13);
+    expect(headers[0]).toHaveTextContent(/^Open on Amazon$/); // visually hidden
+    expect(headers[1]).toHaveTextContent(/^Product$/);
+    expect(headers[2]).toHaveTextContent(/^Leaf category$/);
+    expect(headers[3]).toHaveTextContent(/Monthly sold/);
+    expect(headers[4]).toHaveTextContent(/^Rating$/);
+    expect(headers[5]).toHaveTextContent(/Reviews/);
+    expect(headers[6]).toHaveTextContent(/Listed/);
+    expect(headers[7]).toHaveTextContent(/BSR/);
+    expect(headers[8]).toHaveTextContent(/vs 30d avg/);
+    expect(headers[9]).toHaveTextContent(/Price/);
+    expect(headers[10]).toHaveTextContent(/Keywords/);
+    expect(headers[11]).toHaveTextContent(/^FBA$/);
+    expect(headers[12]).toHaveTextContent(/^Amazon$/);
+    expect(headers[8]).toHaveAttribute('title', 'BSR vs its 30-day average');
+    expect(headers[11]).toHaveAttribute('title', 'New offers fulfilled by Amazon; hover a cell for the FBA / FBM counts');
+    expect(headers[12]).toHaveAttribute('title', "Amazon's own offer on the listing");
 
-    const title = within(cells[0]).getByRole('link', { name: 'LED Desk Lamp' });
-    // The ASIN page's back link returns to this exact list (its `from`, percent-encoded).
+    // 1: the magnifier opens the listing on Amazon in a new tab.
+    const magnifier = within(cells[0]).getByRole('link', { name: 'Open B000000001 on Amazon' });
+    expect(magnifier).toHaveAttribute('href', 'https://www.amazon.com/dp/B000000001');
+    expect(magnifier).toHaveAttribute('target', '_blank');
+    expect(magnifier).toHaveAttribute('rel', 'noopener noreferrer nofollow');
+    expect(magnifier).toHaveAttribute('title', 'Open the listing on Amazon');
+
+    // 2: the title links to the product page (its `from` = this exact list, percent-encoded); brand · ASIN as text.
+    const title = within(cells[1]).getByRole('link', { name: 'LED Desk Lamp' });
     expect(title).toHaveAttribute('href', '/products/B000000001?from=%2Fproducts%3Fage%3D180');
     expect(title).toHaveAttribute('target', '_blank');
     expect(title).toHaveAttribute('data-prefetch', 'false');
     expect(title).not.toHaveAttribute('data-replace');
-    expect(within(cells[0]).getByText('Acme')).toBeInTheDocument();
-    const amazon = within(cells[0]).getByRole('link', { name: 'B000000001' });
-    expect(amazon).toHaveAttribute('href', 'https://www.amazon.com/dp/B000000001');
-    expect(amazon).toHaveAttribute('target', '_blank');
+    expect(within(cells[1]).getByText('Acme')).toBeInTheDocument();
+    expect(within(cells[1]).getByText('B000000001')).toBeInTheDocument();
+    expect(within(cells[1]).queryByRole('link', { name: 'B000000001' })).not.toBeInTheDocument();
 
-    expect(cells[1]).toHaveTextContent(/^Desk Lamps$/);
-    expect(cells[1]).toHaveAttribute('title', 'Home & Kitchen › Lighting › Desk Lamps');
-    expect(cells[2]).toHaveTextContent('Aug 1, 2026');
-    expect(cells[2]).toHaveTextContent('69 days');
+    expect(cells[2]).toHaveTextContent(/^Desk Lamps$/);
+    expect(cells[2]).toHaveAttribute('title', 'Home & Kitchen › Lighting › Desk Lamps');
     expect(cells[3]).toHaveTextContent(/^1,000\+$/);
-    expect(cells[4]).toHaveTextContent(/^120 · ★ 4\.4$/);
-    expect(cells[5]).toHaveTextContent(/^\$19\.99$/);
-    expect(cells[6]).toHaveTextContent('1,234');
-    expect(within(cells[6]).getByText('−35%')).toHaveAttribute('title', expect.stringMatching(/30-day average/));
-    expect(cells[7]).toHaveTextContent(/^FBA 3 \/ FBM 1$/);
-    expect(cells[8]).toHaveTextContent(/^No Amazon offer$/);
-    expect(cells[9]).toHaveTextContent(/^7$/);
+    expect(cells[4]).toHaveTextContent(/^★ 4\.4$/);
+    expect(cells[5]).toHaveTextContent(/^120$/);
+    expect(cells[6]).toHaveTextContent('Aug 1, 2026');
+    expect(cells[6]).toHaveTextContent('69 days');
+    expect(cells[7]).toHaveTextContent(/^1,234$/);
+    expect(cells[8]).toHaveTextContent(/^−35%$/);
+    expect(cells[9]).toHaveTextContent(/^\$19\.99$/);
+    expect(cells[10]).toHaveTextContent(/^7$/);
+    // 12–13: a check reads "Yes", an X reads "No"; the counts and the availability sit in the cells' titles.
+    expect(cells[11]).toHaveTextContent(/^Yes$/);
+    expect(cells[11]).toHaveAttribute('title', 'FBA 3 / FBM 1');
+    expect(cells[12]).toHaveTextContent(/^No$/);
+    expect(cells[12]).toHaveAttribute('title', 'No Amazon offer');
   });
 
   it('the from param is the bare list URL under the default filters, and carries the page', () => {
     const { unmount } = renderTable();
-    expect(within(bodyCells()[0]).getByRole('link', { name: 'LED Desk Lamp' })).toHaveAttribute('href', '/products/B000000001?from=%2Fproducts');
+    expect(within(bodyCells()[1]).getByRole('link', { name: 'LED Desk Lamp' })).toHaveAttribute('href', '/products/B000000001?from=%2Fproducts');
     unmount();
     renderTable({ filters: { ...PRODUCT_DEFAULTS, page: 2 } });
-    expect(within(bodyCells()[0]).getByRole('link', { name: 'LED Desk Lamp' })).toHaveAttribute('href', '/products/B000000001?from=%2Fproducts%3Fpage%3D2');
+    expect(within(bodyCells()[1]).getByRole('link', { name: 'LED Desk Lamp' })).toHaveAttribute('href', '/products/B000000001?from=%2Fproducts%3Fpage%3D2');
   });
 
   it("the from it sends is the ASIN page back control's products list: the exact filtered URL, never with a from of its own", () => {
     // A stray from= on the list URL is not a filter, so the parse drops it and it cannot nest.
     const filters = parseProductFilters({ age: '180', leaf: 'Home & Kitchen › Lighting', sort: 'listed', dir: 'asc', page: '2', from: '/explorer' });
     renderTable({ filters });
-    const href = within(bodyCells()[0]).getByRole('link', { name: 'LED Desk Lamp' }).getAttribute('href') ?? '';
+    const href = within(bodyCells()[1]).getByRole('link', { name: 'LED Desk Lamp' }).getAttribute('href') ?? '';
     const from = new URL(href, 'https://keywordquarry.test').searchParams.get('from') ?? '';
     expect(from).toBe('/products?age=180&leaf=Home+%26+Kitchen+%E2%80%BA+Lighting&sort=listed&dir=asc&page=2');
     expect(new URLSearchParams(from.slice(from.indexOf('?') + 1)).has('from')).toBe(false);
@@ -103,15 +127,17 @@ describe('ProductResultsTable rows', () => {
     expect(resolveProductBack(from)).toEqual({ href: from, label: 'Back to products', cameFromPage: true });
   });
 
-  it('a value that is not ASIN-shaped gets no product-page link (the route would 404 it)', () => {
+  it('a value that is not ASIN-shaped gets neither the product-page link (the route would 404 it) nor the magnifier', () => {
     renderTable({ rows: [makeRow({ asin: 'B00BAD#001', title: 'Odd Row' })] });
-    const cell = bodyCells()[0];
-    expect(within(cell).queryByRole('link', { name: 'Odd Row' })).not.toBeInTheDocument();
-    expect(within(cell).getByText('Odd Row')).toBeInTheDocument();
-    expect(within(cell).getByRole('link', { name: 'B00BAD#001' })).toHaveAttribute('href', 'https://www.amazon.com/dp/B00BAD%23001');
+    const cells = bodyCells();
+    expect(within(cells[0]).queryByRole('link')).not.toBeInTheDocument();
+    expect(within(cells[1]).queryByRole('link', { name: 'Odd Row' })).not.toBeInTheDocument();
+    expect(within(cells[1]).getByText('Odd Row')).toBeInTheDocument();
+    expect(within(cells[1]).getByText('B00BAD#001')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /on Amazon/ })).not.toBeInTheDocument();
   });
 
-  it('missing values render as dashes; an untitled product links by its ASIN', () => {
+  it('missing values render as dashes; an untitled product links by its ASIN; the magnifier still shows', () => {
     renderTable({
       rows: [makeRow({
         title: null, brand: null, categoryPath: null, listedSince: null, monthlySold: null, reviewCount: null, averageRatingX10: null, currentPriceCents: null,
@@ -119,28 +145,61 @@ describe('ProductResultsTable rows', () => {
       })],
     });
     const cells = bodyCells();
-    const links = within(cells[0]).getAllByRole('link', { name: 'B000000001' });
-    expect(links.map((a) => a.getAttribute('href'))).toEqual(['/products/B000000001?from=%2Fproducts', 'https://www.amazon.com/dp/B000000001']);
-    for (const i of [1, 2, 3, 4, 5, 6, 7, 8]) expect(cells[i], `column ${i}`).toHaveTextContent(/^—$/);
-    expect(cells[1]).not.toHaveAttribute('title');
-    expect(cells[9]).toHaveTextContent(/^0$/);
+    expect(within(cells[0]).getByRole('link', { name: 'Open B000000001 on Amazon' })).toHaveAttribute('href', 'https://www.amazon.com/dp/B000000001');
+    expect(within(cells[1]).getByRole('link', { name: 'B000000001' })).toHaveAttribute('href', '/products/B000000001?from=%2Fproducts');
+    for (const i of [2, 3, 4, 5, 6, 7, 8, 9, 11, 12]) expect(cells[i], `column ${i}`).toHaveTextContent(/^—$/);
+    expect(cells[2]).not.toHaveAttribute('title');
+    expect(cells[11]).not.toHaveAttribute('title');
+    expect(cells[12]).not.toHaveAttribute('title');
+    expect(cells[10]).toHaveTextContent(/^0$/);
   });
 
   it('a category path whose last segment is blank shows the whole path', () => {
     renderTable({ rows: [makeRow({ categoryPath: 'Home & Kitchen › ' })] });
-    expect(bodyCells()[1]).toHaveTextContent(/^Home & Kitchen ›$/);
-    expect(bodyCells()[1]).toHaveAttribute('title', 'Home & Kitchen › ');
+    expect(bodyCells()[2]).toHaveTextContent(/^Home & Kitchen ›$/);
+    expect(bodyCells()[2]).toHaveAttribute('title', 'Home & Kitchen › ');
   });
 
-  it('a rank above its 30-day average shows a "+" chip; at the average there is no chip', () => {
-    renderTable({ rows: [makeRow({ asin: 'B000000001', rankRatioX100: 130 }), makeRow({ asin: 'B000000002', rankRatioX100: 100 })] });
-    expect(within(bodyCells(0)[6]).getByText('+30%')).toBeInTheDocument();
-    expect(bodyCells(1)[6]).toHaveTextContent(/^1,234$/);
+  it('the BSR comparison has its own column: a "+" chip above the average, "0%" at it, a dash without one while the rank still shows', () => {
+    renderTable({
+      rows: [
+        makeRow({ asin: 'B000000001', rankRatioX100: 130 }),
+        makeRow({ asin: 'B000000002', rankRatioX100: 100 }),
+        makeRow({ asin: 'B000000003', rankRatioX100: null }),
+      ],
+    });
+    expect(bodyCells(0)[8]).toHaveTextContent(/^\+30%$/);
+    expect(bodyCells(1)[8]).toHaveTextContent(/^0%$/);
+    expect(bodyCells(2)[7]).toHaveTextContent(/^1,234$/);
+    expect(bodyCells(2)[8]).toHaveTextContent(/^—$/);
   });
 
-  it('shows the reviews without stars when the rating is missing, and large counts compactly', () => {
+  it('the rating and the reviews are two columns: a dash without a rating, large counts compact', () => {
     renderTable({ rows: [makeRow({ reviewCount: 1834, averageRatingX10: null })] });
-    expect(bodyCells()[4]).toHaveTextContent(/^1\.8k$/);
+    expect(bodyCells()[4]).toHaveTextContent(/^—$/);
+    expect(bodyCells()[5]).toHaveTextContent(/^1\.8k$/);
+  });
+
+  it.each<[number | null, string]>([
+    [null, '—'],
+    [0, 'No'],
+    [3, 'Yes'],
+  ])('FBA %s reads "%s"', (fba, text) => {
+    renderTable({ rows: [makeRow({ fbaOfferCount: fba, fbmOfferCount: 1 })] });
+    expect(bodyCells()[11]).toHaveTextContent(new RegExp(`^${text}$`));
+  });
+
+  it.each<[number | null, string, string | null]>([
+    [null, '—', null],
+    [-1, 'No', 'No Amazon offer'],
+    [0, 'Yes', 'In stock'],
+    [4, 'Yes', 'Delayed'],
+  ])('Amazon availability %s reads "%s"', (code, text, title) => {
+    renderTable({ rows: [makeRow({ amazonAvailability: code })] });
+    const cell = bodyCells()[12];
+    expect(cell).toHaveTextContent(new RegExp(`^${text}$`));
+    if (title === null) expect(cell).not.toHaveAttribute('title');
+    else expect(cell).toHaveAttribute('title', title);
   });
 });
 
