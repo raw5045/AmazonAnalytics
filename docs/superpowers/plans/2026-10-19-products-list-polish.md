@@ -2361,3 +2361,26 @@ Fill the table below (one docs commit per step is fine) and update the memory fi
 | 2026-10-20 import: `category_facets_build` (duration / rows) | | |
 
 Rollback: reverting the code needs no DDL; the table can stay (the next import simply stops rebuilding it).
+
+---
+
+## Landed shape (2026-10-19, subagent-driven; local commits on `main`, nothing pushed)
+
+Every task had a spec-compliance review and a code-quality review; the nits each raised were applied by the same implementer before the next task closed. Gate at `5ab3adf`: `pnpm vitest run` 242 files / 2,978 tests green, `pnpm typecheck` clean, `pnpm build` clean (56 static pages); re-run at the final HEAD after the review follow-ups: at `a09c495` (a09c495 + cda6019 + 2a44dc7 + efc562e): 242 files / 2,979 tests green, typecheck clean, build clean.
+
+| Task | Commits | Tests (file) |
+|---|---|---|
+| 1 Migration 0055 + mirror | c21459a; nits 43a840a (whole-COMMENT pin, row-type pin, header + mirror wording) | `db/schema/productCategoryFacets.test.ts` 5 |
+| 2 Facets builder | 13d53a6; nits 984173e (COMMIT-failure case, telling INSERT fixture, VACUUM comment names the visibility map) | `lib/products/buildCategoryFacets.test.ts` 14 |
+| 3 Import phase + chip | f5a2e2a, 5626097 (the three earlier connect-failure chains hand the facets phase its client); nits 036b5b5 (replay comment, positive assertions) | `inngest/functions/importFile.test.ts` 26; `app/admin/ImportStatusChip.test.tsx` 6 |
+| 4 Hand-run build script | ae85ba9; nits f711c9c (failure stage + hints per SQLSTATE, exit 2 on a zero-row build, header accuracy) | — (typecheck + eslint) |
+| 5 Readers on the facets | 335155b; nits fe8e277 (code-unit re-sort visible on both lists, whole-sequence pin, departments-read failure, header accuracy) | `lib/products/listCategories.test.ts` 11 |
+| 5b Integration option-lists case (added during execution) | de8b0b1 | `tests/integration/productsQueries.test.ts` (owner-run, read-only; skips while the table is empty) |
+| 6 `timed()` + perf panel | 244b77c, c5c685c (parallel-reads case, `pathChars`); nits 468250d (honest `loads` docstring, `timed()` wording, `app/(app)/PerfPanel.test.tsx`) | `lib/perf/handlerTimer.test.ts` 4; `app/(app)/PerfPanel.test.tsx` 2; `app/(app)/products/(list)/page.test.tsx` 8 |
+| 7 Thirteen-column table | 96a8499; nits 511ee02 (neutral chip at the average with a tooltip, `ariaSort(filters, sort)`, star `aria-hidden`, hidden-text and tooltip pins, Keepa code 2 case) | `app/(app)/products/ProductResultsTable.test.tsx` 24 |
+| 8 Filter panel category block | db53204 (one pre-existing case picks inside the department now); nits cbc1148 (separator rule pinned, adjacency-proving order test, mixed picks survive a department change, "1 category") | `app/(app)/products/ProductFilterPanel.test.tsx` 42 |
+| 9 Tab memory | 27eb960; nits 5ab3adf (stable `getSnapshot`, `RememberedListUrlArgs`, `readStoredUrl`, the two memories proven apart, a real "and back") | `app/(app)/TabNav.test.tsx` 29 |
+| docs | 4b5299b (chip gap, follow-ups, Task 2 count), b8372d9 (Task 5b + step 2b), cf3d21a (step 2b wording), 4febde3 (review findings) | — |
+| Final whole-diff review (Ship) follow-ups | a09c495 (the builder refuses an empty build: `facets_empty` rolls back and keeps last build's rows; INSERT in index order), cda6019 (script: `facets_empty` hint, dead zero-row branch removed), 2a44dc7 (research loaders' and readers' comments), efc562e (perf-panel footnote: the remainder is read before the render) | `lib/products/buildCategoryFacets.test.ts` 15 |
+
+Deviations from the spec text, all reviewed: the builder reads its stats from the table inside the transaction (equivalent under the lock) and vacuums with `TRUNCATE false`; the FBA header says "hover a cell for"; `BsrCell` was replaced (rank inline + `RatioCell`); the chip at exactly the average is a neutral slate chip, not bare `0%`; spec §13's chip sentence was removed (the admin chip cannot show post-import phases; pre-existing, §14). Found by the reviews and recorded in spec §14: the chip gap, a pooled-phase helper for `importFile.ts`, the typeahead placeholder, the dead-pick note, `amazon=no` semantics, the magnifier contrast; the builder's floor guard was added in the follow-ups (a09c495).
