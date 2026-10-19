@@ -95,7 +95,8 @@ export async function buildProductCategoryFacets(client: Queryable): Promise<Fac
     throw e;
   }
   // Best-effort, after the COMMIT, as the crosswalk build does: reclaims the replaced rows and refreshes the
-  // planner statistics; autovacuum covers a miss. TRUNCATE false: no page-trim lock, so readers never wait.
+  // planner statistics and the visibility map (the department index's index-only scans); autovacuum covers a
+  // miss. TRUNCATE false: no page-trim lock, so readers never wait.
   await client.query('VACUUM (ANALYZE, TRUNCATE false) product_category_facets').catch(() => undefined);
   return stats;
 }

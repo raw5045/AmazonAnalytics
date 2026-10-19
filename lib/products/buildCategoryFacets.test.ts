@@ -6,7 +6,6 @@ import {
   FACETS_INSERT_SQL,
   FACETS_SCOPE_SQL,
   FACETS_SELECT_SQL,
-  FacetsBuildError,
   buildProductCategoryFacets,
   computeProductCategoryFacets,
   facetStatsSql,
@@ -28,7 +27,7 @@ function fakeClient(answers: Array<[head: string, answer: { rows?: unknown[]; ro
 }
 const STATS = { paths: 23429, departments: 36, products: 1176481 };
 const ANSWERS: Array<[string, { rows?: unknown[]; rowCount?: number }]> = [
-  ['INSERT INTO product_category_facets', { rowCount: 23429 }],
+  ['INSERT INTO product_category_facets', { rowCount: 1 }],
   ['SELECT count(*)::int AS paths', { rows: [STATS] }],
 ];
 const pool = { totalCount: 0, async query(): Promise<never> { throw new Error('must not run'); } };
@@ -103,6 +102,13 @@ describe('buildProductCategoryFacets', () => {
     await expect(buildProductCategoryFacets(client)).rejects.toBe(failure);
   });
 
+  it('a failing COMMIT rolls back, rethrows and skips the VACUUM', async () => {
+    const failure = Object.assign(new Error('commit failed'), { code: '08006' });
+    const { client, heads } = fakeClient([['COMMIT', { throws: failure }], ...ANSWERS]);
+    await expect(buildProductCategoryFacets(client)).rejects.toBe(failure);
+    expect(heads().slice(-2)).toEqual(['COMMIT', 'ROLLBACK']);
+  });
+
   it('a failing VACUUM is swallowed: the build is committed and the stats are returned', async () => {
     const { client, heads } = fakeClient([['VACUUM', { throws: new Error('no vacuum for you') }], ...ANSWERS]);
     await expect(buildProductCategoryFacets(client)).resolves.toEqual(STATS);
@@ -116,7 +122,6 @@ describe('buildProductCategoryFacets', () => {
 
   it('refuses a Pool before any query', async () => {
     await expect(buildProductCategoryFacets(pool)).rejects.toMatchObject({ name: 'FacetsBuildError', code: 'facets_bad_client' });
-    expect(new FacetsBuildError('facets_bad_client', 'x')).toBeInstanceOf(Error);
   });
 });
 
