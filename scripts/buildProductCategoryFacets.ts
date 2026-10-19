@@ -7,6 +7,7 @@
  * Run: node --env-file=.env.local --import tsx scripts/buildProductCategoryFacets.ts
  * PRODUCT_FACETS_DRY_RUN=1 counts the rows a successful build would write (read-only; it never touches the table, so it
  * cannot see a missing migration 0055 or a path with two departments — the build itself fails loudly on both).
+ * A build that would write zero rows is refused by the library (facets_empty) and leaves the previous rows in place.
  * Careful: .env.local's DATABASE_URL points at PRODUCTION — the write replaces the live table's rows (readers keep
  * the previous rows until the commit). The GROUP BY scans the catalog (1.5 s warm on 2026-10-19, longer cold); the
  * printed time also covers the VACUUM after the COMMIT: a few seconds in all.
@@ -26,12 +27,13 @@ if (process.env.PRODUCT_FACETS_DRY_RUN !== undefined && process.env.PRODUCT_FACE
 }
 const dryRun = process.env.PRODUCT_FACETS_DRY_RUN === '1';
 
-/** What to do next, by SQLSTATE, when a run fails. */
+/** What to do next, by error code (a SQLSTATE or a FacetsBuildError code), when a run fails. */
 const HINTS: Readonly<Record<string, string>> = {
   '42P01': 'product_category_facets does not exist: apply migration 0055 first.',
   '23505': 'a catalog path carries two departments: the build refuses to store either (lib/products/buildCategoryFacets.ts).',
   '55P03': "another facets build holds the table (the import's category_facets_build?): re-run when it ends.",
   '57014': 'a statement hit its 600 s limit or was cancelled (cold catalog?): re-run.',
+  'facets_empty': 'the catalog matched no path, so nothing was written and last build\'s rows stay (wrong DATABASE_URL? empty catalog?): fix the cause and re-run before pushing.',
 };
 
 let stage: 'connect' | 'run' = 'connect';
@@ -57,11 +59,6 @@ let stage: 'connect' | 'run' = 'connect';
     console.log(
       `${dryRun ? 'counted' : 'built'} in ${((Date.now() - t0) / 1000).toFixed(1)}s: paths=${stats.paths} departments=${stats.departments} products=${stats.products}`,
     );
-    // A committed empty list is as bad as a failure: the page has no category options and the tools reject category scopes.
-    if (!dryRun && stats.paths === 0) {
-      console.error('built ZERO rows: the catalog matched nothing (wrong DATABASE_URL? empty catalog?). Fix the cause and re-run before pushing.');
-      process.exitCode = 2;
-    }
   } finally {
     client.release();
     await pool.end();
