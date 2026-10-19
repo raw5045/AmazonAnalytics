@@ -6,8 +6,8 @@
 -- (department, path) index. Empty until the first build (lib/products/buildCategoryFacets.ts: once by
 -- hand through scripts/buildProductCategoryFacets.ts, then by every weekly import's
 -- category_facets_build phase).
--- Must be applied BEFORE the code that reads it deploys: the list readers fail loudly (42P01) without
--- it, and show empty category lists while it is empty.
+-- Must be applied BEFORE the code that reads it deploys: the list readers reject (42P01) without it —
+-- the tools surface that error, the page shows empty category lists, as it does while the table is empty.
 
 CREATE TABLE IF NOT EXISTS product_category_facets (
   category_path text PRIMARY KEY,

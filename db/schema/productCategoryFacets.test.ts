@@ -1,9 +1,9 @@
 // db/schema/productCategoryFacets.test.ts
 import { readFileSync } from 'node:fs';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, expectTypeOf } from 'vitest';
 import { getTableColumns } from 'drizzle-orm';
 import { getTableConfig } from 'drizzle-orm/pg-core';
-import { productCategoryFacets } from '@/db/schema';
+import { productCategoryFacets, type ProductCategoryFacetRow } from '@/db/schema';
 
 describe('product_category_facets schema (migration 0055, spec 2026-10-19 §4)', () => {
   const MARKER = '--> statement-breakpoint';
@@ -48,7 +48,12 @@ describe('product_category_facets schema (migration 0055, spec 2026-10-19 §4)',
 
   it('says what the table is, who rebuilds it and who reads it', () => {
     expect(statements[2].startsWith('COMMENT ON TABLE product_category_facets IS')).toBe(true);
+    expect(statements[2]).toMatch(/^COMMENT ON TABLE product_category_facets IS\s+'(?:[^']|'')*';$/);
     expect(statements[2]).toContain('Rebuilt in one transaction by every weekly import (lib/products/buildCategoryFacets.ts)');
     expect(statements[2]).toContain("the Products page''s and tools'' department and leaf-category lists read it");
+  });
+
+  it('the row type is the four columns (type-only pin; vitest never type-checks, pnpm typecheck does)', () => {
+    expectTypeOf<ProductCategoryFacetRow>().toEqualTypeOf<{ categoryPath: string; department: string; productCount: number; builtAt: Date }>();
   });
 });

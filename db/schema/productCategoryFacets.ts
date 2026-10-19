@@ -6,8 +6,9 @@ import { pgTable, text, integer, timestamp, index } from 'drizzle-orm/pg-core';
  * distinct asin_products.category_path among the rows the page can show (in_scope, active or no_price), with
  * its department (category_root) and product count. Rebuilt in one transaction by every weekly import
  * (lib/products/buildCategoryFacets.ts, phase category_facets_build) and by hand
- * (scripts/buildProductCategoryFacets.ts); read by lib/products/listCategories.ts one department at a time
- * through the index, instead of scanning the catalog. Type mirror only: the journal is frozen.
+ * (scripts/buildProductCategoryFacets.ts); read by lib/products/listCategories.ts (the department list, and
+ * the paths one department at a time through the index), instead of scanning the catalog. Type mirror only:
+ * the journal is frozen.
  */
 export const productCategoryFacets = pgTable(
   'product_category_facets',
