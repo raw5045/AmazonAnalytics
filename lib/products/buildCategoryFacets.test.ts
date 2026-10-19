@@ -46,7 +46,7 @@ describe('the statements (spec 2026-10-19 §5)', () => {
 
   it("inserts exactly the mirror's columns but built_at (its default), from that SELECT", () => {
     expect(FACETS_INSERT_SQL.startsWith('INSERT INTO product_category_facets (category_path, department, product_count)\n')).toBe(true);
-    expect(FACETS_INSERT_SQL.endsWith(FACETS_SELECT_SQL)).toBe(true);
+    expect(FACETS_INSERT_SQL).toBe(`INSERT INTO product_category_facets (category_path, department, product_count)\n${FACETS_SELECT_SQL}\nORDER BY category_root, category_path`);
     const cols = FACETS_INSERT_SQL.slice(FACETS_INSERT_SQL.indexOf('(') + 1, FACETS_INSERT_SQL.indexOf(')')).split(',').map((c) => c.trim());
     const mirror = dbCols(productCategoryFacets);
     expect(notIn(cols, mirror)).toEqual([]);
@@ -115,9 +115,15 @@ describe('buildProductCategoryFacets', () => {
     expect(heads().slice(-2)).toEqual(['COMMIT', 'VACUUM (ANALYZE,']);
   });
 
-  it('an empty stats row (never expected) reads as zeros', async () => {
+  it('a build that would write zero rows rolls back with facets_empty and keeps the previous rows (no COMMIT, no VACUUM)', async () => {
+    const { client, heads } = fakeClient([['SELECT count(*)::int AS paths', { rows: [{ paths: 0, departments: 0, products: 0 }] }], ...ANSWERS]);
+    await expect(buildProductCategoryFacets(client)).rejects.toMatchObject({ name: 'FacetsBuildError', code: 'facets_empty' });
+    expect(heads()).toEqual(['BEGIN', 'SET LOCAL', 'SET LOCAL', 'LOCK TABLE', 'DELETE FROM', 'INSERT INTO', 'SELECT count(*)::int', 'ROLLBACK']);
+  });
+
+  it('an empty stats row (never expected) reads as zero paths and is refused the same way', async () => {
     const { client } = fakeClient([['SELECT count(*)::int AS paths', { rows: [] }], ...ANSWERS]);
-    await expect(buildProductCategoryFacets(client)).resolves.toEqual({ paths: 0, departments: 0, products: 0 });
+    await expect(buildProductCategoryFacets(client)).rejects.toMatchObject({ code: 'facets_empty' });
   });
 
   it('refuses a Pool before any query', async () => {

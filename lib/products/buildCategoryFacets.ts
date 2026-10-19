@@ -7,17 +7,17 @@
  *
  * The write: BEGIN → SET LOCAL limits → LOCK TABLE in SHARE ROW EXCLUSIVE MODE (builders queue on it; readers'
  * ACCESS SHARE never waits) → DELETE (not TRUNCATE: its ACCESS EXCLUSIVE lock would queue every reader, and it
- * is not MVCC-safe) → INSERT … SELECT … GROUP BY → the stats → COMMIT, then a best-effort
- * VACUUM (ANALYZE, TRUNCATE false). Grouping by (category_path, category_root) under a primary key on
- * category_path alone: a path that ever carried two roots fails the INSERT (23505) instead of storing a wrong
- * department; today none does (measured 2026-10-19: 0 of 1,176,481 rows).
+ * is not MVCC-safe) → INSERT … SELECT … GROUP BY → the stats (zero paths → ROLLBACK, facets_empty) → COMMIT,
+ * then a best-effort VACUUM (ANALYZE, TRUNCATE false). Grouping by (category_path, category_root) under a
+ * primary key on category_path alone: a path that ever carried two roots fails the INSERT (23505) instead of
+ * storing a wrong department; today none does (measured 2026-10-19: 0 of 1,176,481 rows).
  *
  * `client` must be ONE dedicated connection (never a Pool): each function is a transaction, and SET LOCAL is
  * the only limit that binds through Neon's pooler.
  */
 import type { Queryable } from '@/lib/topAsins/buildWeek';
 
-export type FacetsBuildErrorCode = 'facets_bad_client';
+export type FacetsBuildErrorCode = 'facets_bad_client' | 'facets_empty';
 export class FacetsBuildError extends Error {
   constructor(public readonly code: FacetsBuildErrorCode, message: string) {
     super(message);
@@ -43,8 +43,13 @@ FROM asin_products
 WHERE ${FACETS_SCOPE_SQL}
 GROUP BY category_path, category_root`;
 
+/**
+ * The write's statement. The ORDER BY lays the heap down in the department index's key order, so a plain index
+ * scan stays cheap even before the VACUUM sets the visibility map (the dry run reads FACETS_SELECT_SQL unordered).
+ */
 export const FACETS_INSERT_SQL = `INSERT INTO product_category_facets (category_path, department, product_count)
-${FACETS_SELECT_SQL}`;
+${FACETS_SELECT_SQL}
+ORDER BY category_root, category_path`;
 
 /** The stats over `source`: the table after the INSERT, or the SELECT itself for a dry run. */
 export function facetStatsSql(source: 'table' | 'select'): string {
@@ -89,6 +94,8 @@ export async function buildProductCategoryFacets(client: Queryable): Promise<Fac
     await client.query('DELETE FROM product_category_facets');
     await client.query(FACETS_INSERT_SQL);
     stats = readStats((await client.query(facetStatsSql('table'))).rows);
+    // Nothing matched the membership rule (an empty or wrongly scoped catalog): keep last build's rows rather than an empty list.
+    if (stats.paths === 0) throw new FacetsBuildError('facets_empty', 'the catalog matched no path: nothing written');
     await client.query('COMMIT');
   } catch (e) {
     await client.query('ROLLBACK').catch(() => undefined);
