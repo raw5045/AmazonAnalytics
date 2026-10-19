@@ -38,3 +38,4 @@ export * from './asinSnapshots';
 export * from './keepaServiceStatus';
 export * from './keywordTopAsins';
 export * from './baCategoryCrosswalk';
+export * from './productCategoryFacets';
