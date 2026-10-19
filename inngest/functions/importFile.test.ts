@@ -329,6 +329,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       '[keepa-enqueue] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
     ]);
     expect(err.mock.calls.flat().join(' ')).not.toContain('[category-facets]');
+    expect(mockBuildFacets).toHaveBeenCalledWith(facetsClient);
     expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
     expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
     expect(enqueueTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
@@ -488,6 +489,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
         '[top-asins] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
       ]);
       expect(err.mock.calls.flat().join(' ')).not.toContain('[category-facets]');
+      expect(mockBuildFacets).toHaveBeenCalledWith(facetsClient);
       expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
       expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
@@ -685,6 +687,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       ]);
       expect(err.mock.calls.flat().join(' ')).not.toContain('SECRET');
       expect(err.mock.calls.flat().join(' ')).not.toContain('[category-facets]');
+      expect(mockBuildFacets).toHaveBeenCalledWith(facetsClient);
       expect(mockBuildCrosswalk).not.toHaveBeenCalled();
       expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
