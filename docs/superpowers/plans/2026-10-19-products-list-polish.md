@@ -2353,7 +2353,7 @@ Fill the table below (one docs commit per step is fine) and update the memory fi
 
 | Step | When (UTC) | Outcome |
 |---|---|---|
-| 0055 applied | | |
+| 0055 applied | 2026-10-19 ≈15:20 UTC | `APPLY_0055=yes … applyMigration0055.ts`: 3 statements, committed, assertions passed (0 rows) |
 | First facets build (paths / departments / products / seconds) | | |
 | Integration: option lists on the facets (counts, largest entries, plan) | | |
 | Push (sha) + three deploys green | | |
