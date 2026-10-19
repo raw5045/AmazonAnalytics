@@ -2354,8 +2354,8 @@ Fill the table below (one docs commit per step is fine) and update the memory fi
 | Step | When (UTC) | Outcome |
 |---|---|---|
 | 0055 applied | 2026-10-19 ≈15:20 UTC | `APPLY_0055=yes … applyMigration0055.ts`: 3 statements, committed, assertions passed (0 rows) |
-| First facets build (paths / departments / products / seconds) | 2026-10-19 ≈15:40 UTC | `scripts/buildProductCategoryFacets.ts`: built in 3.8 s: 23,429 / 36 / 1,176,481 (the dry run before it counted the same in 9.2 s cold); exit 0 |
-| Integration: option lists on the facets (counts, largest entries, plan) | | |
+| First facets build (paths / departments / products / seconds) | 2026-10-19 ≈16:35 UTC | `scripts/buildProductCategoryFacets.ts`: built in 3.8 s: 23,429 / 36 / 1,176,481 (the dry run before it counted the same in 9.2 s cold); exit 0 |
+| Integration: option lists on the facets (counts, largest entries, plan) | 2026-10-19 16:44 UTC | PASS (1 passed, 21 skipped): facets 36 / 23,429 / 1,176,481 = live catalog 36 / 23,429; largest entries Books 4,070 paths ≈ 345k chars, Clothing 169k, Kindle Store 159k; per-department plan on the department index, all 443 pages visible, no sort; both list statements 0.17 s warm |
 | Push (sha) + three deploys green | | |
 | Smoke (page) | | |
 | 2026-10-20 import: `category_facets_build` (duration / rows) | | |
