@@ -12,37 +12,56 @@ import { Suspense, use, useEffect, useSyncExternalStore } from 'react';
  * Server-rendered text but client-side for usePathname() so the active
  * tab gets styled correctly without a full page reload after navigation.
  *
- * Remembers the most recent /explorer URL (including filter query
- * params) so switching to the Watchlist tab and back returns you to
- * the same filter state — instead of resetting to defaults. Stored in
- * localStorage, scoped per-browser.
+ * Remembers the most recent /explorer and /products list URLs (including
+ * filter query params) so switching to another tab and back returns you
+ * to the same filter state — instead of resetting to defaults. Stored in
+ * localStorage, scoped per-browser (useRememberedListUrl, one key per tab).
  *
- * Detail-page URLs (/explorer/keyword/[id]) are intentionally NOT
- * remembered — clicking the Explorer tab from a detail page should
- * return to the keyword list, not back to the same detail page.
+ * Detail-page URLs (/explorer/keyword/[id], /products/[asin]) are
+ * intentionally NOT remembered — clicking a tab from a detail page should
+ * return to its list, not back to the same detail page.
  *
  * The watchlist badge count arrives as a promise and streams in via
  * <Suspense> (see WatchlistBadge) so it never blocks the nav render.
  */
 const LAST_EXPLORER_URL_KEY = 'kw-analytics.last-explorer-url';
+const LAST_PRODUCTS_URL_KEY = 'kw-analytics.last-products-url';
 
-// The remembered URL is read from localStorage via useSyncExternalStore
+// A remembered URL is read from localStorage via useSyncExternalStore
 // instead of being copied into state from an effect (which the
 // react-hooks/set-state-in-effect rule rejects). Every render re-reads
-// the snapshot, and the only same-tab writer is this component's own
-// effect below — its value is in place before the next render — so
-// there is nothing to subscribe to and the subscription is a no-op.
-// The server snapshot is null: the server render and the hydrating
-// client render both show the bare /explorer, and React re-renders with
-// the real value right after hydration.
+// the snapshot, and the only same-tab writer is the hook's own effect
+// — its value is in place before the next render — so there is nothing
+// to subscribe to and the subscription is a no-op. The server snapshot
+// is null: the server render and the hydrating client render both show
+// the bare list URL, and React re-renders with the real value right
+// after hydration.
 const subscribeToNothing = () => () => {};
 const getServerSnapshot = () => null;
-function readLastExplorerUrl(): string | null {
+function readItem(key: string): string | null {
   try {
-    return localStorage.getItem(LAST_EXPLORER_URL_KEY);
+    return localStorage.getItem(key);
   } catch {
     return null;
   }
+}
+
+/**
+ * Where a list tab points. On its own list page (`onListPage`) that's the
+ * current URL, which the effect also records under `key`. Anywhere else
+ * (another tab, a detail page) it's the remembered URL, so the tab restores
+ * the user's filters, or the bare `base` when nothing is remembered or
+ * localStorage is unavailable.
+ */
+function useRememberedListUrl({ key, base, onListPage, currentUrl }: { key: string; base: string; onListPage: boolean; currentUrl: string }): string {
+  const remembered = useSyncExternalStore(subscribeToNothing, () => readItem(key), getServerSnapshot);
+  useEffect(() => {
+    if (!onListPage) return;
+    try {
+      localStorage.setItem(key, currentUrl);
+    } catch {}
+  }, [key, onListPage, currentUrl]);
+  return onListPage ? currentUrl : remembered || base;
 }
 
 export function TabNav({
@@ -65,22 +84,23 @@ export function TabNav({
   const isAskAi = pathname === '/ask' || pathname.startsWith('/ask/');
   const isConnectAi = pathname === '/connect-ai' || pathname.startsWith('/connect-ai/');
 
-  // Where the Explorer tab points. On the keyword list page (/explorer,
-  // NOT /explorer/keyword/*) that's the current URL, which the effect
-  // below also records. Anywhere else (/watchlist, /explorer/keyword/*)
-  // it's the remembered URL, so the tab restores the user's filters.
-  const onExplorerList = pathname === '/explorer';
+  // The two list tabs: on the list page itself (NOT /explorer/keyword/*,
+  // NOT /products/*), the tab is the current URL, which is also recorded;
+  // anywhere else it's the remembered one. Both hooks run on every render
+  // (a hook cannot sit behind showProducts).
   const qs = searchParams?.toString() ?? '';
-  const currentExplorerUrl = qs ? `/explorer?${qs}` : '/explorer';
-  const lastExplorerUrl = useSyncExternalStore(subscribeToNothing, readLastExplorerUrl, getServerSnapshot);
-  const explorerHref = onExplorerList ? currentExplorerUrl : lastExplorerUrl || '/explorer';
-
-  useEffect(() => {
-    if (!onExplorerList) return;
-    try {
-      localStorage.setItem(LAST_EXPLORER_URL_KEY, currentExplorerUrl);
-    } catch {}
-  }, [onExplorerList, currentExplorerUrl]);
+  const explorerHref = useRememberedListUrl({
+    key: LAST_EXPLORER_URL_KEY,
+    base: '/explorer',
+    onListPage: pathname === '/explorer',
+    currentUrl: qs ? `/explorer?${qs}` : '/explorer',
+  });
+  const productsHref = useRememberedListUrl({
+    key: LAST_PRODUCTS_URL_KEY,
+    base: '/products',
+    onListPage: pathname === '/products',
+    currentUrl: qs ? `/products?${qs}` : '/products',
+  });
 
   // Navy-bar tabs (2026-07 reskin): active = white with an amber underline
   // pinned to the bar's bottom edge; inactive = slate, brightens on hover.
@@ -97,7 +117,7 @@ export function TabNav({
         Explorer
       </Link>
       {showProducts && (
-        <Link href="/products" className={tabClass(isProducts)}>
+        <Link href={productsHref} className={tabClass(isProducts)}>
           Products
         </Link>
       )}

@@ -181,4 +181,89 @@ describe('TabNav', () => {
       expect(html).not.toContain('creatine');
     });
   });
+
+  describe('remembering the last /products URL (spec 2026-10-19 §10)', () => {
+    const LAST_PRODUCTS_URL_KEY = 'kw-analytics.last-products-url';
+    const productsLink = () => screen.getByRole('link', { name: 'Products' });
+
+    it('on /products, points the Products tab at the current URL and saves it; the Explorer memory is untouched', () => {
+      nav.pathname = '/products';
+      nav.search = 'dept=Pet+Supplies&sort=listed&page=2';
+      render(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products?dept=Pet+Supplies&sort=listed&page=2');
+      expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBe('/products?dept=Pet+Supplies&sort=listed&page=2');
+      expect(localStorage.getItem(LAST_EXPLORER_URL_KEY)).toBeNull();
+    });
+
+    it('on /products with no query string, saves the bare /products', () => {
+      nav.pathname = '/products';
+      render(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products');
+      expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBe('/products');
+    });
+
+    it('elsewhere, points the Products tab at the saved URL and the Explorer tab at its own', () => {
+      localStorage.setItem(LAST_PRODUCTS_URL_KEY, '/products?broad=Pet+Products');
+      localStorage.setItem(LAST_EXPLORER_URL_KEY, '/explorer?q=creatine');
+      nav.pathname = '/watchlist';
+      render(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products?broad=Pet+Products');
+      expect(explorerLink()).toHaveAttribute('href', '/explorer?q=creatine');
+    });
+
+    it('does not remember product (ASIN) pages, and restores the list from one', () => {
+      localStorage.setItem(LAST_PRODUCTS_URL_KEY, '/products?broad=Pet+Products');
+      nav.pathname = '/products/B000000001';
+      nav.search = 'from=%2Fproducts';
+      render(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products?broad=Pet+Products');
+      expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBe('/products?broad=Pet+Products');
+    });
+
+    it('restores the filters after switching to the Explorer and back without remounting', () => {
+      nav.pathname = '/products';
+      nav.search = 'dept=Books&page=3';
+      const { rerender } = render(tabNav(false, false, true));
+
+      nav.pathname = '/explorer';
+      nav.search = 'q=zinc';
+      rerender(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products?dept=Books&page=3');
+      expect(explorerLink()).toHaveAttribute('href', '/explorer?q=zinc');
+    });
+
+    it('elsewhere with nothing saved, falls back to the bare /products', () => {
+      nav.pathname = '/watchlist';
+      render(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products');
+      expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBeNull();
+    });
+
+    it('still points at the current URL when localStorage rejects the write', () => {
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new Error('QuotaExceededError');
+      });
+      nav.pathname = '/products';
+      nav.search = 'dept=Books';
+      render(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products?dept=Books');
+    });
+
+    it('falls back to the bare /products when localStorage cannot be read', () => {
+      vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new Error('SecurityError');
+      });
+      nav.pathname = '/watchlist';
+      render(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products');
+    });
+
+    it('server-renders the bare /products so hydration matches regardless of localStorage', () => {
+      localStorage.setItem(LAST_PRODUCTS_URL_KEY, '/products?broad=Pet+Products');
+      nav.pathname = '/watchlist';
+      const html = renderToString(tabNav(false, false, true));
+      expect(html).toContain('href="/products"');
+      expect(html).not.toContain('Pet+Products');
+    });
+  });
 });
