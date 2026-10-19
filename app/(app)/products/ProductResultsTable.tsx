@@ -49,8 +49,8 @@ function orDash(text: string): ReactNode {
   return text === DASH ? <span className="text-gray-400">{DASH}</span> : text;
 }
 
-function ariaSort(filters: ProductFilters, sorts: ProductSort[]): 'ascending' | 'descending' | undefined {
-  if (!sorts.includes(filters.sort)) return undefined;
+function ariaSort(filters: ProductFilters, sort: ProductSort): 'ascending' | 'descending' | undefined {
+  if (filters.sort !== sort) return undefined;
   return filters.dir === 'asc' ? 'ascending' : 'descending';
 }
 
@@ -236,19 +236,21 @@ function ProductRow({ row, from, now }: { row: ProductSummaryRow; from: string; 
   );
 }
 
-/** "★ 4.4" in the keyword page's review style; a dash without a rating. */
+/** "★ 4.4" in the keyword page's review style (screen readers skip the star and read "4.4" under the Rating header); a dash without a rating. */
 function RatingCell({ ratingX10 }: { ratingX10: number | null }) {
   if (ratingX10 === null) return orDash(DASH);
-  return <span className="text-yellow-600">★ {(ratingX10 / 10).toFixed(1)}</span>;
+  return <span className="text-yellow-600"><span aria-hidden="true">★ </span>{(ratingX10 / 10).toFixed(1)}</span>;
 }
 
-/** The rank against its 30-day average: a green (better) or red (worse) chip, "0%" at the average, a dash without a comparison. */
+/** The rank against its 30-day average: a green (better), red (worse) or neutral (at the average) chip; a dash without a comparison. */
 function RatioCell({ ratioX100 }: { ratioX100: number | null }) {
   const change = formatRatio(ratioX100);
   if (ratioX100 === null || change === DASH) return orDash(DASH);
-  if (change === '0%') return <>{change}</>;
+  const r = Math.round(ratioX100);
+  const tone = r < 100 ? 'bg-emerald-50 text-emerald-700' : r > 100 ? 'bg-rose-50 text-rose-700' : 'bg-slate-100 text-slate-600';
+  const reads = r < 100 ? 'ranked better than' : r > 100 ? 'ranked worse than' : 'at';
   return (
-    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${ratioX100 < 100 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+    <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${tone}`} title={`BSR vs its 30-day average: ${reads} its average`}>
       {change}
     </span>
   );
@@ -291,7 +293,7 @@ function SortHeader({
   title?: string;
 }) {
   return (
-    <th className={`whitespace-nowrap p-2 ${align === 'right' ? 'text-right' : ''}`} aria-sort={ariaSort(filters, [sort])} title={title}>
+    <th className={`whitespace-nowrap p-2 ${align === 'right' ? 'text-right' : ''}`} aria-sort={ariaSort(filters, sort)} title={title}>
       <SortLink filters={filters} sort={sort} label={label} align={align} />
     </th>
   );

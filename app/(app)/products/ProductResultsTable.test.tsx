@@ -71,6 +71,7 @@ describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
     expect(headers[8]).toHaveAttribute('title', 'BSR vs its 30-day average');
     expect(headers[11]).toHaveAttribute('title', 'New offers fulfilled by Amazon; hover a cell for the FBA / FBM counts');
     expect(headers[12]).toHaveAttribute('title', "Amazon's own offer on the listing");
+    expect(within(headers[0]).getByText('Open on Amazon')).toHaveClass('sr-only');
 
     // 1: the magnifier opens the listing on Amazon in a new tab.
     const magnifier = within(cells[0]).getByRole('link', { name: 'Open B000000001 on Amazon' });
@@ -105,6 +106,8 @@ describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
     expect(cells[11]).toHaveAttribute('title', 'FBA 3 / FBM 1');
     expect(cells[12]).toHaveTextContent(/^No$/);
     expect(cells[12]).toHaveAttribute('title', 'No Amazon offer');
+    expect(within(cells[11]).getByText('Yes')).toHaveClass('sr-only');
+    expect(cells[11].querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
   });
 
   it('the from param is the bare list URL under the default filters, and carries the page', () => {
@@ -170,6 +173,8 @@ describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
     });
     expect(bodyCells(0)[8]).toHaveTextContent(/^\+30%$/);
     expect(bodyCells(1)[8]).toHaveTextContent(/^0%$/);
+    expect(within(bodyCells(1)[8]).getByText('0%')).toHaveAttribute('title', 'BSR vs its 30-day average: at its average');
+    expect(within(bodyCells(0)[8]).getByText('+30%')).toHaveAttribute('title', 'BSR vs its 30-day average: ranked worse than its average');
     expect(bodyCells(2)[7]).toHaveTextContent(/^1,234$/);
     expect(bodyCells(2)[8]).toHaveTextContent(/^—$/);
   });
@@ -180,19 +185,21 @@ describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
     expect(bodyCells()[5]).toHaveTextContent(/^1\.8k$/);
   });
 
-  it.each<[number | null, string]>([
-    [null, '—'],
-    [0, 'No'],
-    [3, 'Yes'],
-  ])('FBA %s reads "%s"', (fba, text) => {
+  it.each<[number | null, string, string]>([
+    [null, '—', 'FBA — / FBM 1'],
+    [0, 'No', 'FBA 0 / FBM 1'],
+    [3, 'Yes', 'FBA 3 / FBM 1'],
+  ])('FBA %s reads "%s"', (fba, text, title) => {
     renderTable({ rows: [makeRow({ fbaOfferCount: fba, fbmOfferCount: 1 })] });
     expect(bodyCells()[11]).toHaveTextContent(new RegExp(`^${text}$`));
+    expect(bodyCells()[11]).toHaveAttribute('title', title);
   });
 
   it.each<[number | null, string, string | null]>([
     [null, '—', null],
     [-1, 'No', 'No Amazon offer'],
     [0, 'Yes', 'In stock'],
+    [2, 'Yes', 'Unknown'],
     [4, 'Yes', 'Delayed'],
   ])('Amazon availability %s reads "%s"', (code, text, title) => {
     renderTable({ rows: [makeRow({ amazonAvailability: code })] });
