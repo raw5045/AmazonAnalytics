@@ -11,6 +11,7 @@ vi.mock('next/navigation', () => ({
 import { TabNav } from './TabNav';
 
 const LAST_EXPLORER_URL_KEY = 'kw-analytics.last-explorer-url';
+const LAST_PRODUCTS_URL_KEY = 'kw-analytics.last-products-url';
 
 /**
  * A promise `use()` can read synchronously (React's thenable protocol:
@@ -30,6 +31,10 @@ function tabNav(showConnectAi = false, showAskAi = false, showProducts = false) 
 
 function explorerLink() {
   return screen.getByRole('link', { name: 'Explorer' });
+}
+
+function productsLink() {
+  return screen.getByRole('link', { name: 'Products' });
 }
 
 describe('TabNav', () => {
@@ -64,7 +69,6 @@ describe('TabNav', () => {
   });
 
   describe('the Products tab (admins only)', () => {
-    const productsLink = () => screen.getByRole('link', { name: 'Products' });
     // Active = the white label with the amber underline; an inactive tab only has hover:text-white.
     const expectActive = (link: HTMLElement) => expect(link).toHaveClass('text-white', 'after:bg-amber-300');
     const expectInactive = (link: HTMLElement) => {
@@ -183,16 +187,15 @@ describe('TabNav', () => {
   });
 
   describe('remembering the last /products URL (spec 2026-10-19 §10)', () => {
-    const LAST_PRODUCTS_URL_KEY = 'kw-analytics.last-products-url';
-    const productsLink = () => screen.getByRole('link', { name: 'Products' });
-
-    it('on /products, points the Products tab at the current URL and saves it; the Explorer memory is untouched', () => {
+    it('on /products, points the Products tab at the current URL and saves it; the Explorer memory is neither cleared nor overwritten', () => {
+      localStorage.setItem(LAST_EXPLORER_URL_KEY, '/explorer?q=creatine');
       nav.pathname = '/products';
       nav.search = 'dept=Pet+Supplies&sort=listed&page=2';
       render(tabNav(false, false, true));
       expect(productsLink()).toHaveAttribute('href', '/products?dept=Pet+Supplies&sort=listed&page=2');
       expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBe('/products?dept=Pet+Supplies&sort=listed&page=2');
-      expect(localStorage.getItem(LAST_EXPLORER_URL_KEY)).toBeNull();
+      expect(localStorage.getItem(LAST_EXPLORER_URL_KEY)).toBe('/explorer?q=creatine');
+      expect(explorerLink()).toHaveAttribute('href', '/explorer?q=creatine');
     });
 
     it('on /products with no query string, saves the bare /products', () => {
@@ -227,6 +230,13 @@ describe('TabNav', () => {
 
       nav.pathname = '/explorer';
       nav.search = 'q=zinc';
+      rerender(tabNav(false, false, true));
+      expect(productsLink()).toHaveAttribute('href', '/products?dept=Books&page=3');
+      expect(explorerLink()).toHaveAttribute('href', '/explorer?q=zinc');
+      expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBe('/products?dept=Books&page=3');
+
+      nav.pathname = '/products';
+      nav.search = 'dept=Books&page=3';
       rerender(tabNav(false, false, true));
       expect(productsLink()).toHaveAttribute('href', '/products?dept=Books&page=3');
       expect(explorerLink()).toHaveAttribute('href', '/explorer?q=zinc');

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { Suspense, use, useEffect, useSyncExternalStore } from 'react';
+import { Suspense, use, useCallback, useEffect, useSyncExternalStore } from 'react';
 
 /**
  * Top-level navigation: Explorer | Products (only when showProducts is true) |
@@ -38,13 +38,15 @@ const LAST_PRODUCTS_URL_KEY = 'kw-analytics.last-products-url';
 // after hydration.
 const subscribeToNothing = () => () => {};
 const getServerSnapshot = () => null;
-function readItem(key: string): string | null {
+function readStoredUrl(key: string): string | null {
   try {
     return localStorage.getItem(key);
   } catch {
     return null;
   }
 }
+
+type RememberedListUrlArgs = { key: string; base: string; onListPage: boolean; currentUrl: string };
 
 /**
  * Where a list tab points. On its own list page (`onListPage`) that's the
@@ -53,8 +55,14 @@ function readItem(key: string): string | null {
  * the user's filters, or the bare `base` when nothing is remembered or
  * localStorage is unavailable.
  */
-function useRememberedListUrl({ key, base, onListPage, currentUrl }: { key: string; base: string; onListPage: boolean; currentUrl: string }): string {
-  const remembered = useSyncExternalStore(subscribeToNothing, () => readItem(key), getServerSnapshot);
+function useRememberedListUrl({
+  key,
+  base,
+  onListPage,
+  currentUrl,
+}: RememberedListUrlArgs): string {
+  const getSnapshot = useCallback(() => readStoredUrl(key), [key]);
+  const remembered = useSyncExternalStore(subscribeToNothing, getSnapshot, getServerSnapshot);
   useEffect(() => {
     if (!onListPage) return;
     try {
