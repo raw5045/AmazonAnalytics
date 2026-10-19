@@ -23,6 +23,7 @@ describe('ImportStatusChip', () => {
     ['keepa_enqueue', 'Keepa queue'],
     ['top_asins_build', 'Top ASINs'],
     ['ba_crosswalk_build', 'Broad categories'],
+    ['category_facets_build', 'Category list'],
     ['some_future_phase', 'some_future_phase'],
   ])('shows the %s phase as "%s"', async (phase, shown) => {
     const active = {

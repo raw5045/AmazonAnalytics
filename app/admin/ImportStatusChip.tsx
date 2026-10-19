@@ -187,6 +187,8 @@ function humanPhase(phase: string): string {
       return 'Top ASINs';
     case 'ba_crosswalk_build':
       return 'Broad categories';
+    case 'category_facets_build':
+      return 'Category list';
     case 'summary_refresh':
       return 'rebuilding summary';
     default:

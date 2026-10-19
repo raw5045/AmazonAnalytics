@@ -23,6 +23,7 @@ import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
 import { enqueueWeek, EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { buildTopAsinsWeek, TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
 import { buildCrosswalk, BaCrosswalkError } from '@/lib/baCategory/buildCrosswalk';
+import { buildProductCategoryFacets } from '@/lib/products/buildCategoryFacets';
 import { errFields } from '@/lib/ask/logSafe';
 
 export interface ImportFileInput {
@@ -1163,6 +1164,56 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
           }
         },
         // rows_affected = paths written; null marks a failed or skipped build.
+        (r) => (r ? r.paths : null),
+      );
+
+      // ----------------------------------------------------------------
+      // Products category facets (spec 2026-10-19 §5): rebuild the
+      // Products page's category option lists from the live catalog, right
+      // after the crosswalk and BEFORE the long summary refresh. Fail-soft,
+      // like the phases above: a failure never fails the import — the
+      // previous rows stay in place (the replace is one transaction) and
+      // scripts/buildProductCategoryFacets.ts re-runs it by hand. Same
+      // replay rule: a historical week must not rebuild the live lists.
+      // ----------------------------------------------------------------
+      await timePhase(
+        file.id,
+        'category_facets_build',
+        async () => {
+          const facetsPool = new Pool({
+            connectionString: env.DATABASE_URL,
+            max: 1,
+            statement_timeout: 600_000,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10_000,
+            connectionTimeoutMillis: 20_000,
+          });
+          // Dropped-socket guards, as in the phases above.
+          facetsPool.on('error', () => undefined);
+          let stage: 'connect' | 'build' = 'connect';
+          try {
+            const client = await facetsPool.connect();
+            stage = 'build';
+            try {
+              client.on('error', () => undefined);
+              const r = await buildProductCategoryFacets(client);
+              console.log(`[category-facets] paths=${r.paths} departments=${r.departments} products=${r.products}`);
+              return r;
+            } finally {
+              client.release();
+            }
+          } catch (e) {
+            const { error, code } = errFields(e);
+            console.error(
+              '[category-facets] failed (import continues)',
+              JSON.stringify({ week: weekEndDate, stage, error, code }),
+            );
+            return null;
+          } finally {
+            await facetsPool.end();
+          }
+        },
+        // rows_affected = facet rows written; null marks a failed build.
         (r) => (r ? r.paths : null),
       );
     }
