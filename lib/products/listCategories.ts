@@ -3,22 +3,26 @@
  * The Products page's category option lists (spec 2026-10-12 (category filters) §4.4; spec 2026-10-19 §6),
  * read from product_category_facets — one row per distinct catalog path with its department, rebuilt in one
  * transaction by every weekly import (lib/products/buildCategoryFacets.ts) — and cached an hour with
- * unstable_cache like lib/explorer/listLeafCategories.ts. Nothing here scans the catalog: a cache miss is an
- * index read in milliseconds (the scans this replaced read hundreds of MB per department).
+ * unstable_cache like lib/explorer/listLeafCategories.ts. Nothing here scans the catalog: a cache miss reads
+ * the ~23k-row facets table (the paths through the department index) in milliseconds warm, where the scans this
+ * replaced read up to 780 MB for one department.
  *  - listProductDepartments: the distinct departments of the facets (36 today);
  *  - listProductCategoryPaths: every facet path (23,429 today), read one department at a time through
  *    product_category_facets_department_idx and cached per department (unstable_cache keys on the function's
  *    arguments). Per department because Next's data cache refuses entries over 2 MB (it warns and skips in
  *    production, throws in dev) and the full list is about 2 MB today; the per-department entries stay well
- *    under it (the largest, Books, is roughly 0.35 MB);
+ *    under it (measured well under 1 MB each; tests/integration/productsQueries.test.ts prints the three
+ *    largest);
  *  - listProductBroadCategories: the distinct codes of ba_category_crosswalk (spec 2026-10-14 §7; ~24k rows,
  *    milliseconds whatever the plan), read through neonRunner so PRODUCT_READ_TIMEOUT_MS caps it like the
  *    page's reads.
  * All three lists are sorted by plain code-unit comparison so the order never depends on the host's ICU data
  * (lib/research/categories.ts sorts the same way). An empty facets table (before the first build) or crosswalk
  * gives empty lists: the page shows no category options and the tools reject category scopes, which is why the
- * first build precedes the deploy (spec 2026-10-19 §13). A path first seen mid-week joins the lists at the next
- * build; the search predicate runs on the live catalog, so any listed path matches correctly.
+ * first build precedes the deploy (spec 2026-10-19 §13). Deployed between the migration and the first build, an
+ * empty table is a successful read, so [] is cached for an hour (no per-department entries exist yet) and the
+ * page shows no category options until that entry goes stale. A path first seen mid-week joins the lists at the
+ * next build; the search predicate runs on the live catalog, so any listed path matches correctly.
  * A failed read rejects the whole list (the tools validate category scopes against it, so a partial list would
  * turn a transient error into a false CATEGORY_NOT_AVAILABLE); never catch inside a cached function, or an
  * empty list is cached for an hour.
@@ -55,7 +59,7 @@ async function fetchDepartmentsSorted(): Promise<string[]> {
 
 /**
  * fetchDepartmentsSorted, cached an hour (it is the callback itself, so the key covers its statement; see the header).
- * React's cache dedupes it per render: the page calls it twice at once (directly and via listProductCategoryPaths).
+ * React's cache dedupes it per render: the page calls it twice at once (directly and via listProductCategoryPaths), so a miss reads once and a hit costs one data-cache lookup.
  */
 export const listProductDepartments = cache(
   unstable_cache(fetchDepartmentsSorted, ['product-departments'], { revalidate: REVALIDATE_SECONDS, tags: [PRODUCT_CATEGORIES_TAG] }),

@@ -69,13 +69,14 @@ describe('assemblePathLists', () => {
 });
 
 describe('the loaders', () => {
-  /** Two departments, answered out of code-unit order so the re-sort shows. */
-  const DEPARTMENT_ROWS = [{ department: 'Pet Supplies' }, { department: 'Appliances' }];
+  /** Three departments, answered out of code-unit order so the re-sort shows (by code unit the lowercase one comes last; by locale it would sort between the other two). */
+  const DEPARTMENT_ROWS = [{ department: 'Pet Supplies' }, { department: 'Appliances' }, { department: 'arts' }];
   /** Four codes, answered out of code-unit order so the re-sort shows (by code unit the lowercase one comes last; by locale it would come first). */
   const BROAD_ROWS = [{ code: 'Toys' }, { code: 'Home' }, { code: 'Misc SDP' }, { code: 'apparel' }];
   const PATH_ROWS: Record<string, Array<{ category_path: string }>> = {
     Appliances: [{ category_path: 'Appliances › Dishwashers' }],
     'Pet Supplies': [{ category_path: 'Pet Supplies › Dogs › Toys' }, { category_path: 'Pet Supplies' }],
+    arts: [{ category_path: 'arts › Supplies' }],
   };
 
   beforeEach(() => {
@@ -90,16 +91,16 @@ describe('the loaders', () => {
   });
 
   it('lists the departments of the facets, in code-unit order; the catalog is never scanned', async () => {
-    await expect(listProductDepartments()).resolves.toEqual(['Appliances', 'Pet Supplies']);
+    await expect(listProductDepartments()).resolves.toEqual(['Appliances', 'Pet Supplies', 'arts']);
     expect(neonMock.queries).toEqual([{ text: DEPARTMENTS_SQL, values: [] }]);
   });
 
-  it('reads the paths one department at a time through the department index, binding only the department, and assembles one sorted list', async () => {
-    await expect(listProductCategoryPaths()).resolves.toEqual(['Appliances › Dishwashers', 'Pet Supplies', 'Pet Supplies › Dogs › Toys']);
+  it('reads the paths one department at a time, binding only the department, and assembles one sorted list; nothing else runs', async () => {
+    await expect(listProductCategoryPaths()).resolves.toEqual(['Appliances › Dishwashers', 'Pet Supplies', 'Pet Supplies › Dogs › Toys', 'arts › Supplies']);
     const pathQueries = neonMock.queries.filter((q) => q.text === PATHS_SQL);
-    expect(pathQueries).toHaveLength(2);
-    expect(pathQueries.map((q) => q.values)).toEqual([['Appliances'], ['Pet Supplies']]);
-    expect(neonMock.queries.some((q) => q.text.includes('asin_products'))).toBe(false);
+    expect(pathQueries).toHaveLength(3);
+    expect(pathQueries.map((q) => q.values)).toEqual([['Appliances'], ['Pet Supplies'], ['arts']]);
+    expect(neonMock.queries.map((q) => q.text)).toEqual([DEPARTMENTS_SQL, PATHS_SQL, PATHS_SQL, PATHS_SQL]);
   });
 
   it('an empty facets table (before the first build) gives empty lists, never an error', async () => {
@@ -108,13 +109,23 @@ describe('the loaders', () => {
     await expect(listProductCategoryPaths()).resolves.toEqual([]);
   });
 
-  it('a failed department read rejects the whole list: nothing is swallowed and no partial list is returned', async () => {
+  it("one department's failed path read rejects the whole list: nothing is swallowed and no partial list is returned", async () => {
     const failure = new Error('connection reset');
     const answer = neonMock.answer;
     neonMock.answer = (text, values) => {
       if (text === PATHS_SQL && values[0] === 'Pet Supplies') throw failure;
       return answer(text, values);
     };
+    await expect(listProductCategoryPaths()).rejects.toBe(failure);
+  });
+
+  it('a failed departments read rejects both lists', async () => {
+    const failure = Object.assign(new Error('cold'), { code: '57014' });
+    neonMock.answer = (text) => {
+      if (text === DEPARTMENTS_SQL) throw failure;
+      return [];
+    };
+    await expect(listProductDepartments()).rejects.toBe(failure);
     await expect(listProductCategoryPaths()).rejects.toBe(failure);
   });
 
@@ -161,6 +172,7 @@ describe('the loaders', () => {
       { keyParts: ['product-departments'], args: [] },
       { keyParts: ['product-category-paths'], args: ['Appliances'] },
       { keyParts: ['product-category-paths'], args: ['Pet Supplies'] },
+      { keyParts: ['product-category-paths'], args: ['arts'] },
     ]);
   });
 });
