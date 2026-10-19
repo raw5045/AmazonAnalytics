@@ -33,6 +33,7 @@
 | `app/admin/ImportStatusChip.tsx` + `.test.tsx` | the phase's label "Category list" |
 | `scripts/buildProductCategoryFacets.ts` (create, tracked) | the one-off / re-run build by hand, with a dry run |
 | `lib/products/listCategories.ts` + `.test.ts` | the department and path readers on the facets |
+| `tests/integration/productsQueries.test.ts` (Task 5b, added during execution) | the option-lists case on the facets: counts vs the live scope, entry sizes, the per-department plan (index, no sort) |
 | `lib/perf/handlerTimer.ts` + `.test.ts` (create) | `timed()` for parallel reads |
 | `app/(app)/products/(list)/page.tsx` + `.test.tsx` | the timer, the `loads` step with its note, the `PerfPanel` |
 | `app/(app)/products/ProductResultsTable.tsx` + `.test.tsx` | the thirteen columns |
@@ -2325,6 +2326,10 @@ Optional dry run first: `PRODUCT_FACETS_DRY_RUN=1 node --env-file=.env.local --i
 Run (owner's go): `node --env-file=.env.local --import tsx scripts/buildProductCategoryFacets.ts`
 Expected: `built in N.Ns: paths≈23429 departments=36 products≈1176481` (the 2026-10-19 probe's numbers; a later week drifts slightly). Cross-check read-only: `SELECT count(*)::int AS paths, count(DISTINCT department)::int AS departments, sum(product_count)::bigint AS products FROM product_category_facets` equals the printed stats.
 
+- [ ] **Step 2b: The integration case (owner's go)**
+
+Run: `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept -t "option lists"` (read-only against production; Task 5b rewrote the case for the facets). Expect: the facets' department and path counts within 5 % of the live catalog scope, the three largest per-department entries printed (each well under 1.5M chars), the per-department statement planned on `product_category_facets_department_idx` with no Sort node, the departments statement planned, both timed in milliseconds.
+
 - [ ] **Step 3: Push and deploys**
 
 Run: `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts` (no live import, the explorer aggregate sync older than 70 min, inside the push window), then, as its own Bash call, exactly: `git push origin main`.
@@ -2348,6 +2353,7 @@ Fill the table below (one docs commit per step is fine) and update the memory fi
 |---|---|---|
 | 0055 applied | | |
 | First facets build (paths / departments / products / seconds) | | |
+| Integration: option lists on the facets (counts, largest entries, plan) | | |
 | Push (sha) + three deploys green | | |
 | Smoke (page) | | |
 | 2026-10-20 import: `category_facets_build` (duration / rows) | | |
