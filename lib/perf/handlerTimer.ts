@@ -35,3 +35,13 @@ export function startHandlerTimer(): HandlerTimer {
     steps,
   };
 }
+
+/**
+ * One promise's settle time, for reads that run in parallel (mark() measures sequential steps): resolves to
+ * the value and the ms it took; a rejection passes through, untimed.
+ */
+export async function timed<T>(p: Promise<T>): Promise<{ value: T; ms: number }> {
+  const t0 = Date.now();
+  const value = await p;
+  return { value, ms: Date.now() - t0 };
+}

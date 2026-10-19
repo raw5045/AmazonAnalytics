@@ -137,6 +137,14 @@ describe('ProductsPage (/products)', () => {
     expect(screen.getByText(/^1 categories/)).toBeInTheDocument();
   });
 
+  it('for an admin: the perf panel shows the handler total with the auth and loads steps; the loads note times the five reads, run in parallel, with the path count and size', async () => {
+    render(<>{await resolveAsync(await callPage())}</>);
+    // The summary line (PerfPanel): total, then one entry per step.
+    expect(screen.getByText(/^perf · total=\d+ms · auth=\d+ms · loads=\d+ms$/)).toBeInTheDocument();
+    // The loads row's note: the fixture's one path, 38 characters, rounds to 0.0 MB.
+    expect(screen.getByText(/^\(parallel: search \d+ · departments \d+ · broad \d+ · paths \d+ \(1 · 0\.0 MB\) · custom \d+ ms\)$/)).toBeInTheDocument();
+  });
+
   it("expands the admin's custom categories into exact paths for the query and keeps the ids in the filters", async () => {
     const ID = '11111111-1111-4111-8111-000000000001';
     data.expand.mockResolvedValue(['Home & Kitchen › Lighting › Desk Lamps']);
