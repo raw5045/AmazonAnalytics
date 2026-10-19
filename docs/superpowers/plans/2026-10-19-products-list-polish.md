@@ -2354,7 +2354,7 @@ Fill the table below (one docs commit per step is fine) and update the memory fi
 | Step | When (UTC) | Outcome |
 |---|---|---|
 | 0055 applied | 2026-10-19 ≈15:20 UTC | `APPLY_0055=yes … applyMigration0055.ts`: 3 statements, committed, assertions passed (0 rows) |
-| First facets build (paths / departments / products / seconds) | | |
+| First facets build (paths / departments / products / seconds) | 2026-10-19 ≈15:40 UTC | `scripts/buildProductCategoryFacets.ts`: built in 3.8 s: 23,429 / 36 / 1,176,481 (the dry run before it counted the same in 9.2 s cold); exit 0 |
 | Integration: option lists on the facets (counts, largest entries, plan) | | |
 | Push (sha) + three deploys green | | |
 | Smoke (page) | | |
