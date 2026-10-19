@@ -109,7 +109,16 @@ async function ProductsResults({ filters, user, timer }: { filters: ProductFilte
     <div className="flex">
       <ProductFilterPanel key={panelKey} filters={filters} departments={departments} broadCategories={broadCategories} leafCategories={leafCategories} customCategories={customCategories} />
       <div className="min-w-0 flex-1 p-6">
-        <PerfPanel admin={user.role === 'admin'} data={{ totalMs: timer.totalMs(), steps: timer.steps }} />
+        <PerfPanel
+          admin={user.role === 'admin'}
+          data={{
+            totalMs: timer.totalMs(),
+            steps: timer.steps,
+            footnote:
+              'server-handler time only, read before the render (so the remainder row is ~0 here, not "render is free"). ' +
+              'Browser-perceived total also includes Vercel function cold-start, Neon warm-up, network and rendering.',
+          }}
+        />
         <ProductResultsTable rows={result.rows} total={result.total} totalIsCapped={result.totalIsCapped} filters={filters} now={now} />
         <ProductPagination page={filters.page} total={result.total} totalIsCapped={result.totalIsCapped} pageSize={result.pageSize} />
       </div>

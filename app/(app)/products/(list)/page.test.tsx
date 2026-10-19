@@ -143,6 +143,7 @@ describe('ProductsPage (/products)', () => {
     expect(screen.getByText(/^perf · total=\d+ms · auth=\d+ms · loads=\d+ms$/)).toBeInTheDocument();
     // The loads row's note: the fixture's one path, 38 characters, rounds to 0.0 MB.
     expect(screen.getByText(/^\(parallel: search \d+ · departments \d+ · broad \d+ · paths \d+ \(1 · 0\.0 MB\) · custom \d+ ms\)$/)).toBeInTheDocument();
+    expect(screen.getByText(/read before the render/)).toBeInTheDocument();
   });
 
   it('starts the five reads in parallel: none waits for another to finish', async () => {
