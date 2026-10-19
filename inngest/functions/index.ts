@@ -10,6 +10,7 @@ import { warmExplorerLandingFn } from './warmExplorerLanding';
 import { warmChartSeriesFn } from './warmChartSeries';
 import { cleanupResearchUsageFn } from './cleanupResearchUsage';
 import { keepaServiceWatcherFn } from './keepaServiceWatcher';
+import { rebuildProductCategoryFacetsFn } from './rebuildProductCategoryFacets';
 
 // Note: `importFileFn` is no longer registered. The batch path
 // (importBatchFn) now calls processFileImport directly via the worker's
@@ -29,4 +30,5 @@ export const functions = [
   warmChartSeriesFn,
   cleanupResearchUsageFn,
   keepaServiceWatcherFn,
+  rebuildProductCategoryFacetsFn,
 ];
