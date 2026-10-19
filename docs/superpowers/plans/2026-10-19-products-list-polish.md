@@ -2335,7 +2335,7 @@ Run: `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.t
 - [ ] **Step 3: Push and deploys**
 
 Run: `node --env-file=.env.local --import tsx scripts/checkActiveJobs.ts` (no live import, the explorer aggregate sync older than 70 min, inside the push window), then, as its own Bash call, exactly: `git push origin main`.
-Watch: `gh api repos/raw5045/AmazonAnalytics/commits/<sha>/status --jq '"overall: \(.state)", (.statuses[] | "\(.context): \(.state) @ \(.updated_at)")'` until Vercel and both Railway services are green (the Keepa service has no code change here but redeploys with the repo).
+Watch: `gh api repos/raw5045/AmazonAnalytics/commits/<sha>/status --jq '"overall: \(.state)", (.statuses[] | "\(.context): \(.state) @ \(.updated_at)")'` until Vercel and both Railway services are green (the Keepa service has no code change here but redeploys with the repo). Then re-sync the Inngest app so the worker's 13th function (the daily facets cron, Task 12) registers: `curl -X PUT https://amazonanalytics-production.up.railway.app/api/inngest` → "Successfully registered"; the Inngest dashboard lists `rebuild-product-category-facets` with its cron (existing crons keep firing without the sync, which hides a missed one). Its first run is the next 14:00 ET: expect a `[category-facets] daily paths=… departments=… products=… in …ms` line in the worker log.
 
 - [ ] **Step 4: Smoke in the owner's Chrome**
 
@@ -2343,7 +2343,7 @@ On `/products`: the perf line renders (`perf · total=… · auth=… · loads=�
 
 - [ ] **Step 5: The 2026-10-20 import**
 
-After the import: `SELECT phase, started_at, duration_ms, rows_affected FROM import_phase_timings WHERE phase IN ('ba_crosswalk_build', 'category_facets_build') ORDER BY started_at DESC LIMIT 4` shows `category_facets_build` right after `ba_crosswalk_build`, a few seconds, rows ≈ 23k; the worker log has one `[category-facets] paths=… departments=… products=…` line (the admin chip cannot show hook phases after mark_imported — spec §14); `SELECT max(built_at) FROM product_category_facets` is the import's time. If the phase failed, the previous rows are still there: re-run `scripts/buildProductCategoryFacets.ts` and read the failure's code in the worker log.
+After the import: `SELECT phase, started_at, duration_ms, rows_affected FROM import_phase_timings WHERE phase IN ('ba_crosswalk_build', 'category_facets_build') ORDER BY started_at DESC LIMIT 4` shows `category_facets_build` right after `ba_crosswalk_build`, a few seconds, rows ≈ 23k; the worker log has one `[category-facets] paths=… departments=… products=…` line (the admin chip cannot show hook phases after mark_imported — spec §14); `SELECT max(built_at) FROM product_category_facets` is the latest build's time (the import's phase, or the 14:00 ET cron if it ran after it). If the phase failed, the previous rows are still there: re-run `scripts/buildProductCategoryFacets.ts` and read the failure's code in the worker log.
 
 - [ ] **Step 6: Results**
 
@@ -2381,6 +2381,22 @@ Every task had a spec-compliance review and a code-quality review; the nits each
 | 8 Filter panel category block | db53204 (one pre-existing case picks inside the department now); nits cbc1148 (separator rule pinned, adjacency-proving order test, mixed picks survive a department change, "1 category") | `app/(app)/products/ProductFilterPanel.test.tsx` 42 |
 | 9 Tab memory | 27eb960; nits 5ab3adf (stable `getSnapshot`, `RememberedListUrlArgs`, `readStoredUrl`, the two memories proven apart, a real "and back") | `app/(app)/TabNav.test.tsx` 29 |
 | docs | 4b5299b (chip gap, follow-ups, Task 2 count), b8372d9 (Task 5b + step 2b), cf3d21a (step 2b wording), 4febde3 (review findings) | — |
+| 12 Daily facets cron (owner's decision after the final review; see Task 12 below) | 8b32ab1; nits 9c7f20b | `inngest/functions/rebuildProductCategoryFacets.test.ts` 5 |
 | Final whole-diff review (Ship) follow-ups | a09c495 (the builder refuses an empty build: `facets_empty` rolls back and keeps last build's rows; INSERT in index order), cda6019 (script: `facets_empty` hint, dead zero-row branch removed), 2a44dc7 (research loaders' and readers' comments), efc562e (perf-panel footnote: the remainder is read before the render) | `lib/products/buildCategoryFacets.test.ts` 15 |
 
 Deviations from the spec text, all reviewed: the builder reads its stats from the table inside the transaction (equivalent under the lock) and vacuums with `TRUNCATE false`; the FBA header says "hover a cell for"; `BsrCell` was replaced (rank inline + `RatioCell`); the chip at exactly the average is a neutral slate chip, not bare `0%`; spec §13's chip sentence was removed (the admin chip cannot show post-import phases; pre-existing, §14). Found by the reviews and recorded in spec §14: the chip gap, a pooled-phase helper for `importFile.ts`, the typeahead placeholder, the dead-pick note, `amazon=no` semantics, the magnifier contrast; the builder's floor guard was added in the follow-ups (a09c495).
+
+---
+
+### Task 12: Daily facets rebuild cron (added 2026-10-19 after the final review; owner's decision)
+
+**Why:** the Products tools validate category paths against the facets (`lib/research/products.ts`); the Keepa service adds paths all week, so with a weekly build a path first seen after the import is rejected with a false CATEGORY_NOT_AVAILABLE until the next import (spec §14). A daily rebuild (about two seconds) caps that lag at a day.
+
+**Files:**
+- Create: `inngest/functions/rebuildProductCategoryFacets.ts` — `rebuildProductCategoryFacetsFn`: `inngest.createFunction({ id: 'rebuild-product-category-facets', name: 'Daily: rebuild product_category_facets', retries: 0, concurrency: { limit: 1 }, triggers: [{ cron: 'TZ=America/New_York 0 14 * * *' }] }, …)`; its own one-connection `pg` Pool with the import phase's options and `'error'` guards; `buildProductCategoryFacets(client)`; logs `[category-facets] daily paths=… departments=… products=… in …ms`; on failure logs `[category-facets] daily rebuild failed (previous rows stay) {"stage","error","code"}` through `errFields` and resolves `{ ok: false, stage, code }` (fail-soft; tomorrow is the retry); release and `pool.end()` in `finally`.
+- Create: `inngest/functions/rebuildProductCategoryFacets.test.ts` — the config pins; success (pool options, guard before the build, the log line, cleanup, the return); a build failure and a `facets_empty` refusal (coded log fields only, no message text, cleanup, resolves ok false); a connect failure (stage `connect`, builder never called).
+- Modify: `inngest/functions/index.ts` — the worker's 13th registered function.
+
+**Ship:** after the deploy, re-sync the Inngest app so the 13th function registers (`PUT https://amazonanalytics-production.up.railway.app/api/inngest`, as for arc 11); the first run is the next 14:00 ET; check the worker log for the `[category-facets] daily …` line and `max(built_at)`.
+
+**Landed:** 8b32ab1 (function, test, registration; 5 tests), nits 9c7f20b (honest schedule docblock, retries: 1, callers' comments).
