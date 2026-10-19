@@ -10,17 +10,21 @@ import { buildProductCategoryFacets } from '@/lib/products/buildCategoryFacets';
  * leaf-category lists and the Products tools' category-path check read this table; the weekly import rebuilds
  * it (category_facets_build), and the Keepa service adds paths all week, so without this cron a path first seen
  * after the import is missing (and rejected by the tools as CATEGORY_NOT_AVAILABLE) until the next import.
- * Runs on the Railway worker at 14:00 ET every day — clear of the Monday import window and of the other crons;
- * the build takes about two seconds and holds a lock readers never wait on. Fail-soft: a failure is logged with
- * coded fields and the previous rows stay (the builder replaces them in one transaction and refuses an empty
- * build); tomorrow's run is the retry, so retries are 0. A run that coincides with the import's own build
- * queues on the table lock (120 s) or fails with 55P03 — harmless either way.
+ * Runs on the Railway worker at 14:00 ET daily (DST-safe; clear of the 03:30–05:59 ET nightly sync and the
+ * 6-hourly chart sweep; the 15-minute pings share the minute and touch nothing it locks). An owner-started
+ * import may be running: harmless — the build reads one snapshot of asin_products (the Keepa enqueue is one
+ * transaction), the import's own category_facets_build runs after keepa_enqueue, and a run that meets it queues
+ * on the table lock (≤120 s) or fails with 55P03. Seconds when warm (600 s cap); on import day the VACUUM may
+ * have to wait for autovacuum, which only costs the readers a few heap fetches. Fail-soft: a failure is logged
+ * with coded fields and the previous rows stay (the builder replaces them in one transaction and refuses an
+ * empty build); the handler never throws, so tomorrow's run is the retry for a failed build, and retries: 1
+ * only re-runs a transport failure.
  */
 export const rebuildProductCategoryFacetsFn = inngest.createFunction(
   {
     id: 'rebuild-product-category-facets',
     name: 'Daily: rebuild product_category_facets',
-    retries: 0,
+    retries: 1, // the handler never throws, so this only re-runs a transport failure (a worker restart at 14:00); the build is idempotent and serialized by its lock
     concurrency: { limit: 1 },
     triggers: [{ cron: 'TZ=America/New_York 0 14 * * *' }],
   },
@@ -35,6 +39,7 @@ export const rebuildProductCategoryFacetsFn = inngest.createFunction(
     });
     // Dropped-socket guards, as in the import phase: an unhandled 'error' event crashes the worker; a failed query still rejects.
     pool.on('error', () => undefined);
+    // total: connect, build and the post-COMMIT VACUUM
     const started = Date.now();
     let stage: 'connect' | 'build' = 'connect';
     try {

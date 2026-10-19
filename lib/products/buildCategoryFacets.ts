@@ -3,7 +3,8 @@
  * Rebuild product_category_facets (spec 2026-10-19 §5): one row per distinct catalog path among the rows the
  * Products page can show, with its department and product count, replaced in ONE transaction so readers keep
  * the previous rows until COMMIT and never see a half-written list. Callers: the import phase
- * category_facets_build (inngest/functions/importFile.ts) and scripts/buildProductCategoryFacets.ts.
+ * category_facets_build (inngest/functions/importFile.ts), the daily cron
+ * (inngest/functions/rebuildProductCategoryFacets.ts) and scripts/buildProductCategoryFacets.ts.
  *
  * The write: BEGIN → SET LOCAL limits → LOCK TABLE in SHARE ROW EXCLUSIVE MODE (builders queue on it; readers'
  * ACCESS SHARE never waits) → DELETE (not TRUNCATE: its ACCESS EXCLUSIVE lock would queue every reader, and it

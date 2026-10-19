@@ -2,10 +2,10 @@
 /**
  * The Products page's category option lists (spec 2026-10-12 (category filters) §4.4; spec 2026-10-19 §6),
  * read from product_category_facets — one row per distinct catalog path with its department, rebuilt in one
- * transaction by every weekly import (lib/products/buildCategoryFacets.ts) — and cached an hour with
- * unstable_cache like lib/explorer/listLeafCategories.ts. Nothing here scans the catalog: a cache miss reads
- * the ~23k-row facets table (the paths through the department index) in milliseconds warm, where the scans this
- * replaced read up to 780 MB for one department.
+ * transaction by every weekly import and by a daily cron (14:00 ET) through lib/products/buildCategoryFacets.ts —
+ * and cached an hour with unstable_cache like lib/explorer/listLeafCategories.ts. Nothing here scans the catalog:
+ * a cache miss reads the ~23k-row facets table (the paths through the department index) in milliseconds warm,
+ * where the scans this replaced read up to 780 MB for one department.
  *  - listProductDepartments: the distinct departments of the facets (36 today);
  *  - listProductCategoryPaths: every facet path (23,429 today), read one department at a time through
  *    product_category_facets_department_idx and cached per department (unstable_cache keys on the function's
@@ -23,8 +23,9 @@
  * empty table is a successful read, so [] is cached for an hour (no per-department entries exist yet) and the
  * page shows no category options until that entry goes stale. Next then serves that stale entry once more while
  * it revalidates in the background, and a redeploy does not reset it (same callback text, same key): about an
- * hour plus one request. A path first seen mid-week joins the lists at the next build; the search predicate
- * runs on the live catalog, so any listed path matches correctly.
+ * hour plus one request. A path first seen after a build joins the lists at the next one (daily at 14:00 ET; the
+ * readers' hour cache adds up to an hour); the search predicate runs on the live catalog, so any listed path
+ * matches correctly.
  * A failed read rejects the whole list (the tools validate category scopes against it, so a partial list would
  * turn a transient error into a false CATEGORY_NOT_AVAILABLE); never catch inside a cached function, or an
  * empty list is cached for an hour.
@@ -92,8 +93,8 @@ export const BROAD_CATEGORY_LIST_SQL = 'SELECT DISTINCT code FROM ba_category_cr
 
 /**
  * The codes in code-unit order (the statement's ORDER BY follows the database's collation; re-sorted here).
- * Run through neonRunner, so PRODUCT_READ_TIMEOUT_MS caps the read like every web read (the weekly rebuild
- * deletes and re-inserts under a lock that admits readers, so none waits on it).
+ * Run through neonRunner, so PRODUCT_READ_TIMEOUT_MS caps the read like every web read (the crosswalk's weekly
+ * rebuild deletes and re-inserts under a lock that admits readers, so none waits on it).
  */
 async function fetchBroadCategoriesSorted(): Promise<string[]> {
   const run = neonRunner(neon(env.DATABASE_URL));

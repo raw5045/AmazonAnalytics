@@ -60,11 +60,11 @@ describe('rebuildProductCategoryFacetsFn', () => {
     vi.restoreAllMocks(); // the console spies
   });
 
-  it('runs on the worker daily at 14:00 ET, one run at a time, with no retries', () => {
+  it('runs on the worker daily at 14:00 ET, one run at a time, with one retry (transport failures only: the handler never throws)', () => {
     expect(config).toEqual({
       id: 'rebuild-product-category-facets',
       name: 'Daily: rebuild product_category_facets',
-      retries: 0,
+      retries: 1,
       concurrency: { limit: 1 },
       triggers: [{ cron: 'TZ=America/New_York 0 14 * * *' }],
     });

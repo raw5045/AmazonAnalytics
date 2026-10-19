@@ -1173,7 +1173,9 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       // after the crosswalk and BEFORE the long summary refresh. Fail-soft,
       // like the phases above: a failure never fails the import — the
       // previous rows stay in place (the replace is one transaction) and
-      // scripts/buildProductCategoryFacets.ts re-runs it by hand.
+      // scripts/buildProductCategoryFacets.ts re-runs it by hand, and the
+      // daily cron (inngest/functions/rebuildProductCategoryFacets.ts)
+      // rebuilds it at 14:00 ET anyway.
       // Skipped on replays like the other hooks: they change nothing the
       // lists read (keepa_enqueue is skipped too). It takes no week, so a
       // late import of an older week rebuilds from the live catalog,

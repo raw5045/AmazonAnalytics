@@ -46,15 +46,17 @@ export interface ProductLoaders {
   history: (asin: string) => Promise<ProductHistoryPoint[]>;
   keywords: (asin: string, limit: number) => Promise<ProductKeywordsResult>;
   /**
-   * The departments of the weekly-built facets (product_category_facets, rebuilt by every import's
-   * category_facets_build phase and by hand; lib/products/listCategories, cached an hour): a search's
-   * department must be one of them. A department first seen mid-week is offered at the next build.
+   * The departments of the facets (product_category_facets, rebuilt weekly by every import's
+   * category_facets_build phase, daily by the worker's 14:00 ET cron and by hand; lib/products/listCategories,
+   * cached an hour): a search's department must be one of them. A department first seen after a build is
+   * offered within about a day.
    */
   departments: () => Promise<string[]>;
   /**
-   * The category paths of the weekly-built facets (product_category_facets, rebuilt by every import's
-   * category_facets_build phase and by hand; lib/products/listCategories, cached an hour): a search's taxonomy
-   * and leaf paths are checked against them. A path first seen mid-week is offered at the next build.
+   * The category paths of the facets (product_category_facets, rebuilt weekly by every import's
+   * category_facets_build phase, daily by the worker's 14:00 ET cron and by hand; lib/products/listCategories,
+   * cached an hour): a search's taxonomy and leaf paths are checked against them. A path first seen after a
+   * build is offered within about a day.
    */
   categoryPaths: () => Promise<string[]>;
   /** The Brand Analytics codes of the crosswalk (lib/products/listCategories, cached an hour): a search's broadCategory must be one of them. */
