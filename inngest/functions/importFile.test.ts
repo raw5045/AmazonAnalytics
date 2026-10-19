@@ -317,7 +317,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
         Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }),
       )
       .mockResolvedValueOnce(topAsinsClient)
-      .mockResolvedValueOnce(crosswalkClient);
+      .mockResolvedValueOnce(crosswalkClient)
+      .mockResolvedValueOnce(facetsClient);
 
     await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({
       rowsImported: expect.any(Number),
@@ -327,6 +328,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
     expect(keepaLines(err)).toEqual([
       '[keepa-enqueue] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
     ]);
+    expect(err.mock.calls.flat().join(' ')).not.toContain('[category-facets]');
     expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
     expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
     expect(enqueueTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
@@ -474,7 +476,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
         .mockRejectedValueOnce(
           Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }),
         )
-        .mockResolvedValueOnce(crosswalkClient);
+        .mockResolvedValueOnce(crosswalkClient)
+        .mockResolvedValueOnce(facetsClient);
 
       await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({
         rowsImported: expect.any(Number),
@@ -484,6 +487,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(topAsinsLines(err)).toEqual([
         '[top-asins] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNREFUSED"}',
       ]);
+      expect(err.mock.calls.flat().join(' ')).not.toContain('[category-facets]');
       expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
       expect(topAsinsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
@@ -671,7 +675,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
         .mockResolvedValueOnce(copyClient())
         .mockResolvedValueOnce(hookClient)
         .mockResolvedValueOnce(topAsinsClient)
-        .mockRejectedValueOnce(Object.assign(new Error('SECRET'), { code: 'ECONNRESET' }));
+        .mockRejectedValueOnce(Object.assign(new Error('SECRET'), { code: 'ECONNRESET' }))
+        .mockResolvedValueOnce(facetsClient);
 
       await processFileImport({ uploadedFileId: 'f1' });
 
@@ -679,6 +684,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
         '[ba-crosswalk] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNRESET"}',
       ]);
       expect(err.mock.calls.flat().join(' ')).not.toContain('SECRET');
+      expect(err.mock.calls.flat().join(' ')).not.toContain('[category-facets]');
       expect(mockBuildCrosswalk).not.toHaveBeenCalled();
       expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
