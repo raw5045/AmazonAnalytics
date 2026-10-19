@@ -128,12 +128,12 @@ describe('ProductsPage (/products)', () => {
     expect(data.paths).toHaveBeenCalledTimes(1);
     expect(data.custom).toHaveBeenCalledWith('a1');
     expect(data.expand).toHaveBeenCalledWith('a1', [], []);
-    expect(screen.getByLabelText('Department')).toHaveDisplayValue('All departments');
-    expect(screen.getByLabelText('Broad category')).toHaveDisplayValue('All broad categories');
+    expect(screen.getByLabelText('Department (Keepa)')).toHaveDisplayValue('All departments');
+    expect(screen.getByLabelText('Broad category (Brand Analytics)')).toHaveDisplayValue('All broad categories');
     // Two departments, two broad codes and one path in the fixtures: a swapped or an empty list fails one of these.
     // Both option lists are pinned whole: 'Pet Supplies' is in each fixture, so one shared option could not tell them apart.
-    expect(within(screen.getByLabelText('Department')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments', 'Home & Kitchen', 'Pet Supplies']);
-    expect(within(screen.getByLabelText('Broad category')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All broad categories', 'Home', 'Pet Supplies']);
+    expect(within(screen.getByLabelText('Department (Keepa)')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments', 'Home & Kitchen', 'Pet Supplies']);
+    expect(within(screen.getByLabelText('Broad category (Brand Analytics)')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All broad categories', 'Home', 'Pet Supplies']);
     expect(screen.getByText(/^1 categories/)).toBeInTheDocument();
   });
 
@@ -181,8 +181,8 @@ describe('ProductsPage (/products)', () => {
     render(<>{await resolveAsync(await callPage())}</>);
     expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
     expect(data.search).toHaveBeenCalledTimes(1);
-    expect(within(screen.getByLabelText('Department')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments']);
-    expect(within(screen.getByLabelText('Broad category')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All broad categories']);
+    expect(within(screen.getByLabelText('Department (Keepa)')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments']);
+    expect(within(screen.getByLabelText('Broad category (Brand Analytics)')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All broad categories']);
     expect(screen.getByText(/^0 categories/)).toBeInTheDocument();
   });
 

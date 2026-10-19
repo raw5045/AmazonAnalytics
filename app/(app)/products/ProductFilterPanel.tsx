@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useState, useTransition, type FormEvent, type ReactNode } from 'react';
+import { useMemo, useState, useTransition, type FormEvent, type ReactNode } from 'react';
 // Product-filter imports come from filterParams only: ./filters carries the zod schema, which must
 // stay out of the browser bundle.
 import {
@@ -15,6 +15,7 @@ import {
   type ProductSort,
 } from '@/lib/products/filterParams';
 import { formatBadge } from '@/lib/products/format';
+import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
 import { LeafCategoryTypeahead } from '@/app/(app)/explorer/LeafCategoryTypeahead';
 import { LoadingOverlay } from '@/app/(app)/explorer/LoadingOverlay';
 
@@ -203,8 +204,9 @@ export interface PanelCustomCategory { id: string; name: string; leafPaths: stri
  * header re-sort re-seeds it), Apply / Reset inside a transition with the LoadingOverlay. Apply builds a
  * ProductFilters object and replaces the URL with productFiltersToSearchParams of it, back on page 1.
  * The page hands it four lists: the departments, the Brand Analytics codes, the category paths and the
- * user's custom categories. Under "Leaf categories", Leaf mode applies the typeahead picks and Custom
- * mode the checked custom ids, never both.
+ * user's custom categories. Under "Leaf categories (Keepa)", Leaf mode applies the typeahead picks and Custom
+ * mode the checked custom ids, never both. The category block follows the Explorer's order (broad,
+ * department, leaf; spec 2026-10-19 §9), and the department narrows the typeahead's options.
  */
 export function ProductFilterPanel({
   filters, departments, broadCategories, leafCategories, customCategories,
@@ -214,7 +216,7 @@ export function ProductFilterPanel({
   departments: string[];
   /** The Brand Analytics codes of the crosswalk (lib/products/listCategories), the Broad category select's options. */
   broadCategories: string[];
-  /** The catalog's distinct category paths, the typeahead's options. */
+  /** The catalog's distinct category paths: the typeahead's options before the department narrows them. */
   leafCategories: string[];
   /** The signed-in user's custom categories (lib/customCategories/loadServer). */
   customCategories: ReadonlyArray<PanelCustomCategory>;
@@ -254,6 +256,13 @@ export function ProductFilterPanel({
   // A department or broad category from a hand-edited URL that the list lacks still shows as the selected option.
   const departmentOptions = pending.dept === '' || departments.includes(pending.dept) ? departments : [...departments, pending.dept];
   const broadOptions = pending.broad === '' || broadCategories.includes(pending.broad) ? broadCategories : [...broadCategories, pending.broad];
+  // The leaf typeahead's options, narrowed to the pending department (the department itself and everything
+  // under it) when one is chosen. The picks already made are left alone: a pick outside the department
+  // matches nothing, as the predicate always did.
+  const leafOptions = useMemo(
+    () => (pending.dept === '' ? leafCategories : leafCategories.filter((p) => p === pending.dept || p.startsWith(pending.dept + PATH_SEP))),
+    [leafCategories, pending.dept],
+  );
   const toggleCustom = (id: string) =>
     set('customCategoryIds', pending.customCategoryIds.includes(id) ? pending.customCategoryIds.filter((x) => x !== id) : [...pending.customCategoryIds, id]);
   const selectedCustom = customCategories.filter((c) => pending.customCategoryIds.includes(c.id));
@@ -437,18 +446,7 @@ export function ProductFilterPanel({
               <p className={HINT}>Today&apos;s BSR against its own 30-day average.</p>
             </Field>
 
-            <Field label="Department" htmlFor="pf-dept">
-              <select id="pf-dept" value={pending.dept} onChange={(e) => set('dept', e.target.value)} className={INPUT}>
-                <option value="">All departments</option>
-                {departmentOptions.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Broad category" htmlFor="pf-broad">
+            <Field label="Broad category (Brand Analytics)" htmlFor="pf-broad">
               <select id="pf-broad" value={pending.broad} onChange={(e) => set('broad', e.target.value)} className={INPUT}>
                 <option value="">All broad categories</option>
                 {broadOptions.map((c) => (
@@ -457,10 +455,22 @@ export function ProductFilterPanel({
                   </option>
                 ))}
               </select>
-              <p className={HINT}>Brand Analytics category, as on the Explorer, mapped from the product&apos;s Keepa category. One per product.</p>
+              <p className={HINT}>Amazon&apos;s Brand Analytics category, as on the Explorer; one per product, mapped from its Keepa category.</p>
             </Field>
 
-            <Field label="Leaf categories" groupId="pf-leaf-categories">
+            <Field label="Department (Keepa)" htmlFor="pf-dept">
+              <select id="pf-dept" value={pending.dept} onChange={(e) => set('dept', e.target.value)} className={INPUT}>
+                <option value="">All departments</option>
+                {departmentOptions.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
+              <p className={HINT}>Narrows the leaf search below; also filters on its own.</p>
+            </Field>
+
+            <Field label="Leaf categories (Keepa)" groupId="pf-leaf-categories">
               {/* Leaf | Custom segmented toggle, as the explorer sidebar's. */}
               <div className="mb-2 flex overflow-hidden rounded-full border border-slate-300 text-xs font-medium">
                 <button type="button" aria-pressed={pending.leafMode === 'leaf'} onClick={() => set('leafMode', 'leaf')} className={modeClass(pending.leafMode === 'leaf')}>
@@ -477,10 +487,10 @@ export function ProductFilterPanel({
               </div>
               {pending.leafMode === 'leaf' ? (
                 <>
-                  <LeafCategoryTypeahead options={leafCategories} selected={pending.leafPaths} onChange={(next) => set('leafPaths', next)} />
+                  <LeafCategoryTypeahead options={leafOptions} selected={pending.leafPaths} onChange={(next) => set('leafPaths', next)} />
                   <p className={HINT}>
-                    {leafCategories.length.toLocaleString('en-US')} categories — type to search, click or Enter to add. Each pick includes its sub-categories; several
-                    match with OR.
+                    {leafOptions.length.toLocaleString('en-US')} categories{pending.dept === '' ? '' : ` in ${pending.dept}`} — type to search, click or Enter to
+                    add. Each pick includes its sub-categories; several match with OR.
                   </p>
                 </>
               ) : customCategories.length === 0 ? (

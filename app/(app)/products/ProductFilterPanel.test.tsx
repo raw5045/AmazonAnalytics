@@ -59,14 +59,15 @@ describe('ProductFilterPanel controls', () => {
     }
     expect(control('BSR vs 30-day avg')).toHaveDisplayValue('Any');
     expect(optionTexts('BSR vs 30-day avg')).toEqual(['Any', 'At least 10% better', 'At least 30% better', 'At least 50% better']);
-    expect(control('Department')).toHaveDisplayValue('All departments');
-    expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS]);
-    expect(control('Broad category')).toHaveDisplayValue('All broad categories');
-    expect(optionTexts('Broad category')).toEqual(['All broad categories', ...BROAD]);
-    expect(screen.getByText("Brand Analytics category, as on the Explorer, mapped from the product's Keepa category. One per product.")).toBeInTheDocument();
+    expect(control('Department (Keepa)')).toHaveDisplayValue('All departments');
+    expect(optionTexts('Department (Keepa)')).toEqual(['All departments', ...DEPARTMENTS]);
+    expect(control('Broad category (Brand Analytics)')).toHaveDisplayValue('All broad categories');
+    expect(optionTexts('Broad category (Brand Analytics)')).toEqual(['All broad categories', ...BROAD]);
+    expect(screen.getByText("Amazon's Brand Analytics category, as on the Explorer; one per product, mapped from its Keepa category.")).toBeInTheDocument();
+    expect(screen.getByText('Narrows the leaf search below; also filters on its own.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Leaf' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'false');
-    expect(within(screen.getByRole('group', { name: 'Leaf categories' })).getByLabelText('Add leaf category')).toBeInTheDocument();
+    expect(within(screen.getByRole('group', { name: 'Leaf categories (Keepa)' })).getByLabelText('Add leaf category')).toBeInTheDocument();
     expect(screen.getByText(/3 categories — type to search/)).toBeInTheDocument();
     expect(control('Add leaf category')).toHaveValue('');
     expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
@@ -92,8 +93,8 @@ describe('ProductFilterPanel controls', () => {
     expect(control('Minimum BSR')).toHaveValue(1);
     expect(control('Maximum BSR')).toHaveValue(50_000);
     expect(control('BSR vs 30-day avg')).toHaveDisplayValue('At least 30% better');
-    expect(control('Department')).toHaveDisplayValue('Home & Kitchen');
-    expect(control('Broad category')).toHaveDisplayValue('Home');
+    expect(control('Department (Keepa)')).toHaveDisplayValue('Home & Kitchen');
+    expect(control('Broad category (Brand Analytics)')).toHaveDisplayValue('Home');
     expect(screen.getByRole('button', { name: `Remove ${LEAVES[0]}` })).toBeInTheDocument();
     expect(control('FBA offer')).toHaveDisplayValue('Present');
     expect(control('Amazon selling')).toHaveDisplayValue('No');
@@ -208,8 +209,8 @@ describe('ProductFilterPanel Apply / Reset', () => {
     expect(control('Listing age')).toHaveDisplayValue('Any');
     expect(control('Reviews (at most)')).toHaveValue(null);
     expect(control('Minimum price')).toHaveValue(null);
-    expect(control('Department')).toHaveDisplayValue('All departments');
-    expect(control('Broad category')).toHaveDisplayValue('All broad categories');
+    expect(control('Department (Keepa)')).toHaveDisplayValue('All departments');
+    expect(control('Broad category (Brand Analytics)')).toHaveDisplayValue('All broad categories');
     expect(screen.queryByRole('button', { name: /^Remove / })).not.toBeInTheDocument();
     expect(control('Sort')).toHaveDisplayValue('Monthly sold');
     expect(control('Sort direction')).toHaveDisplayValue('Most sold first');
@@ -221,13 +222,13 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
 
   it('leaf picks accumulate as chips and apply as repeated leaf params, with the department', () => {
     renderPanel();
-    change('Department', 'Home & Kitchen');
+    change('Department (Keepa)', 'Home & Kitchen');
     pickCategory('Desk Lamps');
-    pickCategory('Jigsaw Puzzles');
+    pickCategory('Floor Lamps');
     expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(2);
     fireEvent.click(applyButton());
     expect(replace).toHaveBeenLastCalledWith(
-      `/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, dept: 'Home & Kitchen', leafPaths: [LEAVES[0], LEAVES[2]] })}`,
+      `/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, dept: 'Home & Kitchen', leafPaths: [LEAVES[0], LEAVES[1]] })}`,
       { scroll: false },
     );
     fireEvent.click(screen.getByRole('button', { name: `Remove ${LEAVES[0]}` }));
@@ -236,25 +237,25 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
 
   it('a department the list lacks (from the URL) still shows as the selected option', () => {
     renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Appliances' });
-    expect(control('Department')).toHaveDisplayValue('Appliances');
-    expect(optionTexts('Department')).toEqual(['All departments', ...DEPARTMENTS, 'Appliances']);
+    expect(control('Department (Keepa)')).toHaveDisplayValue('Appliances');
+    expect(optionTexts('Department (Keepa)')).toEqual(['All departments', ...DEPARTMENTS, 'Appliances']);
   });
 
   it('seeds the Broad category select from the applied filters (spec 2026-10-12 broad category §7)', () => {
     renderPanel({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
-    expect(control('Broad category')).toHaveDisplayValue('Home');
+    expect(control('Broad category (Brand Analytics)')).toHaveDisplayValue('Home');
   });
 
   it('a broad category the list lacks (from the URL) still shows as the selected option', () => {
     renderPanel({ ...PRODUCT_DEFAULTS, broadCategory: 'Ebook' });
-    expect(control('Broad category')).toHaveDisplayValue('Ebook');
-    expect(optionTexts('Broad category')).toEqual(['All broad categories', ...BROAD, 'Ebook']);
+    expect(control('Broad category (Brand Analytics)')).toHaveDisplayValue('Ebook');
+    expect(optionTexts('Broad category (Brand Analytics)')).toEqual(['All broad categories', ...BROAD, 'Ebook']);
   });
 
   it('picking a broad category dirties the form and Apply writes broad= beside dept=', () => {
     renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies' });
     expect(applyButton()).toBeDisabled();
-    change('Broad category', 'Home');
+    change('Broad category (Brand Analytics)', 'Home');
     expect(applyButton()).toBeEnabled();
     fireEvent.click(applyButton());
     expect(replace).toHaveBeenLastCalledWith('/products?dept=Pet+Supplies&broad=Home', { scroll: false });
@@ -263,7 +264,7 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
   it('Reset clears the broad category with everything else', () => {
     renderPanel({ ...PRODUCT_DEFAULTS, broadCategory: 'Home' });
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    expect(control('Broad category')).toHaveDisplayValue('All broad categories');
+    expect(control('Broad category (Brand Analytics)')).toHaveDisplayValue('All broad categories');
     expect(replace).toHaveBeenLastCalledWith('/products', { scroll: false });
   });
 
@@ -309,7 +310,7 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
 
   it('a department + leaf URL is not dirty on load, and its picks show as chips', () => {
     renderPanel({ ...PRODUCT_DEFAULTS, dept: 'Pet Supplies', leafPaths: [LEAVES[0], LEAVES[2]] });
-    expect(control('Department')).toHaveDisplayValue('Pet Supplies');
+    expect(control('Department (Keepa)')).toHaveDisplayValue('Pet Supplies');
     expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(2);
     expect(applyButton()).toBeDisabled();
   });
@@ -366,6 +367,44 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
     change('Listing age', '90');
     fireEvent.click(applyButton());
     expect(replace).toHaveBeenLastCalledWith(`/products?${productFiltersToSearchParams({ ...applied, age: 90, leafPaths: [LEAVES[1], LEAVES[0]] })}`, { scroll: false });
+  });
+
+  it("lays the category block out in the Explorer's order: broad category, then department, then leaf categories (spec 2026-10-19 §9)", () => {
+    renderPanel();
+    // Field headings are <label>s (one control) or <p id>s (a group), in document order.
+    const headings = [...document.querySelectorAll('label, p[id]')].map((el) => el.textContent ?? '');
+    const at = (text: string) => headings.indexOf(text);
+    expect(at('Broad category (Brand Analytics)')).toBeGreaterThan(at('BSR vs 30-day avg'));
+    expect(at('Department (Keepa)')).toBeGreaterThan(at('Broad category (Brand Analytics)'));
+    expect(at('Leaf categories (Keepa)')).toBeGreaterThan(at('Department (Keepa)'));
+    expect(at('FBA offer')).toBeGreaterThan(at('Leaf categories (Keepa)'));
+  });
+
+  it('the department narrows the leaf typeahead to its paths and widens it back; the hint counts the narrowed list', () => {
+    renderPanel();
+    const input = control('Add leaf category');
+    const options = () => within(screen.getByRole('listbox')).getAllByRole('option').map((o) => o.textContent);
+    change('Department (Keepa)', 'Home & Kitchen');
+    expect(screen.getByText(/^2 categories in Home & Kitchen — type to search/)).toBeInTheDocument();
+    fireEvent.focus(input);
+    // Each option is its leaf name followed by its parent path.
+    expect(options()).toEqual(['Desk LampsHome & Kitchen › Lighting', 'Floor LampsHome & Kitchen › Lighting']);
+    change('Department (Keepa)', '');
+    expect(screen.getByText(/^3 categories — type to search/)).toBeInTheDocument();
+    fireEvent.focus(input);
+    expect(options()).toHaveLength(3);
+  });
+
+  it('a department change leaves the picks alone: a pick outside the department stays as a chip and applies (it matches nothing, as the predicate always did)', () => {
+    renderPanel();
+    pickCategory('Jigsaw Puzzles');
+    change('Department (Keepa)', 'Home & Kitchen');
+    expect(screen.getByRole('button', { name: `Remove ${LEAVES[2]}` })).toBeInTheDocument();
+    fireEvent.click(applyButton());
+    expect(replace).toHaveBeenLastCalledWith(
+      `/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, dept: 'Home & Kitchen', leafPaths: [LEAVES[2]] })}`,
+      { scroll: false },
+    );
   });
 });
 
