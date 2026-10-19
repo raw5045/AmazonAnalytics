@@ -2328,7 +2328,7 @@ Expected: `built in N.Ns: paths≈23429 departments=36 products≈1176481` (the 
 
 - [ ] **Step 2b: The integration case (owner's go)**
 
-Run: `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept -t "option lists"` (read-only against production; Task 5b rewrote the case for the facets). Expect: the facets' department and path counts within 5 % of the live catalog scope, the three largest per-department entries printed (each well under 1.5M chars), the per-department statement planned on `product_category_facets_department_idx` with no Sort node, the departments statement planned, both timed in milliseconds.
+Run: `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept -t "option lists"` (read-only against production; Task 5b rewrote the case for the facets). Expect: the facets' path count within 5 % of the live catalog scope (departments printed beside the live count and ≥ 20), the three largest per-department entries printed (each well under 1.5M chars), the per-department statement planned on `product_category_facets_department_idx` with no Sort node (an `Index Only Scan` once the build's VACUUM has set the visibility map; the case prints all-visible pages of total), the departments statement planned, both timed in milliseconds. The case reports as skipped while the table is empty.
 
 - [ ] **Step 3: Push and deploys**
 
