@@ -21,8 +21,10 @@
  * gives empty lists: the page shows no category options and the tools reject category scopes, which is why the
  * first build precedes the deploy (spec 2026-10-19 §13). Deployed between the migration and the first build, an
  * empty table is a successful read, so [] is cached for an hour (no per-department entries exist yet) and the
- * page shows no category options until that entry goes stale. A path first seen mid-week joins the lists at the
- * next build; the search predicate runs on the live catalog, so any listed path matches correctly.
+ * page shows no category options until that entry goes stale. Next then serves that stale entry once more while
+ * it revalidates in the background, and a redeploy does not reset it (same callback text, same key): about an
+ * hour plus one request. A path first seen mid-week joins the lists at the next build; the search predicate
+ * runs on the live catalog, so any listed path matches correctly.
  * A failed read rejects the whole list (the tools validate category scopes against it, so a partial list would
  * turn a transient error into a false CATEGORY_NOT_AVAILABLE); never catch inside a cached function, or an
  * empty list is cached for an hour.

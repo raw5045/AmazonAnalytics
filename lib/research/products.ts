@@ -45,9 +45,17 @@ export interface ProductLoaders {
   facts: (asin: string) => Promise<CatalogProductFacts | null>;
   history: (asin: string) => Promise<ProductHistoryPoint[]>;
   keywords: (asin: string, limit: number) => Promise<ProductKeywordsResult>;
-  /** The catalog's Keepa root departments (lib/products/listCategories, cached an hour): a search's department must be one of them. */
+  /**
+   * The departments of the weekly-built facets (product_category_facets, rebuilt by every import's
+   * category_facets_build phase and by hand; lib/products/listCategories, cached an hour): a search's
+   * department must be one of them. A department first seen mid-week is offered at the next build.
+   */
   departments: () => Promise<string[]>;
-  /** The catalog's distinct category paths (lib/products/listCategories, cached an hour): a search's taxonomy and leaf paths are checked against them. */
+  /**
+   * The category paths of the weekly-built facets (product_category_facets, rebuilt by every import's
+   * category_facets_build phase and by hand; lib/products/listCategories, cached an hour): a search's taxonomy
+   * and leaf paths are checked against them. A path first seen mid-week is offered at the next build.
+   */
   categoryPaths: () => Promise<string[]>;
   /** The Brand Analytics codes of the crosswalk (lib/products/listCategories, cached an hour): a search's broadCategory must be one of them. */
   broadCategories: () => Promise<string[]>;
