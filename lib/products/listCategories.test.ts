@@ -45,10 +45,20 @@ vi.mock('@neondatabase/serverless', () => ({
   },
 }));
 
-import { assemblePathLists, BROAD_CATEGORY_LIST_SQL, compareCodeUnits, listProductBroadCategories, listProductCategoryPaths, listProductDepartments, PRODUCT_CATEGORIES_TAG } from './listCategories';
+import {
+  assemblePathLists,
+  BROAD_CATEGORY_LIST_SQL,
+  compareCodeUnits,
+  listProductBroadCategories,
+  listProductCategoryPaths,
+  listProductDepartments,
+  PRODUCT_CATEGORIES_TAG,
+} from './listCategories';
 import { PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
 
-const SCOPE = "in_scope AND enrichment_status IN ('active', 'no_price')";
+/** The two facets statements as the tagged-template mock records them (spec 2026-10-19 §6). */
+const DEPARTMENTS_SQL = 'SELECT DISTINCT department FROM product_category_facets ORDER BY department';
+const PATHS_SQL = 'SELECT category_path FROM product_category_facets WHERE department = ? ORDER BY category_path';
 
 describe('assemblePathLists', () => {
   it('flattens, deduplicates and sorts by code unit (not locale)', () => {
@@ -60,7 +70,7 @@ describe('assemblePathLists', () => {
 
 describe('the loaders', () => {
   /** Two departments, answered out of code-unit order so the re-sort shows. */
-  const DEPARTMENT_ROWS = [{ category_root: 'Pet Supplies' }, { category_root: 'Appliances' }];
+  const DEPARTMENT_ROWS = [{ department: 'Pet Supplies' }, { department: 'Appliances' }];
   /** Four codes, answered out of code-unit order so the re-sort shows (by code unit the lowercase one comes last; by locale it would come first). */
   const BROAD_ROWS = [{ code: 'Toys' }, { code: 'Home' }, { code: 'Misc SDP' }, { code: 'apparel' }];
   const PATH_ROWS: Record<string, Array<{ category_path: string }>> = {
@@ -72,31 +82,27 @@ describe('the loaders', () => {
     neonMock.queries.length = 0;
     cacheMock.calls.length = 0; // registered is filled once, at import; only the calls belong to a single test
     neonMock.answer = (text, values) => {
-      if (text.includes('DISTINCT category_root')) return DEPARTMENT_ROWS;
-      if (text.includes('DISTINCT category_path')) return PATH_ROWS[values[0] as string] ?? [];
+      if (text === DEPARTMENTS_SQL) return DEPARTMENT_ROWS;
+      if (text === PATHS_SQL) return PATH_ROWS[values[0] as string] ?? [];
       if (text.includes('SELECT DISTINCT code FROM ba_category_crosswalk')) return BROAD_ROWS;
       return [];
     };
   });
 
-  it('lists the departments of the in-scope, active or no-price rows, in code-unit order', async () => {
+  it('lists the departments of the facets, in code-unit order; the catalog is never scanned', async () => {
     await expect(listProductDepartments()).resolves.toEqual(['Appliances', 'Pet Supplies']);
-    expect(neonMock.queries).toHaveLength(1);
-    expect(neonMock.queries[0].text).toBe(`SELECT DISTINCT category_root FROM asin_products WHERE ${SCOPE} AND category_root IS NOT NULL ORDER BY category_root`);
-    expect(neonMock.queries[0].values).toEqual([]);
+    expect(neonMock.queries).toEqual([{ text: DEPARTMENTS_SQL, values: [] }]);
   });
 
-  it('reads the paths one department at a time (the path index serves each), binding the root and the root plus separator, and assembles one sorted list', async () => {
+  it('reads the paths one department at a time through the department index, binding only the department, and assembles one sorted list', async () => {
     await expect(listProductCategoryPaths()).resolves.toEqual(['Appliances › Dishwashers', 'Pet Supplies', 'Pet Supplies › Dogs › Toys']);
-    const pathQueries = neonMock.queries.filter((q) => q.text.includes('DISTINCT category_path'));
+    const pathQueries = neonMock.queries.filter((q) => q.text === PATHS_SQL);
     expect(pathQueries).toHaveLength(2);
-    expect(pathQueries[0].text).toBe(
-      `SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price') AND (category_path = ? OR starts_with(category_path, ?)) ORDER BY category_path`,
-    );
-    expect(pathQueries.map((q) => q.values)).toEqual([['Appliances', 'Appliances › '], ['Pet Supplies', 'Pet Supplies › ']]);
+    expect(pathQueries.map((q) => q.values)).toEqual([['Appliances'], ['Pet Supplies']]);
+    expect(neonMock.queries.some((q) => q.text.includes('asin_products'))).toBe(false);
   });
 
-  it('an empty catalog gives empty lists, never an error', async () => {
+  it('an empty facets table (before the first build) gives empty lists, never an error', async () => {
     neonMock.answer = () => [];
     await expect(listProductDepartments()).resolves.toEqual([]);
     await expect(listProductCategoryPaths()).resolves.toEqual([]);
@@ -106,7 +112,7 @@ describe('the loaders', () => {
     const failure = new Error('connection reset');
     const answer = neonMock.answer;
     neonMock.answer = (text, values) => {
-      if (text.includes('DISTINCT category_path') && values[0] === 'Pet Supplies') throw failure;
+      if (text === PATHS_SQL && values[0] === 'Pet Supplies') throw failure;
       return answer(text, values);
     };
     await expect(listProductCategoryPaths()).rejects.toBe(failure);
@@ -142,9 +148,9 @@ describe('the loaders', () => {
   it("each cached callback holds its own statement (or names the constant whose text is a key part), so an edit to the SQL changes the cache key (Next keys an entry on the callback's source and the key parts)", () => {
     const [departments, paths, broad] = cacheMock.sources.map((s) => s.replace(/\s+/g, ' '));
     expect(cacheMock.sources).toHaveLength(3);
-    expect(departments).toContain(`SELECT DISTINCT category_root FROM asin_products WHERE ${SCOPE} AND category_root IS NOT NULL ORDER BY category_root`);
-    // The path statement's head only: its holes are code, which the test transform may rewrite.
-    expect(paths).toContain("SELECT DISTINCT category_path FROM asin_products WHERE in_scope AND category_path IS NOT NULL AND enrichment_status IN ('active', 'no_price')");
+    expect(departments).toContain(DEPARTMENTS_SQL);
+    // The path statement's head only: its hole is code, which the test transform may rewrite.
+    expect(paths).toContain('SELECT category_path FROM product_category_facets WHERE department = ');
     // The broad-category callback runs the exported constant by name, through neonRunner; the statement text itself is its second key part (pinned above).
     expect(broad).toContain('run(BROAD_CATEGORY_LIST_SQL, [])');
   });
