@@ -134,7 +134,7 @@ describe('ProductsPage (/products)', () => {
     // Both option lists are pinned whole: 'Pet Supplies' is in each fixture, so one shared option could not tell them apart.
     expect(within(screen.getByLabelText('Department (Keepa)')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments', 'Home & Kitchen', 'Pet Supplies']);
     expect(within(screen.getByLabelText('Broad category (Brand Analytics)')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All broad categories', 'Home', 'Pet Supplies']);
-    expect(screen.getByText(/^1 categories/)).toBeInTheDocument();
+    expect(screen.getByText(/^1 category /)).toBeInTheDocument();
   });
 
   it('for an admin: the perf panel shows the handler total with the auth and loads steps; the loads note times the five reads, run in parallel, with the path count and size', async () => {

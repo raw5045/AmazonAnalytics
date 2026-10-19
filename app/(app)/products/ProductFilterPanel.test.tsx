@@ -371,13 +371,15 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
 
   it("lays the category block out in the Explorer's order: broad category, then department, then leaf categories (spec 2026-10-19 §9)", () => {
     renderPanel();
-    // Field headings are <label>s (one control) or <p id>s (a group), in document order.
-    const headings = [...document.querySelectorAll('label, p[id]')].map((el) => el.textContent ?? '');
-    const at = (text: string) => headings.indexOf(text);
-    expect(at('Broad category (Brand Analytics)')).toBeGreaterThan(at('BSR vs 30-day avg'));
-    expect(at('Department (Keepa)')).toBeGreaterThan(at('Broad category (Brand Analytics)'));
-    expect(at('Leaf categories (Keepa)')).toBeGreaterThan(at('Department (Keepa)'));
-    expect(at('FBA offer')).toBeGreaterThan(at('Leaf categories (Keepa)'));
+    const follows = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    const block = [
+      control('BSR vs 30-day avg'),
+      control('Broad category (Brand Analytics)'),
+      control('Department (Keepa)'),
+      screen.getByRole('group', { name: 'Leaf categories (Keepa)' }),
+      control('FBA offer'),
+    ];
+    block.slice(1).forEach((el, i) => expect(follows(block[i], el), `${i}`).toBe(true));
   });
 
   it('the department narrows the leaf typeahead to its paths and widens it back; the hint counts the narrowed list', () => {
@@ -395,14 +397,25 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
     expect(options()).toHaveLength(3);
   });
 
-  it('a department change leaves the picks alone: a pick outside the department stays as a chip and applies (it matches nothing, as the predicate always did)', () => {
+  it("narrows on the separator: the department's own path is in, a department that only shares its prefix is out", () => {
+    render(
+      <ProductFilterPanel filters={PRODUCT_DEFAULTS} departments={['Toys', 'Toys & Games']} broadCategories={BROAD} leafCategories={['Toys', 'Toys & Games › Puzzles', 'Toys › Dolls']} customCategories={CUSTOM} />,
+    );
+    change('Department (Keepa)', 'Toys');
+    // 3 if the separator were dropped, 1 if the equality clause were, 2 when correct.
+    expect(screen.getByText(/^2 categories in Toys — type to search/)).toBeInTheDocument();
+  });
+
+  it('a department change leaves the picks alone: picks inside and outside the department stay as chips and apply (the outside one matches nothing, as the predicate always did)', () => {
     renderPanel();
     pickCategory('Jigsaw Puzzles');
+    pickCategory('Desk Lamps');
     change('Department (Keepa)', 'Home & Kitchen');
+    expect(screen.getAllByRole('button', { name: /^Remove / })).toHaveLength(2);
     expect(screen.getByRole('button', { name: `Remove ${LEAVES[2]}` })).toBeInTheDocument();
     fireEvent.click(applyButton());
     expect(replace).toHaveBeenLastCalledWith(
-      `/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, dept: 'Home & Kitchen', leafPaths: [LEAVES[2]] })}`,
+      `/products?${productFiltersToSearchParams({ ...PRODUCT_DEFAULTS, dept: 'Home & Kitchen', leafPaths: [LEAVES[2], LEAVES[0]] })}`,
       { scroll: false },
     );
   });

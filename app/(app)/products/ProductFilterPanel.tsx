@@ -259,10 +259,11 @@ export function ProductFilterPanel({
   // The leaf typeahead's options, narrowed to the pending department (the department itself and everything
   // under it) when one is chosen. The picks already made are left alone: a pick outside the department
   // matches nothing, as the predicate always did.
-  const leafOptions = useMemo(
-    () => (pending.dept === '' ? leafCategories : leafCategories.filter((p) => p === pending.dept || p.startsWith(pending.dept + PATH_SEP))),
-    [leafCategories, pending.dept],
-  );
+  const leafOptions = useMemo(() => {
+    if (pending.dept === '') return leafCategories;
+    const under = pending.dept + PATH_SEP;
+    return leafCategories.filter((p) => p === pending.dept || p.startsWith(under));
+  }, [leafCategories, pending.dept]);
   const toggleCustom = (id: string) =>
     set('customCategoryIds', pending.customCategoryIds.includes(id) ? pending.customCategoryIds.filter((x) => x !== id) : [...pending.customCategoryIds, id]);
   const selectedCustom = customCategories.filter((c) => pending.customCategoryIds.includes(c.id));
@@ -489,8 +490,9 @@ export function ProductFilterPanel({
                 <>
                   <LeafCategoryTypeahead options={leafOptions} selected={pending.leafPaths} onChange={(next) => set('leafPaths', next)} />
                   <p className={HINT}>
-                    {leafOptions.length.toLocaleString('en-US')} categories{pending.dept === '' ? '' : ` in ${pending.dept}`} — type to search, click or Enter to
-                    add. Each pick includes its sub-categories; several match with OR.
+                    {leafOptions.length.toLocaleString('en-US')} {leafOptions.length === 1 ? 'category' : 'categories'}
+                    {pending.dept === '' ? '' : ` in ${pending.dept}`} — type to search, click or Enter to add. Each pick includes its sub-categories;
+                    several match with OR.
                   </p>
                 </>
               ) : customCategories.length === 0 ? (
