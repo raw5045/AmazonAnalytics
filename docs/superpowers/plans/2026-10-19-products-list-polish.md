@@ -1234,7 +1234,7 @@ In `app/(app)/products/(list)/page.test.tsx`, add inside `describe('ProductsPage
   });
 ```
 
-(The page redirects every non-admin before rendering, so the panel's `admin` prop cannot be exercised as false here; it is wired from `user.role` for the day the page opens to all accounts, and `PerfPanel`'s own gate is covered by its users' tests.)
+(The page redirects every non-admin before rendering, so the panel's `admin` prop cannot be exercised as false here; it is wired from `user.role` for the day the page opens to all accounts, and `PerfPanel`'s gate has its own test, `app/(app)/PerfPanel.test.tsx`, added in the review pass.)
 
 - [ ] **Step 6: Run it to see it fail**
 
@@ -1825,6 +1825,8 @@ In `app/(app)/products/ProductFilterPanel.test.tsx`:
 
 In `app/(app)/products/(list)/page.test.tsx`, rename the six lookups: `screen.getByLabelText('Department')` → `screen.getByLabelText('Department (Keepa)')` (three places) and `screen.getByLabelText('Broad category')` → `screen.getByLabelText('Broad category (Brand Analytics)')` (three places).
 
+One pre-existing panel case, 'leaf picks accumulate as chips and apply as repeated leaf params, with the department', picks a Toys & Games leaf after choosing Home & Kitchen; the narrowing no longer offers it (by design), so that case picks 'Floor Lamps' as its second pick and expects `leafPaths: [LEAVES[0], LEAVES[1]]` (found and fixed during execution).
+
 - [ ] **Step 2: Run them to see them fail**
 
 Run: `pnpm vitest run "app/(app)/products/ProductFilterPanel.test.tsx" "app/(app)/products/(list)/page.test.tsx"`
@@ -2328,7 +2330,7 @@ Expected: `built in N.Ns: paths≈23429 departments=36 products≈1176481` (the 
 
 - [ ] **Step 2b: The integration case (owner's go)**
 
-Run: `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept -t "option lists"` (read-only against production; Task 5b rewrote the case for the facets). Expect: the facets' path count within 5 % of the live catalog scope (departments printed beside the live count and ≥ 20), the three largest per-department entries printed (each well under 1.5M chars), the per-department statement planned on `product_category_facets_department_idx` with no Sort node (an `Index Only Scan` once the build's VACUUM has set the visibility map; the case prints all-visible pages of total), the departments statement planned, both timed in milliseconds. The case reports as skipped while the table is empty.
+Run: `RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts --disableConsoleIntercept -t "option lists"` (read-only against production; Task 5b rewrote the case for the facets). Expect: the facets' path count within 5 % of the live catalog scope (departments printed beside the live count and ≥ 20), the three largest per-department entries printed (each well under 1.5M chars), the per-department statement planned on `product_category_facets_department_idx` with no Sort node (an `Index Only Scan` once the build's VACUUM has set the visibility map; the case prints all-visible pages of total), the departments statement planned, both timed in milliseconds. The case reports as skipped while the table is empty. If the plan shows Seq Scan + Sort beside a low all-visible page count, the build's VACUUM could not set the visibility map (another connection held an older snapshot): run `VACUUM (ANALYZE) product_category_facets` by hand and re-run the case.
 
 - [ ] **Step 3: Push and deploys**
 
@@ -2337,7 +2339,7 @@ Watch: `gh api repos/raw5045/AmazonAnalytics/commits/<sha>/status --jq '"overall
 
 - [ ] **Step 4: Smoke in the owner's Chrome**
 
-On `/products`: the perf line renders (`perf · total=… · auth=… · loads=…`; open it: the loads note names the five reads; `paths` is milliseconds, the count ≈ 23k); the thirteen columns in the spec §8 order; a row with a 30-day comparison shows the chip in its own column, one without shows a dash there and the rank still; Rating and Reviews separate; FBA / Amazon checks and Xs with the counts / availability on hover; the magnifier opens the Amazon listing in a new tab; the filter panel reads Broad category (Brand Analytics) → Department (Keepa) → Leaf categories (Keepa); choosing a department narrows the typeahead and the hint says "in <department>"; a leaf pick + Apply filters as before. Then: apply a filter, click the Explorer tab, click the Products tab — the filtered URL returns (page included); open a product page and use Back to products — the same list. Report what differs from the spec, if anything.
+On `/products`: the perf line renders (`perf · total=… · auth=… · loads=…`; open it: the loads note names the five reads; `paths` is milliseconds, the count ≈ 23k); the thirteen columns in the spec §8 order; a row with a 30-day comparison shows the chip in its own column, one without shows a dash there and the rank still; Rating and Reviews separate; FBA / Amazon checks and Xs with the counts / availability on hover; the magnifier opens the Amazon listing in a new tab; the filter panel reads Broad category (Brand Analytics) → Department (Keepa) → Leaf categories (Keepa); choosing a department narrows the typeahead and the hint says "in <department>"; a leaf pick + Apply filters as before. Then: apply a filter, click the Explorer tab, click the Products tab — the filtered URL returns (page included); open a product page and use Back to products — the same list. Report what differs from the spec, if anything. Also judge, as the owner: the green check / red X meaning for the Amazon column (a private-label seller may read "Amazon on the listing" as the bad case; neutral icons are a one-line change); the table at your laptop width (Keywords, FBA and Amazon may sit off-screen at 1366 px; the card scrolls sideways as before); the neutral `0%` chip; and the "Broad category (Brand Analytics)" label, which may wrap to two lines in the sidebar.
 
 - [ ] **Step 5: The 2026-10-20 import**
 
