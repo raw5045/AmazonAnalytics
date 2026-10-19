@@ -145,6 +145,24 @@ describe('ProductsPage (/products)', () => {
     expect(screen.getByText(/^\(parallel: search \d+ · departments \d+ · broad \d+ · paths \d+ \(1 · 0\.0 MB\) · custom \d+ ms\)$/)).toBeInTheDocument();
   });
 
+  it('starts the five reads in parallel: none waits for another to finish', async () => {
+    const started: string[] = [];
+    let open = () => {};
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    const hold = <T,>(name: string, value: T) => async () => { started.push(name); await gate; return value; };
+    data.search.mockImplementation(hold('search', RESULT));
+    data.departments.mockImplementation(hold('departments', ['Home & Kitchen', 'Pet Supplies']));
+    data.broad.mockImplementation(hold('broad', ['Home', 'Pet Supplies']));
+    data.paths.mockImplementation(hold('paths', ['Home & Kitchen › Lighting › Desk Lamps']));
+    data.custom.mockImplementation(hold('custom', []));
+    const page = callPage().then((el) => resolveAsync(el));
+    await vi.waitFor(() => expect(started).toHaveLength(5));
+    expect([...started].sort()).toEqual(['broad', 'custom', 'departments', 'paths', 'search']);
+    open();
+    render(<>{await page}</>);
+    expect(screen.getByText('1,234 products')).toBeInTheDocument();
+  });
+
   it("expands the admin's custom categories into exact paths for the query and keeps the ids in the filters", async () => {
     const ID = '11111111-1111-4111-8111-000000000001';
     data.expand.mockResolvedValue(['Home & Kitchen › Lighting › Desk Lamps']);

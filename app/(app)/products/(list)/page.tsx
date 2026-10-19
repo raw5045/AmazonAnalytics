@@ -80,11 +80,12 @@ async function loadProductsPage(filters: ProductFilters, userId: string, timer: 
     timed(listProductCategoryPaths().catch(() => [] as string[])),
     timed(listCustomCategoriesForUser(userId)),
   ]);
-  const pathBytes = leafCategories.value.reduce((n, p) => n + p.length, 0);
+  // UTF-16 code units, a close-enough proxy for the bytes the list adds to every load (each › is 3 bytes in UTF-8, counted as 1).
+  const pathChars = leafCategories.value.reduce((n, p) => n + p.length, 0);
   timer.mark(
     'loads',
     `parallel: search ${result.ms} · departments ${departments.ms} · broad ${broadCategories.ms} · paths ${leafCategories.ms} ` +
-      `(${leafCategories.value.length.toLocaleString('en-US')} · ${(pathBytes / 1024 / 1024).toFixed(1)} MB) · custom ${customCategories.ms} ms`,
+      `(${leafCategories.value.length.toLocaleString('en-US')} · ${(pathChars / 1024 / 1024).toFixed(1)} MB) · custom ${customCategories.ms} ms`,
   );
   return {
     result: result.value,
