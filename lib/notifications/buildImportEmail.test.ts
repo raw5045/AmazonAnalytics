@@ -140,11 +140,16 @@ describe('buildImportEmail', () => {
 
     it('text body gives the recovery steps and the batch link', () => {
       expect(email.text).toContain(
-        'The file is still uploaded: reset it and click Import again (see memory/import-crash-2026-10-19 in the repo docs or ask the assistant)',
+        "The file is still uploaded: reset the file to 'pass' and the batch to 'clean' (the assistant has the script), then click Import again.",
       );
       expect(email.text).toContain(
         'https://keywordquarry.com/admin/batches/3cbf91d3-ae35-47be-af03-fc09bd97f252',
       );
+    });
+
+    it("never points the reader at the assistant's memory folder", () => {
+      expect(email.text).not.toContain('memory/');
+      expect(email.html).not.toContain('memory/');
     });
 
     it('html body has the red headline, each failed file and its reason, and the recovery steps', () => {
@@ -153,7 +158,9 @@ describe('buildImportEmail', () => {
       expect(email.html).toContain('US_Top_Search_Terms_Simple_Week_2026_05_02.csv');
       expect(email.html).toContain('orchestrator poll budget exhausted');
       expect(email.html).toContain('no reason recorded');
-      expect(email.html).toContain('reset it and click Import again');
+      expect(email.html).toContain(
+        'reset the file to &#39;pass&#39; and the batch to &#39;clean&#39; (the assistant has the script), then click Import again.',
+      );
     });
 
     it('html body escapes the filenames and the stored reasons', () => {
@@ -184,7 +191,7 @@ describe('buildImportEmail', () => {
       const none = buildImportEmail({ ...baseInput, filename: 'batch', outcome: 'batch_failed' });
       expect(none.subject).toBe('✗ Import FAILED: batch');
       expect(none.text).toContain('The import batch failed.');
-      expect(none.text).toContain('reset it and click Import again');
+      expect(none.text).toContain('then click Import again.');
     });
   });
 

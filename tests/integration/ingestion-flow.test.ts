@@ -12,6 +12,9 @@ vi.mock('@/lib/storage/r2', async () => {
     uploadToR2: vi.fn().mockResolvedValue('k'),
     getPresignedUploadUrl: vi.fn().mockResolvedValue('https://presigned.example/x'),
     buildUploadStorageKey: () => 'uploads/test/file.csv',
+    // The COPY phase classifies its failures; never retry here, so a failure surfaces at once
+    // with its real error (not a missing-export error from this mock).
+    isRetryableR2Error: () => false,
   };
 });
 

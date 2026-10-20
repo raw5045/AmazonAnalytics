@@ -147,7 +147,7 @@ function buildHardFailure(i: ImportEmailInput): BuiltEmail {
 }
 
 const BATCH_FAILURE_RECOVERY =
-  'The file is still uploaded: reset it and click Import again (see memory/import-crash-2026-10-19 in the repo docs or ask the assistant).';
+  "The file is still uploaded: reset the file to 'pass' and the batch to 'clean' (the assistant has the script), then click Import again.";
 /** A stored reason can be a whole failed query; keep the email readable. */
 const MAX_REASON_CHARS = 500;
 
