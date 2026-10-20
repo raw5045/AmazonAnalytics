@@ -73,7 +73,11 @@ vi.mock('pg-copy-streams', () => ({
   from: vi.fn((_sql: string) => _sql),
 }));
 
-vi.mock('@/lib/storage/r2', () => ({ downloadStreamFromR2: mockDownloadStream }));
+// The real R2StreamError and isRetryableR2Error stay, so the COPY retry classifies errors for real.
+vi.mock('@/lib/storage/r2', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/storage/r2')>()),
+  downloadStreamFromR2: mockDownloadStream,
+}));
 vi.mock('@/db/client', () => ({
   db: {
     execute: mockExecute,
@@ -122,6 +126,7 @@ import { processFileImport } from './importFile';
 import { EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
 import { BaCrosswalkError } from '@/lib/baCategory/buildCrosswalk';
+import { R2StreamError } from '@/lib/storage/r2';
 
 function createFakeCopyStream() {
   const lines: string[] = [];
@@ -167,6 +172,163 @@ describe('processFileImport', () => {
     expect(lines.length).toBe(result.rowsImported);
     expect(mockClientRelease).toHaveBeenCalled();
     expect(mockPoolEnd).toHaveBeenCalled();
+  });
+
+  // 2026-10-19: the R2 download stalled mid-COPY and the inactivity guard's error killed the worker.
+  // A retryable download failure now gets up to three attempts, 15 s apart; anything else still
+  // fails the import at once.
+  describe('copy_to_staging retries', () => {
+    const fixture = readFileSync(path.join(__dirname, '../../lib/csv/fixtures/valid-sample.csv'));
+    const stalled = () => new R2StreamError('SECRET R2 stream k inactive for 120000ms');
+    /** A COPY client whose stream records each line; `onFirstLine` runs once the COPY is under way. */
+    const copyClient = (onFirstLine?: () => void) => {
+      const lines: string[] = [];
+      const stream = new Writable({
+        write(chunk, _enc, cb) {
+          lines.push(chunk.toString());
+          if (lines.length === 1) onFirstLine?.();
+          cb();
+        },
+      });
+      const release = vi.fn();
+      return { client: { query: vi.fn(() => stream), release }, lines, release };
+    };
+    /** A body that delivers the first half of the fixture, then goes silent, as the 10-19 one did. */
+    const goesSilentHalfway = () => {
+      let sent = false;
+      return new Readable({
+        read() {
+          if (sent) return; // the transfer has stalled: nothing more ever arrives
+          sent = true;
+          this.push(fixture.subarray(0, Math.floor(fixture.length / 2)));
+        },
+      });
+    };
+    const quietConsole = () => ({
+      warn: vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+      err: vi.spyOn(console, 'error').mockImplementation(() => undefined), // the hook phases' fail-soft lines
+      log: vi.spyOn(console, 'log').mockImplementation(() => undefined),
+    });
+    const copyLines = (spy: { mock: { calls: unknown[][] } }) =>
+      spy.mock.calls.map((args) => args.join(' ')).filter((line) => line.includes('[copy]'));
+    const stalledLine = (attempt: number) =>
+      `[copy] attempt ${attempt} of 3 failed for f1, retrying in 15s {"error":"R2StreamError","code":"r2_stream_inactive"}`;
+
+    beforeEach(() => {
+      // Only setTimeout is faked: the 15 s retry delay. Streams run on nextTick, the heartbeat on setInterval.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      // The lock UPDATE ... RETURNING id acquires the lock; then the file row.
+      mockExecute.mockResolvedValueOnce({ rows: [{ id: 'f1' }] });
+      mockFindFile.mockResolvedValueOnce({
+        id: 'f1',
+        batchId: 'b1',
+        storageKey: 'k',
+        weekEndDate: '2026-04-11',
+        isReplacement: false,
+      });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks(); // the console spies
+      // Drop anything a case queued but never took, so it cannot leak into the later tests.
+      mockExecute.mockReset().mockResolvedValue(undefined);
+      mockFindFile.mockReset();
+      mockDownloadStream.mockReset();
+      mockPoolConnect.mockReset();
+    });
+
+    it('a stalled download is retried after 15 s and the import completes; the warn line carries no message text', async () => {
+      const { warn } = quietConsole();
+      mockDownloadStream.mockRejectedValueOnce(stalled()).mockResolvedValueOnce(Readable.from(fixture));
+      const copy = copyClient();
+      mockPoolConnect.mockResolvedValueOnce(copy.client);
+
+      const running = processFileImport({ uploadedFileId: 'f1' });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const result = await running;
+
+      expect(result.rowsImported).toBeGreaterThan(90);
+      expect(copy.lines.length).toBe(result.rowsImported);
+      expect(mockDownloadStream).toHaveBeenCalledTimes(2);
+      expect(mockDownloadStream).toHaveBeenNthCalledWith(2, 'k');
+      expect(copyLines(warn)).toEqual([stalledLine(1)]);
+      expect(warn.mock.calls.flat().join(' ')).not.toContain('SECRET');
+      // Staging is cleared between the failed attempt and the retry: clear_staging, the retry's
+      // clear, then staging_cleanup at the end.
+      expect(mockDelete).toHaveBeenCalledTimes(3);
+      expect(mockDelete.mock.invocationCallOrder[1]).toBeGreaterThan(
+        mockDownloadStream.mock.invocationCallOrder[0],
+      );
+      expect(mockDelete.mock.invocationCallOrder[1]).toBeLessThan(
+        mockDownloadStream.mock.invocationCallOrder[1],
+      );
+    });
+
+    it('a stall mid-COPY (the 2026-10-19 shape) releases the first COPY connection and the retry stages every row', async () => {
+      const { warn } = quietConsole();
+      const body = goesSilentHalfway();
+      mockDownloadStream.mockResolvedValueOnce(body).mockResolvedValueOnce(Readable.from(fixture));
+      // The inactivity guard destroys the silent body once the COPY is under way, so the stall
+      // error arrives mid-COPY.
+      const first = copyClient(() => body.destroy(stalled()));
+      const second = copyClient();
+      mockPoolConnect.mockResolvedValueOnce(first.client).mockResolvedValueOnce(second.client);
+
+      const running = processFileImport({ uploadedFileId: 'f1' });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const result = await running;
+
+      expect(first.lines.length).toBeGreaterThan(0); // it failed mid-COPY, not before it
+      expect(first.lines.length).toBeLessThan(result.rowsImported);
+      expect(first.release).toHaveBeenCalledTimes(1);
+      expect(second.lines.length).toBe(result.rowsImported);
+      expect(result.rowsImported).toBeGreaterThan(90);
+      expect(copyLines(warn)).toEqual([stalledLine(1)]);
+    });
+
+    it('a non-retryable failure (NoSuchKey) fails the import at once, with no retry', async () => {
+      const { warn } = quietConsole();
+      const noSuchKey = Object.assign(new Error('NoSuchKey'), {
+        name: 'NoSuchKey',
+        $metadata: { httpStatusCode: 404 },
+      });
+      mockDownloadStream.mockRejectedValueOnce(noSuchKey);
+
+      await expect(processFileImport({ uploadedFileId: 'f1' })).rejects.toBe(noSuchKey);
+
+      expect(mockDownloadStream).toHaveBeenCalledTimes(1);
+      expect(mockPoolConnect).not.toHaveBeenCalled();
+      expect(mockDelete).toHaveBeenCalledTimes(1); // clear_staging only
+      expect(copyLines(warn)).toEqual([]);
+    });
+
+    it('three retryable failures in a row fail the import with the third error', async () => {
+      const { warn } = quietConsole();
+      const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+      const internal = Object.assign(new Error('We encountered an internal error'), {
+        name: 'InternalError',
+        $metadata: { httpStatusCode: 500 },
+      });
+      mockDownloadStream
+        .mockRejectedValueOnce(stalled())
+        .mockRejectedValueOnce(reset)
+        .mockRejectedValueOnce(internal);
+
+      const settled = processFileImport({ uploadedFileId: 'f1' }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(await settled).toBe(internal);
+      expect(mockDownloadStream).toHaveBeenCalledTimes(3);
+      expect(copyLines(warn)).toEqual([
+        stalledLine(1),
+        '[copy] attempt 2 of 3 failed for f1, retrying in 15s {"error":"Error","code":"ECONNRESET"}',
+      ]);
+    });
   });
 });
 

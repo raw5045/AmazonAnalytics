@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm';
 import { Pool, Client as PgClient } from 'pg';
 import { from as copyFrom } from 'pg-copy-streams';
 import { inngest } from '../client';
-import { downloadStreamFromR2 } from '@/lib/storage/r2';
+import { downloadStreamFromR2, isRetryableR2Error } from '@/lib/storage/r2';
 import { streamParseCsv } from '@/lib/csv/streamParse';
 import {
   cleanSearchTermForDisplay,
@@ -100,6 +100,13 @@ const LOOSE_RANK_THRESHOLD = 1_000_000;
  * fake-volume filter results.
  */
 const FAKE_VOLUME_RANK_THRESHOLD = 100_000;
+
+/**
+ * The copy_to_staging phase's budget for a retryable R2 download failure
+ * (isRetryableR2Error): three attempts in all, 15 s apart.
+ */
+const MAX_COPY_ATTEMPTS = 3;
+const COPY_RETRY_DELAY_MS = 15_000;
 
 /**
  * Build a SQL expression that calls loose_title_flags_3() — the
@@ -662,178 +669,207 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       file.id,
       'copy_to_staging',
       async () => {
-        const stream = await downloadStreamFromR2(file.storageKey);
-        let rowsStaged = 0;
-        const pool = new Pool({
-          connectionString: env.DATABASE_URL,
-          keepAlive: true,
-          keepAliveInitialDelayMillis: 10_000,
-          connectionTimeoutMillis: 20_000,
-        });
-        pool.on('error', (err) => {
-          console.warn('[copy pool] idle client error:', err.message);
-        });
-        const client = await pool.connect();
-        try {
-          const copySql = `
-            COPY staging_weekly_metrics (
-              batch_id, uploaded_file_id, week_end_date,
-              search_term_raw_original, search_term_raw, search_term_normalized,
-              had_unicode_noise, source_row_number,
-              actual_rank,
-              top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
-              top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
-              top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
-              top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
-              top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
-              top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
-              keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count
-            ) FROM STDIN WITH (FORMAT text, NULL '\\N')
-          `;
-          const copyStream = client.query(copyFrom(copySql));
-
-          // CRITICAL: attach error listener BEFORE the first write. If
-          // pg-copy-streams emits 'error' mid-COPY (Postgres rejected a
-          // row, NUL byte, length overflow, type mismatch, etc.) and no
-          // listener is registered, Node throws and the process exits.
-          // That was the root cause of the prior "stuck on Feb 07"
-          // behavior — process died mid-COPY, Railway restarted the
-          // container, Inngest's waitForEvent had no completion event
-          // ever fired, lock heartbeat never advanced.
-          let copyError: Error | null = null;
-          copyStream.on('error', (err: Error) => {
-            copyError = err;
-            console.error(`[copy] error event for ${file.id.slice(0, 8)}:`, err.message);
+        const copyOnce = async (): Promise<number> => {
+          const stream = await downloadStreamFromR2(file.storageKey);
+          let rowsStaged = 0;
+          const pool = new Pool({
+            connectionString: env.DATABASE_URL,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10_000,
+            connectionTimeoutMillis: 20_000,
           });
+          pool.on('error', (err) => {
+            console.warn('[copy pool] idle client error:', err.message);
+          });
+          const client = await pool.connect();
+          try {
+            const copySql = `
+              COPY staging_weekly_metrics (
+                batch_id, uploaded_file_id, week_end_date,
+                search_term_raw_original, search_term_raw, search_term_normalized,
+                had_unicode_noise, source_row_number,
+                actual_rank,
+                top_clicked_brand_1, top_clicked_brand_2, top_clicked_brand_3,
+                top_clicked_category_1, top_clicked_category_2, top_clicked_category_3,
+                top_clicked_product_1_asin, top_clicked_product_2_asin, top_clicked_product_3_asin,
+                top_clicked_product_1_title, top_clicked_product_2_title, top_clicked_product_3_title,
+                top_clicked_product_1_click_share, top_clicked_product_2_click_share, top_clicked_product_3_click_share,
+                top_clicked_product_1_conversion_share, top_clicked_product_2_conversion_share, top_clicked_product_3_conversion_share,
+                keyword_in_title_1, keyword_in_title_2, keyword_in_title_3, keyword_title_match_count
+              ) FROM STDIN WITH (FORMAT text, NULL '\\N')
+            `;
+            const copyStream = client.query(copyFrom(copySql));
 
-          const encodeField = (v: string | number | boolean | null | undefined): string => {
-            if (v === null || v === undefined || v === '') return '\\N';
-            // Strip NUL bytes — Postgres text/varchar cannot contain them
-            // and pg-copy-streams will emit error mid-stream if it sees
-            // one. Cheap defense; rare in normal Amazon CSVs but observed
-            // in practice in some search-term values.
-            const s = String(v).replace(/\u0000/g, '');
-            return s
-              .replace(/\\/g, '\\\\')
-              .replace(/\t/g, '\\t')
-              .replace(/\n/g, '\\n')
-              .replace(/\r/g, '\\r');
-          };
+            // CRITICAL: attach error listener BEFORE the first write. If
+            // pg-copy-streams emits 'error' mid-COPY (Postgres rejected a
+            // row, NUL byte, length overflow, type mismatch, etc.) and no
+            // listener is registered, Node throws and the process exits.
+            // That was the root cause of the prior "stuck on Feb 07"
+            // behavior — process died mid-COPY, Railway restarted the
+            // container, Inngest's waitForEvent had no completion event
+            // ever fired, lock heartbeat never advanced.
+            let copyError: Error | null = null;
+            copyStream.on('error', (err: Error) => {
+              copyError = err;
+              console.error(`[copy] error event for ${file.id.slice(0, 8)}:`, err.message);
+            });
 
-          const waitForDrainOrError = (): Promise<void> =>
-            new Promise<void>((resolve, reject) => {
-              const onDrain = () => {
+            const encodeField = (v: string | number | boolean | null | undefined): string => {
+              if (v === null || v === undefined || v === '') return '\\N';
+              // Strip NUL bytes — Postgres text/varchar cannot contain them
+              // and pg-copy-streams will emit error mid-stream if it sees
+              // one. Cheap defense; rare in normal Amazon CSVs but observed
+              // in practice in some search-term values.
+              const s = String(v).replace(/\u0000/g, '');
+              return s
+                .replace(/\\/g, '\\\\')
+                .replace(/\t/g, '\\t')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r');
+            };
+
+            const waitForDrainOrError = (): Promise<void> =>
+              new Promise<void>((resolve, reject) => {
+                const onDrain = () => {
+                  copyStream.removeListener('error', onError);
+                  resolve();
+                };
+                const onError = (err: Error) => {
+                  copyStream.removeListener('drain', onDrain);
+                  reject(err);
+                };
+                copyStream.once('drain', onDrain);
+                copyStream.once('error', onError);
+              });
+
+            let sourceRowNumber = 0;
+            for await (const row of streamParseCsv(stream)) {
+              // If the COPY socket already errored, surface it immediately
+              // rather than continuing to write into a dead stream.
+              if (copyError) throw copyError;
+
+              sourceRowNumber++;
+              const searchTermOriginalRaw = row['Search Term'] ?? '';
+              // Clean for display: strip invisible noise (OBJ, ZWSP, etc.),
+              // collapse whitespace, NFC. This is what gets stored as
+              // staging.search_term_raw and ultimately surfaces in the UI.
+              const searchTermCleanedRaw = cleanSearchTermForDisplay(searchTermOriginalRaw);
+              const noisy = hadUnicodeNoise(searchTermOriginalRaw);
+              // Defensive fallbacks. The cleanest production case (a real
+              // search term with maybe some unicode noise) never hits these,
+              // but if Amazon ships a row with an empty cell or a term
+              // composed entirely of OBJ/ZWSP/etc, we need non-empty values
+              // for the NOT NULL constraints. Use the same sentinel for all
+              // three columns so the dedup logic still groups them together.
+              const searchTermOriginal = searchTermOriginalRaw || '__unparseable__';
+              const searchTermCleaned = searchTermCleanedRaw || '__unparseable__';
+              const normalizedTerm =
+                normalizeForMatch(searchTermCleanedRaw) ||
+                searchTermCleanedRaw.toLowerCase().trim() ||
+                '__unparseable__';
+              const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
+              const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
+              const t3 = row['Top Clicked Product #3: Product Title'] ?? null;
+              const inT1 = titleContainsKeyword(normalizedTerm, t1);
+              const inT2 = titleContainsKeyword(normalizedTerm, t2);
+              const inT3 = titleContainsKeyword(normalizedTerm, t3);
+              const matchCount = (inT1 ? 1 : 0) + (inT2 ? 1 : 0) + (inT3 ? 1 : 0);
+              const fields = [
+                file.batchId,
+                file.id,
+                weekEndDate,
+                searchTermOriginal,
+                searchTermCleaned,
+                normalizedTerm,
+                noisy ? 't' : 'f',
+                sourceRowNumber,
+                Number(row['Search Frequency Rank']),
+                row['Top Clicked Brand #1'] || null,
+                row['Top Clicked Brands #2'] || null,
+                row['Top Clicked Brands #3'] || null,
+                row['Top Clicked Category #1'] || null,
+                row['Top Clicked Category #2'] || null,
+                row['Top Clicked Category #3'] || null,
+                row['Top Clicked Product #1: ASIN'] || null,
+                row['Top Clicked Product #2: ASIN'] || null,
+                row['Top Clicked Product #3: ASIN'] || null,
+                t1,
+                t2,
+                t3,
+                toNumeric(row['Top Clicked Product #1: Click Share']),
+                toNumeric(row['Top Clicked Product #2: Click Share']),
+                toNumeric(row['Top Clicked Product #3: Click Share']),
+                toNumeric(row['Top Clicked Product #1: Conversion Share']),
+                toNumeric(row['Top Clicked Product #2: Conversion Share']),
+                toNumeric(row['Top Clicked Product #3: Conversion Share']),
+                inT1 ? 't' : 'f',
+                inT2 ? 't' : 'f',
+                inT3 ? 't' : 'f',
+                matchCount,
+              ];
+              const line = fields.map(encodeField).join('\t') + '\n';
+              // Use the version that races drain vs. error — without this,
+              // a backpressure pause that's interrupted by an error would
+              // hang forever waiting for 'drain'.
+              if (!copyStream.write(line)) {
+                await waitForDrainOrError();
+              }
+              rowsStaged++;
+            }
+
+            if (copyError) throw copyError;
+
+            copyStream.end();
+
+            // Final completion: race finish vs. error so a late-emitting
+            // error during COPY commit (e.g., constraint violation that
+            // surfaces server-side after we've sent all rows) propagates
+            // properly instead of just hanging.
+            await new Promise<void>((resolve, reject) => {
+              const onFinish = () => {
                 copyStream.removeListener('error', onError);
                 resolve();
               };
               const onError = (err: Error) => {
-                copyStream.removeListener('drain', onDrain);
+                copyStream.removeListener('finish', onFinish);
                 reject(err);
               };
-              copyStream.once('drain', onDrain);
+              copyStream.once('finish', onFinish);
               copyStream.once('error', onError);
             });
-
-          let sourceRowNumber = 0;
-          for await (const row of streamParseCsv(stream)) {
-            // If the COPY socket already errored, surface it immediately
-            // rather than continuing to write into a dead stream.
-            if (copyError) throw copyError;
-
-            sourceRowNumber++;
-            const searchTermOriginalRaw = row['Search Term'] ?? '';
-            // Clean for display: strip invisible noise (OBJ, ZWSP, etc.),
-            // collapse whitespace, NFC. This is what gets stored as
-            // staging.search_term_raw and ultimately surfaces in the UI.
-            const searchTermCleanedRaw = cleanSearchTermForDisplay(searchTermOriginalRaw);
-            const noisy = hadUnicodeNoise(searchTermOriginalRaw);
-            // Defensive fallbacks. The cleanest production case (a real
-            // search term with maybe some unicode noise) never hits these,
-            // but if Amazon ships a row with an empty cell or a term
-            // composed entirely of OBJ/ZWSP/etc, we need non-empty values
-            // for the NOT NULL constraints. Use the same sentinel for all
-            // three columns so the dedup logic still groups them together.
-            const searchTermOriginal = searchTermOriginalRaw || '__unparseable__';
-            const searchTermCleaned = searchTermCleanedRaw || '__unparseable__';
-            const normalizedTerm =
-              normalizeForMatch(searchTermCleanedRaw) ||
-              searchTermCleanedRaw.toLowerCase().trim() ||
-              '__unparseable__';
-            const t1 = row['Top Clicked Product #1: Product Title'] ?? null;
-            const t2 = row['Top Clicked Product #2: Product Title'] ?? null;
-            const t3 = row['Top Clicked Product #3: Product Title'] ?? null;
-            const inT1 = titleContainsKeyword(normalizedTerm, t1);
-            const inT2 = titleContainsKeyword(normalizedTerm, t2);
-            const inT3 = titleContainsKeyword(normalizedTerm, t3);
-            const matchCount = (inT1 ? 1 : 0) + (inT2 ? 1 : 0) + (inT3 ? 1 : 0);
-            const fields = [
-              file.batchId,
-              file.id,
-              weekEndDate,
-              searchTermOriginal,
-              searchTermCleaned,
-              normalizedTerm,
-              noisy ? 't' : 'f',
-              sourceRowNumber,
-              Number(row['Search Frequency Rank']),
-              row['Top Clicked Brand #1'] || null,
-              row['Top Clicked Brands #2'] || null,
-              row['Top Clicked Brands #3'] || null,
-              row['Top Clicked Category #1'] || null,
-              row['Top Clicked Category #2'] || null,
-              row['Top Clicked Category #3'] || null,
-              row['Top Clicked Product #1: ASIN'] || null,
-              row['Top Clicked Product #2: ASIN'] || null,
-              row['Top Clicked Product #3: ASIN'] || null,
-              t1,
-              t2,
-              t3,
-              toNumeric(row['Top Clicked Product #1: Click Share']),
-              toNumeric(row['Top Clicked Product #2: Click Share']),
-              toNumeric(row['Top Clicked Product #3: Click Share']),
-              toNumeric(row['Top Clicked Product #1: Conversion Share']),
-              toNumeric(row['Top Clicked Product #2: Conversion Share']),
-              toNumeric(row['Top Clicked Product #3: Conversion Share']),
-              inT1 ? 't' : 'f',
-              inT2 ? 't' : 'f',
-              inT3 ? 't' : 'f',
-              matchCount,
-            ];
-            const line = fields.map(encodeField).join('\t') + '\n';
-            // Use the version that races drain vs. error — without this,
-            // a backpressure pause that's interrupted by an error would
-            // hang forever waiting for 'drain'.
-            if (!copyStream.write(line)) {
-              await waitForDrainOrError();
-            }
-            rowsStaged++;
+          } finally {
+            client.release();
+            await pool.end();
           }
+          return rowsStaged;
+        };
 
-          if (copyError) throw copyError;
-
-          copyStream.end();
-
-          // Final completion: race finish vs. error so a late-emitting
-          // error during COPY commit (e.g., constraint violation that
-          // surfaces server-side after we've sent all rows) propagates
-          // properly instead of just hanging.
-          await new Promise<void>((resolve, reject) => {
-            const onFinish = () => {
-              copyStream.removeListener('error', onError);
-              resolve();
-            };
-            const onError = (err: Error) => {
-              copyStream.removeListener('finish', onFinish);
-              reject(err);
-            };
-            copyStream.once('finish', onFinish);
-            copyStream.once('error', onError);
-          });
-        } finally {
-          client.release();
-          await pool.end();
+        // Retry a stalled or broken download. On 2026-10-19 the R2 body
+        // trickled for ~65 min, then the inactivity guard fired; with no
+        // listener behind the old .pipe() chains its error killed the worker
+        // and the import vanished unmarked. Retryable = isRetryableR2Error:
+        // the guard's R2StreamError, a dropped or refused socket, an R2 5xx
+        // or throttle. Anything else (a bad row, a constraint violation, a
+        // missing object) still fails the import at once.
+        for (let attempt = 1; ; attempt++) {
+          try {
+            return await copyOnce();
+          } catch (e) {
+            if (attempt >= MAX_COPY_ATTEMPTS || !isRetryableR2Error(e)) throw e;
+            const { error, code } = errFields(e);
+            console.warn(
+              `[copy] attempt ${attempt} of ${MAX_COPY_ATTEMPTS} failed for ${file.id.slice(0, 8)}, retrying in ${COPY_RETRY_DELAY_MS / 1000}s`,
+              JSON.stringify({ error, code }),
+            );
+            // A failed COPY is one rolled-back statement, so staging holds
+            // nothing of this file; clear defensively anyway — by file, as
+            // clear_staging does, never TRUNCATE.
+            await db
+              .delete(stagingWeeklyMetrics)
+              .where(eq(stagingWeeklyMetrics.uploadedFileId, file.id));
+            await new Promise((resolve) => setTimeout(resolve, COPY_RETRY_DELAY_MS));
+          }
         }
-        return rowsStaged;
       },
       (n) => n,
     );

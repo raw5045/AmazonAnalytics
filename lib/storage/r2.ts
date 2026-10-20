@@ -1,6 +1,6 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { Transform, type Readable } from 'node:stream';
+import { pipeline, Transform, type Readable } from 'node:stream';
 import { env } from '@/lib/env';
 
 export const r2 = new S3Client({
@@ -59,9 +59,61 @@ export function buildUploadStorageKey(input: UploadKeyInput): string {
   return `uploads/${input.batchId}/${input.fileId}/${safe}`;
 }
 
+const R2_STREAM_INACTIVE = 'r2_stream_inactive';
+
 /**
- * Stream-level inactivity timeout. Destroys the stream with an error if no
- * chunk arrives within `ms`. Catches the case where R2 returns a body but
+ * The error the inactivity guard destroys a download with. Its `code` lets the
+ * import's COPY retry (and the logs) tell a stalled transfer from a bad row.
+ */
+export class R2StreamError extends Error {
+  readonly code = R2_STREAM_INACTIVE;
+  constructor(message: string) {
+    super(message);
+    this.name = 'R2StreamError';
+  }
+}
+
+const RETRYABLE_CODES = new Set([
+  R2_STREAM_INACTIVE,
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+  'ERR_STREAM_PREMATURE_CLOSE',
+]);
+const RETRYABLE_SDK_NAMES = new Set([
+  'InternalError',
+  'ServiceUnavailable',
+  'SlowDown',
+  'TimeoutError',
+  'AbortError',
+]);
+
+/**
+ * True for a download failure worth retrying: the inactivity guard's
+ * R2StreamError, a dropped, refused or timed-out socket, or an R2 5xx or
+ * throttle (the 2026-09-28 import failed on an R2 InternalError 500 at
+ * GetObject). False for what would fail the same way again: a missing key, a
+ * 403, a bad row, a plain Error.
+ */
+export function isRetryableR2Error(e: unknown): boolean {
+  if (e instanceof R2StreamError) return true;
+  if (typeof e !== 'object' || e === null) return false;
+  const { code, name, $metadata } = e as {
+    code?: unknown;
+    name?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+  };
+  if (typeof code === 'string' && RETRYABLE_CODES.has(code)) return true;
+  const status = $metadata?.httpStatusCode;
+  if (typeof status === 'number' && status >= 500) return true;
+  return typeof name === 'string' && RETRYABLE_SDK_NAMES.has(name);
+}
+
+/**
+ * Stream-level inactivity timeout. Destroys the stream with an R2StreamError
+ * if no chunk arrives within `ms`. Catches the case where R2 returns a body but
  * the underlying TCP stream stalls mid-transfer — a real hang we observed
  * could not be distinguished from a hung Promise without this.
  */
@@ -74,7 +126,7 @@ class InactivityTimeout extends Transform {
   private reset() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
-      this.destroy(new Error(`${this.label} inactive for ${this.ms}ms`));
+      this.destroy(new R2StreamError(`${this.label} inactive for ${this.ms}ms`));
     }, this.ms);
   }
   _transform(chunk: Buffer, _enc: BufferEncoding, cb: (err?: Error | null, data?: Buffer) => void) {
@@ -102,7 +154,9 @@ export interface DownloadStreamOptions {
  * Download an R2 object as a Readable stream, with both request-level and
  * stream-inactivity timeouts. Without these, a stalled R2 transfer would
  * silently hang the import indefinitely (no error event ever fires on
- * downstream consumers).
+ * downstream consumers). Any failure — a stall (R2StreamError) or a body
+ * error — arrives as an 'error' on the returned stream; isRetryableR2Error
+ * says whether it is worth another attempt.
  */
 export async function downloadStreamFromR2(
   key: string,
@@ -126,10 +180,16 @@ export async function downloadStreamFromR2(
 
   if (!result.Body) throw new Error(`R2 object has no body: ${key}`);
 
-  // Pipe through the inactivity timeout. If R2 stalls mid-stream, the
-  // Transform fires an error which propagates to whoever's consuming
-  // the stream — turning a silent hang into a normal caught error.
-  return (result.Body as Readable).pipe(new InactivityTimeout(inactivityTimeoutMs, `R2 stream ${key}`));
+  // Run the body through the inactivity guard with pipeline, not .pipe():
+  // .pipe() never forwards errors, so a body error (a socket reset) never
+  // reached the consumer, and the guard's own timeout error had no listener
+  // at all — an unhandled 'error' event that killed the worker mid-COPY on
+  // 2026-10-19. pipeline forwards a body error to `guarded` and destroys the
+  // body when the guard times out. The callback is a deliberate no-op: the
+  // consumer sees the error on `guarded`.
+  const guarded = new InactivityTimeout(inactivityTimeoutMs, `R2 stream ${key}`);
+  pipeline(result.Body as Readable, guarded, () => undefined);
+  return guarded;
 }
 
 /**

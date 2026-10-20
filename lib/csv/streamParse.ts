@@ -1,5 +1,5 @@
 import { parse, type Parser } from 'csv-parse';
-import { Readable, Transform } from 'node:stream';
+import { pipeline, type Readable, Transform } from 'node:stream';
 
 export interface StreamParseOptions {
   /** If true, drop the very first line before parsing headers. Default true. */
@@ -10,6 +10,13 @@ export interface StreamParseOptions {
  * Async iterable that yields CSV rows as Record<string,string>, keyed by header.
  * Strips a UTF-8 BOM if present. By default, drops the first row (metadata) so
  * the second row becomes the header row.
+ *
+ * Errors propagate: the chain is built with pipeline, so an error anywhere in
+ * it (the input's, a transform's, the parser's) destroys `parser` with that
+ * error and the for-await rejects with it. `.pipe()` never forwards errors; an
+ * unhandled 'error' on the source killed the worker on 2026-10-19. The
+ * pipeline callback is a deliberate no-op: the error surfaces through the
+ * iteration.
  */
 export async function* streamParseCsv(
   input: Readable,
@@ -17,16 +24,17 @@ export async function* streamParseCsv(
 ): AsyncGenerator<Record<string, string>> {
   const skipMetadata = opts.skipMetadataRow ?? true;
 
-  const source: Readable = skipMetadata ? input.pipe(stripFirstLine()) : input;
-  const bomStripped = source.pipe(stripBom());
-
-  const parser: Parser = bomStripped.pipe(
-    parse({
-      columns: true,
-      skip_empty_lines: true,
-      relax_quotes: true,
-      relax_column_count: true,
-    }),
+  const parser: Parser = parse({
+    columns: true,
+    skip_empty_lines: true,
+    relax_quotes: true,
+    relax_column_count: true,
+  });
+  // The array form of pipeline: the variadic overloads cannot take the
+  // optional metadata stage as a spread.
+  pipeline(
+    [input, ...(skipMetadata ? [stripFirstLine()] : []), stripBom(), parser],
+    () => undefined,
   );
 
   for await (const row of parser) {
