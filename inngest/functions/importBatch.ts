@@ -3,9 +3,17 @@ import { inngest } from '../client';
 import { db } from '@/db/client';
 import { uploadBatches, uploadedFiles } from '@/db/schema';
 import { startImportJob } from '@/worker/jobs';
+import { sendImportEmail } from '@/lib/notifications/sendImportEmail';
+import { errFields } from '@/lib/ask/logSafe';
 
 export interface ImportBatchInput {
   batchId: string;
+}
+
+/** The reason stored on a failed file (validation_errors_json.error), or null. */
+function storedReason(validationErrorsJson: unknown): string | null {
+  const reason = (validationErrorsJson as { error?: unknown } | null)?.error;
+  return typeof reason === 'string' ? reason : null;
 }
 
 /**
@@ -283,6 +291,41 @@ export const importBatchFn = inngest.createFunction(
         .set({ status: finalStatus, completedAt: new Date() })
         .where(eq(uploadBatches.id, batchId)),
     );
+
+    // Email the admins when the batch did not fully import. Only the
+    // worker's success path emails, so a failed file (marked by the worker's
+    // catch path, or by the poll budget above after a crash, as on
+    // 2026-10-19) used to tell nobody. Fail-soft: an email problem must never
+    // fail the function.
+    if (finalStatus !== 'imported') {
+      await step.run('notify-failure', async () => {
+        try {
+          const rows = await db.query.uploadedFiles.findMany({
+            where: and(
+              eq(uploadedFiles.batchId, batchId),
+              inArray(uploadedFiles.validationStatus, ['import_failed', 'fail']),
+            ),
+            orderBy: [asc(uploadedFiles.weekEndDate)],
+            columns: { originalFilename: true, validationErrorsJson: true },
+          });
+          const failures = rows.map((r) => ({
+            filename: r.originalFilename,
+            reason: storedReason(r.validationErrorsJson),
+          }));
+          await sendImportEmail({
+            outcome: 'batch_failed',
+            filename: failures[0]?.filename ?? 'batch',
+            batchId,
+            failures,
+          });
+          return { failedFiles: failures.length };
+        } catch (e) {
+          const { error, code } = errFields(e);
+          console.warn('[import-batch] failure email not sent', JSON.stringify({ error, code }));
+          return { failedFiles: null };
+        }
+      });
+    }
 
     // NOTE: the summary refresh runs INLINE in importFile.ts after each file's
     // import, so there is intentionally no 'summary/refresh-requested' consumer.

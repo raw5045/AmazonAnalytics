@@ -109,6 +109,85 @@ describe('buildImportEmail', () => {
     });
   });
 
+  describe('batch_failed (the orchestrator finished a batch with failed files)', () => {
+    const email = buildImportEmail({
+      ...baseInput,
+      outcome: 'batch_failed',
+      failures: [
+        {
+          filename: 'US_Top_Search_Terms_Simple_Week_2026_04_25.csv',
+          reason: 'orchestrator poll budget exhausted (>72 × 5m)',
+        },
+        { filename: 'US_Top_Search_Terms_Simple_Week_2026_05_02.csv', reason: null },
+      ],
+    });
+
+    it('subject says FAILED and names the first failed file, plus how many more', () => {
+      expect(email.subject).toBe(
+        '✗ Import FAILED: US_Top_Search_Terms_Simple_Week_2026_04_25.csv (+1 more)',
+      );
+    });
+
+    it('text body says the batch failed and lists each failed file with its stored reason', () => {
+      expect(email.text).toContain('The import batch failed: 2 files did not import.');
+      expect(email.text).toContain(
+        '- US_Top_Search_Terms_Simple_Week_2026_04_25.csv: orchestrator poll budget exhausted (>72 × 5m)',
+      );
+      expect(email.text).toContain(
+        '- US_Top_Search_Terms_Simple_Week_2026_05_02.csv: no reason recorded',
+      );
+    });
+
+    it('text body gives the recovery steps and the batch link', () => {
+      expect(email.text).toContain(
+        'The file is still uploaded: reset it and click Import again (see memory/import-crash-2026-10-19 in the repo docs or ask the assistant)',
+      );
+      expect(email.text).toContain(
+        'https://keywordquarry.com/admin/batches/3cbf91d3-ae35-47be-af03-fc09bd97f252',
+      );
+    });
+
+    it('html body has the red headline, each failed file and its reason, and the recovery steps', () => {
+      expect(email.html).toContain('#b91c1c');
+      expect(email.html).toContain('Import FAILED');
+      expect(email.html).toContain('US_Top_Search_Terms_Simple_Week_2026_05_02.csv');
+      expect(email.html).toContain('orchestrator poll budget exhausted');
+      expect(email.html).toContain('no reason recorded');
+      expect(email.html).toContain('reset it and click Import again');
+    });
+
+    it('html body escapes the filenames and the stored reasons', () => {
+      const xss = buildImportEmail({
+        ...baseInput,
+        outcome: 'batch_failed',
+        failures: [{ filename: '<b>x.csv</b>', reason: '<script>alert(1)</script>' }],
+      });
+      expect(xss.html).not.toContain('<script>alert(1)</script>');
+      expect(xss.html).toContain('&lt;script&gt;');
+      expect(xss.html).not.toContain('<b>x.csv</b>');
+    });
+
+    it('one failure gets no "+N more", and a long stored reason is cut to keep the email readable', () => {
+      const one = buildImportEmail({
+        ...baseInput,
+        outcome: 'batch_failed',
+        failures: [{ filename: baseInput.filename, reason: `Failed query: ${'x'.repeat(2_000)}` }],
+      });
+      expect(one.subject).toBe('✗ Import FAILED: US_Top_Search_Terms_Simple_Week_2026_04_25.csv');
+      expect(one.text).toContain('The import batch failed: 1 file did not import.');
+      expect(one.text).toContain(`Failed query: ${'x'.repeat(100)}`);
+      expect(one.text).not.toContain('x'.repeat(600));
+      expect(one.text).toContain('…');
+    });
+
+    it('a batch with no failed file rows still says it failed', () => {
+      const none = buildImportEmail({ ...baseInput, filename: 'batch', outcome: 'batch_failed' });
+      expect(none.subject).toBe('✗ Import FAILED: batch');
+      expect(none.text).toContain('The import batch failed.');
+      expect(none.text).toContain('reset it and click Import again');
+    });
+  });
+
   describe('graceful handling of missing fields', () => {
     it('renders dashes for missing duration / counts', () => {
       const email = buildImportEmail({

@@ -1,18 +1,21 @@
 /**
  * Pure function: produce the email subject/text/html for one of the
- * three import-outcome variants. Kept separate from the Resend send
+ * four import-outcome variants. Kept separate from the Resend send
  * so we can snapshot-test the templates without hitting the network.
  *
  * Outcomes:
  *   - 'completed'                       full success
  *   - 'completed_with_refresh_failure'  kwm rows landed; kcs refresh failed
  *   - 'failed'                          import did not complete; data not in kwm
+ *   - 'batch_failed'                    the orchestrator finished a batch with
+ *                                       failed files (sent by importBatch)
  */
 
 export type ImportOutcome =
   | 'completed'
   | 'completed_with_refresh_failure'
-  | 'failed';
+  | 'failed'
+  | 'batch_failed';
 
 export interface ImportEmailInput {
   outcome: ImportOutcome;
@@ -31,6 +34,11 @@ export interface ImportEmailInput {
   lastPhase?: string;
   /** Error message — failure paths. */
   errorMessage?: string;
+  /**
+   * The batch's failed files, each with the reason stored on it (null when
+   * none was recorded) — 'batch_failed'.
+   */
+  failures?: Array<{ filename: string; reason: string | null }>;
   /** App's public URL — used to build the batch detail link. */
   appUrl: string;
 }
@@ -49,6 +57,8 @@ export function buildImportEmail(input: ImportEmailInput): BuiltEmail {
       return buildRefreshFailure(input);
     case 'failed':
       return buildHardFailure(input);
+    case 'batch_failed':
+      return buildBatchFailure(input);
   }
 }
 
@@ -132,6 +142,46 @@ function buildHardFailure(i: ImportEmailInput): BuiltEmail {
     linkUrl,
     linkText: 'View details',
     afterRowsHtml: '<p style="margin: 16px 0 0 0; color: #555;">The data did <strong>NOT</strong> make it into kwm. Re-upload the file once the issue is fixed.</p>',
+  });
+  return { subject, text: lines.join('\n'), html };
+}
+
+const BATCH_FAILURE_RECOVERY =
+  'The file is still uploaded: reset it and click Import again (see memory/import-crash-2026-10-19 in the repo docs or ask the assistant).';
+/** A stored reason can be a whole failed query; keep the email readable. */
+const MAX_REASON_CHARS = 500;
+
+function buildBatchFailure(i: ImportEmailInput): BuiltEmail {
+  const failures = i.failures ?? [];
+  const n = failures.length;
+  const subject = `✗ Import FAILED: ${i.filename}${n > 1 ? ` (+${n - 1} more)` : ''}`;
+  const linkUrl = `${i.appUrl}/admin/batches/${i.batchId}`;
+  const reasonOf = (reason: string | null): string =>
+    reason === null
+      ? 'no reason recorded'
+      : reason.length > MAX_REASON_CHARS
+        ? `${reason.slice(0, MAX_REASON_CHARS)}…`
+        : reason;
+  const lines = [
+    n > 0
+      ? `The import batch failed: ${n} ${n === 1 ? 'file' : 'files'} did not import.`
+      : 'The import batch failed.',
+    '',
+    ...failures.map((f) => `- ${f.filename}: ${reasonOf(f.reason)}`),
+    ...(n > 0 ? [''] : []),
+    BATCH_FAILURE_RECOVERY,
+    '',
+    `View details: ${linkUrl}`,
+  ];
+  const html = htmlShell({
+    headlineColor: '#b91c1c',
+    headline: '✗ Import FAILED',
+    filename: i.filename,
+    // htmlShell escapes each label (the filename); the value is escaped here.
+    rows: failures.map((f): [string, string] => [f.filename, escapeHtml(reasonOf(f.reason))]),
+    linkUrl,
+    linkText: 'View details',
+    afterRowsHtml: `<p style="margin: 16px 0 0 0; color: #555;">${escapeHtml(BATCH_FAILURE_RECOVERY)}</p>`,
   });
   return { subject, text: lines.join('\n'), html };
 }
