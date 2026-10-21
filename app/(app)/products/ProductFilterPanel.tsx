@@ -456,7 +456,7 @@ export function ProductFilterPanel({
                   </option>
                 ))}
               </select>
-              <p className={HINT}>Amazon&apos;s Brand Analytics category, as on the Explorer; one per product, mapped from its Keepa category.</p>
+              <p className={HINT}>Amazon&apos;s Brand Analytics category, as on the Keywords tab; one per product, mapped from its Keepa category.</p>
             </Field>
 
             <Field label="Department (Keepa)" htmlFor="pf-dept">

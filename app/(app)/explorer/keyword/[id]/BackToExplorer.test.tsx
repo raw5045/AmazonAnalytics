@@ -51,7 +51,7 @@ describe('BackToExplorer', () => {
 
   it('came from the explorer: the link points at it, and a plain click restores it with router.back()', () => {
     render(<BackToExplorer href={HREF} cameFromExplorer />);
-    const link = screen.getByRole('link', { name: '← Back to explorer' });
+    const link = screen.getByRole('link', { name: '← Back to keywords' });
     expect(link).toHaveAttribute('href', HREF);
     fireEvent.click(link);
     expect(back).toHaveBeenCalledTimes(1);
@@ -62,7 +62,7 @@ describe('BackToExplorer', () => {
     // The explorer opens keyword pages in a new tab; a same-tab hop and the browser's Back leave history.length at 3 here.
     Object.defineProperty(window, 'navigation', { configurable: true, value: { canGoBack: false } });
     render(<BackToExplorer href={HREF} cameFromExplorer />);
-    fireEvent.click(screen.getByRole('link', { name: '← Back to explorer' }));
+    fireEvent.click(screen.getByRole('link', { name: '← Back to keywords' }));
     expect(back).not.toHaveBeenCalled();
     expect(prevented).toEqual([false]); // left to the link: it opens the explorer
   });
@@ -70,28 +70,28 @@ describe('BackToExplorer', () => {
   it('with the Navigation API saying it can go back, router.back() is used', () => {
     Object.defineProperty(window, 'navigation', { configurable: true, value: { canGoBack: true } });
     render(<BackToExplorer href={HREF} cameFromExplorer />);
-    fireEvent.click(screen.getByRole('link', { name: '← Back to explorer' }));
+    fireEvent.click(screen.getByRole('link', { name: '← Back to keywords' }));
     expect(back).toHaveBeenCalledTimes(1);
   });
 
   it('no history behind us (direct entry, no Navigation API): the link navigates instead of calling back()', () => {
     vi.spyOn(History.prototype, 'length', 'get').mockReturnValue(1);
     render(<BackToExplorer href={HREF} cameFromExplorer />);
-    fireEvent.click(screen.getByRole('link', { name: '← Back to explorer' }));
+    fireEvent.click(screen.getByRole('link', { name: '← Back to keywords' }));
     expect(back).not.toHaveBeenCalled();
     expect(prevented).toEqual([false]);
   });
 
   it('did not come from the explorer: the link navigates, whatever the history', () => {
     render(<BackToExplorer href={HREF} cameFromExplorer={false} />);
-    fireEvent.click(screen.getByRole('link', { name: '← Back to explorer' }));
+    fireEvent.click(screen.getByRole('link', { name: '← Back to keywords' }));
     expect(back).not.toHaveBeenCalled();
     expect(prevented).toEqual([false]);
   });
 
   it('a modified click (new tab) is left to the browser', () => {
     render(<BackToExplorer href={HREF} cameFromExplorer />);
-    fireEvent.click(screen.getByRole('link', { name: '← Back to explorer' }), { ctrlKey: true });
+    fireEvent.click(screen.getByRole('link', { name: '← Back to keywords' }), { ctrlKey: true });
     expect(back).not.toHaveBeenCalled();
   });
 });

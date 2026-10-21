@@ -13,8 +13,8 @@ import type { ResearchLimits } from './limits';
 import { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP } from './productCaps';
 
 export const CATALOG_VERSION = 1;
-/** 2: the workspace section (spec 2026-09-30 §9.1); 3: the products section (spec 2026-10-09 §9); 4: the products section's category rules and filters (spec 2026-10-12 §6); 5: the products broad-category filter and field (spec 2026-10-12 broad category §9); 6: the broad category is the product's own, one per product (spec 2026-10-14 §10). */
-export const GUIDE_VERSION = 6;
+/** 2: the workspace section (spec 2026-09-30 §9.1); 3: the products section (spec 2026-10-09 §9); 4: the products section's category rules and filters (spec 2026-10-12 §6); 5: the products broad-category filter and field (spec 2026-10-12 broad category §9); 6: the broad category is the product's own, one per product (spec 2026-10-14 §10); 7: the Explorer is named the Keywords tab throughout (spec 2026-10-21 Keywords tab rename). */
+export const GUIDE_VERSION = 7;
 export const QUERY_VERSION = 1;
 
 export interface PresetDefinition {
@@ -220,8 +220,8 @@ export const METRIC_DEFINITIONS: Array<{ name: string; definition: string }> = [
 /** Spec 2026-09-30 §9.1. Same voice as categoryRules: short imperative lines the AI follows. */
 export const WORKSPACE_RULES: readonly string[] = Object.freeze([
   'Run the search first, show the results, then save. Pass the exact search object (presetIds, filters, sort, comparisonWindow) to create_saved_view; never a cursor. Relay every entry in notes to the person.',
-  'Every search answer carries explorerUrl: the Explorer opened with the same filters. Offer it when the person wants to see or refine the results in the app.',
-  'A view that names more than about a hundred leaf categories opens but cannot be exported or refined in the Explorer. Save those categories as a custom category and search or save with it instead.',
+  'Every search answer carries explorerUrl: the Keywords tab opened with the same filters. Offer it when the person wants to see or refine the results in the app.',
+  'A view that names more than about a hundred leaf categories opens but cannot be exported or refined in the Keywords tab. Save those categories as a custom category and search or save with it instead.',
   'Resolve category words with resolve_categories first and pass the returned selections to create_custom_category or update_custom_category; the server expands them to leaves.',
   'Edits and deletes take ids from list_saved_views, list_custom_categories or list_watchlist. Confirm the item\'s name with the person before deleting. Deleting is permanent; removing from the watchlist is not.',
   'Names must be unique per account. On DUPLICATE_NAME, ask the person for a different name; never invent one.',

@@ -70,9 +70,9 @@ export default function HelpPage() {
         </p>
       </Section>
 
-      <Section title="The Explorer">
+      <Section title="The Keywords tab">
         <p>
-          The Explorer is the core tool: search and filter roughly a million
+          The Keywords tab is the core tool: search and filter roughly a million
           keywords by rank, estimated monthly volume, week-over-week movement,
           category, and competition. Set a demand floor, sort by the top-3
           review average, and the least-competitive keywords with real volume
@@ -90,7 +90,7 @@ export default function HelpPage() {
           thousands of reviews make winnable keywords look impossible.
         </p>
         <p>
-          The Explorer also flags keywords where none of the top 3 products
+          The Keywords tab also flags keywords where none of the top 3 products
           use the term in their title — open lanes that are much easier to
           rank for.
         </p>
@@ -121,7 +121,7 @@ export default function HelpPage() {
           exact leaf category — not just
           “Health &amp; Household” but “Magnesium Supplements.” The Category
           Builder lets you combine any leaf categories into custom buckets, so
-          the Explorer returns only keywords from the niches you care about.
+          the Keywords tab returns only keywords from the niches you care about.
         </p>
       </Section>
 

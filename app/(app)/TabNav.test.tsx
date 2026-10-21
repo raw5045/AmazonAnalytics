@@ -30,7 +30,7 @@ function tabNav(showConnectAi = false, showAskAi = false, showProducts = false) 
 }
 
 function explorerLink() {
-  return screen.getByRole('link', { name: 'Explorer' });
+  return screen.getByRole('link', { name: 'Keywords' });
 }
 
 function productsLink() {
@@ -60,7 +60,7 @@ describe('TabNav', () => {
   it('shows the Ask AI tab only when eligible, between Category Builder and Connect AI', () => {
     render(tabNav(true, true));
     const names = screen.getAllByRole('link').map((l) => l.textContent?.trim());
-    expect(names).toEqual(['Explorer', 'Watchlist', 'Category Builder', 'Ask AI', 'Connect AI', 'Tutorials']);
+    expect(names).toEqual(['Keywords', 'Watchlist', 'Category Builder', 'Ask AI', 'Connect AI', 'Tutorials']);
     expect(screen.getByRole('link', { name: 'Ask AI' })).toHaveAttribute('href', '/ask');
   });
   it('hides the Ask AI tab when not eligible', () => {
@@ -76,10 +76,10 @@ describe('TabNav', () => {
       expect(link).not.toHaveClass('after:bg-amber-300');
     };
 
-    it('shows between Explorer and Watchlist when showProducts is true', () => {
+    it('shows between Keywords and Watchlist when showProducts is true', () => {
       render(tabNav(true, true, true));
       const names = screen.getAllByRole('link').map((l) => l.textContent?.trim());
-      expect(names).toEqual(['Explorer', 'Products', 'Watchlist', 'Category Builder', 'Ask AI', 'Connect AI', 'Tutorials']);
+      expect(names).toEqual(['Keywords', 'Products', 'Watchlist', 'Category Builder', 'Ask AI', 'Connect AI', 'Tutorials']);
       expect(productsLink()).toHaveAttribute('href', '/products');
     });
 
@@ -89,7 +89,7 @@ describe('TabNav', () => {
       expect(document.querySelector('a[href="/products"]')).toBeNull();
     });
 
-    it.each(['/products', '/products/B000000001'])('is the active tab on %s, and Explorer is not', (path) => {
+    it.each(['/products', '/products/B000000001'])('is the active tab on %s, and Keywords is not', (path) => {
       nav.pathname = path;
       render(tabNav(false, false, true));
       expectActive(productsLink());
@@ -104,7 +104,7 @@ describe('TabNav', () => {
   });
 
   describe('remembering the last /explorer URL', () => {
-    it('on /explorer, points the Explorer tab at the current URL and saves it', () => {
+    it('on /explorer, points the Keywords tab at the current URL and saves it', () => {
       nav.search = 'q=protein&sort=volume';
       render(tabNav());
       expect(explorerLink()).toHaveAttribute('href', '/explorer?q=protein&sort=volume');
@@ -127,7 +127,7 @@ describe('TabNav', () => {
       expect(localStorage.getItem(LAST_EXPLORER_URL_KEY)).toBe('/explorer?q=zinc&sort=rank');
     });
 
-    it('elsewhere, points the Explorer tab at the saved URL', () => {
+    it('elsewhere, points the Keywords tab at the saved URL', () => {
       localStorage.setItem(LAST_EXPLORER_URL_KEY, '/explorer?q=creatine');
       nav.pathname = '/watchlist';
       render(tabNav());
@@ -187,7 +187,7 @@ describe('TabNav', () => {
   });
 
   describe('remembering the last /products URL (spec 2026-10-19 §10)', () => {
-    it('on /products, points the Products tab at the current URL and saves it; the Explorer memory is neither cleared nor overwritten', () => {
+    it('on /products, points the Products tab at the current URL and saves it; the Keywords memory is neither cleared nor overwritten', () => {
       localStorage.setItem(LAST_EXPLORER_URL_KEY, '/explorer?q=creatine');
       nav.pathname = '/products';
       nav.search = 'dept=Pet+Supplies&sort=listed&page=2';
@@ -205,7 +205,7 @@ describe('TabNav', () => {
       expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBe('/products');
     });
 
-    it('elsewhere, points the Products tab at the saved URL and the Explorer tab at its own', () => {
+    it('elsewhere, points the Products tab at the saved URL and the Keywords tab at its own', () => {
       localStorage.setItem(LAST_PRODUCTS_URL_KEY, '/products?broad=Pet+Products');
       localStorage.setItem(LAST_EXPLORER_URL_KEY, '/explorer?q=creatine');
       nav.pathname = '/watchlist';
@@ -223,7 +223,7 @@ describe('TabNav', () => {
       expect(localStorage.getItem(LAST_PRODUCTS_URL_KEY)).toBe('/products?broad=Pet+Products');
     });
 
-    it('restores the filters after switching to the Explorer and back without remounting', () => {
+    it('restores the filters after switching to the Keywords tab and back without remounting', () => {
       nav.pathname = '/products';
       nav.search = 'dept=Books&page=3';
       const { rerender } = render(tabNav(false, false, true));

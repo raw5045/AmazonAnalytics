@@ -16,15 +16,15 @@ What a signed-in user can open today:
 
 | Area | URL | What it is |
 |---|---|---|
-| Explorer | /explorer | The core table: about 3.9M keywords (those seen in the last 28 days), filterable by rank or estimated volume, movement over 1 to 52 weeks, category, competition (average reviews of the top-3 clicked products), word count, title gaps, fake-volume flags; CSV export; saved views |
+| Keywords tab | /explorer | The core table: about 3.9M keywords (those seen in the last 28 days), filterable by rank or estimated volume, movement over 1 to 52 weeks, category, competition (average reviews of the top-3 clicked products), word count, title gaps, fake-volume flags; CSV export; saved views |
 | Keyword page | /explorer/keyword/… | One keyword's 52-week history: rank and estimated-volume trend, the three most-clicked products with click and conversion share, title-match history, fake-volume history, variants, weekly table |
-| Category Builder | /category-builder | Browse Amazon's category tree down to exact leaf categories (about 20,800 leaves used by keywords; about 24,000 in the product catalog) and build custom categories (buckets of leaves) that the Explorer and the AI connector can filter on |
+| Category Builder | /category-builder | Browse Amazon's category tree down to exact leaf categories (about 20,800 leaves used by keywords; about 24,000 in the product catalog) and build custom categories (buckets of leaves) that the Keywords tab and the AI connector can filter on |
 | Products | /products | The product catalog: about 3.5M Amazon ASINs that are top-3 clicked products for keywords, with Keepa facts (price, BSR, reviews, rating, monthly-sold badge, listing age, offers), category filters, and each product's keyword list |
 | Watchlist | /watchlist | Up to 100 starred keywords; a weekly email digest with each one's movement after new data lands |
 | Connect AI | /connect-ai | A connector (MCP) that lets Claude, Claude Code, ChatGPT and Cursor search KeywordQuarry directly, and with approval save views, build custom categories and edit the watchlist |
 | Help / Tutorials | /help | Seven short videos (about 30 minutes): what the data is, how to navigate, how to focus on a market, three filtering recipes |
 
-Scale as of 2026-10-16: 78 weekly datasets (weeks ending 2025-04-19 through 2026-10-10); 10.8M distinct search terms seen over that period; 3,935,990 keywords in the current Explorer population; 99,592 of them in the top 100,000 by Search Frequency Rank; 3.1M carry an exact leaf category; 3.5M carry an average-reviews figure; 105 Brand Analytics broad categories; a product catalog of 3,534,360 ASINs of which 1,601,287 have Keepa facts and 3,395,727 price/rank/review snapshots back to 2026-05-15.
+Scale as of 2026-10-16: 78 weekly datasets (weeks ending 2025-04-19 through 2026-10-10); 10.8M distinct search terms seen over that period; 3,935,990 keywords in the current Keywords tab population; 99,592 of them in the top 100,000 by Search Frequency Rank; 3.1M carry an exact leaf category; 3.5M carry an average-reviews figure; 105 Brand Analytics broad categories; a product catalog of 3,534,360 ASINs of which 1,601,287 have Keepa facts and 3,395,727 price/rank/review snapshots back to 2026-05-15.
 
 ---
 
@@ -35,14 +35,14 @@ Amazon publishes, for brand-registered sellers, a weekly "Top Search Terms" repo
 
 - **Search Frequency Rank (SFR).** Amazon's rank of a search term by how often it was searched that week. Rank 1 is the most-searched term on Amazon; lower is more demand. It is a rank, not a count. KeywordQuarry's history shows the rank per week, so a keyword's demand curve is visible without any modelling.
 - **Click share / conversion share (top-3 clicked products).** Each of the three most-clicked products' share of all clicks, and of all purchases, for that search term that week. KeywordQuarry shows them on the keyword page and uses them for the fake-volume indicator and for "which product owns this keyword" questions.
-- **Top clicked category #1 (broad).** Amazon's own category label for the most-clicked results (about 105 codes such as Home, Apparel, Beauty, Pet Products, Health & Personal Care). It is a filter in the Explorer.
+- **Top clicked category #1 (broad).** Amazon's own category label for the most-clicked results (about 105 codes such as Home, Apparel, Beauty, Pet Products, Health & Personal Care). It is a filter in the Keywords tab.
 - **Weekly cadence.** New data lands once a week, after Amazon publishes the report. Most competing tools refresh their keyword estimates weekly or monthly; the point of KeywordQuarry's history is that the rank itself is observed weekly, not estimated.
 
 ### 2.2 Estimated monthly searches
 SFR is a rank, so KeywordQuarry converts it into an **estimated monthly search count** with a calibrated model: an anchored piecewise power law (four segments with breakpoints at ranks 1k, 10k and 100k) trained on first-party **Search Query Performance (SQP)** data (marketplace-wide query volumes Amazon reports to a brand for its own queries) matched to monthly SFR. The latest fit (July 2026, calibration month April 2026) has a mean absolute error of about 17 % overall (about 15 % in the top 1,000 ranks, 23 % between 1k and 10k, 19 % between 10k and 100k). The rank-1 term is about 4.2 to 4.9M searches a month.
 
 - How to talk about it: "estimated", "directional", "roughly ±20 %". Never "exact searches". The ordering of keywords is reliable (it is the rank); the absolute count is a calibrated estimate.
-- Every keyword in the Explorer has an estimate. The 52-week volume trend on a keyword page is the rank history passed through the model.
+- Every keyword in the Keywords tab has an estimate. The 52-week volume trend on a keyword page is the rank history passed through the model.
 - **Volume delta / movement.** The change in estimated volume (or in rank) against 1, 4, 13, 26 or 52 weeks earlier. A keyword not observed at the earlier date is treated either as "not observed" (excluded) or as a zero baseline, depending on the filter's setting.
 
 ### 2.3 Competition measured on the products shoppers click
@@ -52,12 +52,12 @@ SFR is a rank, so KeywordQuarry converts it into an **estimated monthly search c
 - **Word count.** Words in the normalized keyword.
 
 ### 2.4 Fake-volume indicator
-Some search terms are inflated by search-and-click bots. KeywordQuarry evaluates every keyword in the top 100,000 ranks each week on the #1 clicked product's click share versus conversion share. **Critical:** click share above 20 % with conversion share below 0.5 %, or click share above 30 % with conversion share below 1 %. **Warning:** click share above 5 % with conversion share below 0.5 %, or above 10 % with conversion share below 1 %. Below rank 100,000 the shares are too noisy and the indicator is "none". As of 2026-10-16: 4,271 warnings and 3,586 criticals in the current population. The Explorer hides criticals by default (shows none and warning); the keyword page shows a 52-week history of the flag. Describe it as an indicator of bot-like click patterns, not proof of manipulation.
+Some search terms are inflated by search-and-click bots. KeywordQuarry evaluates every keyword in the top 100,000 ranks each week on the #1 clicked product's click share versus conversion share. **Critical:** click share above 20 % with conversion share below 0.5 %, or click share above 30 % with conversion share below 1 %. **Warning:** click share above 5 % with conversion share below 0.5 %, or above 10 % with conversion share below 1 %. Below rank 100,000 the shares are too noisy and the indicator is "none". As of 2026-10-16: 4,271 warnings and 3,586 criticals in the current population. The Keywords tab hides criticals by default (shows none and warning); the keyword page shows a 52-week history of the flag. Describe it as an indicator of bot-like click patterns, not proof of manipulation.
 
 ### 2.5 Categories
 - **Leaf category.** The exact Amazon browse path of the #1 clicked product (from Keepa), such as "Health & Household › Vitamins, Minerals & Supplements › Minerals › Magnesium". A keyword's leaf is a proxy for its niche: the products shoppers click, not a classification of the words. About 3.1M of 3.9M current keywords carry one; about 20,800 distinct leaves are in use.
 - **Department.** The root of that path (Health & Household, Pet Supplies, …).
-- **Custom category.** A user-built bucket of leaves (up to 25 per account, up to 12,000 leaves each), made in the Category Builder by picking departments, sub-paths or single leaves. Filtering the Explorer by a custom category returns only keywords whose #1 clicked product sits in those leaves.
+- **Custom category.** A user-built bucket of leaves (up to 25 per account, up to 12,000 leaves each), made in the Category Builder by picking departments, sub-paths or single leaves. Filtering the Keywords tab by a custom category returns only keywords whose #1 clicked product sits in those leaves.
 - **Broad category (Brand Analytics code).** Amazon's own coarse label (about 105 codes). On the product side each product carries one broad category too, derived from its Keepa path through a weekly-learned mapping (the leaf's majority code).
 
 ### 2.6 The product catalog (Keepa data)
@@ -73,9 +73,9 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 *Discovering, selecting, evaluating, organizing, comparing and applying Amazon keywords; research methods; prioritization; understanding search demand.*
 
 ### Features that apply
-- **Explorer** (the whole table): text search by word or broad match, exclude terms (up to 5), rank range or estimated-volume range, average reviews (top-3) min/max, word count, movement filter, department / leaf / custom category, broad category, fake-volume severity, title-gap filter with strict or loose match mode; sorts by rank, improvement, decline, title gap, average price, average reviews, date added. Default view: hides critical fake-volume keywords.
+- **Keywords tab** (the whole table): text search by word or broad match, exclude terms (up to 5), rank range or estimated-volume range, average reviews (top-3) min/max, word count, movement filter, department / leaf / custom category, broad category, fake-volume severity, title-gap filter with strict or loose match mode; sorts by rank, improvement, decline, title gap, average price, average reviews, date added. Default view: hides critical fake-volume keywords.
 - **Keyword page**: current rank and estimate, change versus the prior week, the 52-week rank/volume chart (log or linear), the three most-clicked products with click share, conversion share, price, reviews and leaf category, title-match history (strict vs loose), variants (spelling and word-order siblings), weekly history table, a Watch button and a "Search on Amazon" link.
-- **Saved views** (up to 5 per account): a named Explorer filter set that reopens with one click, with sort and page overlaid.
+- **Saved views** (up to 5 per account): a named Keywords tab filter set that reopens with one click, with sort and page overlaid.
 - **CSV export**: up to 10,000 rows per export, 10 exports a day, with the current filters.
 - **Watchlist + weekly digest**: see Subject 4.
 - **Connect AI**: the same search as tool calls from Claude or ChatGPT (Subject 6).
@@ -102,7 +102,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 - No PPC data (no suggested bids, no ad cost): keyword value for ads must come from elsewhere.
 
 ### When the video is about something else
-- **Reverse-ASIN keyword research (Helium 10 Cerebro, Jungle Scout Keyword Scout by ASIN):** KeywordQuarry has no "enter an ASIN, get its keywords" on the Explorer, but a product page in the catalog lists the keywords that product is a top-3 clicked result for (with click and conversion share, and how many consecutive weeks it has held that place). Complementary: reverse-ASIN tools show what a listing ranks or advertises for; KeywordQuarry shows what shoppers actually click it for.
+- **Reverse-ASIN keyword research (Helium 10 Cerebro, Jungle Scout Keyword Scout by ASIN):** KeywordQuarry has no "enter an ASIN, get its keywords" on the Keywords tab, but a product page in the catalog lists the keywords that product is a top-3 clicked result for (with click and conversion share, and how many consecutive weeks it has held that place). Complementary: reverse-ASIN tools show what a listing ranks or advertises for; KeywordQuarry shows what shoppers actually click it for.
 - **Brand Analytics directly (Amazon's Search Query Performance / Top Search Terms reports):** KeywordQuarry is built on the Top Search Terms report and adds the history, the filters, the categories and the competition lens; a brand-registered seller can download the same weekly report themselves and the comment can say so.
 - **Search volume debates ("whose number is right"):** KeywordQuarry's stance is that the rank is Amazon's observed weekly fact and the count is a calibrated estimate; the comment can suggest comparing a tool's number against the keyword's SFR trend rather than against another estimate.
 - **Keyword tracking of a listing's rank (Helium 10 Keyword Tracker, Jungle Scout Rank Tracker):** not a KeywordQuarry feature; the watchlist tracks a keyword's demand rank, not a product's position for it.
@@ -115,7 +115,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 
 ### Features that apply
 - **Products** page: the catalog of about 3.5M ASINs that are top-3 clicked products for keywords, with filters for listing age (within 60/90/180/365 days), monthly-sold badge floor, review count ceiling, rating range, price range, BSR range, BSR versus its 30-day average, department, leaf categories, custom categories, broad category, FBA offer present/absent, Amazon selling yes/no; sorts by monthly sold, listing date, reviews, price, BSR, BSR ratio, keyword count. Each row links to a product page: facts, price/BSR/review history charts, and the keywords the product is clicked for.
-- **Explorer in product mode of thinking:** a keyword's top-3 clicked products are the current winners of that demand; opening a few keywords in a niche shows the same products recurring.
+- **Keywords tab in product mode of thinking:** a keyword's top-3 clicked products are the current winners of that demand; opening a few keywords in a niche shows the same products recurring.
 - **Category Builder + custom categories** to define the niche once and reuse it across keywords and products.
 - **Connect AI** tools `search_products` and `get_product_details` for the same questions in chat.
 
@@ -123,13 +123,13 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 1. Define the niche as a custom category (or pick a department or leaf).
 2. In Products, filter to recently listed products (e.g. within 180 days) with a monthly-sold badge of at least 1,000 and at most 300 reviews: new entrants that are already selling without a review moat.
 3. Sort by monthly sold, open a product, and read its keyword list: which search terms drive it, with what click share, and for how many consecutive weeks.
-4. Cross to the Explorer with those keywords to see demand trend and whether the lane is crowded (average reviews) or open (title gaps).
+4. Cross to the Keywords tab with those keywords to see demand trend and whether the lane is crowded (average reviews) or open (title gaps).
 5. Use the product's price history and BSR-versus-30-day-average to judge whether its sales are steady or a promotion spike.
 
 ### Workflow examples
 - *New-entrant scan:* "Pet Supplies, listed within 180 days, monthly sold ≥ 500, reviews ≤ 200, sort by monthly sold" shows which newcomers are winning and on which keywords.
 - *Validate an idea from a keyword:* open the keyword, note the three winners' prices and reviews, then open each winner's page for its sold badge and BSR trend; if the #1 product owns 40 % of clicks with 2,000 reviews, the keyword is a fortress; if clicks split three ways across sub-500-review listings, it is contestable.
-- *Niche health check:* in a custom category, compare "keywords with rising 13-week movement" in the Explorer against "products listed within 365 days" in Products: rising demand with few new sellers is the pattern to look for.
+- *Niche health check:* in a custom category, compare "keywords with rising 13-week movement" in the Keywords tab against "products listed within 365 days" in Products: rising demand with few new sellers is the pattern to look for.
 
 ### Data, metrics, limitations
 - Sales are **not estimated**. The monthly-sold figure is Amazon's "bought in past month" badge, a floor in buckets (50, 100, … 1,000, 2,000, 5,000, 10,000 …); products without the badge show nothing. BSR and its 30-day average come from Keepa.
@@ -161,7 +161,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 5. During the launch, read the weekly digest and the keyword pages: demand still there, competitors' click share shifting, new entrants appearing on the products page.
 
 ### Workflow examples
-- *First product, small budget:* Explorer with estimated volume between 5,000 and 30,000, average reviews ≤ 200, title gap on at least one of three, no fake-volume flags, sorted by reviews; then open the ten best, keep the ones with a flat-or-rising 52-week line.
+- *First product, small budget:* Keywords tab with estimated volume between 5,000 and 30,000, average reviews ≤ 200, title gap on at least one of three, no fake-volume flags, sorted by reviews; then open the ten best, keep the ones with a flat-or-rising 52-week line.
 - *Next product in an existing niche:* custom category of the brand's leaves; movement filter "volume 15k → 30k over 13 weeks" to find terms that crossed into meaningful demand this quarter; products page filtered to the same category and listed within 365 days to see who else noticed.
 - *Launch keyword list:* export the saved view to CSV; the "In #1/#2/#3" title-match columns tell which terms the competitors are not using in titles.
 
@@ -183,14 +183,14 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 *Understanding product demand, emerging opportunities, seasonality, market trends, changes in customer interest.*
 
 ### Features that apply
-- **Movement filter** in the Explorer: metric rank or volume; window 1, 4, 13, 26 or 52 weeks; presets (rank jumps such as 500k→100k, 100k→50k, 100k→10k, 50k→10k; volume jumps 5k→15k, 15k→30k, 30k→100k, 15k→100k) or a custom threshold jump; sorts by improvement or decline; a baseline choice for keywords not observed at the earlier date.
+- **Movement filter** in the Keywords tab: metric rank or volume; window 1, 4, 13, 26 or 52 weeks; presets (rank jumps such as 500k→100k, 100k→50k, 100k→10k, 50k→10k; volume jumps 5k→15k, 15k→30k, 30k→100k, 15k→100k) or a custom threshold jump; sorts by improvement or decline; a baseline choice for keywords not observed at the earlier date.
 - **52-week chart** on every keyword page (rank or estimated volume; log or linear), the weekly history table, and the fake-volume history.
 - **Watchlist + weekly digest**: every watched keyword's current rank, prior week, 4 weeks ago, 1-week change and estimated volume, each week, sorted gains first.
 - **Products page**: listing age and BSR-versus-30-day-average filters to see new entrants and products currently outperforming their own average.
 - **Connect AI**: `search_keywords` with a movement filter and `get_keyword_history` (up to 52 weeks) for the same in chat; the preset `growing_4w_v1` sorts by absolute volume change over 4 weeks on an observed baseline.
 
 ### How someone uses it
-1. To find what is rising now: Explorer, movement "volume, 4 weeks, custom from 5,000 to 15,000" (or a preset), sorted by improvement; filter to a category to stay in a niche.
+1. To find what is rising now: Keywords tab, movement "volume, 4 weeks, custom from 5,000 to 15,000" (or a preset), sorted by improvement; filter to a category to stay in a niche.
 2. To separate a trend from a spike: open the keyword; a trend climbs over many weeks, a spike is one or two weeks and the fake-volume strip often lights up with it.
 3. To read seasonality: the 52-week line shows last year's shape; a term that peaked in the same weeks last year is seasonal (the data covers 78 weeks, so one full prior year is visible for most terms).
 4. To monitor: star the keywords; the digest arrives after each weekly import.
@@ -218,7 +218,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 *Analyzing search behavior, keyword trends, product data, sales signals, competitor information and other evidence to support research, selection or launch decisions.*
 
 ### Features that apply
-- Every metric in Section 2, visible per keyword (keyword page), per product (product page) and across the population (Explorer, Products, CSV export).
+- Every metric in Section 2, visible per keyword (keyword page), per product (product page) and across the population (Keywords tab, Products, CSV export).
 - **Click share and conversion share** of the top-3 clicked products: who owns the search and whether clicks turn into purchases.
 - **Weeks in top 3**: on a product page, how many consecutive imported weeks the product has been a top-3 clicked result for each keyword, and when that run started.
 - **Title match (strict vs loose) history** over 52 weeks: when the winners started (or stopped) naming the term.
@@ -229,12 +229,12 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 ### How someone uses it
 - Read a keyword's page top to bottom: rank and estimate; the 52-week line; the three winners and their click/conversion shares (a 45 % click share with a 50 % conversion share is a dominant product; 15/15/15 is an open field); the title-match history (a competitor adding the term to its title shows as a flip); the fake-volume strip.
 - Read a product's page: the Keepa facts and history, then the keyword list sorted by rank with each keyword's slot and shares: the product's demand footprint.
-- Export a filtered Explorer view and compute your own ratios (volume per review, gap counts) in a sheet.
+- Export a filtered Keywords tab view and compute your own ratios (volume per review, gap counts) in a sheet.
 
 ### Workflow examples
 - *Who owns a search:* for "collagen peptides powder", the keyword page shows the #1 product's click and conversion share and for how many weeks it has held the slot (product page); a long streak with high conversion share means a stable incumbent.
 - *Evidence for a listing change:* a competitor's title-match flag flipping from no to yes while its click share rose is visible on the keyword page's 52-week title history.
-- *Data pull for a spreadsheet model:* Explorer filtered to a custom category, all columns, exported; join with your own cost model.
+- *Data pull for a spreadsheet model:* Keywords tab filtered to a custom category, all columns, exported; join with your own cost model.
 
 ### Data, metrics, limitations
 - All shares are Amazon's weekly figures for the three most-clicked products only; the long tail of clicks is not reported.
@@ -254,7 +254,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 *Using AI to research keywords or products, analyze opportunities, select products or plan launches; conversational research; AI interpretation of data.*
 
 ### Features that apply
-- **Connect AI** (the KeywordQuarry connector, Model Context Protocol): works with Claude (web and desktop), Claude Code, ChatGPT (paid plan with Developer mode) and Cursor; the user adds the connector by URL and signs in with the KeywordQuarry account. Read tools for every account: `get_research_guide` (definitions, presets, rules), `resolve_categories` (category words to exact selections), `search_keywords` (the Explorer's filters, presets, sorts, movement windows, excluded terms), `get_keyword_details`, `get_keyword_history` (up to 52 weeks), `search_products`, `get_product_details`. Write tools, each requiring the user's approval in the AI client: create/update/delete saved views, custom categories, and add/remove watchlist keywords (with the account caps: 5 views, 25 custom categories, 100 watched keywords). Limits: 60 requests a minute, 1,000 rows per search, pages of 50 to 100, cursors valid 15 minutes.
+- **Connect AI** (the KeywordQuarry connector, Model Context Protocol): works with Claude (web and desktop), Claude Code, ChatGPT (paid plan with Developer mode) and Cursor; the user adds the connector by URL and signs in with the KeywordQuarry account. Read tools for every account: `get_research_guide` (definitions, presets, rules), `resolve_categories` (category words to exact selections), `search_keywords` (the Keywords tab's filters, presets, sorts, movement windows, excluded terms), `get_keyword_details`, `get_keyword_history` (up to 52 weeks), `search_products`, `get_product_details`. Write tools, each requiring the user's approval in the AI client: create/update/delete saved views, custom categories, and add/remove watchlist keywords (with the account caps: 5 views, 25 custom categories, 100 watched keywords). Limits: 60 requests a minute, 1,000 rows per search, pages of 50 to 100, cursors valid 15 minutes.
 - **Presets the AI can use**: high demand (≥ 10,000 estimated searches), low review competition (< 500 average reviews), growing over 4 weeks, title gap (any of the top three titles lacks the term, loose match).
 - The research guide the connector serves instructs the AI on definitions and caveats (estimates, nulls, capped counts), so AI answers carry KeywordQuarry's own caveats.
 - Free during beta.
@@ -323,7 +323,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 - **Watchlist**: watch the niche's key terms weekly.
 
 ### How someone uses it
-1. Define the niche (custom category). In the Explorer, sort by average reviews descending to see the hardest terms and ascending to see the softest; bound by a demand floor so "soft" is not "empty".
+1. Define the niche (custom category). In the Keywords tab, sort by average reviews descending to see the hardest terms and ascending to see the softest; bound by a demand floor so "soft" is not "empty".
 2. For each important term, open the keyword page: if one product holds 40 %+ click share with a high conversion share for 20+ weeks, that term is owned; if the shares are split and the titles have gaps, it is contestable.
 3. In Products, filter the niche to listings created within 365 days with a sold badge: how many new sellers entered and whether they are selling; sort by keyword count to find the newcomer that already wins several searches.
 4. Differentiation: title-gap terms and variants that no winner names are the angles; the 52-week chart tells whether that angle's demand is growing.

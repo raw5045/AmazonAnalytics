@@ -63,7 +63,7 @@ describe('ProductFilterPanel controls', () => {
     expect(optionTexts('Department (Keepa)')).toEqual(['All departments', ...DEPARTMENTS]);
     expect(control('Broad category (Brand Analytics)')).toHaveDisplayValue('All broad categories');
     expect(optionTexts('Broad category (Brand Analytics)')).toEqual(['All broad categories', ...BROAD]);
-    expect(screen.getByText("Amazon's Brand Analytics category, as on the Explorer; one per product, mapped from its Keepa category.")).toBeInTheDocument();
+    expect(screen.getByText("Amazon's Brand Analytics category, as on the Keywords tab; one per product, mapped from its Keepa category.")).toBeInTheDocument();
     expect(screen.getByText('Narrows the leaf search below; also filters on its own.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Leaf' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Custom' })).toHaveAttribute('aria-pressed', 'false');
@@ -369,7 +369,7 @@ describe('ProductFilterPanel categories (spec 2026-10-12 §5.1)', () => {
     expect(replace).toHaveBeenLastCalledWith(`/products?${productFiltersToSearchParams({ ...applied, age: 90, leafPaths: [LEAVES[1], LEAVES[0]] })}`, { scroll: false });
   });
 
-  it("lays the category block out in the Explorer's order: broad category, then department, then leaf categories (spec 2026-10-19 §9)", () => {
+  it("lays the category block out in the Keywords tab's order: broad category, then department, then leaf categories (spec 2026-10-19 §9)", () => {
     renderPanel();
     const follows = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
     const block = [

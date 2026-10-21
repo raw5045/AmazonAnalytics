@@ -5,7 +5,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { Suspense, use, useCallback, useEffect, useSyncExternalStore } from 'react';
 
 /**
- * Top-level navigation: Explorer | Products (only when showProducts is true) |
+ * Top-level navigation: Keywords | Products (only when showProducts is true) |
  * Watchlist (N) | Category Builder | Ask AI (only when showAskAi is true) |
  * Connect AI (only when showConnectAi is true) | Tutorials.
  *
@@ -122,7 +122,7 @@ export function TabNav({
   return (
     <nav className="flex h-full items-stretch gap-6">
       <Link href={explorerHref} className={tabClass(isExplorer)}>
-        Explorer
+        Keywords
       </Link>
       {showProducts && (
         <Link href={productsHref} className={tabClass(isProducts)}>

@@ -171,7 +171,7 @@ export default async function HomePage() {
               <div className="rounded-2xl bg-white p-5 shadow-2xl shadow-blue-950/50">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-semibold text-gray-900">
-                    Keyword Explorer
+                    Keywords
                   </p>
                   <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-[11px] font-medium text-blue-700">
                     This week

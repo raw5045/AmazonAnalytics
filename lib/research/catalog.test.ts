@@ -226,9 +226,9 @@ describe('buildGuide', () => {
 
 describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
   it('is absent unless asked for, and then carries the rules and the caps', () => {
-    expect(GUIDE_VERSION).toBe(6);
+    expect(GUIDE_VERSION).toBe(7);
     const off = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS });
-    expect(off.guideVersion).toBe(6);
+    expect(off.guideVersion).toBe(7);
     expect(off.workspace).toBeUndefined();
     const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: { ...DEFAULT_LIMITS, writesPerDay: 42 }, workspace: true });
     expect(on.workspace).toEqual({ rules: WORKSPACE_RULES, caps: { savedViews: 5, customCategories: 25, watchedKeywords: 100, leavesPerCategory: 12000, writesPerDay: 42 } });

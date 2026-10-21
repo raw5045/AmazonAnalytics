@@ -31,13 +31,13 @@ export interface ConvertResult {
   notes: string[];
 }
 
-export const NOTE_BASELINE = 'The Explorer also counts keywords that had no earlier value, so it can show a few more rows than this search.';
-export const NOTE_DELTA = 'The Explorer cannot filter on the size of the change itself; that part of the movement filter was dropped.';
-export const NOTE_PRIOR_ONLY = 'The Explorer cannot filter on the earlier value alone; that part of the movement filter was dropped.';
-export const NOTE_PRIOR_BAND = 'The Explorer takes a single from-value for a move; the other bound on the earlier value was dropped.';
-export const NOTE_MOVE_UNSUPPORTED = 'The Explorer only accepts a move from a worse rank to a better one, or from a lower volume to a higher one; this move was dropped.';
-export const NOTE_WORD_COUNT_SORT = 'The Explorer cannot sort by word count; the view opens sorted by rank.';
-export const NOTE_EXPLORER_REREAD = 'The Explorer reads part of these filters differently from the search (for example a comma or a doubled space inside an excluded term); check the filters it opens with.';
+export const NOTE_BASELINE = 'The Keywords tab also counts keywords that had no earlier value, so it can show a few more rows than this search.';
+export const NOTE_DELTA = 'The Keywords tab cannot filter on the size of the change itself; that part of the movement filter was dropped.';
+export const NOTE_PRIOR_ONLY = 'The Keywords tab cannot filter on the earlier value alone; that part of the movement filter was dropped.';
+export const NOTE_PRIOR_BAND = 'The Keywords tab takes a single from-value for a move; the other bound on the earlier value was dropped.';
+export const NOTE_MOVE_UNSUPPORTED = 'The Keywords tab only accepts a move from a worse rank to a better one, or from a lower volume to a higher one; this move was dropped.';
+export const NOTE_WORD_COUNT_SORT = 'The Keywords tab cannot sort by word count; the view opens sorted by rank.';
+export const NOTE_EXPLORER_REREAD = 'The Keywords tab reads part of these filters differently from the search (for example a comma or a doubled space inside an excluded term); check the filters it opens with.';
 /**
  * The too-long note for the MCP with the workspace tools on. It points at a custom category, not a saved view: a view of these leaves
  * would open but could not be exported or refined (NOTE_VIEW_TOO_WIDE), while a custom-only scope passes just its ids (§5.2, §5.6).
@@ -49,7 +49,7 @@ export const NOTE_LINK_TOO_LONG_READONLY = 'Too many leaf categories for a link;
  * A saved view whose filters would not fit in a link. It opens from its short ?view= link, but the Explorer's Export and the sidebar's
  * Apply re-serialise the stored filters into URLs, which then fail; the predicate is the same 12,000-byte cap as explorerUrlFor's.
  */
-export const NOTE_VIEW_TOO_WIDE = 'This view names more leaf categories than the Explorer can export or refine; it opens as saved. For a view you can export and change, save these categories as a custom category and save a view that uses it.';
+export const NOTE_VIEW_TOO_WIDE = 'This view names more leaf categories than the Keywords tab can export or refine; it opens as saved. For a view you can export and change, save these categories as a custom category and save a view that uses it.';
 /** Vercel's CDN rejects URLs over 14 KB (§5.6); stay well under it. */
 export const MAX_EXPLORER_URL_BYTES = 12_000;
 

@@ -240,6 +240,6 @@ describe('links', () => {
   it('pins the too-long and too-wide notes', () => {
     expect(NOTE_LINK_TOO_LONG).toBe('Too many leaf categories for a link; save them as a custom category first, then search or save a view with it.');
     expect(NOTE_LINK_TOO_LONG_READONLY).toBe('Too many leaf categories for a link; narrow the categories to get one.');
-    expect(NOTE_VIEW_TOO_WIDE).toBe('This view names more leaf categories than the Explorer can export or refine; it opens as saved. For a view you can export and change, save these categories as a custom category and save a view that uses it.');
+    expect(NOTE_VIEW_TOO_WIDE).toBe('This view names more leaf categories than the Keywords tab can export or refine; it opens as saved. For a view you can export and change, save these categories as a custom category and save a view that uses it.');
   });
 });

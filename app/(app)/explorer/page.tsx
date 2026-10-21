@@ -33,7 +33,7 @@ import { ExportButton } from './ExportButton';
 import { filtersToQueryString } from '@/lib/explorer/export/query';
 
 export const metadata: Metadata = {
-  title: 'Keyword Explorer',
+  title: 'Keywords',
 };
 
 // Broad ("search term contains" → Broad) matches run a substring LIKE over the

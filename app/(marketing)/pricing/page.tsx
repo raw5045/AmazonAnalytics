@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 };
 
 const INCLUDED = [
-  'Full Keyword Explorer — every keyword, every filter',
+  'The full Keywords tab — every keyword, every filter',
   'Weekly-fresh data + 52 weeks of history',
   'Top-3-clicked competition lens + title-gap flags',
   'Fake-volume detection and filtering',

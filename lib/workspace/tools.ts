@@ -37,7 +37,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'list_saved_views',
     title: 'List saved views',
-    description: () => `This account's saved Explorer views (up to ${MAX_VIEWS_PER_USER}): id, name, Explorer link and the stored filters in compact form (leaf categories are previewed: the first ${PREVIEW_LEAF_PATHS} of leafCount). Use the id for update_saved_view and delete_saved_view.`,
+    description: () => `This account's saved views of the Keywords tab (up to ${MAX_VIEWS_PER_USER}): id, name, link and the stored filters in compact form (leaf categories are previewed: the first ${PREVIEW_LEAF_PATHS} of leafCount). Use the id for update_saved_view and delete_saved_view.`,
     inputSchema: emptyInputSchema,
     run: (service, actor, args) => service.listSavedViews(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
@@ -46,7 +46,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'list_custom_categories',
     title: 'List custom categories',
-    description: () => `This account's custom categories (up to ${MAX_CUSTOM_CATEGORIES}): id, name, leaf count, the first ${PREVIEW_LEAF_PATHS} leaf paths and an Explorer link. Use the id for update_custom_category, delete_custom_category, or as a custom selection in search_keywords.`,
+    description: () => `This account's custom categories (up to ${MAX_CUSTOM_CATEGORIES}): id, name, leaf count, the first ${PREVIEW_LEAF_PATHS} leaf paths and a Keywords tab link. Use the id for update_custom_category, delete_custom_category, or as a custom selection in search_keywords.`,
     inputSchema: emptyInputSchema,
     run: (service, actor, args) => service.listCustomCategories(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
@@ -64,7 +64,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'create_saved_view',
     title: 'Create saved view',
-    description: () => `Saves the exact criteria you searched with as a named Explorer view: pass the same presetIds, filters, sort and comparisonWindow (never a cursor; pageSize is accepted and ignored). Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes for anything the Explorer could not carry over; relay the notes to the person. Also returns count (how many saved views the account has after this call) and limit (the cap). ${ASKS}`,
+    description: () => `Saves the exact criteria you searched with as a named view of the Keywords tab: pass the same presetIds, filters, sort and comparisonWindow (never a cursor; pageSize is accepted and ignored). Returns the view with its link, its compact filters (leaf categories previewed, with leafCount), and notes for anything the Keywords tab could not carry over; relay the notes to the person. Also returns count (how many saved views the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: createSavedViewInputSchema,
     run: (service, actor, args) => service.createSavedView(actor, args),
     annotations: CREATE_ANNOTATIONS,
@@ -91,7 +91,7 @@ export const WORKSPACE_TOOLS: ReadonlyArray<WorkspaceToolDefinition> = Object.fr
   frozenTool({
     name: 'create_custom_category',
     title: 'Create custom category',
-    description: () => `Creates a custom category from category selections (from resolve_categories) and/or exact leaf paths; the server expands selections to their leaves, up to ${MAX_LEAF_PATHS_PER_CATEGORY.toLocaleString('en-US')}. Returns id, leaf count, preview paths and an Explorer link, plus count (how many custom categories the account has after this call) and limit (the cap). ${ASKS}`,
+    description: () => `Creates a custom category from category selections (from resolve_categories) and/or exact leaf paths; the server expands selections to their leaves, up to ${MAX_LEAF_PATHS_PER_CATEGORY.toLocaleString('en-US')}. Returns id, leaf count, preview paths and a Keywords tab link, plus count (how many custom categories the account has after this call) and limit (the cap). ${ASKS}`,
     inputSchema: createCustomCategoryInputSchema,
     run: (service, actor, args) => service.createCustomCategory(actor, args),
     annotations: CREATE_ANNOTATIONS,

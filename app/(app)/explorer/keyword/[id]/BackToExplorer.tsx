@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { canGoBack } from '@/lib/nav/canGoBack';
 
 /**
- * Should "Back to explorer" restore the previous page from the browser's
+ * Should "Back to keywords" restore the previous page from the browser's
  * back/forward cache (`router.back()`, instant) instead of doing a fresh
  * `<Link>` navigation that re-runs the explorer's server query?
  *
@@ -26,7 +26,7 @@ export function shouldRestoreViaBack(
 }
 
 /**
- * "← Back to explorer" control on the keyword detail page.
+ * "← Back to keywords" control on the keyword detail page.
  *
  * Renders a real `<Link href>` so SSR, no-JS, and modifier-click ("open in new
  * tab") all keep working and the fallback URL is correct. On a plain left
@@ -71,7 +71,7 @@ export function BackToExplorer({
       prefetch={false}
       className="text-sm text-slate-300 underline hover:text-white"
     >
-      ← Back to explorer
+      ← Back to keywords
     </Link>
   );
 }
