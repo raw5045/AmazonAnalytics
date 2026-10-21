@@ -100,26 +100,28 @@ function fact(label: string): HTMLElement {
 }
 
 describe('FactsCard — a full active row', () => {
-  it('renders every label with its value and its "as of" dates', () => {
+  it('renders every label with one value each, dates as "Mon D, YYYY", and the last-fetched stamp', () => {
     render(<FactsCard facts={FULL} now={NOW} />);
     expect(fact('Brand')).toHaveTextContent('Acme Labs');
     expect(fact('Leaf category')).toHaveTextContent(CATEGORY);
     expect(fact('Broad category')).toHaveTextContent('Health & Personal Care');
-    expect(fact('Listed since')).toHaveTextContent('2026-04-12 · 180 days');
-    expect(fact('Tracking since')).toHaveTextContent('2026-04-15');
+    expect(fact('Listed since')).toHaveTextContent('Apr 12, 2026 · 180 days');
+    expect(fact('Tracking since')).toHaveTextContent('Apr 15, 2026');
     expect(fact('Price')).toHaveTextContent('$19.99');
-    expect(fact('Price')).toHaveTextContent('30d / 90d / 180d / 365d avg $18.99 / $20.49 / $20.99 / —');
+    expect(fact('Price')).not.toHaveTextContent('avg');
     expect(fact('BSR')).toHaveTextContent('#1,234');
-    expect(fact('BSR')).toHaveTextContent('30d / 90d avg #1,900 / #2,500');
+    expect(fact('BSR')).not.toHaveTextContent('30d / 90d avg');
     expect(within(fact('BSR')).getByText(`${MINUS}35% vs 30d avg`)).toBeInTheDocument();
     expect(fact('Reviews')).toHaveTextContent('1,834 · ★ 4.5');
-    expect(fact('Reviews')).toHaveTextContent('rating updated 2026-10-01');
+    expect(fact('Reviews')).not.toHaveTextContent('rating updated');
     expect(fact('Monthly sold')).toHaveTextContent('1,000+');
-    expect(fact('Monthly sold')).toHaveTextContent('as of 2026-10-07');
+    expect(fact('Monthly sold')).toHaveTextContent("Amazon's 'bought in past month' badge");
+    expect(fact('Monthly sold')).not.toHaveTextContent('as of');
     expect(fact('Offers')).toHaveTextContent('new 4 · FBA 3 · FBM 1');
     expect(fact('Amazon')).toHaveTextContent('No Amazon offer');
     expect(within(fact('Status')).getByText('Active')).toBeInTheDocument();
-    expect(fact('Status')).toHaveTextContent('fetched 2026-10-08 (12 fetches)');
+    expect(fact('Status')).not.toHaveTextContent('fetched');
+    expect(screen.getByText('Data last fetched Oct 8, 2026')).toBeInTheDocument();
   });
 
   it('shows one lazy thumbnail with a width and height when the image URL is set, decorative (the h1 names the product)', () => {
@@ -148,7 +150,7 @@ describe('FactsCard — a full active row', () => {
     expect(fact('Brand')).toHaveTextContent('Acme Labs'); // the rest of the card still renders
   });
 
-  it('the ratio chip and the averages lines are left out when Keepa has none', () => {
+  it('the ratio chip is left out when Keepa has no 30-day average', () => {
     render(<FactsCard facts={{ ...FULL, rankRatioX100: null, avg30SalesRank: null, avg90SalesRank: null }} now={NOW} />);
     expect(fact('BSR')).toHaveTextContent(/^#1,234$/);
   });
@@ -158,9 +160,9 @@ describe('FactsCard — a full active row', () => {
     expect(within(fact('BSR')).getByText('+30% vs 30d avg')).toBeInTheDocument();
   });
 
-  it('one fetch reads "1 fetch"', () => {
-    render(<FactsCard facts={{ ...FULL, fetchCount: 1 }} now={NOW} />);
-    expect(fact('Status')).toHaveTextContent('fetched 2026-10-08 (1 fetch)');
+  it('the stamp is omitted when there is no last fetch time', () => {
+    render(<FactsCard facts={{ ...FULL, lastFetchedAt: null }} now={NOW} />);
+    expect(screen.queryByText(/Data last fetched/)).toBeNull();
   });
 
   it('a product whose path is unmapped reads a dash for its broad category', () => {
@@ -173,14 +175,16 @@ describe('FactsCard — edge states', () => {
   it('a delisted row: a "Delisted" badge and dashes for the hidden point-in-time facts; the rest stays', () => {
     render(<FactsCard facts={DELISTED} now={NOW} />);
     expect(within(fact('Status')).getByText('Delisted')).toBeInTheDocument();
-    for (const label of ['Price', 'BSR', 'Monthly sold', 'Offers', 'Amazon']) {
+    for (const label of ['Price', 'BSR', 'Offers', 'Amazon']) {
       expect(fact(label)).toHaveTextContent(/^—$/);
     }
+    // Monthly sold: the dash, then its static badge note (the note shows whatever the value).
+    expect(fact('Monthly sold')).toHaveTextContent(/^—Amazon's 'bought in past month' badge$/);
     expect(fact('Brand')).toHaveTextContent('Acme Labs');
     expect(fact('Leaf category')).toHaveTextContent(CATEGORY);
-    expect(fact('Listed since')).toHaveTextContent('2026-04-12 · 180 days');
+    expect(fact('Listed since')).toHaveTextContent('Apr 12, 2026 · 180 days');
     expect(fact('Reviews')).toHaveTextContent('1,834 · ★ 4.5');
-    expect(fact('Status')).toHaveTextContent('fetched 2026-10-08 (12 fetches)');
+    expect(screen.getByText('Data last fetched Oct 8, 2026')).toBeInTheDocument();
   });
 
   it('a never-fetched row: "Not fetched yet" instead of the fact list', () => {
@@ -191,6 +195,7 @@ describe('FactsCard — edge states', () => {
     expect(screen.queryByText('Health & Personal Care')).toBeNull();
     expect(container.querySelector('img')).toBeNull();
     expect(screen.queryByText(/Not in the Keepa catalog/)).toBeNull();
+    expect(screen.queryByText(/Data last fetched/)).toBeNull();
   });
 
   it('an ASIN with keyword rows but no catalog row: the one "not in the catalog" line, nothing else', () => {

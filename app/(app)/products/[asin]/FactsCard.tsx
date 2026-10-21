@@ -1,10 +1,12 @@
 /**
- * The ASIN page's facts card (spec 2026-10-09 §6.1): everything the Keepa catalog holds on the
- * product, with the dates each fact is "as of". The loader (lib/products/loadProduct.ts) already
- * applies the hiding rules: prices are null unless the row is active, and a delisted row's
- * point-in-time facts (rank, its averages and ratio, monthly sold, offers, Amazon availability) are
- * null, so each of those reads as a dash here. Its Brand Analytics category (the code of its Keepa
- * path) reads as one line, a dash when the path is unmapped.
+ * The ASIN page's facts card (spec 2026-10-09 §6.1, reworked by spec 2026-10-21 product page round 1
+ * §3): one value per fact from the Keepa catalog (the history lives in the charts), dates read
+ * "Mon D, YYYY", and a "Data last fetched" stamp closes the card. The loader
+ * (lib/products/loadProduct.ts) already applies the hiding rules: prices are null unless the row is
+ * active, and a delisted row's point-in-time facts (rank and its ratio, monthly sold, offers, Amazon
+ * availability) are null, so each of those values reads as a dash here and the ratio chip is left
+ * out. Its Brand Analytics category (the code of its Keepa path) reads as one line, a dash when the
+ * path is unmapped.
  *
  * Three shapes: the full fact list; "Not fetched yet" for a catalog row the service has not fetched
  * (every fact null); one line for an ASIN with keyword rows but no catalog row (usually an excluded
@@ -15,6 +17,7 @@ import type { ReactNode } from 'react';
 import type { AsinEnrichmentStatus } from '@/db/schema';
 import type { ProductFacts as ProductPageFacts } from '@/lib/products/loadProduct';
 import { availabilityLabel, formatBadge, formatPriceCents, formatRatio, listingAge } from '@/lib/products/format';
+import { formatDay } from '@/lib/format/date';
 
 export const STATUS_LABEL: Readonly<Record<AsinEnrichmentStatus, string>> = {
   active: 'Active',
@@ -37,6 +40,7 @@ const DASH = '—';
 
 const finite = (n: number | null): n is number => n !== null && Number.isFinite(n);
 const count = (n: number | null): string => (finite(n) ? n.toLocaleString('en-US') : DASH);
+const MONTHLY_SOLD_NOTE = "Amazon's 'bought in past month' badge";
 const rank = (n: number | null): string => (finite(n) ? `#${n.toLocaleString('en-US')}` : DASH);
 
 export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }) {
@@ -58,8 +62,6 @@ export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }
     );
   }
 
-  const priceAvgs = [facts.avg30PriceCents, facts.avg90PriceCents, facts.avg180PriceCents, facts.avg365PriceCents];
-  const rankAvgs = [facts.avg30SalesRank, facts.avg90SalesRank];
   const offers = [facts.newOfferCount, facts.fbaOfferCount, facts.fbmOfferCount];
   const stars = finite(facts.averageRatingX10) ? `★ ${(facts.averageRatingX10 / 10).toFixed(1)}` : null;
   const reviews = [finite(facts.reviewCount) ? count(facts.reviewCount) : null, stars].filter((s) => s !== null);
@@ -94,37 +96,28 @@ export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }
           </Fact>
           <Fact label="Broad category">{facts.broadCategory ?? DASH}</Fact>
           <Fact label="Listed since">
-            {facts.listedSince ? `${facts.listedSince} · ${listingAge(facts.listedSince, now)}` : DASH}
+            {facts.listedSince ? `${formatDay(facts.listedSince)} · ${listingAge(facts.listedSince, now)}` : DASH}
           </Fact>
-          <Fact label="Tracking since">{facts.trackingSince ?? DASH}</Fact>
-          <Fact
-            label="Price"
-            sub={priceAvgs.some(finite) ? `30d / 90d / 180d / 365d avg ${priceAvgs.map(formatPriceCents).join(' / ')}` : null}
-          >
-            {formatPriceCents(facts.currentPriceCents)}
-          </Fact>
-          <Fact label="BSR" sub={rankAvgs.some(finite) ? `30d / 90d avg ${rankAvgs.map(rank).join(' / ')}` : null}>
+          <Fact label="Tracking since">{facts.trackingSince ? formatDay(facts.trackingSince) : DASH}</Fact>
+          <Fact label="Price">{formatPriceCents(facts.currentPriceCents)}</Fact>
+          <Fact label="BSR">
             {rank(facts.salesRank)}
             {finite(facts.rankRatioX100) && <RatioChip ratioX100={facts.rankRatioX100} />}
           </Fact>
-          <Fact label="Reviews" sub={facts.lastRatingUpdate ? `rating updated ${facts.lastRatingUpdate}` : null}>
-            {reviews.length > 0 ? reviews.join(' · ') : DASH}
-          </Fact>
-          <Fact
-            label="Monthly sold"
-            sub={finite(facts.monthlySold) && facts.keepaUpdatedAt ? `as of ${facts.keepaUpdatedAt}` : null}
-          >
+          <Fact label="Reviews">{reviews.length > 0 ? reviews.join(' · ') : DASH}</Fact>
+          <Fact label="Monthly sold" sub={MONTHLY_SOLD_NOTE}>
             {formatBadge(facts.monthlySold)}
           </Fact>
           <Fact label="Offers">
             {offers.some(finite) ? `new ${count(offers[0])} · FBA ${count(offers[1])} · FBM ${count(offers[2])}` : DASH}
           </Fact>
           <Fact label="Amazon">{availabilityLabel(facts.amazonAvailability)}</Fact>
-          <Fact label="Status" sub={fetchedLine(facts)}>
-            {facts.enrichmentStatus ? <StatusBadge status={facts.enrichmentStatus} /> : DASH}
-          </Fact>
+          <Fact label="Status">{facts.enrichmentStatus ? <StatusBadge status={facts.enrichmentStatus} /> : DASH}</Fact>
         </dl>
       </div>
+      {facts.lastFetchedAt && (
+        <p className="mt-3 text-right text-xs text-gray-500">Data last fetched {formatDay(facts.lastFetchedAt)}</p>
+      )}
     </section>
   );
 }
@@ -165,11 +158,4 @@ function StatusBadge({ status }: { status: AsinEnrichmentStatus }) {
       {STATUS_LABEL[status]}
     </span>
   );
-}
-
-/** "fetched 2026-10-08 (12 fetches)": the UTC date of the last fetch and the running count. */
-function fetchedLine(facts: ProductPageFacts): string | null {
-  if (!facts.lastFetchedAt) return null;
-  const n = facts.fetchCount;
-  return `fetched ${facts.lastFetchedAt.slice(0, 10)} (${n.toLocaleString('en-US')} ${n === 1 ? 'fetch' : 'fetches'})`;
 }
