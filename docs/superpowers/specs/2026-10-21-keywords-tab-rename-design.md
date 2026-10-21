@@ -28,10 +28,10 @@ Every place a person reads the name of the keyword table says **Keywords** (the 
 | `lib/research/catalog.ts` WORKSPACE_RULES (two rules) | "the Explorer opened with the same filters", "refined in the Explorer" | "the Keywords tab opened with the same filters", "refined in the Keywords tab"; `GUIDE_VERSION` 6 → 7 with a doc-comment entry |
 | `lib/research/contracts.ts` broadCategory `.describe` | "(the Explorer's broad categories)" | "(the Keywords tab's broad categories)" |
 | `lib/workspace/explorerFilters.ts` NOTE_* strings (8) | "The Explorer …" / "than the Explorer can export or refine" | "The Keywords tab …" / "than the Keywords tab can export or refine" (constant names unchanged) |
-| `lib/workspace/tools.ts` list_saved_views + create_saved_view descriptions | "saved Explorer views … Explorer link", "a named Explorer view" | "saved views of the Keywords tab … link", "a named view of the Keywords tab" |
+| `lib/workspace/tools.ts` list_saved_views, create_saved_view, list_custom_categories, create_custom_category descriptions | "saved Explorer views … Explorer link", "a named Explorer view", "an Explorer link" (×2) | "saved views of the Keywords tab … link", "a named view of the Keywords tab", "a Keywords tab link" |
 | `docs/marketing/keywordquarry-product-profile.md` | "Explorer" rows/bullets | "Keywords tab (`/explorer`)" wording, URLs unchanged |
 
-Tests that pin the old wording follow the new text: `TabNav.test.tsx` (link name + tab-order arrays + it-names), `Thread.test.tsx`, `ProductFilterPanel.test.tsx`, `explorerFilters.test.ts` (NOTE_VIEW_TOO_WIDE pin), `contracts.test.ts` (describe pin), plus any guide-version pin.
+Tests that pin the old wording follow the new text: `TabNav.test.tsx` (link name + tab-order arrays + it-names), `Thread.test.tsx`, `ProductFilterPanel.test.tsx`, `explorerFilters.test.ts` (NOTE_VIEW_TOO_WIDE pin), `contracts.test.ts` (describe pin), `catalog.test.ts` + `service.test.ts` (guide-version pins), `BackToExplorer.test.tsx` (the back-link label).
 
 ## 4. Risk
 

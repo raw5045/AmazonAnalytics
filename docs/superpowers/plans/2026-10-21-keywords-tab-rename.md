@@ -14,7 +14,7 @@
 
 **Files:**
 - Modify: `app/(app)/TabNav.tsx` (CRLF), `app/(app)/explorer/page.tsx`, `app/not-found.tsx`, `app/(app)/ask/Thread.tsx` (CRLF), `app/(app)/products/ProductFilterPanel.tsx`, `app/(app)/explorer/keyword/[id]/BackToExplorer.tsx`, `app/(marketing)/help/page.tsx`, `app/(marketing)/page.tsx` (CRLF), `app/(marketing)/pricing/page.tsx` (CRLF), `lib/research/catalog.ts` (CRLF), `lib/research/contracts.ts` (CRLF), `lib/workspace/explorerFilters.ts`, `lib/workspace/tools.ts`, `docs/marketing/keywordquarry-product-profile.md`
-- Test: `app/(app)/TabNav.test.tsx` (CRLF), `app/(app)/ask/Thread.test.tsx` (CRLF), `app/(app)/products/ProductFilterPanel.test.tsx`, `lib/workspace/explorerFilters.test.ts`, `lib/research/contracts.test.ts`, `lib/research/catalog.test.ts`
+- Test: `app/(app)/TabNav.test.tsx` (CRLF), `app/(app)/ask/Thread.test.tsx` (CRLF), `app/(app)/products/ProductFilterPanel.test.tsx`, `lib/workspace/explorerFilters.test.ts`, `lib/research/contracts.test.ts`, `lib/research/catalog.test.ts`, `app/(app)/explorer/keyword/[id]/BackToExplorer.test.tsx`, `lib/research/service.test.ts` (the last two surfaced by the full-suite gate: the lowercase back-link label and the search provenance's guideVersion pin)
 
 - [ ] **Step 1: Update the tests first (they pin the old wording)**
 
@@ -37,6 +37,8 @@ Exact replacements (old → new), each occurring once unless noted:
 | `lib/research/contracts.test.ts` | `(the Explorer's broad categories)` | `(the Keywords tab's broad categories)` |
 | `lib/research/catalog.test.ts` | `expect(GUIDE_VERSION).toBe(6);` | `expect(GUIDE_VERSION).toBe(7);` |
 | | `expect(off.guideVersion).toBe(6);` | `expect(off.guideVersion).toBe(7);` |
+| `app/(app)/explorer/keyword/[id]/BackToExplorer.test.tsx` | `{ name: '← Back to explorer' }` (×6) | `{ name: '← Back to keywords' }` |
+| `lib/research/service.test.ts` | `guideVersion: 6, queryVersion: 1` | `guideVersion: 7, queryVersion: 1` |
 
 After this step `grep -nP "(?<![A-Za-z_])Explorer(?![A-Za-z_])" "app/(app)/TabNav.test.tsx"` prints nothing.
 
@@ -55,7 +57,7 @@ Expected: failures in all six files (old wording still rendered / `GUIDE_VERSION
 | `app/not-found.tsx` | `            Go to Explorer` | `            Go to Keywords` |
 | `app/(app)/ask/Thread.tsx` | `Same data as the Explorer, answered in plain language.` | `Same data as the Keywords tab, answered in plain language.` |
 | `app/(app)/products/ProductFilterPanel.tsx` | `category, as on the Explorer; one per product` | `category, as on the Keywords tab; one per product` |
-| `app/(app)/explorer/keyword/[id]/BackToExplorer.tsx` | `← Back to explorer` | `← Back to keywords` |
+| `app/(app)/explorer/keyword/[id]/BackToExplorer.tsx` | `← Back to explorer` (the label and its two doc comments) | `← Back to keywords` |
 | `app/(marketing)/help/page.tsx` | `<Section title="The Explorer">` | `<Section title="The Keywords tab">` |
 | | `          The Explorer is the core tool: search and filter roughly a million` | `          The Keywords tab is the core tool: search and filter roughly a million` |
 | | `          The Explorer also flags keywords where none of the top 3 products` | `          The Keywords tab also flags keywords where none of the top 3 products` |
@@ -72,6 +74,7 @@ Expected: failures in all six files (old wording still rendered / `GUIDE_VERSION
 | `lib/workspace/tools.ts` | `This account's saved Explorer views (up to ${MAX_VIEWS_PER_USER}): id, name, Explorer link and the stored filters` | `This account's saved views of the Keywords tab (up to ${MAX_VIEWS_PER_USER}): id, name, link and the stored filters` |
 | | `as a named Explorer view: pass the same presetIds` | `as a named view of the Keywords tab: pass the same presetIds` |
 | | `and notes for anything the Explorer could not carry over` | `and notes for anything the Keywords tab could not carry over` |
+| | `an Explorer link` (×2, the custom-category tools) | `a Keywords tab link` |
 | `docs/marketing/keywordquarry-product-profile.md` | every standalone `Explorer` except `Product Opportunity Explorer` (Amazon's tool, 3 places) and the `/explorer` URLs | `Keywords tab` |
 
 Do them with one byte-exact Python script (`python -I`, relative paths, `open(path, 'rb')` / `'wb'`), asserting each pattern's count before replacing so a drifted file aborts instead of half-applying. Unchanged on purpose: identifiers (`isExplorer`, `NOTE_EXPLORER_REREAD`, …), the help page's video title `How the Keyword Explorer works`, the landing page comment `mini keyword explorer`, admin labels, code comments, `explorerUrl`.
@@ -120,7 +123,7 @@ EOF
 
 | Step | Result |
 |---|---|
-| Task 1 gate | |
+| Task 1 gate | e7065b8 (2026-10-21): 22 files, 70 lines; six touched test files failed on the old wording then passed; the full-suite gate surfaced two more pins (BackToExplorer.test.tsx, service.test.ts) and two more tool descriptions (custom-category tools); final: 243 files / 3,022 tests green, typecheck 0, build "Compiled successfully", eslint clean on all touched files; EOLs preserved (CRLF/LF per file unchanged) |
 | Push | |
 | Deploys | |
 | Smoke | |
