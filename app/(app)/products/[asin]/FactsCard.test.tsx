@@ -115,7 +115,7 @@ describe('FactsCard — a full active row', () => {
     expect(fact('Reviews')).toHaveTextContent('1,834 · ★ 4.5');
     expect(fact('Reviews')).not.toHaveTextContent('rating updated');
     expect(fact('Monthly sold')).toHaveTextContent('1,000+');
-    expect(fact('Monthly sold')).toHaveTextContent("Amazon's 'bought in past month' badge");
+    expect(fact('Monthly sold')).toHaveTextContent('Amazon’s “bought in past month” badge');
     expect(fact('Monthly sold')).not.toHaveTextContent('as of');
     expect(fact('Offers')).toHaveTextContent('new 4 · FBA 3 · FBM 1');
     expect(fact('Amazon')).toHaveTextContent('No Amazon offer');
@@ -175,11 +175,9 @@ describe('FactsCard — edge states', () => {
   it('a delisted row: a "Delisted" badge and dashes for the hidden point-in-time facts; the rest stays', () => {
     render(<FactsCard facts={DELISTED} now={NOW} />);
     expect(within(fact('Status')).getByText('Delisted')).toBeInTheDocument();
-    for (const label of ['Price', 'BSR', 'Offers', 'Amazon']) {
+    for (const label of ['Price', 'BSR', 'Monthly sold', 'Offers', 'Amazon']) {
       expect(fact(label)).toHaveTextContent(/^—$/);
     }
-    // Monthly sold: the dash, then its static badge note (the note shows whatever the value).
-    expect(fact('Monthly sold')).toHaveTextContent(/^—Amazon's 'bought in past month' badge$/);
     expect(fact('Brand')).toHaveTextContent('Acme Labs');
     expect(fact('Leaf category')).toHaveTextContent(CATEGORY);
     expect(fact('Listed since')).toHaveTextContent('Apr 12, 2026 · 180 days');

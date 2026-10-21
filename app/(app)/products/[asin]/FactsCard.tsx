@@ -40,7 +40,7 @@ const DASH = '—';
 
 const finite = (n: number | null): n is number => n !== null && Number.isFinite(n);
 const count = (n: number | null): string => (finite(n) ? n.toLocaleString('en-US') : DASH);
-const MONTHLY_SOLD_NOTE = "Amazon's 'bought in past month' badge";
+const MONTHLY_SOLD_NOTE = 'Amazon’s “bought in past month” badge';
 const rank = (n: number | null): string => (finite(n) ? `#${n.toLocaleString('en-US')}` : DASH);
 
 export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }) {
@@ -105,7 +105,7 @@ export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }
             {finite(facts.rankRatioX100) && <RatioChip ratioX100={facts.rankRatioX100} />}
           </Fact>
           <Fact label="Reviews">{reviews.length > 0 ? reviews.join(' · ') : DASH}</Fact>
-          <Fact label="Monthly sold" sub={MONTHLY_SOLD_NOTE}>
+          <Fact label="Monthly sold" sub={finite(facts.monthlySold) ? MONTHLY_SOLD_NOTE : null}>
             {formatBadge(facts.monthlySold)}
           </Fact>
           <Fact label="Offers">
