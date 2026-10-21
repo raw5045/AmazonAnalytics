@@ -348,7 +348,7 @@ export function ProductFilterPanel({
                   </option>
                 ))}
               </select>
-              <p className={HINT}>Amazon&apos;s &ldquo;bought in past month&rdquo; badge.</p>
+              <p className={HINT}>Amazon&rsquo;s &ldquo;bought in past month&rdquo; badge.</p>
             </Field>
 
             <Field label="Reviews (at most)" htmlFor="pf-reviews">
