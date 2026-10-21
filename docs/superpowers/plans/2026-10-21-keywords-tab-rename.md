@@ -124,6 +124,6 @@ EOF
 | Step | Result |
 |---|---|
 | Task 1 gate | e7065b8 (2026-10-21): 22 files, 70 lines; six touched test files failed on the old wording then passed; the full-suite gate surfaced two more pins (BackToExplorer.test.tsx, service.test.ts) and two more tool descriptions (custom-category tools); final: 243 files / 3,022 tests green, typecheck 0, build "Compiled successfully", eslint clean on all touched files; EOLs preserved (CRLF/LF per file unchanged) |
-| Push | |
-| Deploys | |
-| Smoke | |
+| Push | 2026-10-21 13:59 UTC, 66617bb..8ed9438 (checkActiveJobs: 0 live runs, 0 mid-phase imports, sync 390 min old) |
+| Deploys | Vercel success 14:00:45 UTC; Keepa service success 13:59:57 UTC; the Railway worker posted no status for 8ed9438 (its health endpoint shows commit 66617bb, booted 2026-10-20T11:03:14.499Z); nothing of the worker's changed in this push |
+| Smoke | PASS 2026-10-21 ~14:10 UTC — owner's Chrome: /explorer title "Keywords · KeywordQuarry" + nav link "Keywords" (href /explorer), rank-1 keyword page "← Back to keywords", /ask "Same data as the Keywords tab…", /products hint "as on the Keywords tab"; curl (signed-out): landing hero card "Keywords", pricing "The full Keywords tab — every keyword, every filter", help section "The Keywords tab" (video title unchanged by decision), 404 "Go to Keywords"; get_research_guide → guideVersion 7 with the new wording. The built-in browser pane was denied keywordquarry.com, hence Chrome + curl. |
