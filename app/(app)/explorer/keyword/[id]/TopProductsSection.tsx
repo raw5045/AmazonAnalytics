@@ -16,6 +16,7 @@ import {
   type EnrichedProduct,
 } from '@/lib/explorer/fetchKeywordDetail';
 import { ASIN_RE } from '@/lib/products/asin';
+import { formatBadge } from '@/lib/products/format';
 
 export async function TopProductsSection({
   id,
@@ -104,9 +105,12 @@ interface TopProductSlot {
 
 /**
  * Compact table replacing the old image-heavy ProductCard layout
- * (which was the dominant cause of slow page loads). Shows the three
- * top-clicked products' price, review count + star rating, and
- * leaf category — all from already-fetched Keepa data.
+ * (which was the dominant cause of slow page loads). Eight columns for the
+ * three top-clicked products: #, Product (title + ASIN), Click %, Conv %,
+ * Price, Reviews (count + star rating), Monthly sold and BSR. The two shares
+ * are the keyword data's current week; price, reviews, monthly sold and BSR
+ * come from already-fetched Keepa catalog data. The leaf category moved to
+ * the product page's facts card (spec 2026-10-21 round 1 §4).
  */
 function TopProductsTable({
   slots,
@@ -131,7 +135,8 @@ function TopProductsTable({
             <th className="p-2 text-right" title="Share of all conversions for this keyword that went to this product (Amazon-reported, current week)">Conv %</th>
             <th className="p-2 text-right">Price</th>
             <th className="p-2 text-right">Reviews</th>
-            <th className="p-2">Leaf category</th>
+            <th className="p-2 text-right" title="Amazon’s “bought in past month” badge">Monthly sold</th>
+            <th className="p-2 text-right" title="Best Sellers Rank in the main category">BSR</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -151,7 +156,7 @@ function TopProductsTable({
             return (
               <tr key={`${s.slot}-${s.asin}`} className="align-top">
                 <td className="p-2 font-mono text-gray-600">{s.slot}</td>
-                <td className="p-2 max-w-md">
+                <td className="p-2 max-w-xs">
                   <div className="truncate" title={title ?? undefined}>
                     {titleNode}
                   </div>
@@ -174,9 +179,8 @@ function TopProductsTable({
                 <td className="p-2 text-right tabular-nums whitespace-nowrap">
                   {formatReviews(enriched?.reviewCount ?? null, enriched?.averageRatingX10 ?? null)}
                 </td>
-                <td className="p-2 text-xs text-gray-700">
-                  {enriched?.categoryLeaf ?? enriched?.categoryPath ?? <span className="text-gray-400">—</span>}
-                </td>
+                <td className="p-2 text-right tabular-nums whitespace-nowrap">{formatSold(enriched?.monthlySold)}</td>
+                <td className="p-2 text-right tabular-nums whitespace-nowrap">{formatRank(enriched?.salesRank)}</td>
               </tr>
             );
           })}
@@ -207,6 +211,18 @@ function formatShare(pct: string | null): React.ReactNode {
 function formatPrice(cents: number | null): React.ReactNode {
   if (cents === null || !Number.isFinite(cents)) return <span className="text-gray-400">—</span>;
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+/** Amazon's "bought in past month" floor, "1,000+"; a grey dash when the catalog has none. */
+function formatSold(n: number | null | undefined): React.ReactNode {
+  if (n === null || n === undefined || !Number.isFinite(n)) return <span className="text-gray-400">—</span>;
+  return formatBadge(n);
+}
+
+/** Best Sellers Rank, "#1,234"; a grey dash when unknown (a delisted product reads null). */
+function formatRank(n: number | null | undefined): React.ReactNode {
+  if (n === null || n === undefined || !Number.isFinite(n)) return <span className="text-gray-400">—</span>;
+  return `#${n.toLocaleString('en-US')}`;
 }
 
 function formatReviews(count: number | null, ratingX10: number | null): React.ReactNode {

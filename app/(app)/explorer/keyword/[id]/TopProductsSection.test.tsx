@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import type {
   CurrentWeekProductSlot,
   EnrichedProduct,
@@ -135,4 +135,43 @@ describe('TopProductsSection title links (admin link-back to the ASIN page)', ()
       expect(productHrefs()).toHaveLength(1);
     },
   );
+});
+
+describe('TopProductsSection columns (spec 2026-10-21 round 1 §4)', () => {
+  beforeEach(() => fetchKeywordProducts.mockReset());
+
+  function cellsOf(title: string): string[] {
+    const row = screen.getByText(title).closest('tr');
+    if (!row) throw new Error(`no row for ${title}`);
+    return within(row).getAllByRole('cell').map((c) => c.textContent ?? '');
+  }
+
+  it('shows Monthly sold and BSR after Reviews, and no Leaf category column', async () => {
+    mockProducts({
+      enrichedProductsByAsin: {
+        B000000001: enriched('B000000001', { title: TITLES[0].title, monthlySold: 1000, salesRank: 1234, categoryLeaf: 'Desk Lamps' }),
+        B000000002: enriched('B000000002', { title: TITLES[1].title, monthlySold: null, salesRank: null }),
+      },
+    });
+    await renderSection(false);
+    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual([
+      '#', 'Product', 'Click %', 'Conv %', 'Price', 'Reviews', 'Monthly sold', 'BSR',
+    ]);
+    expect(cellsOf(TITLES[0].title).slice(6)).toEqual(['1,000+', '#1,234']);
+    expect(cellsOf(TITLES[1].title).slice(6)).toEqual(['—', '—']);
+    expect(screen.queryByText('Desk Lamps')).toBeNull();
+  });
+
+  it('a product with no catalog row reads dashes in both new columns', async () => {
+    mockProducts();
+    await renderSection(false);
+    expect(cellsOf(TITLES[2].title).slice(6)).toEqual(['—', '—']);
+  });
+
+  it('the two headers explain their numbers on hover', async () => {
+    mockProducts();
+    await renderSection(false);
+    expect(screen.getByRole('columnheader', { name: 'Monthly sold' })).toHaveAttribute('title', 'Amazon’s “bought in past month” badge');
+    expect(screen.getByRole('columnheader', { name: 'BSR' })).toHaveAttribute('title', 'Best Sellers Rank in the main category');
+  });
 });
