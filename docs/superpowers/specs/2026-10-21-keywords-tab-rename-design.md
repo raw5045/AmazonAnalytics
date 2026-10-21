@@ -21,6 +21,7 @@ Every place a person reads the name of the keyword table says **Keywords** (the 
 | `app/not-found.tsx` button | `Go to Explorer` | `Go to Keywords` |
 | `app/(app)/ask/Thread.tsx` empty state | `Same data as the Explorer, answered in plain language.` | `Same data as the Keywords tab, answered in plain language.` |
 | `app/(app)/products/ProductFilterPanel.tsx` broad-category hint | `…, as on the Explorer; …` | `…, as on the Keywords tab; …` |
+| `app/(app)/explorer/keyword/[id]/BackToExplorer.tsx` back link | `← Back to explorer` | `← Back to keywords` |
 | `app/(marketing)/help/page.tsx` section | title `The Explorer`; "The Explorer is the core tool…", "The Explorer also flags…", "the Explorer returns only keywords…" | title `The Keywords tab`; "The Keywords tab is the core tool…", "The Keywords tab also flags…", "the Keywords tab returns only keywords…" |
 | `app/(marketing)/page.tsx` hero card label | `Keyword Explorer` | `Keywords` |
 | `app/(marketing)/pricing/page.tsx` first bullet | `Full Keyword Explorer — every keyword, every filter` | `The full Keywords tab — every keyword, every filter` |
