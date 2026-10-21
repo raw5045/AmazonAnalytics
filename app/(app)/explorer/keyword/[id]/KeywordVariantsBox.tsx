@@ -1,5 +1,6 @@
 import type { KeywordVariantInfo } from '@/lib/explorer/fetchKeywordDetail';
 import { cleanSearchTermForDisplay, hadUnicodeNoise } from '@/lib/analytics/derivedFields';
+import { formatDay } from '@/lib/format/date';
 
 /**
  * "Keyword variants" box on the keyword detail page.
@@ -55,7 +56,7 @@ export function KeywordVariantsBox({
     <div className="card-app p-4">
       <div className="flex items-baseline justify-between mb-2">
         <h2 className="text-sm font-semibold text-gray-700">Keyword variants</h2>
-        <span className="text-xs text-gray-500">week ending {weekEndDate}</span>
+        <span className="text-xs text-gray-500">week ending {formatDay(weekEndDate)}</span>
       </div>
       <p className="text-xs text-gray-500 mb-3">
         Distinct phrasings observed in Amazon&rsquo;s source data for this keyword,

@@ -152,7 +152,7 @@ export default async function KeywordDetailPage({
               </div>
             ) : (
               <div className="mt-3 inline-block rounded-lg border border-amber-300/40 bg-amber-300/10 px-3 py-2 text-sm text-amber-200">
-                This keyword is dormant — last seen <strong>{header.lastSeenWeek}</strong>. The
+                This keyword is dormant — last seen <strong>{formatDay(header.lastSeenWeek)}</strong>. The
                 history below is preserved; the explorer&apos;s active snapshot has dropped it.
               </div>
             )}
