@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import type { DotItemDotProps, TooltipContentProps } from 'recharts';
 import { formatBadge, formatPriceCents } from '@/lib/products/format';
+import { formatDay, formatFetchTime } from '@/lib/format/date';
 import { HISTORY_CHART_HEIGHT, HISTORY_SERIES, type ChartPoint, type HistorySeriesKey } from './chartMeta';
 
 /**
@@ -75,11 +76,11 @@ export function HistoryCharts({ points, capped = false }: { points: readonly Cha
   );
 }
 
-/** "37 snapshots, 2026-08-01 to 2026-10-08", "1 snapshot, 2026-10-04", plus a note when the cap was hit. */
+/** "37 snapshots, Aug 1, 2026 to Oct 8, 2026", "1 snapshot, Oct 4, 2026", plus a note when the cap was hit. */
 function historySummary(rows: ChartRow[], capped: boolean): string {
   const n = rows.length;
-  const first = rows[0].at.slice(0, 10);
-  const last = rows[n - 1].at.slice(0, 10);
+  const first = formatDay(rows[0].at);
+  const last = formatDay(rows[n - 1].at);
   const span = n === 1 ? `1 snapshot, ${first}` : `${n.toLocaleString('en-US')} snapshots, ${first} to ${last}`;
   return capped ? `${span} (the newest ${n.toLocaleString('en-US')}; older ones are not shown)` : span;
 }
@@ -158,11 +159,6 @@ function PointTooltip({ active, payload, spec }: Partial<TooltipContentProps> & 
       <div className="mt-1 font-mono">{value === null ? 'no value' : spec.formatValue(value)}</div>
     </div>
   );
-}
-
-/** ISO timestamp → "2026-10-04 06:00 UTC". */
-function formatFetchTime(iso: string): string {
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC`;
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];

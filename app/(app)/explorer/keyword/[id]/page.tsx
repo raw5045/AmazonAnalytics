@@ -24,6 +24,7 @@ import { bumpUserActivity } from '@/lib/activity/bump';
 import { WatchToggle } from '@/app/(app)/_components/WatchToggle';
 import { PerfPanel } from '@/app/(app)/PerfPanel';
 import { startHandlerTimer } from '@/lib/perf/handlerTimer';
+import { formatDay } from '@/lib/format/date';
 import { BackToExplorer } from './BackToExplorer';
 import { ChartSkeleton } from './ChartSkeleton';
 import {
@@ -146,7 +147,7 @@ export default async function KeywordDetailPage({
                 )}
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-slate-300">
                   Latest
-                  <span className="font-mono font-semibold text-white">{current.currentWeekEndDate}</span>
+                  <span className="font-mono font-semibold text-white">{formatDay(current.currentWeekEndDate)}</span>
                 </span>
               </div>
             ) : (

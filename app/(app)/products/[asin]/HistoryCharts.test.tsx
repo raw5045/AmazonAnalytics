@@ -52,7 +52,7 @@ describe('HistoryCharts', () => {
     expect(screen.getByText('lower is better · axis flipped')).toBeInTheDocument(); // beside the BSR title
     expect(surfaces(container)).toHaveLength(4);
     expect(container.querySelectorAll('path.recharts-line-curve')).toHaveLength(4);
-    expect(screen.getByText('3 snapshots, 2026-09-20 to 2026-10-04')).toBeInTheDocument();
+    expect(screen.getByText('3 snapshots, Sep 20, 2026 to Oct 4, 2026')).toBeInTheDocument();
     expect(screen.queryByText('No history yet')).toBeNull();
   });
 
@@ -64,7 +64,7 @@ describe('HistoryCharts', () => {
       />,
     );
     expect(
-      screen.getByText('3 snapshots, 2026-09-20 to 2026-10-04 (the newest 3; older ones are not shown)'),
+      screen.getByText('3 snapshots, Sep 20, 2026 to Oct 4, 2026 (the newest 3; older ones are not shown)'),
     ).toBeInTheDocument();
   });
 
@@ -79,7 +79,7 @@ describe('HistoryCharts', () => {
     expect(surfaces(container)).toHaveLength(4);
     expect(container.querySelectorAll('path.recharts-line-curve')).toHaveLength(0);
     expect(container.querySelectorAll('svg.recharts-surface circle')).toHaveLength(4);
-    expect(screen.getByText('1 snapshot, 2026-10-04')).toBeInTheDocument();
+    expect(screen.getByText('1 snapshot, Oct 4, 2026')).toBeInTheDocument();
   });
 
   it('a point between two gaps is still drawn as a dot', () => {

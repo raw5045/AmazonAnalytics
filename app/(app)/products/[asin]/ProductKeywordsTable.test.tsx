@@ -63,12 +63,13 @@ describe('ProductKeywordsTable', () => {
     ]);
     const keywordLinks = screen.getAllByRole('link').map((a) => a.textContent);
     expect(keywordLinks).toEqual(['magnesium glycinate', 'magnesium for sleep']);
+    expect(screen.getByTitle("In this keyword's top 3 since the week ending Jul 18, 2026")).toBeInTheDocument();
   });
 
   it('the weeks-in-top-3 cell carries the streak start week as its tooltip', () => {
     render(<ProductKeywordsTable rows={ROWS} total={2} />);
-    expect(cells('magnesium glycinate')[6]).toHaveAttribute('title', expect.stringContaining('2026-07-18'));
-    expect(cells('magnesium for sleep')[6]).toHaveAttribute('title', expect.stringContaining('2026-10-03'));
+    expect(cells('magnesium glycinate')[6]).toHaveAttribute('title', expect.stringContaining('Jul 18, 2026'));
+    expect(cells('magnesium for sleep')[6]).toHaveAttribute('title', expect.stringContaining('Oct 3, 2026'));
   });
 
   it('says "showing N of M" when the total is over the rows shown', () => {

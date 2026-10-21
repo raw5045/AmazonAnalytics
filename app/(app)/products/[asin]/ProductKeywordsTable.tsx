@@ -8,6 +8,7 @@
 import Link from 'next/link';
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
 import { formatVolume } from '@/lib/products/format';
+import { formatDay } from '@/lib/format/date';
 
 export function ProductKeywordsTable({ rows, total }: { rows: ProductKeywordRow[]; total: number }) {
   return (
@@ -71,7 +72,7 @@ export function ProductKeywordsTable({ rows, total }: { rows: ProductKeywordRow[
                     <td className="p-2 text-right tabular-nums">{formatShare(r.conversionSharePct)}</td>
                     <td
                       className="p-2 text-right tabular-nums"
-                      title={`In this keyword's top 3 since the week ending ${r.streakStartedWeek}`}
+                      title={`In this keyword's top 3 since the week ending ${formatDay(r.streakStartedWeek)}`}
                     >
                       {r.weeksInTop3.toLocaleString('en-US')}
                     </td>
