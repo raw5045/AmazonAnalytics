@@ -388,10 +388,11 @@ EOF
 
 | Step | Result |
 |---|---|
-| Task 1 | |
-| Task 2 | |
-| Task 3 | |
-| Task 4 | |
-| Final review + gate | |
+| Task 1 | bed5894 (sonnet) + review nits 7c366dc (a trailing digit is rejected, a rejected date never gets a clock, honest doc comments); review: approve. 30 tests on the helper + the Products list |
+| Task 2 | 71699d1 (opus) + fd17fbf (two controller decisions that supersede the plan text above: the "bought in past month" note shows only with a value, and it uses curly quotes — Amazon’s “bought in past month” badge) + a698472 (the Products list header's apostrophe made curly to match) + 3d87bd3 (anchored one-value-per-fact assertions, the stamp's place pinned); review: ship. 16 card tests + 17 page tests |
+| Task 3 | c814eb9 (sonnet; no keyword page test exists, so the chip is covered by the helper's tests + tsc) + 9902d55 (review finding: the dormant banner's "last seen" and the variants box's "week ending" sit beside the chip, so they are formatted too; the weekly table / chart tooltips / strip titles stay ISO → spec §8); review: ship |
+| Task 4 | 11f553e (opus): eight headers, grey dashes for null/undefined, curly-quoted header title byte-identical to the list's; 16 tests; tsc 0; review: ship → nits in b7824b2 (truthful leaf-category comment, dash cells pinned as the grey span, the marketing product profile now lists Monthly sold and BSR) |
+| Extra commits | 9d9ce68 (the filter panel's badge hint apostrophe made curly, so all four copies of the phrase agree), bc9149a (final review: the fake-volume strip's first/last week labels were the last always-visible ISO dates on the keyword page) |
+| Final review + gate | Final whole-diff review (opus): no critical/important findings; "ship after docs nits" — §8 completed (remaining ISO dates named, the non-admin leaf-category trade-off, the list's BSR without "#"), Results completed, the strip labels converted. Gate on 9902d55: 244 files / 3,031 tests, typecheck 0, build "Compiled successfully", eslint clean on every touched file; after b7824b2 + bc9149a: typecheck 0, keyword folder 29/29, the TopProductsSection file 16/16 (full suite re-run before the push, see the Push row). Render pins that do not exist and are covered by the helper's tests + the Chrome smoke instead: the chart tooltip, the explorer data chip, the Latest chip, the dormant banner, the variants box, the strip labels |
 | Push / deploys | |
 | Smoke | |

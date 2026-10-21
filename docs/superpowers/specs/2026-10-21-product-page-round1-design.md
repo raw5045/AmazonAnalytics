@@ -4,7 +4,7 @@
 
 ## 1. Goal
 
-Product pages and the keyword page show dates one way ("Oct 17, 2026"), the facts card shows one value per fact with the history left to the charts, the card says when its data was last fetched, and the keyword page's top-clicked-products table shows each product's Monthly sold and BSR instead of its leaf category.
+Product pages and the keyword page show dates one way ("Oct 17, 2026"; exceptions in §8), the facts card shows one value per fact with the history left to the charts, the card says when its data was last fetched, and the keyword page's top-clicked-products table shows each product's Monthly sold and BSR instead of its leaf category.
 
 ## 2. Dates
 
@@ -25,8 +25,11 @@ Call sites (output on the right):
 | `HistoryCharts.tsx` tooltip (`formatFetchTime`) | 2026-10-04 06:00 UTC | Oct 4, 2026 06:00 UTC |
 | `app/(app)/products/[asin]/ProductKeywordsTable.tsx` streak tooltip | since the week ending 2026-10-03 | since the week ending Oct 3, 2026 |
 | `app/(app)/explorer/keyword/[id]/page.tsx` header chip | Latest 2026-10-17 | Latest Oct 17, 2026 (same chip, same styling) |
+| `page.tsx` dormant banner (added during review: it sits beside the chip) | last seen 2026-10-10 | last seen Oct 10, 2026 |
+| `app/(app)/explorer/keyword/[id]/KeywordVariantsBox.tsx` (same reason) | week ending 2026-10-17 | week ending Oct 17, 2026 |
+| `app/(app)/explorer/keyword/[id]/FakeVolumeStrip.tsx` first/last week labels under the strip (final review: the last always-visible ISO date) | 2025-10-25 … 2026-10-17 | Oct 25, 2025 … Oct 17, 2026 |
 
-The chart axis tick labels (short "Oct 4" style, `HistoryCharts.tsx`'s own `MONTHS`) are unchanged. `listingAge` keeps its "2 months" wording.
+The chart axis tick labels (short "Oct 4" style, `HistoryCharts.tsx`'s own `MONTHS`) are unchanged. `listingAge` keeps its "2 months" wording. The keyword page's weekly history table, trend-chart tooltips and the two history strips' hover titles still show ISO dates (§8).
 
 ## 3. Product facts card (`app/(app)/products/[asin]/FactsCard.tsx`)
 
@@ -35,7 +38,7 @@ The chart axis tick labels (short "Oct 4" style, `HistoryCharts.tsx`'s own `MONT
 | Price | current price + "30d / 90d / 180d / 365d avg …" | current price only |
 | BSR | "#1,234" + ratio chip + "30d / 90d avg …" | "#1,234" + the ratio chip ("−35% vs 30d avg"); the averages line goes |
 | Reviews | "1,234 · ★ 4.5" + "rating updated 2026-10-01" | "1,234 · ★ 4.5" only |
-| Monthly sold | "1,000+" + "as of 2026-10-07" | "1,000+" + a static line "Amazon's 'bought in past month' badge" |
+| Monthly sold | "1,000+" + "as of 2026-10-07" | "1,000+" + the line "Amazon’s “bought in past month” badge" (curly quotes, as the Products list header spells it); the line is shown only with a value, so a dash stands alone |
 | Status | badge + "fetched 2026-10-08 (12 fetches)" | badge only |
 | (new) stamp | — | a muted line at the card's bottom-right: "Data last fetched Oct 8, 2026" (from `lastFetchedAt`; the fetch count is dropped). Rendered only on the fetched card; the "Not fetched yet" and "not in catalog" shapes are unchanged. |
 | Brand, Leaf category, Broad category, Listed since, Tracking since, Offers, Amazon | — | unchanged apart from the date format (§2) |
@@ -49,7 +52,7 @@ The loader (`lib/products/loadProduct.ts`, `ProductPageFacts`) is unchanged: the
 Columns: `#` | `Product` | `Click %` | `Conv %` | `Price` | `Reviews` | `Monthly sold` | `BSR`. The `Leaf category` column is removed (the leaf path stays on the product page's facts card).
 
 - `Product` cell: `max-w-md` → `max-w-xs`; still truncated with the full title in the hover title and the ASIN link beneath, unchanged otherwise.
-- `Monthly sold` header title: `Amazon's "bought in past month" badge`; cell `formatBadge(enriched?.monthlySold ?? null)` from `lib/products/format` (`"1,000+"`, dash when null), right-aligned, tabular-nums.
+- `Monthly sold` header title: `Amazon’s “bought in past month” badge` (curly quotes, as the Products list header spells it); cell `formatBadge(enriched?.monthlySold ?? null)` from `lib/products/format` (`"1,000+"`, dash when null), right-aligned, tabular-nums.
 - `BSR` header title: `Best Sellers Rank in the main category`; cell `#` + `toLocaleString('en-US')` (`"#1,234"`), dash when null, right-aligned, tabular-nums.
 - Both values are the catalog's point-in-time facts the reader already returns (`EnrichedProduct.monthlySold` / `salesRank`, null for a delisted product by the existing rule), so no query or type change.
 - The dash is the same grey `—` span the table already uses for a missing title or leaf.
@@ -70,3 +73,11 @@ The Products list's columns and widths; the MCP tools and their answers (`get_pr
 ## 7. Ship
 
 Gate (vitest, typecheck, eslint on touched files, build) → local commits → owner-gated push (`checkActiveJobs` first, outside 03:30–06:59 ET) → Vercel green → Chrome smoke: one product page (card lines, stamp, dates, history caption and tooltip) and one keyword page ("Latest" chip, the eight columns, a Monthly sold and a BSR value).
+
+## 8. Follow-ups (owner's call)
+
+- Remaining ISO dates on the keyword page, each a one-line `formatDay`: the weekly history table's week column (`RawDataTable.tsx`), the trend chart's tooltips (`TrendChart.tsx`), the hover titles of the fake-volume and title-match strips. Left as is this round because they are dense data views; say the word and they follow.
+- The phrase "Amazon’s “bought in past month” badge" now lives in four places (Products list header, filter panel hint, facts card note, keyword table header). One exported constant would stop them drifting again.
+- The "Data last fetched" stamp shows the UTC date of the fetch (as every date here does); an evening fetch in US Eastern time reads as the next day.
+- Trade-off to confirm: the product page is admin-only today, so a non-admin user no longer sees a top product's leaf category anywhere in the UI (the MCP `get_keyword_details` answer still carries it). It returns for everyone when the Products pages open to all accounts.
+- The Products list's BSR cell reads "1,234" while the facts card, the keyword table and the chart tooltip read "#1,234" (§5 kept the list as is); a one-character tweak if wanted.
