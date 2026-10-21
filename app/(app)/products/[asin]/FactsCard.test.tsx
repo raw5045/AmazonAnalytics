@@ -107,21 +107,20 @@ describe('FactsCard — a full active row', () => {
     expect(fact('Broad category')).toHaveTextContent('Health & Personal Care');
     expect(fact('Listed since')).toHaveTextContent('Apr 12, 2026 · 180 days');
     expect(fact('Tracking since')).toHaveTextContent('Apr 15, 2026');
-    expect(fact('Price')).toHaveTextContent('$19.99');
-    expect(fact('Price')).not.toHaveTextContent('avg');
-    expect(fact('BSR')).toHaveTextContent('#1,234');
-    expect(fact('BSR')).not.toHaveTextContent('30d / 90d avg');
+    // Anchored: one value per fact, so any extra line (the old averages, "rating updated", "as of",
+    // "fetched … fetches") fails the match.
+    expect(fact('Price')).toHaveTextContent(/^\$19\.99$/);
+    expect(fact('BSR')).toHaveTextContent(new RegExp(`^#1,234${MINUS}35% vs 30d avg$`));
     expect(within(fact('BSR')).getByText(`${MINUS}35% vs 30d avg`)).toBeInTheDocument();
-    expect(fact('Reviews')).toHaveTextContent('1,834 · ★ 4.5');
-    expect(fact('Reviews')).not.toHaveTextContent('rating updated');
-    expect(fact('Monthly sold')).toHaveTextContent('1,000+');
-    expect(fact('Monthly sold')).toHaveTextContent('Amazon’s “bought in past month” badge');
-    expect(fact('Monthly sold')).not.toHaveTextContent('as of');
+    expect(fact('Reviews')).toHaveTextContent(/^1,834 · ★ 4\.5$/);
+    expect(fact('Monthly sold')).toHaveTextContent(/^1,000\+Amazon’s “bought in past month” badge$/);
     expect(fact('Offers')).toHaveTextContent('new 4 · FBA 3 · FBM 1');
     expect(fact('Amazon')).toHaveTextContent('No Amazon offer');
-    expect(within(fact('Status')).getByText('Active')).toBeInTheDocument();
-    expect(fact('Status')).not.toHaveTextContent('fetched');
-    expect(screen.getByText('Data last fetched Oct 8, 2026')).toBeInTheDocument();
+    expect(fact('Status')).toHaveTextContent(/^Active$/);
+    // The stamp closes the card: outside the facts grid, the section's last child.
+    const stamp = screen.getByText('Data last fetched Oct 8, 2026');
+    expect(stamp.closest('dl')).toBeNull();
+    expect(stamp.closest('section')?.lastElementChild).toBe(stamp);
   });
 
   it('shows one lazy thumbnail with a width and height when the image URL is set, decorative (the h1 names the product)', () => {
