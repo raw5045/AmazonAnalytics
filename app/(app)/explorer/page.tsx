@@ -20,6 +20,7 @@ import { loadSavedViewForUser } from '@/lib/savedViews/loadServer';
 import { listWatchlistForUser } from '@/lib/watchlist/loadServer';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
 import { bumpUserActivity } from '@/lib/activity/bump';
+import { formatDay } from '@/lib/format/date';
 import { Suspense } from 'react';
 import { FilterSidebar } from './FilterSidebar';
 import { LoadingIndicator } from './LoadingIndicator';
@@ -297,17 +298,9 @@ function DataWeekChip({ week }: { week: string | null }) {
       title="The Amazon Brand Analytics week currently loaded. Updates after each weekly import."
     >
       <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-      Data: week ending <span className="font-semibold">{formatWeekLabel(week)}</span>
+      Data: week ending <span className="font-semibold">{formatDay(week)}</span>
     </div>
   );
-}
-
-function formatWeekLabel(isoYyyyMmDd: string): string {
-  const [y, m, d] = isoYyyyMmDd.split('-');
-  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const idx = parseInt(m, 10) - 1;
-  if (idx < 0 || idx > 11) return isoYyyyMmDd;
-  return `${monthNames[idx]} ${parseInt(d, 10)}, ${y}`;
 }
 
 /**

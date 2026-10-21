@@ -10,6 +10,7 @@ import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { isAsin } from '@/lib/products/asin';
 import { availabilityLabel, formatBadge, formatPriceCents, formatRatio, formatReviewCount, listingAge } from '@/lib/products/format';
 import { splitCategoryPath } from '@/lib/categoryBuilder/pathDisplay';
+import { formatDay } from '@/lib/format/date';
 import { LoadingOverlay } from '@/app/(app)/explorer/LoadingOverlay';
 import { SORT_DIR_LABEL, SORT_FIRST_DIR, sortHint } from './ProductFilterPanel';
 
@@ -34,14 +35,6 @@ function sortHref(filters: ProductFilters, sort: ProductSort, dir: Dir): string 
 /** "1,234 products", "1 product", "10,000+ products" (the count is exact up to PRODUCT_COUNT_CAP). */
 function countLabel(total: number, totalIsCapped: boolean): string {
   return `${total.toLocaleString('en-US')}${totalIsCapped ? '+' : ''} ${total === 1 && !totalIsCapped ? 'product' : 'products'}`;
-}
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-/** "2026-08-01" → "Aug 1, 2026", read off the string (no time zone involved). */
-function formatDate(iso: string): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  const month = m ? MONTHS[Number(m[2]) - 1] : undefined;
-  return m && month ? `${month} ${Number(m[3])}, ${m[1]}` : iso;
 }
 
 /** A formatter's dash in grey, like the explorer's empty cells; any other text as is. */
@@ -212,7 +205,7 @@ function ProductRow({ row, from, now }: { row: ProductSummaryRow; from: string; 
       <td className="whitespace-nowrap p-2">
         {row.listedSince ? (
           <>
-            <div>{formatDate(row.listedSince)}</div>
+            <div>{formatDay(row.listedSince)}</div>
             <div className="text-xs text-gray-500">{listingAge(row.listedSince, now)}</div>
           </>
         ) : (
