@@ -146,6 +146,15 @@ describe('TopProductsSection columns (spec 2026-10-21 round 1 §4)', () => {
     return within(row).getAllByRole('cell').map((c) => c.textContent ?? '');
   }
 
+  /** The last two cells (Monthly sold, BSR) each hold the grey dash span, not plain text. */
+  function expectGreyDashes(title: string): void {
+    const row = screen.getByText(title).closest('tr');
+    if (!row) throw new Error(`no row for ${title}`);
+    for (const cell of within(row).getAllByRole('cell').slice(6)) {
+      expect(within(cell).getByText('—')).toHaveClass('text-gray-400');
+    }
+  }
+
   it('shows Monthly sold and BSR after Reviews, and no Leaf category column', async () => {
     mockProducts({
       enrichedProductsByAsin: {
@@ -159,6 +168,7 @@ describe('TopProductsSection columns (spec 2026-10-21 round 1 §4)', () => {
     ]);
     expect(cellsOf(TITLES[0].title).slice(6)).toEqual(['1,000+', '#1,234']);
     expect(cellsOf(TITLES[1].title).slice(6)).toEqual(['—', '—']);
+    expectGreyDashes(TITLES[1].title);
     expect(screen.queryByText('Desk Lamps')).toBeNull();
   });
 
@@ -166,6 +176,7 @@ describe('TopProductsSection columns (spec 2026-10-21 round 1 §4)', () => {
     mockProducts();
     await renderSection(false);
     expect(cellsOf(TITLES[2].title).slice(6)).toEqual(['—', '—']);
+    expectGreyDashes(TITLES[2].title);
   });
 
   it('the two headers explain their numbers on hover', async () => {

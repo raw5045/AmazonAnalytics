@@ -109,8 +109,9 @@ interface TopProductSlot {
  * three top-clicked products: #, Product (title + ASIN), Click %, Conv %,
  * Price, Reviews (count + star rating), Monthly sold and BSR. The two shares
  * are the keyword data's current week; price, reviews, monthly sold and BSR
- * come from already-fetched Keepa catalog data. The leaf category moved to
- * the product page's facts card (spec 2026-10-21 round 1 §4).
+ * come from already-fetched Keepa catalog data. The leaf category is not
+ * shown here; it stays on the admin-only product page's facts card (spec
+ * 2026-10-21 round 1 §4).
  */
 function TopProductsTable({
   slots,

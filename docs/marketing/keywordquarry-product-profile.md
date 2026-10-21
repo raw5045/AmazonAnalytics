@@ -74,7 +74,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 
 ### Features that apply
 - **Keywords tab** (the whole table): text search by word or broad match, exclude terms (up to 5), rank range or estimated-volume range, average reviews (top-3) min/max, word count, movement filter, department / leaf / custom category, broad category, fake-volume severity, title-gap filter with strict or loose match mode; sorts by rank, improvement, decline, title gap, average price, average reviews, date added. Default view: hides critical fake-volume keywords.
-- **Keyword page**: current rank and estimate, change versus the prior week, the 52-week rank/volume chart (log or linear), the three most-clicked products with click share, conversion share, price, reviews and leaf category, title-match history (strict vs loose), variants (spelling and word-order siblings), weekly history table, a Watch button and a "Search on Amazon" link.
+- **Keyword page**: current rank and estimate, change versus the prior week, the 52-week rank/volume chart (log or linear), the three most-clicked products with click share, conversion share, price, reviews, monthly sold and BSR, title-match history (strict vs loose), variants (spelling and word-order siblings), weekly history table, a Watch button and a "Search on Amazon" link.
 - **Saved views** (up to 5 per account): a named Keywords tab filter set that reopens with one click, with sort and page overlaid.
 - **CSV export**: up to 10,000 rows per export, 10 exports a day, with the current filters.
 - **Watchlist + weekly digest**: see Subject 4.
