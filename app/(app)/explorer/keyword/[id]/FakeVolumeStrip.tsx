@@ -1,5 +1,6 @@
 import type { KeywordDetailHistoryRow } from '@/lib/explorer/fetchKeywordDetail';
 import { buildWeekCalendar, gapFillHistory } from '@/lib/explorer/formatHistory';
+import { formatDay } from '@/lib/format/date';
 
 /**
  * 52 cells, one per week, colored by fake_volume_severity:
@@ -41,8 +42,8 @@ export function FakeVolumeStrip({
         ))}
       </div>
       <div className="mt-2 flex justify-between text-xs text-gray-500">
-        <span>{data[0]?.weekEndDate}</span>
-        <span>{data[data.length - 1]?.weekEndDate}</span>
+        <span>{data[0] ? formatDay(data[0].weekEndDate) : null}</span>
+        <span>{data[data.length - 1] ? formatDay(data[data.length - 1].weekEndDate) : null}</span>
       </div>
     </div>
   );
