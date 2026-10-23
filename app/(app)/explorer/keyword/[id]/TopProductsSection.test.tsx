@@ -185,4 +185,27 @@ describe('TopProductsSection columns (spec 2026-10-21 round 1 §4)', () => {
     expect(screen.getByRole('columnheader', { name: 'Monthly sold' })).toHaveAttribute('title', 'Amazon’s “bought in past month” badge');
     expect(screen.getByRole('columnheader', { name: 'BSR' })).toHaveAttribute('title', 'Best Sellers Rank in the main category');
   });
+
+  it('shows the listing age after the ASIN with the exact date on hover, and none without a listing date (spec 2026-10-23 §2)', async () => {
+    mockProducts({
+      enrichedProductsByAsin: {
+        B000000001: enriched('B000000001', { title: TITLES[0].title, listedSince: '2026-02-06' }),
+        B000000002: enriched('B000000002', { title: TITLES[1].title, listedSince: null }),
+      },
+    });
+    render(await TopProductsSection({ id: KW, currentWeekEndDate: WEEK, linkProducts: false, now: new Date('2026-10-09T12:00:00Z') }));
+    const age = screen.getByText('· listed 245 days ago');
+    expect(age).toHaveAttribute('title', 'Listed on Amazon Feb 6, 2026');
+    expect(age.closest('tr')).toBe(screen.getByText(TITLES[0].title).closest('tr'));
+    expect(screen.getAllByText(/listed .* ago/)).toHaveLength(1);
+    // The ASIN link keeps its monospace face; the age reads in the normal font.
+    expect(screen.getByRole('link', { name: 'B000000001' })).toHaveClass('font-mono');
+    expect(age).not.toHaveClass('font-mono');
+  });
+
+  it('a listing older than a year reads years and days', async () => {
+    mockProducts({ enrichedProductsByAsin: { B000000001: enriched('B000000001', { title: TITLES[0].title, listedSince: '2018-03-19' }) } });
+    render(await TopProductsSection({ id: KW, currentWeekEndDate: WEEK, linkProducts: false, now: new Date('2026-10-09T12:00:00Z') }));
+    expect(screen.getByText('· listed 8 years, 204 days ago')).toBeInTheDocument();
+  });
 });

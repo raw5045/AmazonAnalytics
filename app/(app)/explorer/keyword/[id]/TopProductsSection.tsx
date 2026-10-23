@@ -16,12 +16,14 @@ import {
   type EnrichedProduct,
 } from '@/lib/explorer/fetchKeywordDetail';
 import { ASIN_RE } from '@/lib/products/asin';
-import { formatBadge } from '@/lib/products/format';
+import { formatBadge, listingAge } from '@/lib/products/format';
+import { formatDay } from '@/lib/format/date';
 
 export async function TopProductsSection({
   id,
   currentWeekEndDate,
   linkProducts,
+  now = new Date(),
 }: {
   id: string;
   currentWeekEndDate: string;
@@ -30,6 +32,8 @@ export async function TopProductsSection({
    * keyword (`id`) through its `?from=`.
    */
   linkProducts: boolean;
+  /** The clock the listing ages are counted against; tests pin it, the page takes the default. */
+  now?: Date;
 }) {
   let slots: TopProductSlot[];
   let enrichedByAsin: Record<string, EnrichedProduct>;
@@ -66,6 +70,7 @@ export async function TopProductsSection({
         enrichedByAsin={enrichedByAsin}
         linkProducts={linkProducts}
         keywordId={id}
+        now={now}
       />
     </section>
   );
@@ -106,23 +111,26 @@ interface TopProductSlot {
 /**
  * Compact table replacing the old image-heavy ProductCard layout
  * (which was the dominant cause of slow page loads). Eight columns for the
- * three top-clicked products: #, Product (title + ASIN), Click %, Conv %,
+ * three top-clicked products: #, Product (title, then the ASIN and the listing
+ * age "listed 245 days ago" with the exact date on hover), Click %, Conv %,
  * Price, Reviews (count + star rating), Monthly sold and BSR. The two shares
- * are the keyword data's current week; price, reviews, monthly sold and BSR
- * come from already-fetched Keepa catalog data. The leaf category is not
- * shown here; it stays on the admin-only product page's facts card (spec
- * 2026-10-21 round 1 §4).
+ * are the keyword data's current week; price, reviews, monthly sold, BSR and
+ * the listing date come from already-fetched Keepa catalog data. The leaf
+ * category is not shown here; it stays on the admin-only product page's facts
+ * card (spec 2026-10-21 round 1 §4; listing age: spec 2026-10-23 §2).
  */
 function TopProductsTable({
   slots,
   enrichedByAsin,
   linkProducts,
   keywordId,
+  now,
 }: {
   slots: TopProductSlot[];
   enrichedByAsin: Record<string, EnrichedProduct>;
   linkProducts: boolean;
   keywordId: string;
+  now: Date;
 }) {
   const rows = slots.filter((s): s is TopProductSlot & { asin: string } => !!s.asin);
   return (
@@ -161,15 +169,20 @@ function TopProductsTable({
                   <div className="truncate" title={title ?? undefined}>
                     {titleNode}
                   </div>
-                  <div className="text-xs text-gray-500 font-mono">
+                  <div className="text-xs text-gray-500">
                     <a
                       href={`https://www.amazon.com/dp/${s.asin}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="hover:underline"
+                      className="font-mono hover:underline"
                     >
                       {s.asin}
                     </a>
+                    {enriched?.listedSince && (
+                      <span title={`Listed on Amazon ${formatDay(enriched.listedSince)}`}>
+                        {' '}· listed {listingAge(enriched.listedSince, now)} ago
+                      </span>
+                    )}
                   </div>
                 </td>
                 <td className="p-2 text-right tabular-nums">{formatShare(s.clickShare)}</td>
