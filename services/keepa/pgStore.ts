@@ -8,12 +8,13 @@
  * fetch, so it writes none), the status row last.
  *
  * Concurrency: the weekly enqueue upsert (lib/keepa/enqueueWeek.ts) holds the exclusive advisory
- * lock ENQUEUE_LOCK_KEY while it row-locks ~2.3M catalog rows in its own order. Every store
- * transaction (the stale-claim release, the claim, both batch writes, the SIGTERM release of this
- * boot's own claims) takes the shared form first, before any row lock, so while an upsert runs the
- * service waits before claiming — instead of a batch write deadlocking with it, the release running
- * into the statement timeout on its row locks, or a claim spending tokens on a batch whose write
- * would then block.
+ * lock ENQUEUE_LOCK_KEY while it row-locks ~2.3M catalog rows in its own order, and so does the
+ * import's keyword-count build (every exclusive holder is listed at ENQUEUE_LOCK_KEY in
+ * lib/keepa/lanes.ts). Every store transaction (the stale-claim release, the claim, both batch
+ * writes, the SIGTERM release of this boot's own claims) takes the shared form first, before any
+ * row lock, so while an exclusive holder runs the service waits before claiming — instead of a
+ * batch write deadlocking with it, the release running into the statement timeout on its row
+ * locks, or a claim spending tokens on a batch whose write would then block.
  */
 import type { Pool, PoolClient } from 'pg';
 import { ENQUEUE_LOCK_KEY, nextDueAfterDelisted, nextDueAfterError, nextDueAfterSuccess, type Lane, type Tier } from '@/lib/keepa/lanes';
@@ -129,12 +130,15 @@ async function writeRow(c: Queryable, row: ClaimedRow, f: ProductFacts, now: Dat
 }
 
 /**
- * Wait for any running enqueue-week upsert (spec §6.1): the upsert holds the exclusive form of
- * ENQUEUE_LOCK_KEY for minutes and locks rows in a different order than a batch write, so a batch
- * that started mid-upsert would deadlock with it. Taken by every store transaction, before any row
- * lock. The lock wait gets 1900 s (the enqueue's own budget is 1800 s; a weekly upsert over ~2.3M
- * rows outlasts the pool's five-minute ceiling); once the lock is held the timeout goes back to five
- * minutes, so the row statements keep the pool's ceiling.
+ * Wait for any running exclusive holder of ENQUEUE_LOCK_KEY: the enqueue-week upsert (spec §6.1)
+ * or the import's keyword-count build (the holders are listed at ENQUEUE_LOCK_KEY in
+ * lib/keepa/lanes.ts). Each holds the exclusive form for minutes and locks rows in a different
+ * order than a batch write, so a batch that started mid-write would deadlock with it. Taken by
+ * every store transaction, before any row lock. The lock wait gets 1900 s (the enqueue's own budget
+ * is 1800 s; a weekly upsert over ~2.3M rows outlasts the pool's five-minute ceiling; a by-hand
+ * keyword-count build may hold the lock longer, and the wait then fails with 57014 and the loop
+ * retries); once the lock is held the timeout goes back to five minutes, so the row statements keep
+ * the pool's ceiling.
  */
 async function awaitEnqueueLock(c: Queryable): Promise<void> {
   await c.query(`SET LOCAL statement_timeout = '1900s'`);

@@ -116,7 +116,11 @@ vi.mock('@/lib/baCategory/buildCrosswalk', async (importOriginal) => ({
   buildCrosswalk: mockBuildCrosswalk,
 }));
 vi.mock('@/lib/products/buildCategoryFacets', () => ({ buildProductCategoryFacets: mockBuildFacets }));
-vi.mock('@/lib/products/buildKeywordCounts', () => ({ buildKeywordCounts: mockBuildKeywordCounts }));
+// Likewise the keyword-count build: the real KeywordCountsBuildError stays for the coded-failure case.
+vi.mock('@/lib/products/buildKeywordCounts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/products/buildKeywordCounts')>()),
+  buildKeywordCounts: mockBuildKeywordCounts,
+}));
 vi.mock('@/inngest/functions/refreshSummary', () => ({
   refreshKeywordCurrentSummary: mockRefreshSummary,
 }));
@@ -129,6 +133,7 @@ import { processFileImport } from './importFile';
 import { EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
 import { BaCrosswalkError } from '@/lib/baCategory/buildCrosswalk';
+import { KeywordCountsBuildError } from '@/lib/products/buildKeywordCounts';
 import { R2StreamError } from '@/lib/storage/r2';
 
 function createFakeCopyStream() {
@@ -391,7 +396,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       .mockReset()
       .mockResolvedValue({ rows: 3, previousWeek: null, carriedFrom: 'none' });
     // A successful keyword-counts build by default, so the phase after the pair table adds no stray failure line.
-    mockBuildKeywordCounts.mockReset().mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23, analyzed: true });
+    mockBuildKeywordCounts.mockReset().mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23, vacuumed: true });
     // A successful crosswalk build by default, so the phase after the keyword counts adds no stray failure line.
     mockBuildCrosswalk.mockReset().mockResolvedValue({
       week: '2026-04-11',
@@ -759,29 +764,46 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(mockPoolEnd.mock.invocationCallOrder[3]).toBeLessThan(
         mockBuildCrosswalk.mock.invocationCallOrder[0],
       );
-      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2 analyze=ok']);
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2 vacuum=ok']);
       expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 1234 })]); // updated + zeroed
     });
 
     it('a quiet week that changed nothing records 0 rows, not the failure marker', async () => {
       const { log } = spyConsole();
-      mockBuildKeywordCounts.mockResolvedValue({ updated: 0, zeroed: 0, seconds: 3.04, analyzed: true });
+      mockBuildKeywordCounts.mockResolvedValue({ updated: 0, zeroed: 0, seconds: 3.04, vacuumed: true });
 
       await processFileImport({ uploadedFileId: 'f1' });
 
-      expect(countsLines(log)).toEqual(['[keyword-counts] updated=0 zeroed=0 seconds=3.0 analyze=ok']);
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=0 zeroed=0 seconds=3.0 vacuum=ok']);
       expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 0 })]);
     });
 
-    it('a failed ANALYZE (the counts committed) reads analyze=failed in the summary and is no phase failure', async () => {
+    it('a failed VACUUM (the counts committed) reads vacuum=failed in the summary and is no phase failure', async () => {
       const { log, err } = spyConsole();
-      mockBuildKeywordCounts.mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23, analyzed: false });
+      mockBuildKeywordCounts.mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23, vacuumed: false });
 
       await processFileImport({ uploadedFileId: 'f1' });
 
-      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2 analyze=failed']);
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2 vacuum=failed']);
       expect(countsLines(err)).toEqual([]);
       expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 1234 })]);
+    });
+
+    it('the empty-pair-table refusal is a failure logged by its code only; the import goes on', async () => {
+      const { log, err, warn } = spyConsole();
+      mockBuildKeywordCounts.mockRejectedValue(
+        new KeywordCountsBuildError('keyword_counts_no_rows', 'keyword_top_asins is empty; refusing to zero every count'),
+      );
+
+      await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({ rowsImported: expect.any(Number) });
+
+      expect(countsLines(err)).toEqual([
+        '[keyword-counts] failed (import continues) {"week":"2026-04-11","stage":"build","error":"KeywordCountsBuildError","code":"keyword_counts_no_rows"}',
+      ]);
+      expect([...log.mock.calls, ...err.mock.calls, ...warn.mock.calls].flat().join(' ')).not.toContain('refusing'); // the message stays out
+      expect(mockBuildCrosswalk).toHaveBeenCalledTimes(1);
+      expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
     });
 
     it('opens its own pool: one connection, 10-minute statement timeout, keepalive, 20 s connect timeout', async () => {

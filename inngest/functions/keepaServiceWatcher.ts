@@ -86,7 +86,9 @@ export async function runWatcherTick(client: Queryable, deps: WatcherTickDeps): 
     [s.tail_enabled],
   );
   const dueWorkExists = due[0]?.due ?? false;
-  // Is the weekly enqueue upsert holding ENQUEUE_LOCK_KEY exclusively? The rules suppress alarms
+  // Is anything holding ENQUEUE_LOCK_KEY exclusively: the weekly enqueue upsert or the import's
+  // keyword-count build (the holders are listed at ENQUEUE_LOCK_KEY in lib/keepa/lanes.ts)? So
+  // `enqueueRunning` and the rules' 'enqueue_running' label cover both. The rules suppress alarms
   // meanwhile as extra caution: the service's heartbeat ticker keeps beating while its batch writes
   // wait on the lock. pg_locks is server-wide (this works through Neon's pooler), hence the
   // database filter.

@@ -3,9 +3,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { asinProducts, keywordTopAsins } from '@/db/schema';
 import { ENQUEUE_LOCK_KEY } from '@/lib/keepa/lanes';
 import { aliasCols, dbCols, notIn } from '@/lib/products/testHelpers';
-import { SET_COUNTS_SQL, ZERO_DROPPED_SQL, buildKeywordCounts, type KeywordCountsClient } from './buildKeywordCounts';
+import {
+  HAS_PAIRS_SQL,
+  KeywordCountsBuildError,
+  SET_COUNTS_SQL,
+  ZERO_DROPPED_SQL,
+  buildKeywordCounts,
+  type KeywordCountsClient,
+} from './buildKeywordCounts';
 
-type Answer = { rowCount?: number | null; throws?: Error };
+type Answer = { rowCount?: number | null; rows?: unknown[]; throws?: Error };
 
 /** Answers by statement head (the first match wins, so an override goes before ANSWERS) and records every call in order. */
 function fakeClient(answers: Array<[head: string, answer: Answer]> = []) {
@@ -14,7 +21,7 @@ function fakeClient(answers: Array<[head: string, answer: Answer]> = []) {
     calls.push({ text, values });
     const a = answers.find(([head]) => text.startsWith(head))?.[1];
     if (a?.throws) throw a.throws;
-    return { rowCount: a && a.rowCount !== undefined ? a.rowCount : 0, rows: [] };
+    return { rowCount: a && a.rowCount !== undefined ? a.rowCount : 0, rows: a?.rows ?? [] };
   }
   // The fake answers only the (text, values) form the builder calls; pg's overloaded query type is cast away, as in
   // tests/integration/keepaWatcher.test.ts.
@@ -22,13 +29,14 @@ function fakeClient(answers: Array<[head: string, answer: Answer]> = []) {
   return { client, calls, texts: () => calls.map((c) => c.text) };
 }
 const ANSWERS: Array<[string, Answer]> = [
+  [HAS_PAIRS_SQL, { rows: [{ any: true }] }],
   [SET_COUNTS_SQL, { rowCount: 1234 }],
   [ZERO_DROPPED_SQL, { rowCount: 56 }],
 ];
 const LOCK = 'SELECT pg_advisory_xact_lock($1)';
-const ANALYZE = 'ANALYZE asin_products';
-const OPENING = ['BEGIN', "SET LOCAL statement_timeout = '600s'", LOCK];
-const WRITE = [...OPENING, SET_COUNTS_SQL, ZERO_DROPPED_SQL, 'COMMIT'];
+const VACUUM = 'VACUUM (ANALYZE) asin_products';
+const OPENING = ['BEGIN', "SET LOCAL statement_timeout = '600s'", "SET LOCAL work_mem = '256MB'", LOCK];
+const WRITE = [...OPENING, HAS_PAIRS_SQL, SET_COUNTS_SQL, ZERO_DROPPED_SQL, 'COMMIT'];
 
 describe('the statements (spec 2026-10-23 §5)', () => {
   it("sets the count of every product in the pair table whose stored count differs; no week filter (the table holds the current week only)", () => {
@@ -45,6 +53,10 @@ describe('the statements (spec 2026-10-23 §5)', () => {
     );
     expect(ZERO_DROPPED_SQL).toContain('NOT EXISTS');
     expect(ZERO_DROPPED_SQL).toContain('a.keyword_count <> 0'); // a product already at zero is not rewritten
+  });
+
+  it('checks that the pair table holds any row at all', () => {
+    expect(HAS_PAIRS_SQL).toBe('SELECT EXISTS (SELECT 1 FROM keyword_top_asins) AS any');
   });
 
   it('names only real columns of the two tables', () => {
@@ -64,22 +76,32 @@ describe('buildKeywordCounts', () => {
     vi.restoreAllMocks();
   });
 
-  it("runs one transaction: BEGIN, the 600 s default limit, the Keepa service's lock, the two UPDATEs in order, COMMIT; then the ANALYZE outside it; returns the row counts, the seconds and analyzed", async () => {
+  it("runs one transaction: BEGIN, the 600 s default limit, work_mem, the Keepa service's lock, the empty-table check, the two UPDATEs in order, COMMIT; then the VACUUM (ANALYZE) outside it; returns the row counts, the seconds and vacuumed", async () => {
     vi.spyOn(Date, 'now').mockReturnValueOnce(1_000_000).mockReturnValue(1_061_500);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { client, calls, texts } = fakeClient(ANSWERS);
-    await expect(buildKeywordCounts(client)).resolves.toEqual({ updated: 1234, zeroed: 56, seconds: 61.5, analyzed: true });
-    expect(texts()).toEqual([...WRITE, ANALYZE]);
+    await expect(buildKeywordCounts(client)).resolves.toEqual({ updated: 1234, zeroed: 56, seconds: 61.5, vacuumed: true });
+    expect(texts()).toEqual([...WRITE, VACUUM]);
     // The exclusive form, before any row lock: the service's batch writes take the shared form first and wait.
-    expect(calls[2].values).toEqual([ENQUEUE_LOCK_KEY]);
+    expect(calls[3].values).toEqual([ENQUEUE_LOCK_KEY]);
     expect(calls.filter((c) => c.values !== undefined)).toHaveLength(1); // nothing else takes parameters
     expect(warn).not.toHaveBeenCalled();
   });
 
   it('a longer statement limit, when passed, is the one the transaction sets', async () => {
     const { client, texts } = fakeClient(ANSWERS);
-    await expect(buildKeywordCounts(client, { statementTimeoutSeconds: 1800 })).resolves.toMatchObject({ analyzed: true });
-    expect(texts()).toEqual(['BEGIN', "SET LOCAL statement_timeout = '1800s'", LOCK, SET_COUNTS_SQL, ZERO_DROPPED_SQL, 'COMMIT', ANALYZE]);
+    await expect(buildKeywordCounts(client, { statementTimeoutSeconds: 1800 })).resolves.toMatchObject({ vacuumed: true });
+    expect(texts()).toEqual([
+      'BEGIN',
+      "SET LOCAL statement_timeout = '1800s'",
+      "SET LOCAL work_mem = '256MB'",
+      LOCK,
+      HAS_PAIRS_SQL,
+      SET_COUNTS_SQL,
+      ZERO_DROPPED_SQL,
+      'COMMIT',
+      VACUUM,
+    ]);
   });
 
   it.each([0, -600, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
@@ -94,26 +116,44 @@ describe('buildKeywordCounts', () => {
     },
   );
 
+  it.each([
+    ['answers false', [{ any: false }]],
+    ['answers no row', []],
+  ])('an empty pair table (the check %s) rolls back before any UPDATE with keyword_counts_no_rows', async (_how, rows) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { client, texts } = fakeClient([[HAS_PAIRS_SQL, { rows }], ...ANSWERS]);
+    const err = await buildKeywordCounts(client).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(KeywordCountsBuildError);
+    expect(err).toMatchObject({
+      name: 'KeywordCountsBuildError',
+      code: 'keyword_counts_no_rows',
+      message: 'keyword_top_asins is empty; refusing to zero every count',
+    });
+    expect(texts()).toEqual([...OPENING, HAS_PAIRS_SQL, 'ROLLBACK']); // no UPDATE, no COMMIT, no VACUUM
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('a null rowCount reads as zero', async () => {
     const { client } = fakeClient([
       [SET_COUNTS_SQL, { rowCount: null }],
       [ZERO_DROPPED_SQL, { rowCount: null }],
+      ...ANSWERS,
     ]);
-    await expect(buildKeywordCounts(client)).resolves.toMatchObject({ updated: 0, zeroed: 0, analyzed: true });
+    await expect(buildKeywordCounts(client)).resolves.toMatchObject({ updated: 0, zeroed: 0, vacuumed: true });
   });
 
   it('a failing first UPDATE rolls back and rethrows the original error unchanged; the second never runs', async () => {
     const failure = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
     const { client, texts } = fakeClient([[SET_COUNTS_SQL, { throws: failure }], ...ANSWERS]);
     await expect(buildKeywordCounts(client)).rejects.toBe(failure);
-    expect(texts()).toEqual([...OPENING, SET_COUNTS_SQL, 'ROLLBACK']);
+    expect(texts()).toEqual([...OPENING, HAS_PAIRS_SQL, SET_COUNTS_SQL, 'ROLLBACK']);
   });
 
   it('a failing second UPDATE rolls the first one back with it', async () => {
     const failure = Object.assign(new Error('connection lost'), { code: '08006' });
     const { client, texts } = fakeClient([[ZERO_DROPPED_SQL, { throws: failure }], ...ANSWERS]);
     await expect(buildKeywordCounts(client)).rejects.toBe(failure);
-    expect(texts()).toEqual([...OPENING, SET_COUNTS_SQL, ZERO_DROPPED_SQL, 'ROLLBACK']);
+    expect(texts()).toEqual([...OPENING, HAS_PAIRS_SQL, SET_COUNTS_SQL, ZERO_DROPPED_SQL, 'ROLLBACK']);
   });
 
   it('a lock wait past the statement limit rolls back before any row is written', async () => {
@@ -131,31 +171,30 @@ describe('buildKeywordCounts', () => {
   });
 
   it.each([
+    ['the empty-table check', HAS_PAIRS_SQL],
     ['the first UPDATE', SET_COUNTS_SQL],
     ['the second UPDATE', ZERO_DROPPED_SQL],
     ['the lock wait', LOCK],
     ['the COMMIT', 'COMMIT'],
-  ])('a rolled-back build (%s fails) never runs the ANALYZE', async (_what, head) => {
+  ])('a rolled-back build (%s fails) never runs the VACUUM', async (_what, head) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const failure = Object.assign(new Error('failed'), { code: '57014' });
     const { client, texts } = fakeClient([[head, { throws: failure }], ...ANSWERS]);
     await expect(buildKeywordCounts(client)).rejects.toBe(failure);
     expect(texts().slice(-1)).toEqual(['ROLLBACK']);
-    expect(texts()).not.toContain(ANALYZE);
+    expect(texts()).not.toContain(VACUUM);
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('a failing ANALYZE after the COMMIT warns once with the coded fields; the committed counts are still returned, with analyzed: false', async () => {
+  it('a failing VACUUM after the COMMIT warns once with the coded fields only; the committed counts are still returned, with vacuumed: false', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const failure = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
-    const { client, texts } = fakeClient([[ANALYZE, { throws: failure }], ...ANSWERS]);
-    await expect(buildKeywordCounts(client)).resolves.toMatchObject({ updated: 1234, zeroed: 56, analyzed: false });
-    expect(texts()).toEqual([...WRITE, ANALYZE]); // no ROLLBACK: the write was already committed
+    const failure = Object.assign(new Error('SECRET canceling statement due to statement timeout'), { code: '57014' });
+    const { client, texts } = fakeClient([[VACUUM, { throws: failure }], ...ANSWERS]);
+    await expect(buildKeywordCounts(client)).resolves.toMatchObject({ updated: 1234, zeroed: 56, vacuumed: false });
+    expect(texts()).toEqual([...WRITE, VACUUM]); // no ROLLBACK: the write was already committed
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(
-      '[keyword-counts] analyze failed',
-      JSON.stringify({ outcome: 'analyze_failed', error: 'Error', code: '57014', detail: 'canceling statement due to statement timeout' }),
-    );
+    expect(warn).toHaveBeenCalledWith('[keyword-counts] vacuum failed', JSON.stringify({ outcome: 'vacuum_failed', error: 'Error', code: '57014' }));
+    expect(warn.mock.calls.flat().join(' ')).not.toContain('SECRET'); // never the message
   });
 
   it('a failing ROLLBACK does not mask the original error', async () => {

@@ -3,19 +3,25 @@
  * Write asin_products.keyword_count by hand (spec 2026-10-23 §5): the one-off first build after migration 0056 (every
  * count starts at 0), or a re-run after the import's own keyword_counts_build phase logged a failure. Sets each
  * product's count from keyword_top_asins (the current week only) and zeroes the products that dropped out, in one
- * transaction (lib/products/buildKeywordCounts.ts), then refreshes the catalog's statistics (a best-effort ANALYZE).
- * Only changed rows are written, so a re-run is idempotent and cheap.
+ * transaction (lib/products/buildKeywordCounts.ts), then a best-effort VACUUM (ANALYZE) of asin_products. An empty pair
+ * table is refused (keyword_counts_no_rows) and nothing is written. Only changed rows are written, so a re-run is
+ * idempotent and cheap.
  *
  * Run: node --env-file=.env.local --import tsx scripts/buildKeywordCounts.ts
  * KEYWORD_COUNTS_DRY_RUN=1 runs one read-only statement instead: the count of distinct ASINs in keyword_top_asins (about
  * the rows the first build writes: those of them the catalog holds). It never touches asin_products, so it cannot see a
  * missing migration 0056 — the build itself fails loudly on that (42703).
- * Careful: .env.local's DATABASE_URL points at PRODUCTION — the write updates the live catalog's rows. While it runs it
- * holds the Keepa service's lock (ENQUEUE_LOCK_KEY), so the service's batch writes wait for the COMMIT, and a run during
- * an import's keepa_enqueue waits for that phase first.
+ * Careful: .env.local's DATABASE_URL points at PRODUCTION — the write updates the live catalog's rows. While it writes it
+ * holds the Keepa service's lock (ENQUEUE_LOCK_KEY), so the service's batch writes wait for the COMMIT.
+ * Run it outside an import: its open read of keyword_top_asins (held until the COMMIT) makes top_asins_build's table
+ * swap wait out its 120 s lock timeout and fail, and it and the import's keepa_enqueue wait on each other's lock.
  * Time: the first build touches every catalog row with a count (about 2.5M: every product in the pair table), each
  * update non-HOT because the column is indexed, so it may take well over a minute; hence the 30-minute statement limit
- * here (the weekly phase keeps the builder's 600 s default: it writes only the changed counts). Later runs are quick.
+ * here (the weekly phase keeps the builder's 600 s default: it writes only the changed counts). The limit is per
+ * statement, so the lock can be held up to about 2 × 1800 s (the two UPDATEs); past the Keepa service's 1900 s lock wait
+ * its store transaction fails with 57014 and the service retries 30 s later, losing at most one batch's tokens (a batch
+ * fetched before the lock was taken, whose write then timed out). The VACUUM (ANALYZE) after the COMMIT adds its own
+ * time, without the lock.
  */
 import { Pool } from 'pg';
 import { buildKeywordCounts } from '@/lib/products/buildKeywordCounts';
@@ -37,11 +43,12 @@ const STATEMENT_LIMIT_SECONDS = 1800;
 /** The dry run's one statement (read-only): the distinct ASINs of the pair table. */
 const DISTINCT_ASINS_SQL = 'SELECT count(*)::int AS n FROM (SELECT asin FROM keyword_top_asins GROUP BY asin) c';
 
-/** What to do next, by error code (a SQLSTATE), when a run fails. */
+/** What to do next, by error code (a SQLSTATE or a KeywordCountsBuildError code), when a run fails. */
 const HINTS: Readonly<Record<string, string>> = {
   '42703': 'asin_products.keyword_count does not exist: apply migration 0056 first.',
   '42P01': 'keyword_top_asins or asin_products does not exist: wrong DATABASE_URL?',
   '57014': "a statement hit its 30-minute limit or was cancelled (a cold catalog? an import's keepa_enqueue holding the Keepa lock?): re-run.",
+  'keyword_counts_no_rows': 'keyword_top_asins is empty (wrong DATABASE_URL? the pair table never built?): nothing was written; build it (scripts/buildTopAsinsWeek.ts) and re-run.',
 };
 
 let stage: 'connect' | 'run' = 'connect';
@@ -69,8 +76,8 @@ let stage: 'connect' | 'run' = 'connect';
     } else {
       console.log(`writing asin_products.keyword_count from keyword_top_asins (statement limit ${STATEMENT_LIMIT_SECONDS} s)`);
       const r = await buildKeywordCounts(client, { statementTimeoutSeconds: STATEMENT_LIMIT_SECONDS });
-      console.log(`built: updated=${r.updated} zeroed=${r.zeroed} seconds=${r.seconds.toFixed(1)} analyze=${r.analyzed ? 'ok' : 'failed'}`);
-      if (!r.analyzed) console.log('The counts are committed; only the statistics refresh failed: autoanalyze catches up (or run ANALYZE asin_products).');
+      console.log(`built: updated=${r.updated} zeroed=${r.zeroed} seconds=${r.seconds.toFixed(1)} vacuum=${r.vacuumed ? 'ok' : 'failed'}`);
+      if (!r.vacuumed) console.log('The counts are committed; only the VACUUM (ANALYZE) failed: autovacuum catches up (or run VACUUM (ANALYZE) asin_products).');
     }
   } finally {
     client.release();

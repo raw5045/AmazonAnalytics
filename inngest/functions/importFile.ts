@@ -1153,11 +1153,12 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       // rebuilt keyword_top_asins, and BEFORE the long summary refresh.
       // Only the changed rows are written; the builder holds the Keepa
       // service's lock while it writes, so the service's batch writes wait
-      // instead of deadlocking with it. After the COMMIT it refreshes the
-      // catalog's statistics (a best-effort ANALYZE: analyze=failed in the
-      // log line, never a phase failure). Fail-soft, like the phases
-      // around it: a failure never fails the import — the previous counts
-      // stay (the two UPDATEs are one transaction) and
+      // instead of deadlocking with it. After the COMMIT it vacuums and
+      // analyzes asin_products (best-effort: vacuum=failed in the log line,
+      // never a phase failure). Fail-soft, like the phases around it: a
+      // failure never fails the import — the previous counts stay (the two
+      // UPDATEs are one transaction; an empty pair table is refused as
+      // keyword_counts_no_rows, writing nothing) and
       // scripts/buildKeywordCounts.ts re-runs it by hand. Skipped on
       // replays like the other hooks: a historical week must not rewrite
       // the live counts (top_asins_build is skipped too). It takes no
@@ -1187,7 +1188,7 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
               client.on('error', () => undefined);
               const r = await buildKeywordCounts(client);
               console.log(
-                `[keyword-counts] updated=${r.updated} zeroed=${r.zeroed} seconds=${r.seconds.toFixed(1)} analyze=${r.analyzed ? 'ok' : 'failed'}`,
+                `[keyword-counts] updated=${r.updated} zeroed=${r.zeroed} seconds=${r.seconds.toFixed(1)} vacuum=${r.vacuumed ? 'ok' : 'failed'}`,
               );
               return r;
             } finally {

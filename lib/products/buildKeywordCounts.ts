@@ -13,10 +13,19 @@
  * form first (services/keepa/pgStore.ts) and simply wait until the COMMIT. Transaction-scoped, because Neon's
  * pooler does not keep session-level locks.
  *
- * The transaction's statement limit defaults to 600 s (the weekly phase); the by-hand first build, which touches
- * every counted product, passes a longer one. After the COMMIT, a best-effort ANALYZE asin_products refreshes
- * the planner statistics of the rewritten column, outside the transaction so a failure cannot undo the counts:
- * it only warns, and autoanalyze catches up.
+ * Guard: an empty pair table (not built, a wrong database) would make the second statement zero every count, so
+ * the transaction checks first and refuses with keyword_counts_no_rows, writing nothing.
+ *
+ * Limits: the transaction's statement limit defaults to 600 s (the weekly phase); the by-hand first build, which
+ * touches every counted product, passes a longer one. work_mem is raised for the GROUP BY over the ~9.4M-row
+ * pair table, as top_asins_build does for its carry.
+ *
+ * After the COMMIT, a best-effort VACUUM (ANALYZE) asin_products, as the enqueue upsert runs after its own write;
+ * outside the transaction (VACUUM cannot run inside one, and a failure must not undo the counts). Every changed
+ * count is a non-HOT update (the column is indexed) that leaves a dead tuple and dead index entries: the first
+ * build rewrites ~2.5M rows and would otherwise leave ~2M dead (0, asin) entries at the start of the partial
+ * keyword-count index's ascending walk until autovacuum got there. The ANALYZE refreshes the column's
+ * statistics. A failure only warns, with coded fields only (vacuumed: false), and autovacuum catches up.
  */
 import type { Client, PoolClient } from 'pg';
 import { errFields } from '@/lib/ask/logSafe';
@@ -30,14 +39,25 @@ export interface KeywordCountsOptions {
 export interface KeywordCountsResult {
   updated: number;
   zeroed: number;
-  /** The whole call, the ANALYZE included. */
+  /** The whole call, the VACUUM included. */
   seconds: number;
-  /** False when the ANALYZE after the COMMIT failed (warned; the counts stay committed). */
-  analyzed: boolean;
+  /** False when the VACUUM (ANALYZE) after the COMMIT failed (warned; the counts stay committed). */
+  vacuumed: boolean;
+}
+
+export type KeywordCountsBuildErrorCode = 'keyword_counts_no_rows';
+/** Carries a `code` so the import phase's coded log line and the by-hand script name the cause. */
+export class KeywordCountsBuildError extends Error {
+  constructor(public readonly code: KeywordCountsBuildErrorCode, message: string) {
+    super(message);
+    this.name = 'KeywordCountsBuildError';
+  }
 }
 
 const DEFAULT_STATEMENT_TIMEOUT_SECONDS = 600;
 
+/** The guard: does the pair table hold any row at all? */
+export const HAS_PAIRS_SQL = 'SELECT EXISTS (SELECT 1 FROM keyword_top_asins) AS any';
 export const SET_COUNTS_SQL = `UPDATE asin_products a SET keyword_count = c.n
   FROM (SELECT asin, count(*)::int AS n FROM keyword_top_asins GROUP BY asin) c
   WHERE a.asin = c.asin AND a.keyword_count IS DISTINCT FROM c.n`;
@@ -54,8 +74,14 @@ export async function buildKeywordCounts(client: KeywordCountsClient, opts: Keyw
   await client.query('BEGIN');
   try {
     await client.query(`SET LOCAL statement_timeout = '${limit}s'`);
+    await client.query("SET LOCAL work_mem = '256MB'");
     // Waits out an in-flight service batch (seconds); a wait past the limit above is a 57014 and rolls back.
     await client.query('SELECT pg_advisory_xact_lock($1)', [ENQUEUE_LOCK_KEY]);
+    // Fail-closed: anything but a plain true (no row, a null) refuses as well.
+    const pairs = await client.query(HAS_PAIRS_SQL);
+    if ((pairs.rows[0] as { any?: unknown } | undefined)?.any !== true) {
+      throw new KeywordCountsBuildError('keyword_counts_no_rows', 'keyword_top_asins is empty; refusing to zero every count');
+    }
     updated = (await client.query(SET_COUNTS_SQL)).rowCount ?? 0;
     zeroed = (await client.query(ZERO_DROPPED_SQL)).rowCount ?? 0;
     await client.query('COMMIT');
@@ -63,12 +89,13 @@ export async function buildKeywordCounts(client: KeywordCountsClient, opts: Keyw
     await client.query('ROLLBACK').catch(() => undefined);
     throw e;
   }
-  let analyzed = true;
+  let vacuumed = true;
   try {
-    await client.query('ANALYZE asin_products');
+    await client.query('VACUUM (ANALYZE) asin_products');
   } catch (e) {
-    analyzed = false;
-    console.warn('[keyword-counts] analyze failed', JSON.stringify({ outcome: 'analyze_failed', ...errFields(e) }));
+    vacuumed = false;
+    const { error, code } = errFields(e);
+    console.warn('[keyword-counts] vacuum failed', JSON.stringify({ outcome: 'vacuum_failed', error, code }));
   }
-  return { updated, zeroed, seconds: (Date.now() - started) / 1000, analyzed };
+  return { updated, zeroed, seconds: (Date.now() - started) / 1000, vacuumed };
 }
