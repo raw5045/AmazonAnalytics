@@ -55,12 +55,15 @@ describe('availabilityLabel', () => {
 describe('listingAge', () => {
   const cases: Array<[string | null, string]> = [
     ['2026-07-01', '100 days'],
-    ['2025-09-04', '1.1 years'], // 400 days
+    ['2025-09-04', '1 year, 35 days'], // 400 days: one anniversary passed, 35 days since it
     ['2026-10-09', '0 days'],
     ['2026-10-08', '1 day'],
     ['2025-10-10', '364 days'],
-    ['2025-10-09', '1.0 years'], // 365 days
-    ['2024-10-09', '2.0 years'],
+    ['2025-10-09', '1 year'], // the anniversary itself: no ", 0 days"
+    ['2025-10-08', '1 year, 1 day'],
+    ['2024-10-09', '2 years'],
+    ['2018-03-19', '8 years, 204 days'],
+    ['2024-02-29', '2 years, 222 days'], // a Feb 29 listing takes Mar 1 as its anniversary in 2026
     ['2026-10-20', '0 days'], // dated after now (clock skew): never negative
     [null, '—'],
     ['not a date', '—'],

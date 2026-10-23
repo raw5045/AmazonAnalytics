@@ -41,8 +41,11 @@ export function availabilityLabel(code: number | null): string {
 }
 
 /**
- * How long ago a listing started, as of `now`: "100 days" up to a year, then "1.1 years". `date`
- * is a YYYY-MM-DD string; a date after `now` reads as 0 days.
+ * How long ago a listing started, as of `now` (spec 2026-10-23 listing age §1): "245 days" under a
+ * year; from a year on, whole calendar years since the listing date and the days since that
+ * anniversary, "1 year, 245 days", or just "2 years" on the anniversary itself. `date` is a
+ * YYYY-MM-DD string; a date after `now` reads as 0 days (never negative). A Feb 29 listing takes
+ * Mar 1 as its anniversary in a non-leap year (what Date.UTC does with day 29 of February).
  *
  * Days are counted on the UTC calendar. That agrees with the Products page's age filter
  * (`listed_since >= current_date - N`) on one assumption: `current_date` there is evaluated in the
@@ -52,12 +55,23 @@ export function availabilityLabel(code: number | null): string {
 export function listingAge(date: string | null, now: Date): string {
   const m = date === null ? null : /^(\d{4})-(\d{2})-(\d{2})/.exec(date);
   if (!m) return DASH;
-  const listed = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const year = Number(m[1]);
+  const month = Number(m[2]) - 1;
+  const day = Number(m[3]);
+  const listed = Date.UTC(year, month, day);
   const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const elapsed = (today - listed) / DAY_MS;
-  if (!Number.isFinite(elapsed)) return DASH;
-  const days = Math.max(0, Math.round(elapsed));
-  return days >= 365 ? `${(days / 365).toFixed(1)} years` : `${days} ${days === 1 ? 'day' : 'days'}`;
+  if (!Number.isFinite(listed) || !Number.isFinite(today)) return DASH;
+  if (today <= listed) return '0 days';
+  let years = now.getUTCFullYear() - year;
+  let anniversary = Date.UTC(year + years, month, day);
+  if (anniversary > today) {
+    years -= 1;
+    anniversary = Date.UTC(year + years, month, day);
+  }
+  const days = Math.round((today - anniversary) / DAY_MS);
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (years <= 0) return unit(days, 'day');
+  return days === 0 ? unit(years, 'year') : `${unit(years, 'year')}, ${unit(days, 'day')}`;
 }
 
 /** 1999 → "$19.99". */
