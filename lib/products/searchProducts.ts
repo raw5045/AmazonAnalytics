@@ -4,24 +4,33 @@
  * over a `(text, values) => rows` runner (the page wraps neon's client in `neonRunner`; the tools reuse it).
  * The category filter is a ProductCategoryScope built by the caller — see ./categoryPredicate; every
  * other filter is read from ProductFilters (spec 2026-10-12 §4.3).
- * The indexes behind the predicates: the 0051 (key, asin) partial indexes for the range filters and sorts
- * (the base predicate matches their WHERE clause exactly), 0050's partial asin_products_category_path_idx
- * for the category predicate (see ./categoryPredicate), and 0053's ba_category_crosswalk_code_idx (a plain
- * index on the small crosswalk) for the broad-category semi-join. Rating, FBA and Amazon have no index of
- * their own and ride whichever scan the planner picks.
+ * The indexes behind the predicates: the 0051 (key, asin) partial indexes for the range filters and sorts,
+ * and 0056's asin_products_keyword_count_idx for the keywords sort (the base predicate matches their WHERE
+ * clause exactly, which is what lets the planner use a partial index at all), 0050's partial
+ * asin_products_category_path_idx for the category predicate (see ./categoryPredicate), and 0053's
+ * ba_category_crosswalk_code_idx (a plain index on the small crosswalk) for the broad-category semi-join.
+ * Rating, FBA and Amazon have no index of their own and ride whichever scan the planner picks.
  *
  * Two rules keep a page cheap on a multi-million-row catalog:
- *  - Page first, count second. The filter, the order and the 50-row page are a subquery (it also
- *    carries the raw sort value as `sort_key`); the lateral keyword count joins only those rows
- *    (spec §5.2) and the outer ORDER BY restates the order, since a join promises none. The
- *    `keywords` sort is the exception: it orders by the count, so it stays single-level and its
- *    lateral runs for every candidate row.
- *  - Sorts hide rows whose sort key is NULL (the explorer's rule for its avg sorts). The WHERE gets
- *    `<key> IS NOT NULL`, the ORDER BY has no NULLS clause, and its `asin` tie-breaker runs in the
- *    sort direction, so the order is exactly a forward (ASC) or backward (DESC) scan of the key's
- *    `(<key>, asin)` partial index and the top-N comes off the index instead of sorting every
- *    candidate. The tie-breaker stays: without a total order, rows could repeat or skip across
- *    pages when updates move rows inside a tie. The page says so with SORT_KEY_LABEL.
+ *  - Every sort has an index to walk. Each one orders by a stored catalog column and nothing is
+ *    joined to the page (the Keywords column is the stored count too), so the statement is one level:
+ *    the filter, the order and the 50-row page. The ORDER BY has no NULLS clause and its `asin`
+ *    tie-breaker runs in the sort direction, so the order is exactly a forward (ASC) or backward
+ *    (DESC) scan of the key's `(<key>, asin)` partial index and the top-N can come off the index
+ *    instead of sorting every candidate. The tie-breaker stays: without a total order, rows could
+ *    repeat or skip across pages when updates move rows inside a tie.
+ *  - Sorts hide rows whose sort key is NULL (the explorer's rule for its avg sorts): the WHERE gets
+ *    `<key> IS NOT NULL`, and the page says so with SORT_KEY_LABEL. keyword_count is NOT NULL, so
+ *    the keywords sort hides nothing and gets no such predicate.
+ *
+ * The keywords sort (spec 2026-10-23 §5) walks asin_products_keyword_count_idx, partial on the base
+ * predicate like 0051's six, as the other sorts walk theirs. keyword_count is the stored current-week
+ * count of keywords the product is a top-3 clicked product for, written weekly by the import's
+ * keyword_counts_build phase right after top_asins_build rebuilds keyword_top_asins
+ * (./buildKeywordCounts); the pair table changes only at imports, so the weekly write is exact. Before
+ * 0056 the sort counted keywords with a lateral subquery per candidate row, and a wide filter (broad
+ * category Home: ~315k probes before the sort) ran past the 30 s cap cold. The cap stays as the
+ * safety net (see neonRunner).
  *
  * The total is best-effort: a count that hits the statement timeout (57014) yields the capped total
  * and `countTimedOut`, so a slow count never costs the page its rows.
@@ -60,9 +69,7 @@ const SORT_COLUMN: Record<NullableKeySort, string> = {
 
 const PAGE_COLUMNS = `a.asin, a.title, a.brand, a.category_path, a.listed_since::text AS listed_since, a.monthly_sold, a.review_count, a.average_rating_x10,
   CASE WHEN a.enrichment_status = 'active' THEN a.current_price_cents END AS current_price_cents,
-  a.sales_rank, a.rank_ratio_x100, a.fba_offer_count, a.fbm_offer_count, a.amazon_availability, a.enrichment_status::text AS enrichment_status`;
-/** The current top-3 keyword count of the rows of `alias` (the catalog itself, or the page subquery). */
-const keywordCount = (alias: 'a' | 'p') => `LEFT JOIN LATERAL (SELECT count(*)::int AS keyword_count FROM keyword_top_asins k WHERE k.asin = ${alias}.asin) kc ON true`;
+  a.sales_rank, a.rank_ratio_x100, a.fba_offer_count, a.fbm_offer_count, a.amazon_availability, a.keyword_count, a.enrichment_status::text AS enrichment_status`;
 
 export function productSearchSql(f: ProductFilters, scope: ProductCategoryScope): { rows: SqlStatement; count: SqlStatement } {
   const where: string[] = [BASE];
@@ -88,27 +95,24 @@ export function productSearchSql(f: ProductFilters, scope: ProductCategoryScope)
   if (f.fba === 'no') where.push('a.fba_offer_count = 0');
   if (f.amazon === 'yes') where.push('a.amazon_availability >= 0');
   if (f.amazon === 'no') where.push('(a.amazon_availability IS NULL OR a.amazon_availability = -1)');
-  const keyColumn = sortHidesNullKey(f.sort) ? SORT_COLUMN[f.sort] : null;
-  if (keyColumn !== null) where.push(`a.${keyColumn} IS NOT NULL`);
+  // The sort's column: the stored keyword count (NOT NULL, so the keywords sort hides nothing), else a nullable catalog column whose NULLs the sort hides.
+  const keyColumn = f.sort === 'keywords' ? 'keyword_count' : SORT_COLUMN[f.sort];
+  if (sortHidesNullKey(f.sort)) where.push(`a.${keyColumn} IS NOT NULL`);
   const whereSql = where.join(' AND ');
   const dir = f.dir === 'asc' ? 'ASC' : 'DESC';
   const whereValues = [...values];
   const limit = bind(PRODUCT_PAGE_SIZE);
   const offset = bind((f.page - 1) * PRODUCT_PAGE_SIZE);
-  const rows = keyColumn === null
-    // Ordered by the count itself, so it stays single-level: the lateral runs for every candidate row.
-    ? `SELECT ${PAGE_COLUMNS}, kc.keyword_count FROM asin_products a ${keywordCount('a')} WHERE ${whereSql} ORDER BY kc.keyword_count ${dir}, a.asin ${dir} LIMIT ${limit} OFFSET ${offset}`
-    // Page first, count second: the subquery is the filtered, ordered page, with the raw sort value as sort_key
-    // (not the ::text date or the masked price); only its rows get the lateral count, and the outer ORDER BY
-    // restates the order.
-    : `SELECT p.*, kc.keyword_count FROM (SELECT ${PAGE_COLUMNS}, a.${keyColumn} AS sort_key FROM asin_products a WHERE ${whereSql} ORDER BY a.${keyColumn} ${dir}, a.asin ${dir} LIMIT ${limit} OFFSET ${offset}) p ${keywordCount('p')} ORDER BY p.sort_key ${dir}, p.asin ${dir}`;
+  // One level for every sort: nothing is joined to the page, so the ORDER BY on the raw column (not the ::text date or the
+  // masked price) is the order of the sort's (key, asin) index, which the planner can walk and stop at the page.
+  const rows = `SELECT ${PAGE_COLUMNS} FROM asin_products a WHERE ${whereSql} ORDER BY a.${keyColumn} ${dir}, a.asin ${dir} LIMIT ${limit} OFFSET ${offset}`;
   return {
     rows: { text: rows, values },
     count: { text: `SELECT count(*)::int AS n FROM (SELECT 1 FROM asin_products a WHERE ${whereSql} LIMIT ${PRODUCT_COUNT_CAP}) c`, values: whereValues },
   };
 }
 
-/** A result row. The page-first statement also returns `sort_key` (for its outer re-sort); the mapper does not read it. */
+/** A result row: the columns of PAGE_COLUMNS. keyword_count is NOT NULL in the table; the mapper still reads a missing one as 0. */
 interface Raw { asin: string; title: string | null; brand: string | null; category_path: string | null; listed_since: string | null; monthly_sold: number | null; review_count: number | null; average_rating_x10: number | null; current_price_cents: number | null; sales_rank: number | null; rank_ratio_x100: number | null; fba_offer_count: number | null; fbm_offer_count: number | null; amazon_availability: number | null; enrichment_status: 'active' | 'no_price'; keyword_count: number | null }
 
 /** SQLSTATE 57014 (query_canceled), what a statement timeout raises; pg's DatabaseError and neon's NeonDbError both carry it as `.code`. */
@@ -150,10 +154,12 @@ export type NeonRunnerSql = Pick<NeonQueryFunction<false, false>, 'query' | 'tra
 /**
  * The page's runner: neon's query form (positional parameters), one statement per call, run as its
  * own HTTP transaction behind `SET LOCAL statement_timeout` so a slow read is cancelled server-side
- * after PRODUCT_READ_TIMEOUT_MS. That matters most for `sort=keywords` on wide filters, which counts
- * keywords for the whole catalog while holding a read lock on keyword_top_asins; an import's table
- * swap waits on that lock (120 s, then the build fails soft and the reverse table stays a week
- * behind). `@neondatabase/serverless` 1.x (checked against 1.0.2): `sql.query()` only builds a lazy
+ * after PRODUCT_READ_TIMEOUT_MS: the safety net for any slow combination of filters and sort. It used
+ * to matter most for `sort=keywords` on wide filters, which counted keywords for the whole catalog
+ * while holding a read lock on keyword_top_asins, the lock an import's table swap waits on (120 s,
+ * then the build fails soft and the reverse table stays a week behind). The keywords sort now reads
+ * the stored keyword_count (spec 2026-10-23 §5), so the search no longer reads that table and that
+ * wait no longer applies to it. `@neondatabase/serverless` 1.x (checked against 1.0.2): `sql.query()` only builds a lazy
  * query, and `sql.transaction([...])` submits the batch as one transaction and resolves to one row
  * array per statement under the default options, so the query's rows are the last element.
  */

@@ -31,6 +31,11 @@
  *    sorting). Every broad search has its rows and count statements planned (both plans printed), timed
  *    apart under a local cap of twice the page's, re-run with EXPLAIN (ANALYZE, BUFFERS), and every row
  *    of its page checked to map to the code;
+ *  - the keywords sort (spec 2026-10-23 §5), which reads the stored asin_products.keyword_count (migration 0056): two cases under
+ *    broad category Home, the widest, descending then ascending, placed after the ten broad cases and before the department and leaf
+ *    cases. Each must plan on asin_products_keyword_count_idx with no Sort node over more than a page, runs through the same broad
+ *    search (both statements timed apart, each under the page's cap; the EXPLAIN ANALYZE re-run printed; every row mapped to Home),
+ *    and its page's keyword counts must run in the sort's direction;
  *  - the option lists (spec 2026-10-19 §6), read from product_category_facets (migration 0055): the facets' department,
  *    path and product counts, the path count cross-checked against the live catalog scope (FACETS_SCOPE_SQL, imported)
  *    within 5 % (the facets are rebuilt weekly, so they lag it); the estimated sizes of the three largest per-department
@@ -41,7 +46,9 @@
  *    the same text) and stand in for them;
  *  - the ASIN page's loaders (facts, snapshot history, keywords with weeks in top 3) answer for an ASIN
  *    taken from the search; an ASIN the reverse table has but the catalog lacks gets a stub
- *    (inCatalog false); an unknown ASIN has no facts.
+ *    (inCatalog false); an unknown ASIN has no facts;
+ *  - last of all, the stored keyword counts against a fresh count of keyword_top_asins for every catalog row (none may differ): a
+ *    full pass over the catalog, so it runs after every timed case.
  *
  * Read-only: every case runs inside BEGIN READ ONLY ... ROLLBACK on one dedicated connection (a stray
  * write would error), so nothing persists.
@@ -63,6 +70,9 @@
  *  - migration 0055 applied (checked up front: the file fails at once when product_category_facets is missing) and the
  *    facets built once (scripts/buildProductCategoryFacets.ts, spec 2026-10-19 §13 step 3): until the table holds a row
  *    the option-lists case skips with a note ("facets not built");
+ *  - migration 0056 applied (checked up front: the file fails at once when asin_products_keyword_count_idx is missing, since every
+ *    search selects asin_products.keyword_count) and the keyword counts built once (scripts/buildKeywordCounts.ts, spec 2026-10-23
+ *    §9): while every count is 0 the stored-count case skips with a note ("keyword counts not built yet");
  *  - a custom category with stored paths (any account's; only its paths are read) for the two
  *    custom-category cases: when there is none they are skipped ("no custom category to test with");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
@@ -79,6 +89,8 @@
  * (blocks hit + read, the sort-index node's rows), which does not depend on the cache, not by their times
  * alone. For the coldest index reading, run the mismatched-department case alone first:
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "mismatched department" --disableConsoleIntercept
+ * Likewise for the coldest reading of the keywords sort (spec 2026-10-23 §5), its two cases alone:
+ *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "keywords sort" --disableConsoleIntercept
  */
 import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
@@ -114,6 +126,8 @@ const PRODUCT_SEARCH_INDEXES = [
   'asin_products_price_idx',
   'asin_products_rank_ratio_idx',
 ] as const;
+/** The keywords sort's index (migration 0056): (keyword_count, asin), partial on the list's base predicate like the six above. */
+const KEYWORD_COUNT_INDEX = 'asin_products_keyword_count_idx';
 /** The category filter's index (migration 0050): category_path text_pattern_ops, partial on in_scope AND category_path IS NOT NULL. */
 const CATEGORY_PATH_INDEX = 'asin_products_category_path_idx';
 /** The broad-category filter's index (migration 0053): (code, category_path) on the crosswalk; the equality probes ride the category-path index above. */
@@ -190,6 +204,9 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     if (!crosswalk.rows[0]?.ok) throw new Error('migration 0053 is not applied (ba_category_crosswalk is missing)');
     const facets = await client.query<{ ok: boolean }>("SELECT to_regclass('product_category_facets') IS NOT NULL AS ok");
     if (!facets.rows[0]?.ok) throw new Error('migration 0055 is not applied (product_category_facets is missing)');
+    // Every search selects a.keyword_count (42703 without the column); the index exists only on top of it.
+    const keywordCounts = await client.query<{ ok: boolean }>(`SELECT to_regclass('${KEYWORD_COUNT_INDEX}') IS NOT NULL AS ok`);
+    if (!keywordCounts.rows[0]?.ok) throw new Error(`migration 0056 is not applied (${KEYWORD_COUNT_INDEX} is missing)`);
     const meta = await client.query<{ week: string | null }>('SELECT week_end_date::text AS week FROM keyword_top_asins_meta WHERE singleton');
     metaWeek = meta.rows[0]?.week ?? null;
   }, HOOK_TIMEOUT_MS);
@@ -297,7 +314,8 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   }
 
   /**
-   * One broad-category search under the default sort (spec 2026-10-14 §6); `note` says how warm it runs, when that is known, and
+   * One broad-category search (spec 2026-10-14 §6), under the default sort unless `order` names another (the keywords-sort cases of
+   * spec 2026-10-23 §5; the log lines then carry the sort); `note` says how warm it runs, when that is known, and
    * `scope` adds a department or a leaf pick (the default adds none). Both statements are planned (EXPLAIN, so the plans print even if the count
    * later aborts the transaction). The search runs for real through searchProducts under a local SEARCH_TIMEOUT, with its rows
    * statement and its count statement timed apart (they run back to back on this one connection, while the page runs them in
@@ -305,17 +323,24 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
    * whose loop counts tell a probe of the crosswalk per candidate (a nested-loop walk of the sort index) from one read of the
    * code's paths (the path-set-first plan), which a plain plan outline cannot; the local cap stays on through that re-run, so a
    * bad plan cannot outlive the case there either. Last, every row of the page is checked to map to the code, whatever plan
-   * served it. It returns the planned outline, the page's rows and the re-run's result (`analyzed`), whose blocks hit + read are a
-   * verdict that does not depend on the cache.
+   * served it. It returns the planned rows plan (its root and outline), the page's rows and the re-run's result (`analyzed`), whose
+   * blocks hit + read are a verdict that does not depend on the cache.
    */
-  async function broadSearch(code: string, note?: string, scope: ProductCategoryScope = EMPTY_CATEGORY_SCOPE): Promise<{ lines: string[]; rows: ProductSummaryRow[]; analyzed: AnalyzedPlan }> {
+  async function broadSearch(
+    code: string,
+    note?: string,
+    scope: ProductCategoryScope = EMPTY_CATEGORY_SCOPE,
+    order: Pick<ProductFilters, 'sort' | 'dir'> = PRODUCT_DEFAULTS,
+  ): Promise<{ root: PlanNode; lines: string[]; rows: ProductSummaryRow[]; analyzed: AnalyzedPlan }> {
     const cap = PRODUCT_READ_TIMEOUT_MS / 1000;
-    const filters: ProductFilters = { ...PRODUCT_DEFAULTS, broadCategory: code };
+    const filters: ProductFilters = { ...PRODUCT_DEFAULTS, sort: order.sort, dir: order.dir, broadCategory: code };
+    // How the log lines and messages name this search: the code, plus the sort when it is not the default one.
+    const name = order.sort === PRODUCT_DEFAULTS.sort && order.dir === PRODUCT_DEFAULTS.dir ? `"${code}"` : `"${code}" sorted by ${order.sort} ${order.dir}`;
     const q = productSearchSql(filters, scope);
     const planned = await explain(q.rows);
-    console.log(`[productsQueries] broad category "${code}" rows plan (planned in ${planned.seconds.toFixed(2)}s):\n${planned.lines.join('\n')}`);
+    console.log(`[productsQueries] broad category ${name} rows plan (planned in ${planned.seconds.toFixed(2)}s):\n${planned.lines.join('\n')}`);
     const countPlanned = await explain(q.count);
-    console.log(`[productsQueries] broad category "${code}" count plan (planned in ${countPlanned.seconds.toFixed(2)}s):\n${countPlanned.lines.join('\n')}`);
+    console.log(`[productsQueries] broad category ${name} count plan (planned in ${countPlanned.seconds.toFixed(2)}s):\n${countPlanned.lines.join('\n')}`);
 
     // searchProducts sends both statements at once and the connection runs them in order: note when each completes, and each one's
     // own time is the gap since the one before it finished.
@@ -336,7 +361,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
       // searchProducts swallows a count cancelled by the cap, so a statement timeout (SQLSTATE 57014, query_canceled) that gets out is
       // the rows statement's; any other error is left as it is.
       if ((e as { code?: unknown } | null)?.code !== '57014') throw e;
-      throw new Error(`the rows statement of "${code}" hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s) after ${((performance.now() - started) / 1000).toFixed(1)}s`, { cause: e });
+      throw new Error(`the rows statement of ${name} hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s) after ${((performance.now() - started) / 1000).toFixed(1)}s`, { cause: e });
     }
     const seconds = { rows: 0, count: 0 };
     let previous = started;
@@ -345,20 +370,20 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
       previous = done.at;
     }
     console.log(
-      `[productsQueries] broad category "${code}" search${note ? `, ${note}` : ''}: rows statement ${seconds.rows.toFixed(2)}s, count statement ${seconds.count.toFixed(2)}s ` +
+      `[productsQueries] broad category ${name} search${note ? `, ${note}` : ''}: rows statement ${seconds.rows.toFixed(2)}s, count statement ${seconds.count.toFixed(2)}s ` +
         `(the page's cap is ${cap}s each), countTimedOut ${result.countTimedOut === true}; ${result.rows.length} rows on page ${result.page}, ${result.total}${result.totalIsCapped ? '+' : ''} matches`,
     );
     const over = (['rows', 'count'] as const).filter((statement) => seconds[statement] >= cap);
-    if (over.length > 0) console.log(`[productsQueries] OVER THE PAGE'S ${cap}s CAP: the ${over.join(' and the ')} statement of the "${code}" search`);
+    if (over.length > 0) console.log(`[productsQueries] OVER THE PAGE'S ${cap}s CAP: the ${over.join(' and the ')} statement of the ${name} search`);
     // searchProducts swallows a count cancelled by the local cap, but the cancelled statement aborted this transaction: nothing more can run in it.
     if (result.countTimedOut) {
-      throw new Error(`the count statement of the "${code}" search hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s) and aborted the transaction; its rows statement took ${seconds.rows.toFixed(1)}s`);
+      throw new Error(`the count statement of the ${name} search hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s) and aborted the transaction; its rows statement took ${seconds.rows.toFixed(1)}s`);
     }
 
     // The rows statement again (warm now): what each node really did, and how many times.
     const analyzed = await explainAnalyze(q.rows);
     console.log(
-      `[productsQueries] broad category "${code}" rows statement re-run with EXPLAIN ANALYZE (warm): ${analyzed.seconds.toFixed(2)}s planning + execution, ${analyzed.rows} rows, ` +
+      `[productsQueries] broad category ${name} rows statement re-run with EXPLAIN ANALYZE (warm): ${analyzed.seconds.toFixed(2)}s planning + execution, ${analyzed.rows} rows, ` +
         `shared blocks hit ${analyzed.hit}, read ${analyzed.read}:\n${analyzed.lines.join('\n')}`,
     );
     await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT}'`);
@@ -368,10 +393,38 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
        LEFT JOIN ba_category_crosswalk x ON x.category_path = a.category_path WHERE x.code IS DISTINCT FROM $2`,
       [result.rows.map((r) => r.asin), code],
     );
-    expect(without.rows[0].n, `rows of the "${code}" page whose path does not map to the code`).toBe(0);
-    expect(seconds.rows, `rows statement of the "${code}" search (the page's cap is ${cap}s)`).toBeLessThan(cap);
-    expect(seconds.count, `count statement of the "${code}" search (the page's cap is ${cap}s)`).toBeLessThan(cap);
-    return { lines: planned.lines, rows: result.rows, analyzed };
+    expect(without.rows[0].n, `rows of the ${name} page whose path does not map to the code`).toBe(0);
+    expect(seconds.rows, `rows statement of the ${name} search (the page's cap is ${cap}s)`).toBeLessThan(cap);
+    expect(seconds.count, `count statement of the ${name} search (the page's cap is ${cap}s)`).toBeLessThan(cap);
+    return { root: planned.root, lines: planned.lines, rows: result.rows, analyzed };
+  }
+
+  /**
+   * The keywords sort under broad category Home (spec 2026-10-23 §5), in one direction: the combination that ran past the page's cap
+   * cold while the sort counted keywords with a lateral per candidate row (~315k probes for Home, the widest broad category; spec
+   * 2026-10-12 §13). With the stored keyword_count it must plan on asin_products_keyword_count_idx with no Sort node over more than a
+   * page (the top-N comes off the index walk, as in the default-view case), and broadSearch holds its rows and count statements each
+   * under the page's cap and prints their seconds. The index is partial (WHERE in_scope AND enrichment_status IN ('active',
+   * 'no_price')), so the planner can use it only because the query carries that predicate: the list's base predicate (BASE in
+   * lib/products/searchProducts.ts) is exactly it, so nothing extra is needed. The page's keyword counts are checked to run in the
+   * sort's direction. Skipped with a note when the crosswalk is not built or has no Home code.
+   */
+  async function keywordsSortUnderHome(ctx: TestContext, dir: ProductFilters['dir']): Promise<void> {
+    await skipUnlessCodes(ctx);
+    const present = await client.query<{ ok: boolean }>("SELECT EXISTS (SELECT 1 FROM ba_category_crosswalk WHERE code = 'Home') AS ok");
+    if (!present.rows[0]?.ok) {
+      console.log('[productsQueries] no Home code in the crosswalk: the keywords-sort case is skipped.');
+      return ctx.skip('no Home code in the crosswalk');
+    }
+    const { root, lines, rows } = await broadSearch('Home', `the keywords sort, ${dir}`, EMPTY_CATEGORY_SCOPE, { sort: 'keywords', dir });
+    expect(lines.join('\n'), `the plan of the Home search sorted by keywords ${dir}`).toContain(KEYWORD_COUNT_INDEX);
+    const wideSorts = planNodes(root).filter((n) => /Sort$/.test(n['Node Type']) && n['Plan Rows'] > PRODUCT_PAGE_SIZE);
+    expect(wideSorts.map((n) => `${n['Node Type']} rows=${n['Plan Rows']}`), `Sort nodes over more than a page (${PRODUCT_PAGE_SIZE} rows)`).toEqual([]);
+    expect(rows.length, `rows on the Home page sorted by keywords ${dir}`).toBeGreaterThanOrEqual(1);
+    const counts = rows.map((r) => r.keywordCount);
+    console.log(`[productsQueries] Home sorted by keywords ${dir}: the page's keyword counts run ${counts[0]} → ${counts[counts.length - 1]}`);
+    if (dir === 'desc' && counts.every((c) => c === 0)) console.log('[productsQueries] every keyword count on the descending page is 0: has the keyword-count build (scripts/buildKeywordCounts.ts) run?');
+    expect(counts, `the page's keyword counts, ${dir}`).toEqual([...counts].sort((x, y) => (dir === 'asc' ? x - y : y - x)));
   }
 
   it(
@@ -680,6 +733,33 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     TEST_TIMEOUT_MS,
   );
 
+  // The keywords sort reads the stored keyword_count (spec 2026-10-23 §5). These two run after the broad cases above (so those run as
+  // warm as they always have) and before the department and leaf picks, whose catalog scans would warm what these time. Nothing above
+  // reads asin_products_keyword_count_idx, so its pages are as cold as the run allows; the heap pages of Home's popular products are
+  // not (the sold sort above reads many of the same products). For the coldest reading run them alone first (-t "keywords sort", see
+  // the header).
+  it(
+    'the keywords sort under the widest broad category walks the keyword_count index and stays under the cap cold',
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        await keywordsSortUnderHome(ctx, 'desc');
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'the keywords sort ascending under the widest broad category walks the keyword_count index too and stays under the cap',
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        // A forward walk starts at count 0. The index is partial on the base predicate, so the rows the list cannot show (retired and
+        // out-of-scope products are never deleted, and most sit at count 0) are not in it: the walk meets only rows the list can show.
+        await keywordsSortUnderHome(ctx, 'asc');
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   it(
     'a department-only search (the smallest department) is served by the category path index',
     async () => {
@@ -924,6 +1004,38 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     async () => {
       await inReadOnlyTransaction(async () => {
         expect(await loadProduct(run, 'ZZZZZZZZZZ')).toBeNull();
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it(
+    'the stored keyword counts agree with a fresh count',
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        // Last of all: a full pass over the catalog with one probe of keyword_top_asins_asin_idx per row, which warms both, so it runs
+        // after every timed case. keyword_top_asins changes only at imports and keyword_counts_build rewrites the counts right after
+        // top_asins_build inside the import, so between imports the two agree exactly (no import may be running, see the header); a
+        // mismatch means that phase failed or was skipped ("[keyword-counts] failed" in the import log; scripts/buildKeywordCounts.ts
+        // re-runs it). Every row is checked, the retired ones too: the build zeroes any row whose product left the pair table.
+        const built = await client.query<{ max: number | null }>('SELECT max(keyword_count) AS max FROM asin_products');
+        if ((built.rows[0]?.max ?? 0) === 0) {
+          console.log('[productsQueries] every keyword_count is 0 (the keyword-count backfill, scripts/buildKeywordCounts.ts, has not run): the stored-count case is skipped.');
+          return ctx.skip('keyword counts not built yet');
+        }
+        const started = performance.now();
+        const mismatched = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM (
+             SELECT a.asin FROM asin_products a
+             JOIN LATERAL (SELECT count(*)::int AS n FROM keyword_top_asins k WHERE k.asin = a.asin) c ON true
+             WHERE a.keyword_count <> c.n LIMIT 1000
+           ) m`,
+        );
+        console.log(
+          `[productsQueries] stored keyword counts against a fresh count per catalog row: ${mismatched.rows[0].n} mismatched (stops at 1,000) ` +
+            `in ${((performance.now() - started) / 1000).toFixed(1)}s; the largest stored count is ${built.rows[0].max}`,
+        );
+        expect(mismatched.rows[0].n, 'catalog rows whose stored keyword_count differs from a fresh count of keyword_top_asins').toBe(0);
       });
     },
     TEST_TIMEOUT_MS,

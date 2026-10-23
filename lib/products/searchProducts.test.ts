@@ -1,16 +1,16 @@
 // lib/products/searchProducts.test.ts
 import { describe, it, expect } from 'vitest';
 import { neon, neonConfig, type NeonQueryFunction } from '@neondatabase/serverless';
-import { asinProducts, baCategoryCrosswalk, keywordTopAsins } from '@/db/schema';
+import { asinProducts, baCategoryCrosswalk } from '@/db/schema';
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from './categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
 import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
-import { aliasCols, dbCols, notIn } from './testHelpers';
+import { aliasCols, dbCols, notIn, recordingRow, selectNames } from './testHelpers';
 
 type Sort = ProductFilters['sort'];
 type Dir = ProductFilters['dir'];
 
-/** The capped-count statement (the rows statement also contains `count(*)`, in its keyword-count lateral). */
+/** The capped-count statement: the only one that starts with `SELECT count(*)` (the rows statement starts with `SELECT a.asin`). */
 const isCountStatement = (text: string) => text.startsWith('SELECT count(*)');
 /** A statement's predicate text: from the base predicate up to the clause that follows it. */
 const whereText = (text: string, next: string) => { const from = text.indexOf('a.in_scope'); return text.slice(from, text.indexOf(next, from)); };
@@ -19,6 +19,15 @@ const NULLABLE_KEY_SORTS: Array<[sort: Sort, column: string]> = [
   ['sold', 'monthly_sold'], ['listed', 'listed_since'], ['reviews', 'review_count'], ['price', 'current_price_cents'], ['bsr', 'sales_rank'], ['ratio', 'rank_ratio_x100'],
 ];
 const KEY_COLUMN = new Map<Sort, string>(NULLABLE_KEY_SORTS);
+/** The column every sort orders by: the six nullable ones above, and the stored keyword count (NOT NULL, so it hides nothing; spec 2026-10-23 §5). */
+const ORDER_COLUMN = new Map<Sort, string>([...NULLABLE_KEY_SORTS, ['keywords', 'keyword_count']]);
+/** The end of the page columns: the stored keyword count (the Keywords column) sits with the integer facts, and the catalog follows. */
+const COLUMNS_TAIL = 'a.amazon_availability, a.keyword_count, a.enrichment_status::text AS enrichment_status FROM asin_products a WHERE ';
+/** A raw rows-statement row with every column the page selects. */
+const RAW_ROW = {
+  asin: 'B000000001', title: 'Lamp', brand: 'Acme', category_path: 'Home & Kitchen › Lighting › Desk Lamps', listed_since: '2026-08-01', monthly_sold: 1000, review_count: 120, average_rating_x10: 44,
+  current_price_cents: 1999, sales_rank: 1234, rank_ratio_x100: 65, fba_offer_count: 3, fbm_offer_count: 1, amazon_availability: -1, keyword_count: 7, enrichment_status: 'active',
+};
 /** All 14 sort × direction pairs. */
 const SORT_DIR_PAIRS: Array<[sort: Sort, dir: Dir]> = PRODUCT_SORTS.flatMap((sort): Array<[Sort, Dir]> => [[sort, 'asc'], [sort, 'desc']]);
 
@@ -42,16 +51,19 @@ async function withNeonFetch(respond: (url: string, batch: Batch) => FakeRespons
 }
 
 describe('productSearchSql', () => {
-  it('applies the base predicate, hides null sort keys, and pages before counting keywords', () => {
+  it('applies the base predicate, hides null sort keys, and orders the page in one level over the catalog', () => {
     const q = productSearchSql(PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE);
     const t = q.rows.text;
     expect(t).toContain("a.in_scope AND a.enrichment_status IN ('active', 'no_price')");
     expect(t).toContain('a.monthly_sold IS NOT NULL');
-    // The filter, the order and the page are the subquery (it carries the raw sort value as sort_key);
-    // only its 50 rows get the keyword count, and the outer query restates the order.
-    expect(t.startsWith('SELECT p.*, kc.keyword_count FROM (SELECT a.asin, ')).toBe(true);
-    expect(t).toContain(', a.monthly_sold AS sort_key FROM asin_products a WHERE a.in_scope AND ');
-    expect(t).toContain('ORDER BY a.monthly_sold DESC, a.asin DESC LIMIT $1 OFFSET $2) p LEFT JOIN LATERAL (SELECT count(*)::int AS keyword_count FROM keyword_top_asins k WHERE k.asin = p.asin) kc ON true ORDER BY p.sort_key DESC, p.asin DESC');
+    // One level: the page columns (the stored keyword count among them), the filter, the order and the page. Nothing is joined
+    // to the page, so the order is the order of the sort's (key, asin) index.
+    expect(t.startsWith('SELECT a.asin, ')).toBe(true);
+    expect(t).toContain(COLUMNS_TAIL);
+    expect(t.endsWith(" FROM asin_products a WHERE a.in_scope AND a.enrichment_status IN ('active', 'no_price') AND a.monthly_sold IS NOT NULL ORDER BY a.monthly_sold DESC, a.asin DESC LIMIT $1 OFFSET $2")).toBe(true);
+    expect(t).not.toContain('LATERAL');
+    expect(t).not.toContain('keyword_top_asins');
+    expect(t).not.toContain('sort_key');
     expect(t).not.toContain('NULLS');
     expect(t).not.toContain('COALESCE');
     expect(q.rows.values).toEqual([50, 0]);
@@ -76,9 +88,7 @@ describe('productSearchSql', () => {
     expect(t).toContain('(a.category_path = $11::text OR starts_with(a.category_path, $12::text)) AND ((a.category_path = $13::text OR starts_with(a.category_path, $14::text)) OR a.category_path = ANY($15::text[])) AND a.fba_offer_count = 0');
     expect(t).toContain('a.amazon_availability >= 0');
     expect(t).toContain('a.listed_since IS NOT NULL');
-    expect(t).toContain(', a.listed_since AS sort_key FROM asin_products a WHERE ');
-    expect(t).toContain('ORDER BY a.listed_since ASC, a.asin ASC LIMIT $16 OFFSET $17) p');
-    expect(t.endsWith(' ORDER BY p.sort_key ASC, p.asin ASC')).toBe(true);
+    expect(t.endsWith(' AND a.listed_since IS NOT NULL ORDER BY a.listed_since ASC, a.asin ASC LIMIT $16 OFFSET $17')).toBe(true);
     expect(q.rows.values).toEqual([90, 1000, 300, 40, 50, 999, 4000, 1, 50000, 70, 'Tools', 'Tools › ', 'Tools › Bath', 'Tools › Bath › ', ['Tools › Bath › Mats'], 50, 100]);
     expect(q.count.values).toEqual(q.rows.values.slice(0, -2));
     expect(q.count.text).toContain('a.listed_since IS NOT NULL');
@@ -122,7 +132,7 @@ describe('productSearchSql', () => {
     expect(t).toContain('a.fba_offer_count > 0');
     expect(t).toContain('(a.amazon_availability IS NULL OR a.amazon_availability = -1)');
   });
-  it.each(SORT_DIR_PAIRS)('%s %s: the rows and count WHEREs match, and the tie-break follows the direction', (sort, dir) => {
+  it.each(SORT_DIR_PAIRS)('%s %s: the rows and count WHEREs match, and one level orders by the sort column with the tie-break in its direction', (sort, dir) => {
     const D = dir.toUpperCase();
     const q = productSearchSql({ ...PRODUCT_DEFAULTS, age: 90, soldMin: 100, reviewsMax: 300, priceMaxCents: 5000, ratioMax: 80, broadCategory: 'Home', fba: 'yes', amazon: 'no', sort, dir, page: 2 }, { ...EMPTY_CATEGORY_SCOPE, dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true });
     const rowsWhere = whereText(q.rows.text, ' ORDER BY ');
@@ -134,45 +144,68 @@ describe('productSearchSql', () => {
     expect(q.rows.values.slice(-2)).toEqual([50, 50]);
     expect(q.rows.text).not.toContain('NULLS');
     expect(q.rows.text).not.toContain('COALESCE');
+    // Every sort is one level over the catalog: the page columns (the stored keyword count among them), the WHERE, then the order by
+    // the raw column (not the ::text date or the CASE price) and the page, with nothing after it: no page subquery, no re-sort.
+    const n = q.rows.values.length;
+    expect(q.rows.text.startsWith('SELECT a.asin, ')).toBe(true);
+    expect(q.rows.text).toContain(COLUMNS_TAIL);
+    expect(q.rows.text.endsWith(`${rowsWhere} ORDER BY a.${ORDER_COLUMN.get(sort)} ${D}, a.asin ${D} LIMIT $${n - 1} OFFSET $${n}`)).toBe(true);
+    for (const gone of ['LATERAL', 'kc.', 'keyword_top_asins', 'sort_key']) expect(q.rows.text, gone).not.toContain(gone);
     const key = KEY_COLUMN.get(sort);
     if (key === undefined) {
-      // keywords: ordered by the count itself, so single-level; a count is never null, nothing is hidden.
-      expect(q.rows.text).toContain(` ORDER BY kc.keyword_count ${D}, a.asin ${D} LIMIT $`);
-      expect(q.rows.text.startsWith('SELECT a.asin, ')).toBe(true);
-      expect(q.rows.text).not.toContain('sort_key');
+      // keywords: the stored count is NOT NULL, so nothing is hidden.
       expect(rowsWhere).not.toContain('IS NOT NULL');
+      expect(rowsWhere).not.toContain('keyword_count');
     } else {
       expect(rowsWhere.endsWith(` AND a.${key} IS NOT NULL`)).toBe(true);
-      // The subquery selects the raw column as sort_key (not the ::text date or the CASE price) and orders by it.
-      expect(q.rows.text).toContain(`, a.${key} AS sort_key FROM asin_products a WHERE `);
-      expect(q.rows.text).toContain(` ORDER BY a.${key} ${D}, a.asin ${D} LIMIT $`);
-      expect(q.rows.text.endsWith(` ORDER BY p.sort_key ${D}, p.asin ${D}`)).toBe(true);
     }
   });
-  it('sorts by the keyword count single-level, through the lateral count', () => {
+  it('sorts by the stored keyword count in one level and hides nothing (spec 2026-10-23 §5)', () => {
     const desc = productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords' }, EMPTY_CATEGORY_SCOPE);
     const t = desc.rows.text;
-    expect(t).toContain('LEFT JOIN LATERAL (SELECT count(*)::int AS keyword_count FROM keyword_top_asins k WHERE k.asin = a.asin) kc ON true');
-    expect(t).toContain('ORDER BY kc.keyword_count DESC, a.asin DESC LIMIT $1 OFFSET $2');
-    expect(t).toContain('kc.keyword_count FROM asin_products a LEFT JOIN LATERAL');
-    expect(t).not.toContain(') p ');
+    // The column, not a count: no lateral and no read of the pair table, in the select list or the order.
+    expect(t.startsWith('SELECT a.asin, ')).toBe(true);
+    expect(t).toContain(COLUMNS_TAIL);
+    expect(t.endsWith(" FROM asin_products a WHERE a.in_scope AND a.enrichment_status IN ('active', 'no_price') ORDER BY a.keyword_count DESC, a.asin DESC LIMIT $1 OFFSET $2")).toBe(true);
+    expect(t).not.toContain('LATERAL');
+    expect(t).not.toContain('kc.');
+    expect(t).not.toContain('keyword_top_asins');
+    // keyword_count is NOT NULL: no IS NOT NULL predicate, in the rows or the count.
     expect(t).not.toContain('IS NOT NULL');
-    expect(desc.count.text).not.toContain('IS NOT NULL');
-    expect(productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords', dir: 'asc' }, EMPTY_CATEGORY_SCOPE).rows.text).toContain('ORDER BY kc.keyword_count ASC, a.asin ASC LIMIT $1 OFFSET $2');
+    expect(desc.rows.values).toEqual([50, 0]);
+    expect(desc.count.text).toBe(`SELECT count(*)::int AS n FROM (SELECT 1 FROM asin_products a WHERE a.in_scope AND a.enrichment_status IN ('active', 'no_price') LIMIT ${PRODUCT_COUNT_CAP}) c`);
+    expect(desc.count.values).toEqual([]);
+    const asc = productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords', dir: 'asc' }, EMPTY_CATEGORY_SCOPE).rows.text;
+    expect(asc.endsWith(" FROM asin_products a WHERE a.in_scope AND a.enrichment_status IN ('active', 'no_price') ORDER BY a.keyword_count ASC, a.asin ASC LIMIT $1 OFFSET $2")).toBe(true);
+    expect(asc).not.toContain('LATERAL');
   });
-  it.each(PRODUCT_SORTS)('%s: names only real columns', (sort) => {
+  it('the keywords sort under a broad category (the combination spec 2026-10-23 §5 fixes): the semi-join, then the stored count orders the page', () => {
+    const q = productSearchSql({ ...PRODUCT_DEFAULTS, sort: 'keywords', broadCategory: 'Home' }, EMPTY_CATEGORY_SCOPE);
+    const where = "a.in_scope AND a.enrichment_status IN ('active', 'no_price') AND a.category_path IN (SELECT x.category_path FROM ba_category_crosswalk x WHERE x.code = $1::text)";
+    expect(q.rows.text.endsWith(` FROM asin_products a WHERE ${where} ORDER BY a.keyword_count DESC, a.asin DESC LIMIT $2 OFFSET $3`)).toBe(true);
+    expect(q.rows.values).toEqual(['Home', 50, 0]);
+    expect(q.count.text).toBe(`SELECT count(*)::int AS n FROM (SELECT 1 FROM asin_products a WHERE ${where} LIMIT ${PRODUCT_COUNT_CAP}) c`);
+    expect(q.count.values).toEqual(['Home']);
+  });
+  it.each(PRODUCT_SORTS)('%s: the count statement is the capped count over the same WHERE, unchanged by the stored keyword count', (sort) => {
+    const key = KEY_COLUMN.get(sort);
+    const q = productSearchSql({ ...PRODUCT_DEFAULTS, sort }, EMPTY_CATEGORY_SCOPE);
+    expect(q.count.text).toBe(`SELECT count(*)::int AS n FROM (SELECT 1 FROM asin_products a WHERE a.in_scope AND a.enrichment_status IN ('active', 'no_price')${key === undefined ? '' : ` AND a.${key} IS NOT NULL`} LIMIT ${PRODUCT_COUNT_CAP}) c`);
+    expect(q.count.values).toEqual([]);
+  });
+  it.each(PRODUCT_SORTS)('%s: selects the page columns, the stored keyword count among them (the Keywords column)', (sort) => {
+    expect(selectNames(productSearchSql({ ...PRODUCT_DEFAULTS, sort }, EMPTY_CATEGORY_SCOPE).rows.text)).toEqual(new Set(Object.keys(RAW_ROW)));
+  });
+  it.each(PRODUCT_SORTS)('%s: names only real columns, of the catalog and the crosswalk alone', (sort) => {
     const scope: ProductCategoryScope = { dept: 'Tools', subtreePaths: ['Tools › Bath'], exactPaths: ['Tools › Bath › Mats'], scoped: true };
     const t = productSearchSql({ ...PRODUCT_DEFAULTS, sort, age: 60, fba: 'yes', amazon: 'yes', ratioMax: 50, broadCategory: 'Home' }, scope).rows.text;
-    const a = aliasCols(t, 'a');
-    expect([...a].filter((c) => !dbCols(asinProducts).has(c))).toEqual([]);
-    expect([...aliasCols(t, 'k')].filter((c) => !dbCols(keywordTopAsins).has(c))).toEqual([]);
+    expect(notIn(aliasCols(t, 'a'), dbCols(asinProducts))).toEqual([]);
+    expect(aliasCols(t, 'a').has('keyword_count')).toBe(true);
     expect(notIn(aliasCols(t, 'x'), dbCols(baCategoryCrosswalk))).toEqual([]);
-    // `p` is the page subquery: every column the outer query reads from it is one the subquery selects from `a`
-    // (sort_key is an alias of the sort's own column).
-    const key = KEY_COLUMN.get(sort);
-    const fromP = [...aliasCols(t, 'p')].map((c) => (c === 'sort_key' ? key ?? c : c));
-    expect(fromP.filter((c) => !a.has(c))).toEqual([]);
-    expect(aliasCols(t, 'p').has('sort_key')).toBe(key !== undefined);
+    // One level: it reads the catalog and the broad category's crosswalk, and no page subquery (p), keyword-count lateral (kc) or
+    // pair-table read (k) is left.
+    expect([...t.matchAll(/\bFROM (\w+)/g)].map((m) => m[1])).toEqual(['asin_products', 'ba_category_crosswalk']);
+    for (const alias of ['p', 'kc', 'k']) expect([...aliasCols(t, alias)], `columns of ${alias}`).toEqual([]);
   });
 });
 
@@ -196,20 +229,26 @@ describe('searchProducts', () => {
     const calls: Array<{ text: string; values: unknown[] }> = [];
     const fake = async (text: string, values: unknown[]) => {
       calls.push({ text, values });
-      return isCountStatement(text)
-        ? [{ n: 3 }]
-        : [{ asin: 'B000000001', title: 'Lamp', brand: 'Acme', category_path: 'Home & Kitchen › Lighting › Desk Lamps', listed_since: '2026-08-01', monthly_sold: 1000, review_count: 120, average_rating_x10: 44, current_price_cents: 1999, sales_rank: 1234, rank_ratio_x100: 65, fba_offer_count: 3, fbm_offer_count: 1, amazon_availability: -1, enrichment_status: 'active', keyword_count: 7, sort_key: 1000 }];
+      return isCountStatement(text) ? [{ n: 3 }] : [RAW_ROW];
     };
     const r = await searchProducts(fake, PRODUCT_DEFAULTS, EMPTY_CATEGORY_SCOPE);
     expect(r.total).toBe(3);
     expect(r.totalIsCapped).toBe(false);
     expect(r).not.toHaveProperty('countTimedOut');
-    expect(r.rows[0]).toMatchObject({ asin: 'B000000001', monthlySold: 1000, rankRatioX100: 65, keywordCount: 7, amazonAvailability: -1 });
-    expect(r.rows[0].categoryPath).toBe('Home & Kitchen › Lighting › Desk Lamps');
-    // sort_key only carries the outer re-sort; it is not part of the mapped row.
-    expect(r.rows[0]).not.toHaveProperty('sort_key');
-    expect(r.rows[0]).not.toHaveProperty('sortKey');
+    // Every column maps, and nothing else: keywordCount is the stored keyword_count.
+    expect(r.rows).toEqual([{
+      asin: 'B000000001', title: 'Lamp', brand: 'Acme', categoryPath: 'Home & Kitchen › Lighting › Desk Lamps', listedSince: '2026-08-01', monthlySold: 1000, reviewCount: 120, averageRatingX10: 44,
+      currentPriceCents: 1999, salesRank: 1234, rankRatioX100: 65, fbaOfferCount: 3, fbmOfferCount: 1, amazonAvailability: -1, enrichmentStatus: 'active', keywordCount: 7,
+    }]);
     expect(calls).toHaveLength(2);
+  });
+  it.each(PRODUCT_SORTS)('%s: the mapper reads exactly the columns the rows statement selects', async (sort) => {
+    const filters: ProductFilters = { ...PRODUCT_DEFAULTS, sort };
+    const { row, read } = recordingRow({ ...RAW_ROW });
+    await searchProducts(async (text) => (isCountStatement(text) ? [{ n: 1 }] : [row]), filters, EMPTY_CATEGORY_SCOPE);
+    const selected = selectNames(productSearchSql(filters, EMPTY_CATEGORY_SCOPE).rows.text);
+    expect(notIn(read, selected)).toEqual([]); // read but never selected: it would silently map to null (keywordCount to 0)
+    expect(notIn(selected, read)).toEqual([]); // selected but never read: wasted
   });
   it('flags a capped total and defaults a missing keyword count to 0', async () => {
     const fake = async (text: string) => (isCountStatement(text) ? [{ n: PRODUCT_COUNT_CAP }] : [{ asin: 'B000000002', keyword_count: null }]);
