@@ -391,7 +391,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       .mockReset()
       .mockResolvedValue({ rows: 3, previousWeek: null, carriedFrom: 'none' });
     // A successful keyword-counts build by default, so the phase after the pair table adds no stray failure line.
-    mockBuildKeywordCounts.mockReset().mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23 });
+    mockBuildKeywordCounts.mockReset().mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23, analyzed: true });
     // A successful crosswalk build by default, so the phase after the keyword counts adds no stray failure line.
     mockBuildCrosswalk.mockReset().mockResolvedValue({
       week: '2026-04-11',
@@ -759,18 +759,29 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(mockPoolEnd.mock.invocationCallOrder[3]).toBeLessThan(
         mockBuildCrosswalk.mock.invocationCallOrder[0],
       );
-      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2']);
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2 analyze=ok']);
       expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 1234 })]); // updated + zeroed
     });
 
     it('a quiet week that changed nothing records 0 rows, not the failure marker', async () => {
       const { log } = spyConsole();
-      mockBuildKeywordCounts.mockResolvedValue({ updated: 0, zeroed: 0, seconds: 3.04 });
+      mockBuildKeywordCounts.mockResolvedValue({ updated: 0, zeroed: 0, seconds: 3.04, analyzed: true });
 
       await processFileImport({ uploadedFileId: 'f1' });
 
-      expect(countsLines(log)).toEqual(['[keyword-counts] updated=0 zeroed=0 seconds=3.0']);
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=0 zeroed=0 seconds=3.0 analyze=ok']);
       expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 0 })]);
+    });
+
+    it('a failed ANALYZE (the counts committed) reads analyze=failed in the summary and is no phase failure', async () => {
+      const { log, err } = spyConsole();
+      mockBuildKeywordCounts.mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23, analyzed: false });
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2 analyze=failed']);
+      expect(countsLines(err)).toEqual([]);
+      expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 1234 })]);
     });
 
     it('opens its own pool: one connection, 10-minute statement timeout, keepalive, 20 s connect timeout', async () => {

@@ -30,7 +30,10 @@ export const REFILL_MARGIN_MS = 500;
 /**
  * Postgres advisory-lock key shared by the enqueue-week upsert (exclusive) and the service's
  * batch writes (shared): the upsert holds row locks on ~2.3M rows for minutes, in a different
- * order than the batch writes, so without this handshake the two would deadlock.
+ * order than the batch writes, so without this handshake the two would deadlock. A third
+ * holder, also exclusive: the import's weekly keyword_counts_build
+ * (lib/products/buildKeywordCounts.ts), whose UPDATEs row-lock every product whose keyword
+ * count changed — so the service's batch writes also pause while that phase writes.
  */
 export const ENQUEUE_LOCK_KEY = 20261005;
 
