@@ -69,7 +69,7 @@ export const asinProducts = pgTable(
     claimedIdx: index('asin_products_claimed_idx').on(t.claimedAt),
     categoryPathIdx: index('asin_products_category_path_idx').on(t.categoryPath),
     scopeWeekIdx: index('asin_products_scope_week_idx').on(t.scopeWeek),
-    // Plain (not partial) in migration 0056, so this one mirrors it exactly: the keywords sort walks it (spec 2026-10-23 §5).
+    // PARTIAL in migration 0056 (WHERE in_scope AND enrichment_status IN ('active', 'no_price'): the Products list's base predicate, as for 0051's sort indexes); declared plain here for type-checking only. The keywords sort walks it (spec 2026-10-23 §5).
     keywordCountIdx: index('asin_products_keyword_count_idx').on(t.keywordCount, t.asin),
   }),
 );

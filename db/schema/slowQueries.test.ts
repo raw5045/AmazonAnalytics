@@ -1,3 +1,4 @@
+// db/schema/slowQueries.test.ts
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { getTableConfig } from 'drizzle-orm/pg-core';
@@ -41,9 +42,12 @@ describe('migration 0056 SQL text (spec 2026-10-23 §5 and §5b)', () => {
     for (const s of statements) expect(s.match(/^(ALTER|CREATE)\b/gm) ?? []).toHaveLength(1);
   });
 
-  it('adds keyword_count and its (keyword_count, asin) index exactly as the asin_products mirror declares them', () => {
+  it('adds keyword_count and its partial (keyword_count, asin) index, which the asin_products mirror declares', () => {
     expect(statements[0]).toBe('ALTER TABLE asin_products ADD COLUMN IF NOT EXISTS keyword_count integer NOT NULL DEFAULT 0;');
-    expect(statements[1]).toBe('CREATE INDEX IF NOT EXISTS asin_products_keyword_count_idx ON asin_products (keyword_count, asin);');
+    // Partial on the Products list's base predicate, like 0051's six sort indexes; the mirror declares it plain (type-checking only).
+    expect(statements[1]).toBe(
+      "CREATE INDEX IF NOT EXISTS asin_products_keyword_count_idx ON asin_products (keyword_count, asin) WHERE in_scope AND enrichment_status IN ('active', 'no_price');",
+    );
     const cfg = getTableConfig(asinProducts);
     const col = cfg.columns.find((c) => c.name === 'keyword_count');
     expect([col?.getSQLType(), col?.notNull, col?.hasDefault, col?.default]).toEqual(['integer', true, true, 0]);
