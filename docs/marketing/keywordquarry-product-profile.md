@@ -19,7 +19,7 @@ What a signed-in user can open today:
 | Keywords tab | /explorer | The core table: about 3.9M keywords (those seen in the last 28 days), filterable by rank or estimated volume, movement over 1 to 52 weeks, category, competition (average reviews of the top-3 clicked products), word count, title gaps, fake-volume flags; CSV export; saved views |
 | Keyword page | /explorer/keyword/… | One keyword's 52-week history: rank and estimated-volume trend, the three most-clicked products with click and conversion share, title-match history, fake-volume history, variants, weekly table |
 | Category Builder | /category-builder | Browse Amazon's category tree down to exact leaf categories (about 20,800 leaves used by keywords; about 24,000 in the product catalog) and build custom categories (buckets of leaves) that the Keywords tab and the AI connector can filter on |
-| Products | /products | The product catalog: about 3.5M Amazon ASINs that are top-3 clicked products for keywords, with Keepa facts (price, BSR, reviews, rating, monthly-sold badge, listing age, offers), category filters, and each product's keyword list |
+| Products | /products | The product catalog, open to every member: about 3.5M Amazon ASINs that are top-3 clicked products for keywords, with Keepa facts (price, BSR, reviews, rating, monthly-sold badge, listing age, offers), category filters, and each product's keyword list |
 | Watchlist | /watchlist | Up to 100 starred keywords; a weekly email digest with each one's movement after new data lands |
 | Connect AI | /connect-ai | A connector (MCP) that lets Claude, Claude Code, ChatGPT and Cursor search KeywordQuarry directly, and with approval save views, build custom categories and edit the watchlist |
 | Help / Tutorials | /help | Seven short videos (about 30 minutes): what the data is, how to navigate, how to focus on a market, three filtering recipes |
@@ -349,7 +349,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 
 ## 11. Not available to customers today (do not present these as features)
 
-- **Ask AI** (/ask), the in-app chat over the same tools with approval cards: admin-only; planned to become a paid feature. The connector (Subject 6) is the customer-facing AI surface.
+- **Ask AI** (/ask), the in-app chat over the same tools with approval cards: admin-only; planned to become a paid feature. The connector (Subject 6) is the customer-facing AI surface. Products is not restricted: the Products tab, the product pages and the connector's two product tools are open to every member.
 - **Admin tooling**: weekly data import, calibration uploads, digest sending, the Keepa service status page, usage digests. Users do not upload data; the weekly dataset is provided.
 - **Not built**: PPC/bid data, sales and revenue estimates, listing builder or AI copywriting, rank tracking of a listing's position for a keyword, supplier database, profit analytics, non-US marketplaces, daily data, multi-year seasonality (78 weeks of history as of October 2026), market-share aggregation across a niche, alerts other than the weekly digest, team seats or roles (one account per user).
 - **Caps that a comment should respect**: 5 saved views, 25 custom categories (12,000 leaves each), 100 watched keywords, CSV export 10,000 rows and 10 exports a day, connector 60 requests a minute and 1,000 rows a search.

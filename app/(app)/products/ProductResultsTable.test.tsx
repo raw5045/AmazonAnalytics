@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { PRODUCT_DEFAULTS, parseProductFilters, type ProductFilters } from '@/lib/products/filters';
 import type { ProductSummaryRow } from '@/lib/products/searchProducts';
+import { BOUGHT_IN_PAST_MONTH } from '@/lib/products/format';
 import { ProductResultsTable } from './ProductResultsTable';
 import { resolveProductBack } from './[asin]/BackToProducts';
 
@@ -68,6 +69,7 @@ describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
     expect(headers[10]).toHaveTextContent(/Keywords/);
     expect(headers[11]).toHaveTextContent(/^FBA$/);
     expect(headers[12]).toHaveTextContent(/^Amazon$/);
+    expect(headers[3]).toHaveAttribute('title', BOUGHT_IN_PAST_MONTH); // the one wording for the badge note
     expect(headers[8]).toHaveAttribute('title', 'BSR vs its 30-day average');
     expect(headers[11]).toHaveAttribute('title', 'New offers fulfilled by Amazon; hover a cell for the FBA / FBM counts');
     expect(headers[12]).toHaveAttribute('title', "Amazon's own offer on the listing");
@@ -97,7 +99,7 @@ describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
     expect(cells[5]).toHaveTextContent(/^120$/);
     expect(cells[6]).toHaveTextContent('Aug 1, 2026');
     expect(cells[6]).toHaveTextContent('69 days');
-    expect(cells[7]).toHaveTextContent(/^1,234$/);
+    expect(cells[7]).toHaveTextContent(/^#1,234$/);
     expect(cells[8]).toHaveTextContent(/^−35%$/);
     expect(cells[9]).toHaveTextContent(/^\$19\.99$/);
     expect(cells[10]).toHaveTextContent(/^7$/);
@@ -175,7 +177,7 @@ describe('ProductResultsTable rows (spec 2026-10-19 §8)', () => {
     expect(bodyCells(1)[8]).toHaveTextContent(/^0%$/);
     expect(within(bodyCells(1)[8]).getByText('0%')).toHaveAttribute('title', 'BSR vs its 30-day average: at its average');
     expect(within(bodyCells(0)[8]).getByText('+30%')).toHaveAttribute('title', 'BSR vs its 30-day average: ranked worse than its average');
-    expect(bodyCells(2)[7]).toHaveTextContent(/^1,234$/);
+    expect(bodyCells(2)[7]).toHaveTextContent(/^#1,234$/);
     expect(bodyCells(2)[8]).toHaveTextContent(/^—$/);
   });
 

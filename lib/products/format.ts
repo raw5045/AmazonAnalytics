@@ -10,6 +10,12 @@ const DAY_MS = 86_400_000;
 
 const finite = (n: number | null | undefined): n is number => typeof n === 'number' && Number.isFinite(n);
 
+/**
+ * The one wording for the badge note: the list header, the filter hint, the facts card and the
+ * keyword table all show this text (typographic apostrophe and quotes: U+2019, U+201C, U+201D).
+ */
+export const BOUGHT_IN_PAST_MONTH = 'Amazon’s “bought in past month” badge';
+
 /** Amazon's "bought in past month" badge is a floor: 1000 → "1,000+". */
 export function formatBadge(n: number | null): string {
   return finite(n) ? `${n.toLocaleString('en-US')}+` : DASH;

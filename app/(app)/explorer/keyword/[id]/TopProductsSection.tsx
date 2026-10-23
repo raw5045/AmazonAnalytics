@@ -16,7 +16,7 @@ import {
   type EnrichedProduct,
 } from '@/lib/explorer/fetchKeywordDetail';
 import { ASIN_RE } from '@/lib/products/asin';
-import { formatBadge, listingAge } from '@/lib/products/format';
+import { BOUGHT_IN_PAST_MONTH, formatBadge, listingAge } from '@/lib/products/format';
 import { formatDay } from '@/lib/format/date';
 
 export async function TopProductsSection({
@@ -144,7 +144,7 @@ function TopProductsTable({
             <th className="p-2 text-right" title="Share of all conversions for this keyword that went to this product (Amazon-reported, current week)">Conv %</th>
             <th className="p-2 text-right">Price</th>
             <th className="p-2 text-right">Reviews</th>
-            <th className="p-2 text-right" title="Amazon’s “bought in past month” badge">Monthly sold</th>
+            <th className="p-2 text-right" title={BOUGHT_IN_PAST_MONTH}>Monthly sold</th>
             <th className="p-2 text-right" title="Best Sellers Rank in the main category">BSR</th>
           </tr>
         </thead>

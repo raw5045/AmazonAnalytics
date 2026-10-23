@@ -55,7 +55,7 @@ function productHrefs(): string[] {
   return screen.queryAllByRole('link').map((a) => a.getAttribute('href') ?? '').filter((h) => h.startsWith('/products'));
 }
 
-describe('TopProductsSection title links (admin link-back to the ASIN page)', () => {
+describe('TopProductsSection title links (linkProducts: link-back to the ASIN page)', () => {
   beforeEach(() => {
     fetchKeywordProducts.mockReset();
     mockProducts();

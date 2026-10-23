@@ -8,7 +8,7 @@ import type { ReactNode } from 'react';
 import { productFiltersToSearchParams, type ProductFilters, type ProductSort } from '@/lib/products/filterParams';
 import type { ProductSummaryRow } from '@/lib/products/searchProducts';
 import { isAsin } from '@/lib/products/asin';
-import { availabilityLabel, formatBadge, formatPriceCents, formatRatio, formatReviewCount, listingAge } from '@/lib/products/format';
+import { availabilityLabel, BOUGHT_IN_PAST_MONTH, formatBadge, formatPriceCents, formatRatio, formatReviewCount, listingAge } from '@/lib/products/format';
 import { splitCategoryPath } from '@/lib/categoryBuilder/pathDisplay';
 import { formatDay } from '@/lib/format/date';
 import { LoadingOverlay } from '@/app/(app)/explorer/LoadingOverlay';
@@ -105,7 +105,7 @@ export function ProductResultsTable({
                 </th>
                 <th className="p-2">Product</th>
                 <th className="p-2" title="The product's Keepa leaf category; hover a cell for the full path">Leaf category</th>
-                <SortHeader filters={filters} sort="sold" label="Monthly sold" align="right" title="Amazon’s “bought in past month” badge" />
+                <SortHeader filters={filters} sort="sold" label="Monthly sold" align="right" title={BOUGHT_IN_PAST_MONTH} />
                 <th className="whitespace-nowrap p-2 text-right" title="Average star rating">Rating</th>
                 <SortHeader filters={filters} sort="reviews" label="Reviews" align="right" />
                 <SortHeader filters={filters} sort="listed" label="Listed" />
@@ -212,7 +212,7 @@ function ProductRow({ row, from, now }: { row: ProductSummaryRow; from: string; 
           orDash(DASH)
         )}
       </td>
-      <td className="p-2 text-right tabular-nums">{row.salesRank === null ? orDash(DASH) : row.salesRank.toLocaleString('en-US')}</td>
+      <td className="p-2 text-right tabular-nums">{row.salesRank === null ? orDash(DASH) : `#${row.salesRank.toLocaleString('en-US')}`}</td>
       <td className="whitespace-nowrap p-2 text-right tabular-nums">
         <RatioCell ratioX100={row.rankRatioX100} />
       </td>

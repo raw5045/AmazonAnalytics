@@ -16,7 +16,7 @@
 import type { ReactNode } from 'react';
 import type { AsinEnrichmentStatus } from '@/db/schema';
 import type { ProductFacts as ProductPageFacts } from '@/lib/products/loadProduct';
-import { availabilityLabel, formatBadge, formatPriceCents, formatRatio, listingAge } from '@/lib/products/format';
+import { availabilityLabel, BOUGHT_IN_PAST_MONTH, formatBadge, formatPriceCents, formatRatio, listingAge } from '@/lib/products/format';
 import { formatDay } from '@/lib/format/date';
 
 export const STATUS_LABEL: Readonly<Record<AsinEnrichmentStatus, string>> = {
@@ -40,7 +40,6 @@ const DASH = '—';
 
 const finite = (n: number | null): n is number => n !== null && Number.isFinite(n);
 const count = (n: number | null): string => (finite(n) ? n.toLocaleString('en-US') : DASH);
-const MONTHLY_SOLD_NOTE = 'Amazon’s “bought in past month” badge';
 const rank = (n: number | null): string => (finite(n) ? `#${n.toLocaleString('en-US')}` : DASH);
 
 export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }) {
@@ -105,7 +104,7 @@ export function FactsCard({ facts, now }: { facts: ProductPageFacts; now: Date }
             {finite(facts.rankRatioX100) && <RatioChip ratioX100={facts.rankRatioX100} />}
           </Fact>
           <Fact label="Reviews">{reviews.length > 0 ? reviews.join(' · ') : DASH}</Fact>
-          <Fact label="Monthly sold" sub={finite(facts.monthlySold) ? MONTHLY_SOLD_NOTE : null}>
+          <Fact label="Monthly sold" sub={finite(facts.monthlySold) ? BOUGHT_IN_PAST_MONTH : null}>
             {formatBadge(facts.monthlySold)}
           </Fact>
           <Fact label="Offers">

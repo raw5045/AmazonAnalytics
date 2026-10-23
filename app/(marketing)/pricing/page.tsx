@@ -9,6 +9,7 @@ export const metadata: Metadata = {
 
 const INCLUDED = [
   'The full Keywords tab — every keyword, every filter',
+  'The Products tab — the catalog behind the top-clicked products',
   'Weekly-fresh data + 52 weeks of history',
   'Top-3-clicked competition lens + title-gap flags',
   'Fake-volume detection and filtering',

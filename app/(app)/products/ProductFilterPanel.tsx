@@ -14,7 +14,7 @@ import {
   type ProductFilters,
   type ProductSort,
 } from '@/lib/products/filterParams';
-import { formatBadge } from '@/lib/products/format';
+import { BOUGHT_IN_PAST_MONTH, formatBadge } from '@/lib/products/format';
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
 import { LeafCategoryTypeahead } from '@/app/(app)/explorer/LeafCategoryTypeahead';
 import { LoadingOverlay } from '@/app/(app)/explorer/LoadingOverlay';
@@ -348,7 +348,7 @@ export function ProductFilterPanel({
                   </option>
                 ))}
               </select>
-              <p className={HINT}>Amazon&rsquo;s &ldquo;bought in past month&rdquo; badge.</p>
+              <p className={HINT}>{BOUGHT_IN_PAST_MONTH}.</p>
             </Field>
 
             <Field label="Reviews (at most)" htmlFor="pf-reviews">

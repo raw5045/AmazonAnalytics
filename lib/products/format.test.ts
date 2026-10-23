@@ -1,9 +1,21 @@
 // lib/products/format.test.ts
 import { describe, it, expect } from 'vitest';
-import { formatBadge, formatRatio, availabilityLabel, listingAge, formatPriceCents, formatReviewCount, formatVolume } from './format';
+import { BOUGHT_IN_PAST_MONTH, formatBadge, formatRatio, availabilityLabel, listingAge, formatPriceCents, formatReviewCount, formatVolume } from './format';
 
 const MINUS = String.fromCodePoint(0x2212);
+const RSQUO = String.fromCodePoint(0x2019); // the typographic apostrophe
+const LDQUO = String.fromCodePoint(0x201c); // the opening double quote
+const RDQUO = String.fromCodePoint(0x201d); // the closing double quote
 const NOW = new Date('2026-10-09');
+
+describe('BOUGHT_IN_PAST_MONTH', () => {
+  // The one wording for the badge note (list header, filter hint, facts card, keyword table): the
+  // component tests pin the same literal, so the constant cannot drift from what they render.
+  it('is exactly Amazon’s “bought in past month” badge, with the typographic apostrophe and quotes', () => {
+    expect(BOUGHT_IN_PAST_MONTH).toBe(`Amazon${RSQUO}s ${LDQUO}bought in past month${RDQUO} badge`);
+    expect(BOUGHT_IN_PAST_MONTH).toBe('Amazon’s “bought in past month” badge');
+  });
+});
 
 describe('formatBadge', () => {
   const cases: Array<[number | null, string]> = [

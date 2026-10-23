@@ -68,7 +68,7 @@ describe('TabNav', () => {
     expect(screen.queryByRole('link', { name: 'Ask AI' })).toBeNull();
   });
 
-  describe('the Products tab (admins only)', () => {
+  describe('the Products tab (showProducts)', () => {
     // Active = the white label with the amber underline; an inactive tab only has hover:text-white.
     const expectActive = (link: HTMLElement) => expect(link).toHaveClass('text-white', 'after:bg-amber-300');
     const expectInactive = (link: HTMLElement) => {

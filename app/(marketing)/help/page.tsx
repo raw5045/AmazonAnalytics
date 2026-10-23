@@ -96,6 +96,18 @@ export default function HelpPage() {
         </p>
       </Section>
 
+      <Section title="The Products tab">
+        <p>
+          Every product that is one of the three most-clicked results for any keyword sits in the Products tab,
+          with Keepa catalog data: listing date and age, monthly sold (Amazon&apos;s &ldquo;bought in past month&rdquo;
+          floor), rating and reviews, best sellers rank and how it compares with its own 30-day average, price,
+          whether FBA and Amazon itself sell it, and how many keywords it currently wins. Filter by department,
+          leaf or custom category, age, sales, reviews, rating, price and rank; sort by any of them. Open a product
+          for its facts, its history charts (one point per fetch, filling in week by week) and every keyword it
+          ranks for. The catalog refreshes continuously; each product is re-fetched about weekly.
+        </p>
+      </Section>
+
       <Section title="Estimated monthly volume">
         <p>
           SFR is a rank, not a count. KeywordQuarry calibrates rank against
