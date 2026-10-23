@@ -109,4 +109,4 @@ export function listingAge(date: string | null, now: Date): string {
 | Task 1 | ac09d8e: calendar rule in `listingAge`; 54 formatter tests + the Products pages' 167 green |
 | Task 2 | 26458e8: the age line after the ASIN with the hover date, `now` prop; 18 table tests |
 | Review + gate | Read-only opus review: both stages pass (an 8M-pair probe against an independent day-count reference found 0 mismatches); nits taken in 17dac43 (real font assertion, order/separator pin, UTC-anniversary / year-crossing / Feb 29 pins, doc comment). Gate at 26458e8: 244 files / 3,036 tests, build compiled, typecheck 0; 17dac43 (tests + a comment) re-ran its two files, 73 green |
-| Push / smoke | |
+| Push / smoke | Pushed fca224c..a981fe4 2026-10-23 13:43 UTC (checkActiveJobs clean); Vercel green 13:44:55; Railway posting statuses again: the worker rebuilt on a981fe4 at 13:46 and was re-registered with Inngest. Chrome smoke PASS 13:55 UTC: keyword page "toilet paper" → "B07BGLT25K · listed 8 years, 218 days ago", "… 1 year, 51 days ago", "… 3 years, 217 days ago" with hover dates; product page → "Listed since Mar 19, 2018 · 8 years, 218 days" |
