@@ -13,7 +13,10 @@ export const SIGNUP_ROW_CAP = 50;
 export const FLAG_ROW_CAP = 50;
 /** Slow product searches listed (spec 2026-10-23 §5b); the loader's LIMIT, so it reads at most this many. */
 export const SLOW_SEARCH_ROW_CAP = 10;
-/** A recorded query string longer than this shows cut, with a "… (+N chars)" marker (the row keeps it whole). */
+/**
+ * A recorded query string longer than this shows cut, with a "… (+N chars)" marker (the row keeps it as recorded: whole up
+ * to QUERY_STRING_MAX_CHARS in lib/products/slowQueries.ts, cut there with its own marker beyond).
+ */
 export const SLOW_SEARCH_DISPLAY_CHARS = 400;
 
 const AMBER_BG = '#fef3c7';

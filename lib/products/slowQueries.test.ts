@@ -11,7 +11,7 @@ const { mockValues, mockInsert } = vi.hoisted(() => {
 vi.mock('@/db/client', () => ({ db: { insert: mockInsert } }));
 
 import { slowQueries } from '@/db/schema';
-import { recordSlowProductSearch, SLOW_PRODUCT_SEARCH_MS } from './slowQueries';
+import { QUERY_STRING_MAX_CHARS, recordSlowProductSearch, SLOW_PRODUCT_SEARCH_MS } from './slowQueries';
 
 describe('recordSlowProductSearch', () => {
   beforeEach(() => {
@@ -45,6 +45,42 @@ describe('recordSlowProductSearch', () => {
       [{ surface: 'products', userId: 'u1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false }],
       [{ surface: 'products', userId: 'u1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false }],
     ]);
+  });
+
+  describe('the stored query string is capped at QUERY_STRING_MAX_CHARS, for every surface', () => {
+    /** The query string the insert was handed, call `n`. */
+    const stored = (n = 0) => (mockValues.mock.calls[n][0] as { queryString: string }).queryString;
+    /** A `length`-character query string (URL-encoded strings are ASCII). */
+    const ofLength = (length: number) => `leafExact=${'a'.repeat(length - 'leafExact='.length)}`;
+
+    it('is 32000 characters, so a cut string and its marker still fit a Windows environment variable (32,767 characters)', () => {
+      expect(QUERY_STRING_MAX_CHARS).toBe(32_000);
+      expect(`${ofLength(QUERY_STRING_MAX_CHARS)} ...[+9999999 chars]`.length).toBeLessThan(32_767);
+    });
+
+    it('a 32000-character string is stored whole', async () => {
+      const s = ofLength(32_000);
+      expect(s).toHaveLength(32_000);
+      await recordSlowProductSearch({ userId: 'u1', queryString: s, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+      expect(stored()).toBe(s);
+    });
+
+    it('a 32001-character string is stored as its first 32000 characters and " ...[+1 chars]"', async () => {
+      const s = ofLength(32_001);
+      await recordSlowProductSearch({ userId: 'u1', queryString: s, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+      expect(stored()).toBe(`${s.slice(0, 32_000)} ...[+1 chars]`);
+    });
+
+    it("the marker's N is exactly the characters dropped, on the list's surface as on the tool's", async () => {
+      const s = ofLength(45_678);
+      await recordSlowProductSearch({ userId: 'u1', queryString: s, elapsedMs: 9_000, timedOut: false });
+      await recordSlowProductSearch({ userId: 'u1', queryString: s, elapsedMs: 9_000, timedOut: false, surface: 'products_tool' });
+      for (const n of [0, 1]) {
+        expect(stored(n)).toBe(`${s.slice(0, 32_000)} ...[+13678 chars]`);
+        expect(stored(n)).toHaveLength(32_000 + ' ...[+13678 chars]'.length);
+      }
+      expect(mockValues.mock.calls.map(([row]) => (row as { surface: string }).surface)).toEqual(['products', 'products_tool']);
+    });
   });
 
   it('a failed insert resolves anyway and warns one line with the coded fields only: never the message, the statement or its params', async () => {

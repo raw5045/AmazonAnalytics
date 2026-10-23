@@ -53,14 +53,17 @@
  *    request (PRODUCTS_FULL_COUNT_CHECK=1);
  *  - opt-in, by hand: the replay of a recorded slow search (spec 2026-10-23 §5b), PRODUCTS_REPLAY_QUERY=<query string> (a
  *    slow_queries.query_string, as the digest's "Slow product searches" lists it; an empty value is the default list, the digest's
- *    "(no filters)"). A recorded string carries the category scope in three forms: `leaf` (repeated: each a subtree, the page's leaf
- *    pick and the search_products tool's taxonomy selection alike), `custom` (the custom-category ids, comma-joined) and `leafExact`
- *    (repeated: the tool's exact leafPaths, which the page has no form for; a replay-only key the page's parser would ignore). The
- *    leafExact values are taken out first; the rest is parsed as the list page parses its URL (parseProductFilters over the
- *    searchParams shape Next hands the page: a repeated leaf stays a list), the custom ids are expanded to their stored paths
- *    (whoever owns them: the string carries no account), and the leafExact paths join those as exact paths. The rows statement is
- *    planned (EXPLAIN), then run with EXPLAIN (ANALYZE, BUFFERS) under the local cap: the plan and the time print, and the statement
- *    must finish under the page's cap. Skipped without the variable; nothing replays a recorded string automatically.
+ *    "(no filters)"), or, when that is unset, PRODUCTS_REPLAY_FILE=<path>: the string read from that file (UTF-8, trimmed), for one
+ *    too long to paste (the digest shows 400 characters of a string; the row holds it whole up to 32000, beyond that cut, with a
+ *    " ...[+N chars]" marker). A recorded string carries the category scope in three forms: `leaf` (repeated: each a subtree, the
+ *    page's leaf pick and the search_products tool's taxonomy selection alike), `custom` (the custom-category ids, comma-joined)
+ *    and `leafExact` (repeated: the tool's exact leafPaths, which the page has no form for; a replay-only key the page's parser
+ *    would ignore). The leafExact values are taken out first; the rest is parsed as the list page parses its URL
+ *    (parseProductFilters over the searchParams shape Next hands the page: a repeated leaf stays a list), the custom ids are
+ *    expanded to their stored paths (whoever owns them: the string carries no account), and the leafExact paths join those as
+ *    exact paths. The rows statement is planned (EXPLAIN), then run with EXPLAIN (ANALYZE, BUFFERS) under the local cap: the plan
+ *    and the time print, and the statement must finish under the page's cap. Skipped when neither variable is set; nothing
+ *    replays a recorded string automatically.
  *
  * Read-only: every case runs inside BEGIN READ ONLY ... ROLLBACK on one dedicated connection (a stray
  * write would error), so nothing persists.
@@ -108,9 +111,12 @@
  * The stored-count full pass is opt-in: add PRODUCTS_FULL_COUNT_CHECK=1 to the whole-file run (it runs last), or run it alone:
  *   PRODUCTS_FULL_COUNT_CHECK=1 RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "every catalog row" --disableConsoleIntercept
  * The replay of a recorded slow search is opt-in too; run it alone, for the coldest reading (in a whole-file run it comes after every
- * other case but the full pass). Single quotes keep Git Bash off the & of the string:
+ * other case but the full pass). Single quotes keep Git Bash off the & of the string; a long one goes in a file instead (the path
+ * relative to the repo root):
  *   PRODUCTS_REPLAY_QUERY='broad=Home&sort=keywords' RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "recorded slow search" --disableConsoleIntercept
+ *   PRODUCTS_REPLAY_FILE=replay.txt RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "recorded slow search" --disableConsoleIntercept
  */
+import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import { EMPTY_CATEGORY_SCOPE, pageCategoryScope, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
@@ -125,8 +131,13 @@ import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/
 const RUN = !!process.env.RUN_INTEGRATION;
 /** The stored-count full pass (a probe of the pair table for every catalog row) runs only on request: PRODUCTS_FULL_COUNT_CHECK=1. */
 const FULL_COUNT_CHECK = process.env.PRODUCTS_FULL_COUNT_CHECK === '1';
-/** The replay of a recorded slow search runs only on request: PRODUCTS_REPLAY_QUERY=<query string> (an empty value is the default list). */
-const REPLAY_QUERY = process.env.PRODUCTS_REPLAY_QUERY;
+/**
+ * The replay of a recorded slow search runs only on request: PRODUCTS_REPLAY_QUERY=<query string> (an empty value is the default
+ * list), or, when that is unset, PRODUCTS_REPLAY_FILE=<path> (relative to the repo root, where vitest runs): the string read from
+ * that file once, here, as UTF-8 and trimmed, for one too long to paste or to pass in a variable. Neither set: skipped.
+ */
+const REPLAY_FILE = process.env.PRODUCTS_REPLAY_FILE;
+const REPLAY_QUERY = process.env.PRODUCTS_REPLAY_QUERY ?? (REPLAY_FILE ? readFileSync(REPLAY_FILE, 'utf8').trim() : undefined);
 /** Per statement (see the header). */
 const STATEMENT_TIMEOUT = '300s';
 /** How often the server checks that the client is still there while it runs a statement. */
@@ -1109,7 +1120,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it.skipIf(REPLAY_QUERY === undefined)(
-    'opt-in (PRODUCTS_REPLAY_QUERY=<query string>): a recorded slow search, replayed with EXPLAIN (ANALYZE), finishes its rows statement under the page cap',
+    'opt-in (PRODUCTS_REPLAY_QUERY=<query string>, or PRODUCTS_REPLAY_FILE=<path>): a recorded slow search, replayed with EXPLAIN (ANALYZE), finishes its rows statement under the page cap',
     async () => {
       await inReadOnlyTransaction(async () => {
         // The reproduction loop of spec 2026-10-23 §5b: the string the digest lists, parsed as the list page parses its URL.
