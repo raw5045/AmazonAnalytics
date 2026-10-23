@@ -1,6 +1,6 @@
 import { LoadingIndicator } from '@/app/(app)/explorer/LoadingIndicator';
 
-/** The ASIN page while the admin check and the facts read run: title band, facts card and two section blocks. */
+/** The ASIN page while the sign-in check and the facts read run: title band, facts card and two section blocks. */
 export default function ProductLoading() {
   return (
     <>

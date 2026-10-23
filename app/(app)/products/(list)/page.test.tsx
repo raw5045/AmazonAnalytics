@@ -16,18 +16,9 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: vi.fn() }),
   useSearchParams: () => new URLSearchParams(),
 }));
-const auth = vi.hoisted(() => ({ state: 'admin' as 'admin' | 'unauthenticated' | 'forbidden' }));
-vi.mock('@/lib/auth/requireAdmin', async () => {
-  const { AuthError } = await import('@/lib/auth/AuthError');
-  return {
-    AuthError,
-    requireAdmin: async () => {
-      if (auth.state === 'unauthenticated') throw new AuthError('UNAUTHENTICATED', 'Not signed in');
-      if (auth.state === 'forbidden') throw new AuthError('FORBIDDEN', 'Admin only');
-      return { id: 'a1', role: 'admin' };
-    },
-  };
-});
+// The page's gate is "signed in" (spec 2026-10-23 §2): getCurrentUser returns the account, or null when there is no session.
+const auth = vi.hoisted(() => ({ user: null as null | { id: string; role: 'admin' | 'standard_user' } }));
+vi.mock('@/lib/auth/getCurrentUser', () => ({ getCurrentUser: async () => auth.user }));
 const data = vi.hoisted(() => ({ search: vi.fn(), departments: vi.fn(), broad: vi.fn(), paths: vi.fn(), custom: vi.fn(), expand: vi.fn() }));
 vi.mock('@/lib/products/searchProducts', async (orig) => ({
   ...(await orig<typeof import('@/lib/products/searchProducts')>()),
@@ -61,6 +52,10 @@ const RESULT: ProductSearchResult = {
   pageSize: 50,
 };
 
+/** The two kinds of signed-in account (role values of the users table): only the admin sees the perf panel. */
+const ADMIN = { id: 'a1', role: 'admin' } as const;
+const MEMBER = { id: 'm1', role: 'standard_user' } as const;
+
 /**
  * Stand-in for the server renderer: React's client renderer cannot render async components, so
  * each one in the page's tree (the results section behind the Suspense) is replaced by its awaited
@@ -86,7 +81,7 @@ function callPage(search: Record<string, string> = {}) {
 describe('ProductsPage (/products)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    auth.state = 'admin';
+    auth.user = ADMIN;
     neonMock.neon.mockReturnValue({ query: neonMock.query, transaction: neonMock.transaction });
     neonMock.query.mockResolvedValue([]);
     neonMock.transaction.mockResolvedValue([[], []]);
@@ -100,19 +95,26 @@ describe('ProductsPage (/products)', () => {
   });
 
   it('redirects a signed-out visitor to /sign-in before any read', async () => {
-    auth.state = 'unauthenticated';
+    auth.user = null;
     await expect(callPage()).rejects.toThrow('redirect:/sign-in');
     expect(neonMock.neon).not.toHaveBeenCalled();
     expect(data.search).not.toHaveBeenCalled();
     for (const fn of [data.departments, data.broad, data.paths, data.custom, data.expand]) expect(fn).not.toHaveBeenCalled();
   });
 
-  it('redirects a signed-in non-admin to /explorer before any read', async () => {
-    auth.state = 'forbidden';
-    await expect(callPage()).rejects.toThrow('redirect:/explorer');
-    expect(neonMock.neon).not.toHaveBeenCalled();
-    expect(data.search).not.toHaveBeenCalled();
-    for (const fn of [data.departments, data.broad, data.paths, data.custom, data.expand]) expect(fn).not.toHaveBeenCalled();
+  it('for a signed-in member (not an admin): renders the list on their own account and shows no perf panel (spec 2026-10-23 §2)', async () => {
+    auth.user = MEMBER;
+    render(<>{await resolveAsync(await callPage())}</>);
+
+    expect(screen.getByText('1,234 products')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
+    expect(data.search).toHaveBeenCalledTimes(1);
+    // The custom-category reads are the member's own: the signed-in account's id, never another one.
+    expect(data.custom).toHaveBeenCalledWith('m1');
+    expect(data.expand).toHaveBeenCalledWith('m1', [], []);
+    // The perf panel is admin-only (its own tests are in PerfPanel.test.tsx): nothing of it renders for a member.
+    expect(screen.queryByText(/^perf · /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/read before the render/)).not.toBeInTheDocument();
   });
 
   it('for an admin: searches on the parsed filters through the neon runner and renders the results', async () => {

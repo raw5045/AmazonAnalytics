@@ -16,18 +16,9 @@ vi.mock('next/navigation', () => ({
   },
   useRouter: () => ({ back: vi.fn() }),
 }));
-const auth = vi.hoisted(() => ({ state: 'admin' as 'admin' | 'unauthenticated' | 'forbidden' }));
-vi.mock('@/lib/auth/requireAdmin', async () => {
-  const { AuthError } = await import('@/lib/auth/AuthError');
-  return {
-    AuthError,
-    requireAdmin: async () => {
-      if (auth.state === 'unauthenticated') throw new AuthError('UNAUTHENTICATED', 'Not signed in');
-      if (auth.state === 'forbidden') throw new AuthError('FORBIDDEN', 'Admin only');
-      return { id: 'a1', role: 'admin' };
-    },
-  };
-});
+// The page's gate is "signed in" (spec 2026-10-23 §2): getCurrentUser returns the account, or null when there is no session.
+const auth = vi.hoisted(() => ({ user: null as null | { id: string; role: 'admin' | 'standard_user' } }));
+vi.mock('@/lib/auth/getCurrentUser', () => ({ getCurrentUser: async () => auth.user }));
 const loaders = vi.hoisted(() => ({ product: vi.fn(), history: vi.fn(), keywords: vi.fn() }));
 vi.mock('@/lib/products/loadProduct', () => ({ loadProduct: loaders.product }));
 vi.mock('@/lib/products/loadProductHistory', async (orig) => ({
@@ -169,7 +160,8 @@ async function renderPage(asin: string = ASIN, search: { from?: string | string[
 describe('ProductPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    auth.state = 'admin';
+    // The suite runs as a plain member (users.role 'standard_user'): nothing on this page depends on the role.
+    auth.user = { id: 'm1', role: 'standard_user' };
     neonMock.neon.mockReturnValue({ query: neonMock.query });
     loaders.product.mockResolvedValue(CATALOG_ROW);
     loaders.history.mockResolvedValue([]);
@@ -177,17 +169,18 @@ describe('ProductPage', () => {
   });
 
   it('redirects a signed-out visitor to /sign-in before any read', async () => {
-    auth.state = 'unauthenticated';
+    auth.user = null;
     await expect(callPage(ASIN)).rejects.toThrow('redirect:/sign-in');
     expect(neonMock.neon).not.toHaveBeenCalled();
     expect(loaders.product).not.toHaveBeenCalled();
   });
 
-  it('redirects a signed-in non-admin to /explorer before any read', async () => {
-    auth.state = 'forbidden';
-    await expect(callPage(ASIN)).rejects.toThrow('redirect:/explorer');
-    expect(neonMock.neon).not.toHaveBeenCalled();
-    expect(loaders.product).not.toHaveBeenCalled();
+  it.each(['standard_user', 'admin'] as const)('a signed-in %s account gets the page (spec 2026-10-23 §2)', async (role) => {
+    auth.user = { id: 'u1', role };
+    await renderPage();
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(TITLE);
+    expect(screen.getByRole('heading', { name: 'Product facts' })).toBeInTheDocument();
+    expect(loaders.product).toHaveBeenCalledWith(expect.any(Function), ASIN);
   });
 
   it.each(['b0cxyz1234', 'B0CXYZ123', 'B0CXYZ12345', 'B0CXYZ123?', '../explorer'])(

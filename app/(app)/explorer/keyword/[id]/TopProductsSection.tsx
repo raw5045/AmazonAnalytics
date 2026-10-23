@@ -28,8 +28,8 @@ export async function TopProductsSection({
   id: string;
   currentWeekEndDate: string;
   /**
-   * Admins only (arc 7): the product title links to the ASIN page, which links back to this
-   * keyword (`id`) through its `?from=`.
+   * Signed-in accounts (spec 2026-10-23 §2): the product title links to the ASIN page, which
+   * links back to this keyword (`id`) through its `?from=`.
    */
   linkProducts: boolean;
   /** The clock the listing ages are counted against; tests pin it, the page takes the default. */
@@ -116,8 +116,8 @@ interface TopProductSlot {
  * Price, Reviews (count + star rating), Monthly sold and BSR. The two shares
  * are the keyword data's current week; price, reviews, monthly sold, BSR and
  * the listing date come from already-fetched Keepa catalog data. The leaf
- * category is not shown here; it stays on the admin-only product page's facts
- * card (spec 2026-10-21 round 1 §4; listing age: spec 2026-10-23 §2).
+ * category is not shown here; it stays on the product page's facts card
+ * (spec 2026-10-21 round 1 §4; listing age: spec 2026-10-23 §2).
  */
 function TopProductsTable({
   slots,
@@ -152,8 +152,9 @@ function TopProductsTable({
           {rows.map((s) => {
             const enriched = enrichedByAsin[s.asin];
             const title = enriched?.title ?? s.fallbackTitle ?? null;
-            // Admins: the title opens the ASIN page (only for a well-formed ASIN); everyone else keeps
-            // the plain text. focus-visible:underline because the truncate wrapper clips the focus ring.
+            // Signed-in accounts (linkProducts): the title opens the ASIN page (only for a well-formed
+            // ASIN); otherwise it keeps the plain text. focus-visible:underline because the truncate
+            // wrapper clips the focus ring.
             const productHref = linkProducts && title ? productPageHref(s.asin, keywordId) : null;
             const titleNode = productHref ? (
               <Link href={productHref} className="text-blue-700 hover:underline focus-visible:underline">
@@ -205,9 +206,10 @@ function TopProductsTable({
 }
 
 /**
- * The admin-only ASIN page for a top product, or null when the ASIN isn't ASIN-shaped (what the ASIN
- * page's route accepts; the ASINs here come from raw CSV text, so check before linking). `from` is
- * this keyword's page, percent-encoded because it is itself a path, so the ASIN page can link back.
+ * The ASIN page (open to signed-in accounts, spec 2026-10-23 §2) for a top product, or null when the
+ * ASIN isn't ASIN-shaped (what the ASIN page's route accepts; the ASINs here come from raw CSV text,
+ * so check before linking). `from` is this keyword's page, percent-encoded because it is itself a
+ * path, so the ASIN page can link back.
  */
 function productPageHref(asin: string, keywordId: string): string | null {
   if (!ASIN_RE.test(asin)) return null;

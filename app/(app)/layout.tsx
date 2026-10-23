@@ -20,8 +20,8 @@ import { AccountProblem } from '@/app/AccountProblem';
  * Layout shared by /explorer/*, /products/*, /watchlist/*, /category-builder,
  * /ask and /connect-ai.
  *
- * Owns: auth gate, top tab nav (Explorer | Products, shown only to admins |
- * Watchlist | Category Builder |
+ * Owns: auth gate, top tab nav (Explorer | Products, shown to every signed-in
+ * account (spec 2026-10-23 §2) | Watchlist | Category Builder |
  * Ask AI, shown only when askAiEnabled and askAiEligible admit this account |
  * Connect AI, shown only when connectAiEligible admits this account |
  * Tutorials), user info.
@@ -71,7 +71,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             watchlistCountPromise={watchlistCountPromise}
             showConnectAi={connectAiEligible(user.role, mcpAudience())}
             showAskAi={showAskAi}
-            showProducts={user.role === 'admin'}
+            // Every signed-in account (spec 2026-10-23 §2); the gate above already requires one.
+            showProducts={true}
           />
         </div>
         <div className="flex items-center gap-4 whitespace-nowrap text-sm text-slate-300">

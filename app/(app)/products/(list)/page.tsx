@@ -1,8 +1,9 @@
 /**
- * /products — find ASINs by the Keepa catalog's fields (spec 2026-10-09 §5). Admin only (§10).
+ * /products — find ASINs by the Keepa catalog's fields (spec 2026-10-09 §5). Open to every signed-in
+ * account (spec 2026-10-23 §2).
  *
  * Server component, built like /explorer:
- *   1. Admin gate, then parse searchParams → ProductFilters (bad values fall back per field)
+ *   1. Signed-in gate, then parse searchParams → ProductFilters (bad values fall back per field)
  *   2. Stream the shell; behind <Suspense>, expand the custom ids, run the product search, and read
  *      the department, broad-category, path and custom-category lists
  *   3. Render the admin PerfPanel (spec 2026-10-19 §7), ProductFilterPanel, ProductResultsTable and
@@ -27,7 +28,7 @@ import { redirect } from 'next/navigation';
 import { neon } from '@neondatabase/serverless';
 import type { User } from '@/db/schema';
 import { env } from '@/lib/env';
-import { requireAdmin, AuthError } from '@/lib/auth/requireAdmin';
+import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { expandCustomCategories } from '@/lib/customCategories/expand';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
 import { startHandlerTimer, timed, type HandlerTimer } from '@/lib/perf/handlerTimer';
@@ -47,16 +48,11 @@ export const metadata: Metadata = { title: 'Products' };
 export default async function ProductsPage({ searchParams }: { searchParams: Promise<SearchParamsLike> }) {
   // The timer starts before the gate: the panel's total is the whole handler, as on the Watchlist.
   const timer = startHandlerTimer();
-  // Page-level gate, as app/admin/keepa-enrichment/page.tsx does it: checked here before any data
-  // read (the (app) layout only requires a signed-in user, and Next renders layouts and pages in
-  // parallel). The Products tab itself shows only for admins.
-  let user: User;
-  try {
-    user = await requireAdmin();
-  } catch (e) {
-    if (e instanceof AuthError) redirect(e.code === 'UNAUTHENTICATED' ? '/sign-in' : '/explorer');
-    throw e;
-  }
+  // Page-level gate: every signed-in account may open the page (spec 2026-10-23 §2). The (app) layout
+  // already requires a signed-in user, but Next renders layouts and pages in parallel, so it is
+  // checked here too, before any data read.
+  const user = await getCurrentUser();
+  if (!user) redirect('/sign-in');
   timer.mark('auth');
   const filters = parseProductFilters(await searchParams);
   return (
