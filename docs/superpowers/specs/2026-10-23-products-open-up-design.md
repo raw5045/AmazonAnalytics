@@ -36,7 +36,7 @@ A member (any signed-in account) sees the Products tab, opens the list and any p
 - `lib/activity/bump.ts` `UserActivityMetric` gains `'products_query'` (one per list-page render that runs a search) and `'product_view'` (one per product-page render). The storage column is a varchar, so no migration.
 - The list page bumps `products_query` where the Keywords tab bumps `explorer_query`; the product page bumps `product_view` where the keyword page bumps `detail_view` (fire-and-forget, after auth, before the reads).
 - The MCP and Ask AI tool calls are already counted under `mcp_request` / `ask_tool_call` (+ rows); no second counter.
-- Daily usage digest (`lib/notifications/abuseDigest/*`): `USER_METRICS`, `PerUserActivity` and `assemblePerUserActivity` gain `productsQueries` and `productViews`; the reads rank and `totalReads` include them; `evaluateFlags` adds them to the per-user reads threshold (same amber 500 / red 2000); the email's text and table gain two columns ("Products", "Product views") after "Detail views". Tests follow.
+- Daily usage digest (`lib/notifications/abuseDigest/*`): `USER_METRICS`, `PerUserActivity` and `assemblePerUserActivity` gain `productsQueries` and `productViews`; the reads rank and `totalReads` include them; `evaluateFlags` adds them to the per-user reads threshold (same amber 500 / red 2000); the email's text and table gain two columns ("Products", "Product views") after "Detail views"; plus the "Slow product searches" section and flag of §5b. Tests follow.
 
 ## 5. Performance: the keywords sort
 
@@ -47,6 +47,15 @@ Today `sort=keywords` counts a product's keywords with a lateral subquery per ca
 - Semantics unchanged: the count is the current week's keywords the product is a top-3 clicked product for; keyword_top_asins changes only at imports, so a weekly write is exact. The research tool's `keywordCount` and the list column read the column.
 - Timing: `keyword_counts_build` on 2.5M catalog rows is measured on the first run (expected a minute or two; the rows that changed are the only writes). The phase appears in the import timings and the admin chip like `category_facets_build`.
 - The page's safety net stays: `PRODUCT_READ_TIMEOUT_MS` 30 s. New: the list page catches SQLSTATE 57014 from the rows read and renders an inline notice in place of the table, "This combination took too long to load. Narrow the filters or try again.", instead of the error page; every other error still throws.
+
+### 5b. The slow-search log (owner's ask 2026-10-23: know what runs long, fix it)
+
+- New table `slow_queries` (migration 0056, with the column above): `id bigserial PK`, `surface text NOT NULL` (`'products'` now; the Keywords tab can join later), `happened_at timestamptz NOT NULL DEFAULT now()`, `user_id uuid NULL` (the account; null if unknown), `query_string text NOT NULL` (the filter combination exactly as the URL carries it: sort, direction, scope, every filter), `elapsed_ms integer NOT NULL`, `timed_out boolean NOT NULL`; index `(surface, happened_at)`.
+- The list page records a row when its rows read times out (57014; `elapsed_ms` = the measured time, `timed_out = true`) or completes slower than `SLOW_PRODUCT_SEARCH_MS` = 8,000 (`timed_out = false`). Fire-and-forget after the response is decided, log-safe (a failed insert is a one-line warn, never an error for the person); the person's page is unchanged by the recording.
+- The daily usage digest (§4) gains a section "Slow product searches" for the digest's day: timeouts and slow runs counted separately, then the top ten query strings by occurrences with their occurrence and distinct-account counts (the query string is shown verbatim: it holds filters, never personal data). One or more timeouts raise an amber flag ("product search timeouts: N"), so it shows in the digest's flag list; slow runs alone do not flag. The admin usage page shows the same section.
+- Reproduction loop: paste a recorded query string into the integration harness's product search (it parses the same `parseProductFilters`), run it cold with EXPLAIN ANALYZE, fix with an index or a guard.
+- Retention: rows older than 90 days are deleted by the digest job after it reads (one statement); the table stays small.
+- No immediate email (owner's decision): the digest is the channel.
 - Integration (`tests/integration/productsQueries.test.ts`, owner's go): `broad=Home&sort=keywords` cold rows + count under the cap, and the plan uses `asin_products_keyword_count_idx`; the stored counts agree with a fresh GROUP BY on a sample.
 
 ## 6. Help and copy
@@ -66,4 +75,4 @@ The keyword page's remaining ISO dates; a products CSV export; plan or payment g
 
 ## 9. Tests and ship
 
-Unit tests per task as listed; the full gate; migration 0056 and the backfill on the owner's go (before the push, as 0055 was); integration run on the owner's go; push on the owner's go; Vercel + worker deploys (Inngest re-sync); smoke as a member (the owner's standard account) on the tab, the list (Home + keywords sort cold), a product page, a keyword page's product link, and the connector asking the owner's example question; the next import's timings show `keyword_counts_build`.
+Unit tests per task as listed; the full gate; migration 0056 (the column, its index, `slow_queries`) and the keyword-count backfill on the owner's go (before the push, as 0055 was); integration run on the owner's go; push on the owner's go; Vercel + worker deploys (Inngest re-sync); smoke as a member (the owner's standard account) on the tab, the list (Home + keywords sort cold), a product page, a keyword page's product link, and the connector asking the owner's example question; the next morning's digest shows the two new columns and the slow-search section; the next import's timings show `keyword_counts_build`.
