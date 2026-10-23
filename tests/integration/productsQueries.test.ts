@@ -118,7 +118,8 @@
  * relative to the repo root), written straight from its row (the id from SELECT id, surface, length(query_string) FROM
  * slow_queries ORDER BY happened_at DESC):
  *   PRODUCTS_REPLAY_QUERY='broad=Home&sort=keywords' RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "recorded slow search" --disableConsoleIntercept
- *   psql "$DATABASE_URL" -At -c "SELECT query_string FROM slow_queries WHERE id = 123" > replay.txt
+ *   node --env-file=.env.local -e "const {Client} = require('pg'); const c = new Client({connectionString: process.env.DATABASE_URL}); c.connect().then(() => c.query('SELECT query_string FROM slow_queries WHERE id = $1', [123])).then((r) => { require('fs').writeFileSync('replay.txt', r.rows[0].query_string); return c.end(); })"
+ *   (psql is not installed on the owner's machine; the one-liner reads the row through pg and writes it untouched)
  *   PRODUCTS_REPLAY_FILE=replay.txt RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "recorded slow search" --disableConsoleIntercept
  */
 import { readFileSync } from 'node:fs';
@@ -1161,6 +1162,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         );
         // The count statement too, printed only: in production a count that hits the cap is swallowed (the total reads as capped),
         // so the search completes and is recorded as slow at about the cap. Run before the rows assertion so it always prints.
+        // Its reading is WARM: the rows statement just walked the same pages, so a count recorded slow cold can look fast here.
         const countAnalyzed = await explainAnalyze(q.count).catch((e: unknown) => {
           if ((e as { code?: unknown } | null)?.code !== '57014') throw e;
           return null;
@@ -1168,7 +1170,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         console.log(
           countAnalyzed === null
             ? `[productsQueries] replay count statement hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s): in production its total would read as capped`
-            : `[productsQueries] replay count statement with EXPLAIN ANALYZE: ${countAnalyzed.seconds.toFixed(2)}s planning + execution (the page's cap is ${cap}s), ` +
+            : `[productsQueries] replay count statement with EXPLAIN ANALYZE (warm, after the rows statement): ${countAnalyzed.seconds.toFixed(2)}s planning + execution (the page's cap is ${cap}s), ` +
                 `shared blocks hit ${countAnalyzed.hit}, read ${countAnalyzed.read}:\n${countAnalyzed.lines.join('\n')}`,
         );
         expect(analyzed.seconds, `the replayed rows statement of "${query}" (the page's cap is ${cap}s)`).toBeLessThan(cap);

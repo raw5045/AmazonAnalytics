@@ -220,8 +220,10 @@ export function toolQueryString(filters: ProductFilters, categories: ProductSear
  * than SLOW_PRODUCT_SEARCH_MS is recorded and answered as usual. Any other failure, a synchronous throw included, passes
  * through unchanged and unrecorded. The row goes to scheduleSlowSearchRecord (lib/products/slowQueries.ts), shared with
  * the Products list: inside the MCP route handler's request after() keeps the function alive until the insert lands
- * (the route's maxDuration leaves the room); without a request scope it is recorded directly, never awaited. Either way
- * the answer never waits for it. `queryString` is the search as it ran (toolQueryString), built by the caller; the read
+ * (the route's maxDuration leaves the room); the Ask AI chat route is the other caller, where after() registers the same
+ * way when the tool runs inside the route's request scope, and otherwise the direct write happens while the route's own
+ * after(() => turnFinished) keeps the function alive; without any request scope it is recorded directly, never awaited.
+ * Either way the answer never waits for it. `queryString` is the search as it ran (toolQueryString), built by the caller; the read
  * runs on `filters` and `scope` alone.
  */
 async function searchLoggingSlow(
