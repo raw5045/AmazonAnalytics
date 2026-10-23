@@ -4,10 +4,12 @@
  * search_products tool (surface 'products_tool': an AI client over the MCP, or Ask AI; lib/research/products.ts) call
  * it after the search settled, fire-and-forget, so recording never delays or fails the response. One row per timeout
  * (the 30 s statement cap, SQLSTATE 57014) or per completed search slower than SLOW_PRODUCT_SEARCH_MS, carrying the
- * filter combination as the URL query string (the tool's carries its page filters: a categories object, resolved into
- * the search's scope, is not in it). The daily usage digest reads the rows. A recorded query string can be replayed by
- * hand in tests/integration/productsQueries.test.ts (PRODUCTS_REPLAY_QUERY=<query string>); nothing replays one
- * automatically. A failed insert warns once with coded fields and is otherwise silent.
+ * filter combination as the URL query string (the tool's carries its category scope too: its taxonomy selections as
+ * `leaf` and its custom ids as `custom`, the page's own forms, and its exact leaf paths, which the page has no form for,
+ * as a replay-only `leafExact`; toolQueryString in lib/research/products.ts). The daily usage digest reads the rows. A
+ * recorded query string can be replayed by hand in tests/integration/productsQueries.test.ts
+ * (PRODUCTS_REPLAY_QUERY=<query string>); nothing replays one automatically. A failed insert warns once with coded
+ * fields and is otherwise silent.
  */
 import { db } from '@/db/client';
 import { slowQueries } from '@/db/schema';

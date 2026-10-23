@@ -33,8 +33,8 @@ vi.mock('@/lib/products/slowQueries', async (orig) => ({
   recordSlowProductSearch: slow.record,
 }));
 
-import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
-import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filters';
+import { EMPTY_CATEGORY_SCOPE, pageCategoryScope, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
+import { parseProductFilters, PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filters';
 import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import type { HistoryPoint } from '@/lib/products/loadProductHistory';
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
@@ -43,7 +43,7 @@ import { SLOW_PRODUCT_SEARCH_MS } from '@/lib/products/slowQueries';
 import type { CustomRow } from './categories';
 import { ResearchError } from './errors';
 import {
-  defaultProductsDeps, PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP, productDetailsForTool, searchProductsForTool, type ProductsDeps,
+  defaultProductsDeps, PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP, productDetailsForTool, searchProductsForTool, toolQueryString, type ProductsDeps,
 } from './products';
 import type { ResearchActor } from './service';
 import { classifyToolError } from './toolErrors';
@@ -412,11 +412,45 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
     expect(deps.record).not.toHaveBeenCalled();
   });
 
-  it("the recorded string is the page filters' URL form: a categories object, resolved into the scope, is not in it", async () => {
+  /** One taxonomy selection, one custom selection and one exact leaf path (none of the custom category's stored paths), under a broad category. */
+  const TAXONOMY = 'Pet Supplies › Dogs › Toys';
+  const EXACT = 'Health & Household › Vitamins › Magnesium';
+  const SCOPED_INPUT = { filters: { broadCategory: 'Home', categories: { selections: [{ kind: 'taxonomy', path: TAXONOMY }, { kind: 'custom', id: CUSTOM_ID }], leafPaths: [EXACT] } }, sort: 'price' };
+  /** The page filters, then the three groups: leaf and custom in the page's URL form, then leafExact; encoded as URLSearchParams encodes them (› is %E2%80%BA, & is %26). */
+  const SCOPED_QUERY_STRING = `broad=Home&sort=price&leaf=Pet+Supplies+%E2%80%BA+Dogs+%E2%80%BA+Toys&custom=${CUSTOM_ID}&leafExact=Health+%26+Household+%E2%80%BA+Vitamins+%E2%80%BA+Magnesium`;
+  /** The query string the recorder was handed, call `n`. */
+  const recordedQueryString = (n = 0) => (slow.record.mock.calls[n][0] as { queryString: string }).queryString;
+
+  it("a search with categories is recorded with them, in the page's URL form (leaf, custom) and then leafExact for its exact paths, on a timeout and a slow completion alike", async () => {
+    expect(SCOPED_QUERY_STRING.endsWith(`&${new URLSearchParams([['leaf', TAXONOMY], ['custom', CUSTOM_ID], ['leafExact', EXACT]]).toString()}`)).toBe(true);
+    const [{ leafPaths: customPaths }] = await makeDeps().customRows(member.localUserId, [CUSTOM_ID]);
+    const timedOut = makeDeps({ search: searchTaking(30_000, statementTimeout()) });
+    await expect(searchProductsForTool(timedOut, member, SCOPED_INPUT)).rejects.toMatchObject(TIMEOUT_INFO);
+    // The search itself is unchanged: the categories are in its scope, never in its page filters.
+    expect(searchedQueryString(timedOut)).toBe('broad=Home&sort=price');
+    expect(vi.mocked(timedOut.search).mock.calls[0][1]).toStrictEqual({ dept: null, subtreePaths: [TAXONOMY], exactPaths: [EXACT, ...customPaths], scoped: true });
+    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: SCOPED_QUERY_STRING, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+    await searchProductsForTool(makeDeps({ search: searchTaking(9_000) }), member, SCOPED_INPUT);
+    expect(slow.record).toHaveBeenCalledTimes(2);
+    expect(slow.record).toHaveBeenLastCalledWith({ userId: member.localUserId, queryString: SCOPED_QUERY_STRING, elapsedMs: 9_000, timedOut: false, surface: 'products_tool' });
+  });
+
+  it('the replay (tests/integration/productsQueries.test.ts) rebuilds from that string the page filters and the category scope the search ran on', async () => {
     const deps = makeDeps({ search: searchTaking(30_000, statementTimeout()) });
-    await expect(searchProductsForTool(deps, admin, { filters: { categories: { leafPaths: ['Pet Supplies › Cats › Toys'] } }, sort: 'price' })).rejects.toMatchObject(TIMEOUT_INFO);
-    expect(vi.mocked(deps.search).mock.calls[0][1]).toStrictEqual({ dept: null, subtreePaths: [], exactPaths: ['Pet Supplies › Cats › Toys'], scoped: true });
-    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: admin.localUserId, queryString: 'sort=price', elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+    await expect(searchProductsForTool(deps, member, SCOPED_INPUT)).rejects.toMatchObject(TIMEOUT_INFO);
+    const [filters, scope] = vi.mocked(deps.search).mock.calls[0];
+    // As the replay does: leafExact out, the rest through the page's parser (one leaf here, so Object.fromEntries keeps every
+    // value), the custom id expanded to its stored paths, and the leafExact paths added to the exact ones.
+    const params = new URLSearchParams(recordedQueryString());
+    const leafExact = [...new Set(params.getAll('leafExact'))];
+    params.delete('leafExact');
+    const pageFilters = parseProductFilters(Object.fromEntries(params));
+    const [{ leafPaths: customPaths }] = await makeDeps().customRows(member.localUserId, pageFilters.customCategoryIds);
+    const pageScope = pageCategoryScope(pageFilters, customPaths);
+    const replayed = { ...pageScope, exactPaths: [...new Set([...customPaths, ...leafExact])], scoped: pageScope.scoped || leafExact.length > 0 };
+    expect({ ...pageFilters, leafPaths: [], customCategoryIds: [] }).toStrictEqual(filters);
+    // The exact paths are one bound array (`= ANY`), so only their set matters.
+    expect({ ...replayed, exactPaths: [...replayed.exactPaths].sort() }).toStrictEqual({ ...scope, exactPaths: [...scope.exactPaths].sort() });
   });
 
   it.each([8_001, 9_000])('a search that completes in %i ms (above SLOW_PRODUCT_SEARCH_MS) is answered as usual and recorded with timedOut false', async (ms) => {
@@ -454,6 +488,34 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
       expect(deps.record).not.toHaveBeenCalled();
     }
     expect(slow.record).not.toHaveBeenCalled();
+  });
+});
+
+describe('toolQueryString', () => {
+  const FILTERS: ProductFilters = { ...PRODUCT_DEFAULTS, age: 60, soldMin: 30_000, dept: 'Pet Supplies', broadCategory: 'Home', fba: 'yes', sort: 'keywords', dir: 'asc', page: 3 };
+
+  it("with no categories (absent, or an empty object) is exactly the page filters' URL form", () => {
+    const page = productFiltersToSearchParams(FILTERS).toString();
+    expect(toolQueryString(FILTERS, undefined)).toBe(page);
+    expect(toolQueryString(FILTERS, { selections: [], leafPaths: [] })).toBe(page);
+  });
+
+  it('appends leaf, custom and leafExact after the page filters, in that order, each de-duplicated, the custom ids as one comma-joined value', () => {
+    const out = toolQueryString(FILTERS, {
+      selections: [
+        { kind: 'custom', id: CUSTOM_ID }, { kind: 'taxonomy', path: 'Tools › Bath', includeDescendants: true }, { kind: 'custom', id: OTHER_ID },
+        { kind: 'taxonomy', path: 'Tools › Bath', includeDescendants: false }, { kind: 'taxonomy', path: 'Tools › Kitchen', includeDescendants: true }, { kind: 'custom', id: CUSTOM_ID },
+      ],
+      leafPaths: ['Tools › Bath › Mats', 'Tools › Bath › Mats', 'Tools › Bath'],
+    });
+    const groups = new URLSearchParams([
+      ['leaf', 'Tools › Bath'], ['leaf', 'Tools › Kitchen'], ['custom', `${CUSTOM_ID},${OTHER_ID}`], ['leafExact', 'Tools › Bath › Mats'], ['leafExact', 'Tools › Bath'],
+    ]);
+    expect(out).toBe(`${productFiltersToSearchParams(FILTERS).toString()}&${groups.toString()}`);
+    // The page's parser reads both leaf picks and both custom ids from it (the comma travels as %2C) and ignores leafExact.
+    const sp = new URLSearchParams(out);
+    expect(sp.getAll('custom')).toEqual([`${CUSTOM_ID},${OTHER_ID}`]);
+    expect(parseProductFilters({ ...Object.fromEntries(sp), leaf: sp.getAll('leaf') })).toStrictEqual({ ...FILTERS, leafPaths: ['Tools › Bath', 'Tools › Kitchen'], customCategoryIds: [CUSTOM_ID, OTHER_ID] });
   });
 });
 

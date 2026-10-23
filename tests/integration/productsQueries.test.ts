@@ -53,12 +53,14 @@
  *    request (PRODUCTS_FULL_COUNT_CHECK=1);
  *  - opt-in, by hand: the replay of a recorded slow search (spec 2026-10-23 §5b), PRODUCTS_REPLAY_QUERY=<query string> (a
  *    slow_queries.query_string, as the digest's "Slow product searches" lists it; an empty value is the default list, the digest's
- *    "(no filters)"). The string is parsed as the list page parses its URL (parseProductFilters over the searchParams shape Next hands
- *    the page: a repeated leaf stays a list), its custom-category ids are expanded to their stored paths (whoever owns them: the
- *    string carries no account), and its rows statement is planned (EXPLAIN), then run with EXPLAIN (ANALYZE, BUFFERS) under the
- *    local cap: the plan and the time print, and the statement must finish under the page's cap. Skipped without the variable;
- *    nothing replays a recorded string automatically. A string the search_products tool recorded (surface products_tool) holds its
- *    page filters only (its categories object is not in it), so its replay runs without that scope.
+ *    "(no filters)"). A recorded string carries the category scope in three forms: `leaf` (repeated: each a subtree, the page's leaf
+ *    pick and the search_products tool's taxonomy selection alike), `custom` (the custom-category ids, comma-joined) and `leafExact`
+ *    (repeated: the tool's exact leafPaths, which the page has no form for; a replay-only key the page's parser would ignore). The
+ *    leafExact values are taken out first; the rest is parsed as the list page parses its URL (parseProductFilters over the
+ *    searchParams shape Next hands the page: a repeated leaf stays a list), the custom ids are expanded to their stored paths
+ *    (whoever owns them: the string carries no account), and the leafExact paths join those as exact paths. The rows statement is
+ *    planned (EXPLAIN), then run with EXPLAIN (ANALYZE, BUFFERS) under the local cap: the plan and the time print, and the statement
+ *    must finish under the page's cap. Skipped without the variable; nothing replays a recorded string automatically.
  *
  * Read-only: every case runs inside BEGIN READ ONLY ... ROLLBACK on one dedicated connection (a stray
  * write would error), so nothing persists.
@@ -1112,19 +1114,30 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
       await inReadOnlyTransaction(async () => {
         // The reproduction loop of spec 2026-10-23 §5b: the string the digest lists, parsed as the list page parses its URL.
         const query = REPLAY_QUERY ?? '';
-        const filters = parseProductFilters(toSearchParamsLike(new URLSearchParams(query)));
+        const params = new URLSearchParams(query);
+        // The search_products tool's exact leaf paths (leafExact, which the page has no form for) come out first, so the parser sees
+        // the page's own string; they join the exact paths below.
+        const leafExact = [...new Set(params.getAll('leafExact'))];
+        params.delete('leafExact');
+        const filters = parseProductFilters(toSearchParamsLike(params));
         // The page expands its custom ids for the signed-in account; the recorded string carries none, so each id expands to its
-        // stored paths whoever owns it (the page offers an account only its own categories).
+        // stored paths whoever owns it (the page offers an account only its own categories, and the tool refuses anyone else's).
         const customPaths = filters.customCategoryIds.length === 0
           ? []
           : (await client.query<{ leaf_paths: string[] | null }>('SELECT leaf_paths FROM custom_categories WHERE id = ANY($1::uuid[])', [filters.customCategoryIds])).rows.flatMap((r) => r.leaf_paths ?? []);
-        const q = productSearchSql(filters, pageCategoryScope(filters, customPaths));
+        // pageCategoryScope builds a fresh, unfrozen object (its arrays copied), so its fields spread; the two that leafExact extends are replaced.
+        const pageScope = pageCategoryScope(filters, customPaths);
+        const scope: ProductCategoryScope = { ...pageScope, exactPaths: [...new Set([...customPaths, ...leafExact])], scoped: pageScope.scoped || leafExact.length > 0 };
+        const q = productSearchSql(filters, scope);
         const cap = PRODUCT_READ_TIMEOUT_MS / 1000;
-        // Parsing drops a value the page would drop (a bad one falls back to its default): the re-serialised string shows what is replayed.
-        const parsed = productFiltersToSearchParams(filters).toString();
+        // Parsing drops a value the page would drop (a bad one falls back to its default): the re-serialised string, against the
+        // recorded one without leafExact and in any order (the tool appends its category groups after the page filters), shows that.
+        const parsed = productFiltersToSearchParams(filters);
+        const pairs = (sp: URLSearchParams): string => JSON.stringify([...sp].map((pair) => JSON.stringify(pair)).sort());
         console.log(
-          `[productsQueries] replay of "${query}": parsed as "${parsed}"${parsed === query ? '' : ' (differs from the recorded string)'}` +
-            `${filters.customCategoryIds.length > 0 ? `; ${filters.customCategoryIds.length} custom categories, ${customPaths.length} stored paths` : ''}`,
+          `[productsQueries] replay of "${query}": parsed as "${parsed.toString()}"${pairs(parsed) === pairs(params) ? '' : ' (differs from the recorded string)'}` +
+            `${filters.customCategoryIds.length > 0 ? `; ${filters.customCategoryIds.length} custom categories, ${customPaths.length} stored paths` : ''}` +
+            `; ${leafExact.length} leafExact paths`,
         );
         const planned = await explain(q.rows);
         console.log(`[productsQueries] replay rows plan (planned in ${planned.seconds.toFixed(2)}s):\n${planned.lines.join('\n')}`);

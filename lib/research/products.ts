@@ -8,8 +8,8 @@
  * service's own (createResearchService binds them), so a products call is metered exactly as the
  * keyword tools are: search_keywords reserves its page size up front and records the rows it
  * delivered; get_keyword_details reserves and records one row. The search's read is timed, and one
- * that times out or runs slow is logged to slow_queries as the Products list logs its own
- * (searchLoggingSlow below; spec 2026-10-23 §5b).
+ * that times out or runs slow is logged to slow_queries as the Products list logs its own, with the
+ * search as it ran (searchLoggingSlow and toolQueryString below; spec 2026-10-23 §5b).
  */
 import { neon } from '@neondatabase/serverless';
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
@@ -193,18 +193,41 @@ const SEARCH_TIMED_OUT =
   'This combination of filters took too long to search; narrow the filters (a department, a category, a sales floor) rather than retrying the same search.';
 
 /**
+ * The string a slow or timed-out search_products read is recorded with (spec 2026-10-23 §5b): the search as it ran, in
+ * the Products page's URL form wherever one exists, so the digest lists it and the integration replay
+ * (tests/integration/productsQueries.test.ts) rebuilds the same scope. The page filters come first
+ * (productFiltersToSearchParams; the tool's filters never carry leaf picks or custom ids, see toProductFilters), then the
+ * categories object in three groups, each de-duplicated: every taxonomy selection as `leaf` (a page leaf pick is a subtree,
+ * as a selection is on products), the custom selections' ids as one comma-joined `custom` (the page's form), and the
+ * exact leafPaths, which the page has no form for, as `leafExact` (repeated: a replay-only key the page's parser ignores).
+ */
+export function toolQueryString(filters: ProductFilters, categories: ProductSearchFilters['categories']): string {
+  const sp = productFiltersToSearchParams(filters);
+  if (categories) {
+    const unique = (values: string[]): string[] => [...new Set(values)];
+    for (const path of unique(categories.selections.flatMap((s) => (s.kind === 'taxonomy' ? [s.path] : [])))) sp.append('leaf', path);
+    const ids = unique(categories.selections.flatMap((s) => (s.kind === 'custom' ? [s.id] : [])));
+    if (ids.length > 0) sp.append('custom', ids.join(','));
+    for (const path of unique(categories.leafPaths)) sp.append('leafExact', path);
+  }
+  return sp.toString();
+}
+
+/**
  * The search's read, timed and logged as the Products list logs its own (spec 2026-10-23 §5b), under surface
  * 'products_tool': a rows read cut off by the statement cap (SQLSTATE 57014, isStatementTimeout) is recorded as timed
  * out and answered with QUERY_TIMEOUT (not retryable: narrowing the filters is what helps); a read that completes slower
  * than SLOW_PRODUCT_SEARCH_MS is recorded and answered as usual. Any other failure passes through unchanged and
  * unrecorded. The recording is fire-and-forget (the recorder never rejects; a failed insert only warns) with a plain
- * `void`: a tool call has no after() context. The query string is the page filters' URL form, so a categories object
- * (resolved into `scope`) is not in it.
+ * `void`: a tool call has no after() context. `queryString` is the search as it ran (toolQueryString), built by the
+ * caller; the read runs on `filters` and `scope` alone.
  */
-async function searchLoggingSlow(deps: ProductsDeps, actor: ResearchActor, filters: ProductFilters, scope: ProductCategoryScope): Promise<ProductSearchResult> {
+async function searchLoggingSlow(
+  deps: ProductsDeps, actor: ResearchActor, filters: ProductFilters, scope: ProductCategoryScope, queryString: string,
+): Promise<ProductSearchResult> {
   const started = Date.now();
   const log = (elapsedMs: number, timedOut: boolean): void => {
-    void recordSlowProductSearch({ userId: actor.localUserId, queryString: productFiltersToSearchParams(filters).toString(), elapsedMs, timedOut, surface: 'products_tool' });
+    void recordSlowProductSearch({ userId: actor.localUserId, queryString, elapsedMs, timedOut, surface: 'products_tool' });
   };
   const result = await deps.search(filters, scope).catch((e: unknown) => {
     if (!isStatementTimeout(e)) throw e;
@@ -222,8 +245,8 @@ async function searchLoggingSlow(deps: ProductsDeps, actor: ResearchActor, filte
  * The department and the categories object become the search's category scope
  * (resolveProductCategoryScope), resolved after the reserve as the keyword tools resolve theirs.
  * The broad category is checked there too and travels on the page filters, not in the scope.
- * A rows read cut off by the statement cap is QUERY_TIMEOUT; it and a slow read are logged
- * (searchLoggingSlow).
+ * A rows read cut off by the statement cap is QUERY_TIMEOUT; it and a slow read are logged with
+ * the search as it ran, its categories included (searchLoggingSlow, toolQueryString).
  */
 export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchActor, input: unknown): Promise<ProductSearchResponse> {
   const parsed = productSearchInputSchema.safeParse(input);
@@ -231,7 +254,8 @@ export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchA
   const filters = toProductFilters(parsed.data);
   await deps.reserve(actor, PRODUCT_PAGE_SIZE);
   const scope = await resolveProductCategoryScope(deps, actor, parsed.data.filters ?? {});
-  const result = await searchLoggingSlow(deps, actor, filters, scope);
+  const queryString = toolQueryString(filters, parsed.data.filters?.categories);
+  const result = await searchLoggingSlow(deps, actor, filters, scope, queryString);
   const response: ProductSearchResponse = {
     schemaVersion: SCHEMA_VERSION,
     products: result.rows.map((row) => ({ ...row, url: productUrlFor(deps.appUrl, row.asin) })),
