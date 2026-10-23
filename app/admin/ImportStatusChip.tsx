@@ -189,6 +189,8 @@ function humanPhase(phase: string): string {
       return 'Broad categories';
     case 'category_facets_build':
       return 'Category list';
+    case 'keyword_counts_build':
+      return 'Keyword counts';
     case 'summary_refresh':
       return 'rebuilding summary';
     default:

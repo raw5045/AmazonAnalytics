@@ -24,6 +24,7 @@ import { enqueueWeek, EnqueueWeekError } from '@/lib/keepa/enqueueWeek';
 import { buildTopAsinsWeek, TopAsinsBuildError } from '@/lib/topAsins/buildWeek';
 import { buildCrosswalk, BaCrosswalkError } from '@/lib/baCategory/buildCrosswalk';
 import { buildProductCategoryFacets } from '@/lib/products/buildCategoryFacets';
+import { buildKeywordCounts } from '@/lib/products/buildKeywordCounts';
 import { errFields } from '@/lib/ask/logSafe';
 
 export interface ImportFileInput {
@@ -1145,9 +1146,70 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       );
 
       // ----------------------------------------------------------------
+      // Stored keyword counts (spec 2026-10-23 §5): write each product's
+      // asin_products.keyword_count (its keywords as a top-3 clicked
+      // product: the Products keywords sort's index key) from the pair
+      // table, so it sits right after top_asins_build, which has just
+      // rebuilt keyword_top_asins, and BEFORE the long summary refresh.
+      // Only the changed rows are written; the builder holds the Keepa
+      // service's lock while it writes, so the service's batch writes wait
+      // instead of deadlocking with it. Fail-soft, like the phases around
+      // it: a failure never fails the import — the previous counts stay
+      // (the two UPDATEs are one transaction) and
+      // scripts/buildKeywordCounts.ts re-runs it by hand. Skipped on
+      // replays like the other hooks: a historical week must not rewrite
+      // the live counts (top_asins_build is skipped too). It takes no
+      // week: it counts whatever the pair table holds, so after a skipped
+      // or failed top_asins_build it matches the build still in place
+      // (writing little or nothing).
+      // ----------------------------------------------------------------
+      await timePhase(
+        file.id,
+        'keyword_counts_build',
+        async () => {
+          const keywordCountsPool = new Pool({
+            connectionString: env.DATABASE_URL,
+            max: 1,
+            statement_timeout: 600_000,
+            keepAlive: true,
+            keepAliveInitialDelayMillis: 10_000,
+            connectionTimeoutMillis: 20_000,
+          });
+          // Dropped-socket guards, as in the hand-off above.
+          keywordCountsPool.on('error', () => undefined);
+          let stage: 'connect' | 'build' = 'connect';
+          try {
+            const client = await keywordCountsPool.connect();
+            stage = 'build';
+            try {
+              client.on('error', () => undefined);
+              const r = await buildKeywordCounts(client);
+              console.log(
+                `[keyword-counts] updated=${r.updated} zeroed=${r.zeroed} seconds=${r.seconds.toFixed(1)}`,
+              );
+              return r;
+            } finally {
+              client.release();
+            }
+          } catch (e) {
+            const { error, code } = errFields(e);
+            console.error(
+              '[keyword-counts] failed (import continues)',
+              JSON.stringify({ week: weekEndDate, stage, error, code }),
+            );
+            return null;
+          } finally {
+            await keywordCountsPool.end();
+          }
+        },
+        // rows_affected = rows written (counts set + counts zeroed); null marks a failed build.
+        (r) => (r ? r.updated + r.zeroed : null),
+      );
+
+      // ----------------------------------------------------------------
       // Brand Analytics crosswalk (spec 2026-10-14 §5.4): relearn the Keepa
-      // path → code mapping from this week's report, right after the pair
-      // table and BEFORE the long summary refresh. Fail-soft, like the two
+      // path → code mapping from this week's report, after the pair
+      // table and BEFORE the long summary refresh. Fail-soft, like the
       // phases above: a failure never fails the import — the previous
       // crosswalk stays in place and scripts/buildBaCrosswalk.ts re-runs
       // it by hand. Same replay rule, and the builder refuses a week older

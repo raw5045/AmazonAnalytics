@@ -18,6 +18,7 @@ const {
   mockClientQuery,
   mockEnqueueWeek,
   mockBuildTopAsinsWeek,
+  mockBuildKeywordCounts,
   mockBuildCrosswalk,
   mockBuildFacets,
   mockRefreshSummary,
@@ -45,6 +46,7 @@ const {
   mockClientQuery: vi.fn(),
   mockEnqueueWeek: vi.fn(),
   mockBuildTopAsinsWeek: vi.fn(),
+  mockBuildKeywordCounts: vi.fn(),
   mockBuildCrosswalk: vi.fn(),
   mockBuildFacets: vi.fn(),
   mockRefreshSummary: vi.fn(),
@@ -114,6 +116,7 @@ vi.mock('@/lib/baCategory/buildCrosswalk', async (importOriginal) => ({
   buildCrosswalk: mockBuildCrosswalk,
 }));
 vi.mock('@/lib/products/buildCategoryFacets', () => ({ buildProductCategoryFacets: mockBuildFacets }));
+vi.mock('@/lib/products/buildKeywordCounts', () => ({ buildKeywordCounts: mockBuildKeywordCounts }));
 vi.mock('@/inngest/functions/refreshSummary', () => ({
   refreshKeywordCurrentSummary: mockRefreshSummary,
 }));
@@ -336,6 +339,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
   const fixture = readFileSync(path.join(__dirname, '../../lib/csv/fixtures/valid-sample.csv'));
   const hookClient = { on: vi.fn(), release: vi.fn(), query: vi.fn() };
   const topAsinsClient = { on: vi.fn(), release: vi.fn(), query: vi.fn() };
+  const keywordCountsClient = { on: vi.fn(), release: vi.fn(), query: vi.fn() };
   const crosswalkClient = { on: vi.fn(), release: vi.fn(), query: vi.fn() };
   const facetsClient = { on: vi.fn(), release: vi.fn(), query: vi.fn() };
   // Every db.insert(...).values(row) lands here; the import_phase_timings rows carry `phase`.
@@ -344,12 +348,13 @@ describe('processFileImport — keepa_enqueue hook', () => {
     onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
   });
   // The first connect() is the COPY pool's client; the second is the Keepa hook's, the third the
-  // top-ASINs phase's, the fourth the crosswalk phase's, the fifth the facets phase's.
+  // top-ASINs phase's, the fourth the keyword-counts phase's, the fifth the crosswalk phase's, the
+  // sixth the facets phase's.
   const copyClient = () => {
     const { stream } = createFakeCopyStream();
     return { query: vi.fn(() => stream), release: vi.fn() };
   };
-  const POOLS = 5; // the COPY pool + one per hook phase
+  const POOLS = 6; // the COPY pool + one per hook phase
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -370,6 +375,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       .mockResolvedValueOnce(copyClient())
       .mockResolvedValueOnce(hookClient)
       .mockResolvedValueOnce(topAsinsClient)
+      .mockResolvedValueOnce(keywordCountsClient)
       .mockResolvedValueOnce(crosswalkClient)
       .mockResolvedValueOnce(facetsClient);
     mockPoolEnd.mockReset().mockResolvedValue(undefined);
@@ -384,7 +390,9 @@ describe('processFileImport — keepa_enqueue hook', () => {
     mockBuildTopAsinsWeek
       .mockReset()
       .mockResolvedValue({ rows: 3, previousWeek: null, carriedFrom: 'none' });
-    // A successful crosswalk build by default, so the phase after the pair table adds no stray failure line.
+    // A successful keyword-counts build by default, so the phase after the pair table adds no stray failure line.
+    mockBuildKeywordCounts.mockReset().mockResolvedValue({ updated: 1200, zeroed: 34, seconds: 84.23 });
+    // A successful crosswalk build by default, so the phase after the keyword counts adds no stray failure line.
     mockBuildCrosswalk.mockReset().mockResolvedValue({
       week: '2026-04-11',
       paths: 0,
@@ -438,10 +446,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
     expect(hookClient.on.mock.invocationCallOrder[0]).toBeLessThan(
       mockEnqueueWeek.mock.invocationCallOrder[0],
     );
-    expect(mockPoolOn).toHaveBeenCalledTimes(POOLS); // the COPY pool's guard + the four hook pools'
+    expect(mockPoolOn).toHaveBeenCalledTimes(POOLS); // the COPY pool's guard + the five hook pools'
     expect(mockPoolOn).toHaveBeenNthCalledWith(2, 'error', expect.any(Function)); // the Keepa hook's
     expect(hookClient.release).toHaveBeenCalledTimes(1);
-    expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS); // the COPY pool + the four hook pools
+    expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS); // the COPY pool + the five hook pools
     expect(keepaLines(log)).toEqual([
       '[keepa-enqueue] week 2026-04-11: inserted=5 updated=7 retired=2 vacuumed=false vacuumError=57014',
     ]);
@@ -479,6 +487,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
         Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }),
       )
       .mockResolvedValueOnce(topAsinsClient)
+      .mockResolvedValueOnce(keywordCountsClient)
       .mockResolvedValueOnce(crosswalkClient)
       .mockResolvedValueOnce(facetsClient);
 
@@ -522,8 +531,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
   });
 
   // The phase after keepa_enqueue (spec 2026-10-09 §4.1): its own pool and the same fail-soft
-  // shape, so these tests share this block's setup (five pools: COPY, Keepa hook, this phase, the
-  // crosswalk phase, the facets phase).
+  // shape, so these tests share this block's setup (six pools: COPY, Keepa hook, this phase, the
+  // keyword-counts phase, the crosswalk phase, the facets phase).
   describe('top_asins_build phase', () => {
     beforeEach(() => {
       // The Keepa hook succeeds, so the only console.error lines are this phase's.
@@ -556,7 +565,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(mockBuildTopAsinsWeek.mock.invocationCallOrder[0]).toBeLessThan(
         mockRefreshSummary.mock.invocationCallOrder[0],
       );
-      const order = ['keepa_enqueue', 'top_asins_build', 'ba_crosswalk_build', 'category_facets_build', 'summary_refresh'];
+      const order = ['keepa_enqueue', 'top_asins_build', 'keyword_counts_build', 'ba_crosswalk_build', 'category_facets_build', 'summary_refresh'];
       const phaseRows = insertValues.mock.calls
         .map(([row]) => (row as { phase?: string }).phase)
         .filter((phase) => phase !== undefined && order.includes(phase));
@@ -565,10 +574,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(topAsinsClient.on.mock.invocationCallOrder[0]).toBeLessThan(
         mockBuildTopAsinsWeek.mock.invocationCallOrder[0],
       );
-      expect(mockPoolOn).toHaveBeenCalledTimes(POOLS); // the COPY pool's guard + the four hook pools'
+      expect(mockPoolOn).toHaveBeenCalledTimes(POOLS); // the COPY pool's guard + the five hook pools'
       expect(mockPoolOn).toHaveBeenNthCalledWith(3, 'error', expect.any(Function)); // this phase's
       expect(topAsinsClient.release).toHaveBeenCalledTimes(1);
-      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS); // the COPY pool + the four hook pools
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS); // the COPY pool + the five hook pools
       expect(topAsinsLines(log)).toEqual([
         '[top-asins] week 2026-04-11: rows=21 previous=2026-04-04 carried=current analyzeError=57014',
       ]);
@@ -639,6 +648,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
         .mockRejectedValueOnce(
           Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5432'), { code: 'ECONNREFUSED' }),
         )
+        .mockResolvedValueOnce(keywordCountsClient)
         .mockResolvedValueOnce(crosswalkClient)
         .mockResolvedValueOnce(facetsClient);
 
@@ -685,8 +695,8 @@ describe('processFileImport — keepa_enqueue hook', () => {
     it('opens its own pool: one connection, 30-minute statement timeout, keepalive, 20 s connect timeout', async () => {
       await processFileImport({ uploadedFileId: 'f1' });
 
-      // Pools are built in order: the COPY pool, the Keepa hook's, this phase's, the crosswalk
-      // phase's, the facets phase's.
+      // Pools are built in order: the COPY pool, the Keepa hook's, this phase's, the keyword-counts
+      // phase's, the crosswalk phase's, the facets phase's.
       expect(mockPoolCtor).toHaveBeenCalledTimes(POOLS);
       expect(mockPoolCtor.mock.calls[2][0]).toMatchObject({
         connectionString: 'postgres://test:test@localhost:5432/test',
@@ -699,7 +709,155 @@ describe('processFileImport — keepa_enqueue hook', () => {
     });
   });
 
-  // The phase after top_asins_build (spec 2026-10-14 §5.4): the same pool shape and fail-soft rule.
+  // The phase after top_asins_build (spec 2026-10-23 §5): the same pool shape and fail-soft rule. It counts
+  // the pair table top_asins_build has just rebuilt, so no week is passed; the week only names the import in
+  // the failure line.
+  describe('keyword_counts_build phase', () => {
+    beforeEach(() => {
+      // The Keepa hook succeeds, so the only console.error lines are this phase's.
+      mockEnqueueWeek.mockResolvedValue({ inserted: 0, updated: 0, retired: 0, vacuumed: false });
+    });
+
+    const countsLines = (spy: { mock: { calls: unknown[][] } }) =>
+      spy.mock.calls
+        .map((args) => args.join(' '))
+        .filter((line) => line.includes('[keyword-counts]'));
+    const countsTimings = () =>
+      insertValues.mock.calls
+        .map(([row]) => row as { phase?: string; rowsAffected?: number | null })
+        .filter((row) => row.phase === 'keyword_counts_build');
+
+    it('writes the counts once, after the pair table and before the crosswalk, logs them and cleans up', async () => {
+      const { log } = spyConsole();
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(mockBuildKeywordCounts).toHaveBeenCalledTimes(1);
+      expect(mockBuildKeywordCounts).toHaveBeenCalledWith(keywordCountsClient);
+      expect(mockBuildTopAsinsWeek.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBuildKeywordCounts.mock.invocationCallOrder[0],
+      );
+      expect(mockBuildKeywordCounts.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBuildCrosswalk.mock.invocationCallOrder[0],
+      );
+      const order = ['keepa_enqueue', 'top_asins_build', 'keyword_counts_build', 'ba_crosswalk_build', 'category_facets_build', 'summary_refresh'];
+      const phaseRows = insertValues.mock.calls
+        .map(([row]) => (row as { phase?: string }).phase)
+        .filter((phase) => phase !== undefined && order.includes(phase));
+      expect(phaseRows).toEqual(order); // one timing row each, in this order
+      expect(keywordCountsClient.on).toHaveBeenCalledWith('error', expect.any(Function));
+      expect(keywordCountsClient.on.mock.invocationCallOrder[0]).toBeLessThan(
+        mockBuildKeywordCounts.mock.invocationCallOrder[0],
+      );
+      expect(mockPoolOn).toHaveBeenNthCalledWith(4, 'error', expect.any(Function)); // this phase's
+      expect(keywordCountsClient.release).toHaveBeenCalledTimes(1);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
+      // Its pool is the fourth to end: after the build, before the crosswalk starts.
+      expect(mockPoolEnd.mock.invocationCallOrder[3]).toBeGreaterThan(
+        mockBuildKeywordCounts.mock.invocationCallOrder[0],
+      );
+      expect(mockPoolEnd.mock.invocationCallOrder[3]).toBeLessThan(
+        mockBuildCrosswalk.mock.invocationCallOrder[0],
+      );
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=1200 zeroed=34 seconds=84.2']);
+      expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 1234 })]); // updated + zeroed
+    });
+
+    it('a quiet week that changed nothing records 0 rows, not the failure marker', async () => {
+      const { log } = spyConsole();
+      mockBuildKeywordCounts.mockResolvedValue({ updated: 0, zeroed: 0, seconds: 3.04 });
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(countsLines(log)).toEqual(['[keyword-counts] updated=0 zeroed=0 seconds=3.0']);
+      expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 0 })]);
+    });
+
+    it('opens its own pool: one connection, 10-minute statement timeout, keepalive, 20 s connect timeout', async () => {
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      // Pools are built in order: the COPY pool, the Keepa hook's, the top-ASINs phase's, this one, the
+      // crosswalk's, the facets'.
+      expect(mockPoolCtor).toHaveBeenCalledTimes(POOLS);
+      expect(mockPoolCtor.mock.calls[3][0]).toMatchObject({
+        connectionString: 'postgres://test:test@localhost:5432/test',
+        max: 1,
+        statement_timeout: 600_000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10_000,
+        connectionTimeoutMillis: 20_000,
+      });
+    });
+
+    it('replay runs (skipRefresh) never write the counts', async () => {
+      await processFileImport({ uploadedFileId: 'f1', skipRefresh: true });
+
+      expect(mockBuildKeywordCounts).not.toHaveBeenCalled();
+      expect(countsTimings()).toEqual([]);
+    });
+
+    it.each([
+      ['failed', Object.assign(new Error('SECRET'), { code: '57014' })],
+      ['skipped', new TopAsinsBuildError('top_asins_older_than_meta', 'week 2026-04-11 is older than the built week 2026-04-18')],
+    ])('still runs after a %s top_asins_build: it counts the build still in place', async (_outcome, failure) => {
+      spyConsole();
+      mockBuildTopAsinsWeek.mockRejectedValue(failure);
+
+      await processFileImport({ uploadedFileId: 'f1' });
+
+      expect(mockBuildKeywordCounts).toHaveBeenCalledTimes(1);
+      expect(mockBuildKeywordCounts).toHaveBeenCalledWith(keywordCountsClient);
+      expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: 1234 })]);
+    });
+
+    it('a failure logs only the week, stage, error name and code; the import completes, the later phases and the refresh still run, the timing row is null', async () => {
+      const { log, err, warn } = spyConsole();
+      mockBuildKeywordCounts.mockRejectedValue(
+        Object.assign(new Error('SECRET canceling statement due to statement timeout'), { name: 'error', code: '57014' }),
+      );
+
+      await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({ rowsImported: expect.any(Number) });
+
+      expect(countsLines(err)).toEqual([
+        '[keyword-counts] failed (import continues) {"week":"2026-04-11","stage":"build","error":"error","code":"57014"}',
+      ]);
+      expect(err).toHaveBeenCalledTimes(1); // that line alone
+      expect(countsLines(log)).toEqual([]); // no success line
+      expect([...log.mock.calls, ...err.mock.calls, ...warn.mock.calls].flat().join(' ')).not.toContain('SECRET');
+      expect(keywordCountsClient.release).toHaveBeenCalledTimes(1);
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
+      expect(mockBuildCrosswalk).toHaveBeenCalledWith(crosswalkClient, '2026-04-11');
+      expect(mockBuildFacets).toHaveBeenCalledWith(facetsClient);
+      expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+
+    it('a connect failure is logged at the connect stage and never reaches the builder', async () => {
+      const { err } = spyConsole();
+      mockPoolConnect
+        .mockReset()
+        .mockResolvedValueOnce(copyClient())
+        .mockResolvedValueOnce(hookClient)
+        .mockResolvedValueOnce(topAsinsClient)
+        .mockRejectedValueOnce(Object.assign(new Error('SECRET'), { code: 'ECONNRESET' }))
+        .mockResolvedValueOnce(crosswalkClient)
+        .mockResolvedValueOnce(facetsClient);
+
+      await expect(processFileImport({ uploadedFileId: 'f1' })).resolves.toEqual({ rowsImported: expect.any(Number) });
+
+      expect(countsLines(err)).toEqual([
+        '[keyword-counts] failed (import continues) {"week":"2026-04-11","stage":"connect","error":"Error","code":"ECONNRESET"}',
+      ]);
+      expect(err.mock.calls.flat().join(' ')).not.toContain('SECRET');
+      expect(mockBuildKeywordCounts).not.toHaveBeenCalled();
+      expect(mockBuildCrosswalk).toHaveBeenCalledWith(crosswalkClient, '2026-04-11');
+      expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
+      expect(mockRefreshSummary).toHaveBeenCalledTimes(1);
+      expect(countsTimings()).toEqual([expect.objectContaining({ rowsAffected: null })]);
+    });
+  });
+
+  // The phase after keyword_counts_build (spec 2026-10-14 §5.4): the same pool shape and fail-soft rule.
   describe('ba_crosswalk_build phase', () => {
     beforeEach(() => {
       // The Keepa hook succeeds, so the only console.error lines are this phase's.
@@ -741,7 +899,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(crosswalkClient.on.mock.invocationCallOrder[0]).toBeLessThan(
         mockBuildCrosswalk.mock.invocationCallOrder[0],
       );
-      expect(mockPoolOn).toHaveBeenNthCalledWith(4, 'error', expect.any(Function)); // this phase's
+      expect(mockPoolOn).toHaveBeenNthCalledWith(5, 'error', expect.any(Function)); // this phase's
       expect(crosswalkClient.release).toHaveBeenCalledTimes(1);
       expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(crosswalkLines(log)).toEqual([
@@ -790,10 +948,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
     it('opens its own pool: one connection, 30-minute statement timeout, keepalive, 20 s connect timeout', async () => {
       await processFileImport({ uploadedFileId: 'f1' });
 
-      // Pools are built in order: the COPY pool, the Keepa hook's, the top-ASINs phase's, this one,
-      // the facets phase's.
+      // Pools are built in order: the COPY pool, the Keepa hook's, the top-ASINs phase's, the
+      // keyword-counts phase's, this one, the facets phase's.
       expect(mockPoolCtor).toHaveBeenCalledTimes(POOLS);
-      expect(mockPoolCtor.mock.calls[3][0]).toMatchObject({
+      expect(mockPoolCtor.mock.calls[4][0]).toMatchObject({
         connectionString: 'postgres://test:test@localhost:5432/test',
         max: 1,
         statement_timeout: 1_800_000,
@@ -839,6 +997,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
         .mockResolvedValueOnce(copyClient())
         .mockResolvedValueOnce(hookClient)
         .mockResolvedValueOnce(topAsinsClient)
+        .mockResolvedValueOnce(keywordCountsClient)
         .mockRejectedValueOnce(Object.assign(new Error('SECRET'), { code: 'ECONNRESET' }))
         .mockResolvedValueOnce(facetsClient);
 
@@ -885,7 +1044,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
       expect(mockBuildFacets.mock.invocationCallOrder[0]).toBeLessThan(mockRefreshSummary.mock.invocationCallOrder[0]);
       expect(facetsClient.on).toHaveBeenCalledWith('error', expect.any(Function));
       expect(facetsClient.on.mock.invocationCallOrder[0]).toBeLessThan(mockBuildFacets.mock.invocationCallOrder[0]);
-      expect(mockPoolOn).toHaveBeenNthCalledWith(5, 'error', expect.any(Function)); // this phase's
+      expect(mockPoolOn).toHaveBeenNthCalledWith(6, 'error', expect.any(Function)); // this phase's
       expect(facetsClient.release).toHaveBeenCalledTimes(1);
       expect(mockPoolEnd).toHaveBeenCalledTimes(POOLS);
       expect(facetsLines(log)).toEqual(['[category-facets] paths=23429 departments=36 products=1176481']);
@@ -895,9 +1054,10 @@ describe('processFileImport — keepa_enqueue hook', () => {
     it('opens its own pool: one connection, 10-minute statement timeout, keepalive, 20 s connect timeout', async () => {
       await processFileImport({ uploadedFileId: 'f1' });
 
-      // Pools are built in order: the COPY pool, the Keepa hook's, the top-ASINs phase's, the crosswalk's, this one.
+      // Pools are built in order: the COPY pool, the Keepa hook's, the top-ASINs phase's, the keyword counts',
+      // the crosswalk's, this one.
       expect(mockPoolCtor).toHaveBeenCalledTimes(POOLS);
-      expect(mockPoolCtor.mock.calls[4][0]).toMatchObject({
+      expect(mockPoolCtor.mock.calls[5][0]).toMatchObject({
         connectionString: 'postgres://test:test@localhost:5432/test',
         max: 1,
         statement_timeout: 600_000,
@@ -937,6 +1097,7 @@ describe('processFileImport — keepa_enqueue hook', () => {
         .mockResolvedValueOnce(copyClient())
         .mockResolvedValueOnce(hookClient)
         .mockResolvedValueOnce(topAsinsClient)
+        .mockResolvedValueOnce(keywordCountsClient)
         .mockResolvedValueOnce(crosswalkClient)
         .mockRejectedValueOnce(Object.assign(new Error('SECRET'), { code: 'ECONNRESET' }));
 
