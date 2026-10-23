@@ -21,7 +21,7 @@ import { loadProduct, type ProductFacts as CatalogProductFacts } from '@/lib/pro
 import { loadProductHistory } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
 import { isStatementTimeout, neonRunner, searchProducts, type ProductSearchResult } from '@/lib/products/searchProducts';
-import { recordSlowProductSearch, SLOW_PRODUCT_SEARCH_MS } from '@/lib/products/slowQueries';
+import { scheduleSlowSearchRecord, SLOW_PRODUCT_SEARCH_MS } from '@/lib/products/slowQueries';
 import { loadCustomRows, type CustomRow } from './categories';
 import {
   invalid, productDetailsInputSchema, productSearchInputSchema, SCHEMA_VERSION, toProductFilters,
@@ -217,23 +217,28 @@ export function toolQueryString(filters: ProductFilters, categories: ProductSear
  * The search's read, timed and logged as the Products list logs its own (spec 2026-10-23 §5b), under surface
  * 'products_tool': a rows read cut off by the statement cap (SQLSTATE 57014, isStatementTimeout) is recorded as timed
  * out and answered with QUERY_TIMEOUT (not retryable: narrowing the filters is what helps); a read that completes slower
- * than SLOW_PRODUCT_SEARCH_MS is recorded and answered as usual. Any other failure passes through unchanged and
- * unrecorded. The recording is fire-and-forget (the recorder never rejects; a failed insert only warns) with a plain
- * `void`: a tool call has no after() context. `queryString` is the search as it ran (toolQueryString), built by the
- * caller; the read runs on `filters` and `scope` alone.
+ * than SLOW_PRODUCT_SEARCH_MS is recorded and answered as usual. Any other failure, a synchronous throw included, passes
+ * through unchanged and unrecorded. The row goes to scheduleSlowSearchRecord (lib/products/slowQueries.ts), shared with
+ * the Products list: inside the MCP route handler's request after() keeps the function alive until the insert lands
+ * (the route's maxDuration leaves the room); without a request scope it is recorded directly, never awaited. Either way
+ * the answer never waits for it. `queryString` is the search as it ran (toolQueryString), built by the caller; the read
+ * runs on `filters` and `scope` alone.
  */
 async function searchLoggingSlow(
   deps: ProductsDeps, actor: ResearchActor, filters: ProductFilters, scope: ProductCategoryScope, queryString: string,
 ): Promise<ProductSearchResult> {
   const started = Date.now();
   const log = (elapsedMs: number, timedOut: boolean): void => {
-    void recordSlowProductSearch({ userId: actor.localUserId, queryString, elapsedMs, timedOut, surface: 'products_tool' });
+    scheduleSlowSearchRecord({ userId: actor.localUserId, queryString, elapsedMs, timedOut, surface: 'products_tool' });
   };
-  const result = await deps.search(filters, scope).catch((e: unknown) => {
+  let result: ProductSearchResult;
+  try {
+    result = await deps.search(filters, scope);
+  } catch (e) {
     if (!isStatementTimeout(e)) throw e;
     log(Date.now() - started, true);
     throw new ResearchError('QUERY_TIMEOUT', SEARCH_TIMED_OUT);
-  });
+  }
   const elapsedMs = Date.now() - started;
   if (elapsedMs > SLOW_PRODUCT_SEARCH_MS) log(elapsedMs, false);
   return result;

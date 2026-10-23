@@ -81,25 +81,27 @@ const etDayWindow = (column: string) =>
 describe('loadAbuseDigestData — slow product searches (spec 2026-10-23 §5b)', () => {
   beforeEach(() => {
     fake.statements.length = 0;
-    answerWith({ counts: [{ timeouts: 2, slow: 5 }], top: TOP });
+    answerWith({ counts: [{ timeouts: 2, slow: 5, viaToolTotal: 1 }], top: TOP });
   });
 
-  it("returns the day's timeouts and slow runs, and the top query strings with their occurrences, accounts and tool occurrences", async () => {
+  it("returns the day's timeouts, slow runs and tool rows, and the top query strings with their occurrences, accounts and tool occurrences", async () => {
     const stats = await loadAbuseDigestData(DAY);
-    expect(stats.slowSearches).toEqual({ timeouts: 2, slow: 5, top: TOP });
+    expect(stats.slowSearches).toEqual({ timeouts: 2, slow: 5, viaToolTotal: 1, top: TOP });
     // The rest of the digest still loads around it.
     expect(stats).toMatchObject({ day: DAY, totalUsers: 3, signups: [], activeUsers: [] });
   });
 
-  it('counts timeouts and slow runs apart in one statement, with no grouping, order or limit', async () => {
+  it("counts timeouts and slow runs apart, and the tool's rows among them, in one statement, with no grouping, order or limit", async () => {
     await loadAbuseDigestData(DAY);
     const statements = slowStatements();
     expect(statements).toHaveLength(2);
     const [counts] = statements;
     // drizzle leaves a single-table select list unqualified ("timed_out"); the where clause is qualified.
     expect(counts.sql).toMatch(
-      /^select \(count\(\*\) filter \(where "timed_out"\)\)::int, \(count\(\*\) filter \(where not "timed_out"\)\)::int from "slow_queries" where /,
+      /^select \(count\(\*\) filter \(where "timed_out"\)\)::int, \(count\(\*\) filter \(where not "timed_out"\)\)::int, \(count\(\*\) filter \(where "surface" = \$1\)\)::int from "slow_queries" where /,
     );
+    // viaToolTotal: the rows of the search_products tool's surface.
+    expect(counts.params[0]).toBe('products_tool');
     expect(counts.sql).not.toMatch(/ group by | order by | limit /);
   });
 
@@ -132,12 +134,12 @@ describe('loadAbuseDigestData — slow product searches (spec 2026-10-23 §5b)',
   });
 
   it('a day without slow searches: zero counts and no rows', async () => {
-    answerWith({ counts: [{ timeouts: 0, slow: 0 }], top: [] });
-    await expect(loadAbuseDigestData(DAY)).resolves.toMatchObject({ slowSearches: { timeouts: 0, slow: 0, top: [] } });
+    answerWith({ counts: [{ timeouts: 0, slow: 0, viaToolTotal: 0 }], top: [] });
+    expect((await loadAbuseDigestData(DAY)).slowSearches).toStrictEqual({ timeouts: 0, slow: 0, viaToolTotal: 0, top: [] });
   });
 
   it('a counts read with no row reads as zero counts', async () => {
     answerWith({ counts: [], top: [] });
-    await expect(loadAbuseDigestData(DAY)).resolves.toMatchObject({ slowSearches: { timeouts: 0, slow: 0, top: [] } });
+    expect((await loadAbuseDigestData(DAY)).slowSearches).toStrictEqual({ timeouts: 0, slow: 0, viaToolTotal: 0, top: [] });
   });
 });

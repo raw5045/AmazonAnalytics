@@ -18,7 +18,7 @@ function quietStats(): AbuseDigestStats {
     monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: [] },
     signIns: { count: 0, emails: [] },
     contact: { submissions: 0, honeypotTrips: 0 },
-    slowSearches: { timeouts: 0, slow: 0, top: [] },
+    slowSearches: { timeouts: 0, slow: 0, viaToolTotal: 0, top: [] },
   };
 }
 
@@ -294,7 +294,12 @@ describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)
     { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2, viaTool: 0 },
     { queryString: 'age=60', occurrences: 1, accounts: 1, viaTool: 0 },
   ];
-  const withSlow = (slowSearches: AbuseDigestStats['slowSearches']): AbuseDigestStats => ({ ...quietStats(), activeUsers: [activeUser(1, 5)], slowSearches });
+  /** A day with these slow searches; none from the search_products tool unless viaToolTotal says so. */
+  const withSlow = (slowSearches: Omit<AbuseDigestStats['slowSearches'], 'viaToolTotal'> & { viaToolTotal?: number }): AbuseDigestStats => ({
+    ...quietStats(),
+    activeUsers: [activeUser(1, 5)],
+    slowSearches: { viaToolTotal: 0, ...slowSearches },
+  });
   /** The text rows under the section heading, up to the next blank line. */
   function sectionLines(text: string, heading: string): string[] {
     const lines = text.split('\n');
@@ -319,14 +324,24 @@ describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)
     expect(html).toContain('<li>3× by 2 account(s): broad=Home&amp;sort=keywords</li><li>1× by 1 account(s): age=60</li>');
   });
 
+  it('the heading carries how many came from AI tools (the search_products tool) and leaves the clause out at 0, in both bodies', () => {
+    const viaTools = buildAbuseDigestEmail(withSlow({ timeouts: 2, slow: 4, viaToolTotal: 3, top: TOP }), []);
+    expect(viaTools.text).toContain('\nSlow product searches (timeouts 2, slow 4, 3 via AI tools):\n');
+    expect(viaTools.html).toContain('>Slow product searches (timeouts 2, slow 4, 3 via AI tools)</h2>');
+    const none = buildAbuseDigestEmail(withSlow({ timeouts: 2, slow: 4, viaToolTotal: 0, top: TOP }), []);
+    expect(none.text).toContain('\nSlow product searches (timeouts 2, slow 4):\n');
+    expect(none.html).toContain('>Slow product searches (timeouts 2, slow 4)</h2>');
+    expect(`${none.text}${none.html}`).not.toContain('via AI tools');
+  });
+
   it('marks the occurrences from AI tools (the search_products tool) after the accounts, only on rows that have any, in both bodies', () => {
     const top = [
       { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2, viaTool: 1 },
       { queryString: 'dept=Pet+Supplies&sort=price', occurrences: 2, accounts: 1, viaTool: 2 },
       { queryString: 'age=60', occurrences: 1, accounts: 1, viaTool: 0 },
     ];
-    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 2, slow: 4, top }), []);
-    expect(sectionLines(text, 'Slow product searches (timeouts 2, slow 4):')).toEqual([
+    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 2, slow: 4, viaToolTotal: 3, top }), []);
+    expect(sectionLines(text, 'Slow product searches (timeouts 2, slow 4, 3 via AI tools):')).toEqual([
       '  3× by 2 account(s), 1 via AI tools: broad=Home&sort=keywords',
       '  2× by 1 account(s), 2 via AI tools: dept=Pet+Supplies&sort=price',
       '  1× by 1 account(s): age=60',

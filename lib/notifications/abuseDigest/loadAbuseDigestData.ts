@@ -120,9 +120,9 @@ export async function loadAbuseDigestData(day: string): Promise<AbuseDigestStats
 /**
  * The day's slow_queries rows of a product search, from the Products list and from the search_products tool (spec
  * 2026-10-23 §5b), read through the (surface, happened_at) index: timeouts and completed-but-slow runs counted apart over
- * both surfaces, then the SLOW_SEARCH_ROW_CAP most frequent query strings (ties by the string) with their occurrences,
- * their distinct accounts (a null user_id, an unknown account, is not counted as one) and how many of the occurrences
- * came from the tool (viaTool).
+ * both surfaces, with the tool's share of all of them (viaToolTotal), then the SLOW_SEARCH_ROW_CAP most frequent query
+ * strings (ties by the string) with their occurrences, their distinct accounts (a null user_id, an unknown account, is
+ * not counted as one) and how many of the occurrences came from the tool (viaTool).
  */
 async function loadSlowSearches(start: SQL, end: SQL): Promise<SlowSearchesSummary> {
   const inDay = and(inArray(slowQueries.surface, PRODUCT_SEARCH_SURFACES), gte(slowQueries.happenedAt, start), lt(slowQueries.happenedAt, end));
@@ -131,6 +131,7 @@ async function loadSlowSearches(start: SQL, end: SQL): Promise<SlowSearchesSumma
     .select({
       timeouts: sql<number>`(count(*) filter (where ${slowQueries.timedOut}))::int`,
       slow: sql<number>`(count(*) filter (where not ${slowQueries.timedOut}))::int`,
+      viaToolTotal: sql<number>`(count(*) filter (where ${slowQueries.surface} = ${PRODUCTS_TOOL_SURFACE}))::int`,
     })
     .from(slowQueries)
     .where(inDay);
@@ -146,7 +147,7 @@ async function loadSlowSearches(start: SQL, end: SQL): Promise<SlowSearchesSumma
     .groupBy(slowQueries.queryString)
     .orderBy(desc(sql`count(*)`), asc(slowQueries.queryString))
     .limit(SLOW_SEARCH_ROW_CAP);
-  return { timeouts: counts?.timeouts ?? 0, slow: counts?.slow ?? 0, top };
+  return { timeouts: counts?.timeouts ?? 0, slow: counts?.slow ?? 0, viaToolTotal: counts?.viaToolTotal ?? 0, top };
 }
 
 async function loadWindow(startDay: string, endDay: string): Promise<ActiveUsersWindow> {

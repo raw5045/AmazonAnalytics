@@ -1,7 +1,8 @@
 // scripts/buildKeywordCounts.ts
 /**
  * Write asin_products.keyword_count by hand (spec 2026-10-23 §5): the one-off first build after migration 0056 (every
- * count starts at 0), or a re-run after the import's own keyword_counts_build phase logged a failure. Sets each
+ * count starts at 0), a re-run after the import's own keyword_counts_build phase logged a failure, or a run after a
+ * by-hand scripts/buildTopAsinsWeek.ts (the import's phase follows only the import's own top_asins_build). Sets each
  * product's count from keyword_top_asins (the current week only) and zeroes the products that dropped out, in one
  * transaction (lib/products/buildKeywordCounts.ts), then a best-effort VACUUM (ANALYZE) of asin_products. An empty pair
  * table is refused (keyword_counts_no_rows) and nothing is written. Only changed rows are written, so a re-run is

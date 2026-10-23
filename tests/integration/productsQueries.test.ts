@@ -53,17 +53,20 @@
  *    request (PRODUCTS_FULL_COUNT_CHECK=1);
  *  - opt-in, by hand: the replay of a recorded slow search (spec 2026-10-23 §5b), PRODUCTS_REPLAY_QUERY=<query string> (a
  *    slow_queries.query_string, as the digest's "Slow product searches" lists it; an empty value is the default list, the digest's
- *    "(no filters)"), or, when that is unset, PRODUCTS_REPLAY_FILE=<path>: the string read from that file (UTF-8, trimmed), for one
- *    too long to paste (the digest shows 400 characters of a string; the row holds it whole up to 32000, beyond that cut, with a
- *    " ...[+N chars]" marker). A recorded string carries the category scope in three forms: `leaf` (repeated: each a subtree, the
- *    page's leaf pick and the search_products tool's taxonomy selection alike), `custom` (the custom-category ids, comma-joined)
- *    and `leafExact` (repeated: the tool's exact leafPaths, which the page has no form for; a replay-only key the page's parser
- *    would ignore). The leafExact values are taken out first; the rest is parsed as the list page parses its URL
- *    (parseProductFilters over the searchParams shape Next hands the page: a repeated leaf stays a list), the custom ids are
- *    expanded to their stored paths (whoever owns them: the string carries no account), and the leafExact paths join those as
- *    exact paths. The rows statement is planned (EXPLAIN), then run with EXPLAIN (ANALYZE, BUFFERS) under the local cap: the plan
- *    and the time print, and the statement must finish under the page's cap. Skipped when neither variable is set; nothing
- *    replays a recorded string automatically.
+ *    "(no filters)"), or, when that is unset, PRODUCTS_REPLAY_FILE=<path>: the string read from that file (UTF-8, trimmed). The
+ *    digest shows 400 characters of a string; take a longer one from its row, and one over about 32,000 characters (a Windows
+ *    environment variable holds at most 32,767) must come through the file. A recorded string carries the category scope in
+ *    three forms: `leaf` (repeated: each a subtree, the page's leaf pick and the search_products tool's taxonomy selection
+ *    alike), `custom` (the custom-category ids, comma-joined) and `leafExact` (repeated: the tool's exact leafPaths, which the page
+ *    has no form for; a replay-only key the page's parser would ignore). parseRecordedProductSearch (lib/products/replayQuery.ts,
+ *    the code the unit tests run) takes the leafExact values out and parses the rest as the list page parses its URL; the custom
+ *    ids are expanded to their stored paths (whoever owns them: the string carries no account), and scopeForReplay adds the
+ *    leafExact paths to those exact ones. A string the recorder cut (past QUERY_STRING_MAX_CHARS, ending with its
+ *    " ...[+N chars]" marker) is refused before anything runs: its scope is partial. The rows statement is planned (EXPLAIN),
+ *    then run with EXPLAIN (ANALYZE, BUFFERS) under the local cap, and so is the count statement (printed only: in production a
+ *    count that hits the cap is swallowed and the search recorded as slow): the plans and the times print, and the rows
+ *    statement must finish under the page's cap. Skipped when neither variable is set; nothing replays a recorded string
+ *    automatically.
  *
  * Read-only: every case runs inside BEGIN READ ONLY ... ROLLBACK on one dedicated connection (a stray
  * write would error), so nothing persists.
@@ -112,15 +115,18 @@
  *   PRODUCTS_FULL_COUNT_CHECK=1 RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "every catalog row" --disableConsoleIntercept
  * The replay of a recorded slow search is opt-in too; run it alone, for the coldest reading (in a whole-file run it comes after every
  * other case but the full pass). Single quotes keep Git Bash off the & of the string; a long one goes in a file instead (the path
- * relative to the repo root):
+ * relative to the repo root), written straight from its row (the id from SELECT id, surface, length(query_string) FROM
+ * slow_queries ORDER BY happened_at DESC):
  *   PRODUCTS_REPLAY_QUERY='broad=Home&sort=keywords' RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "recorded slow search" --disableConsoleIntercept
+ *   psql "$DATABASE_URL" -At -c "SELECT query_string FROM slow_queries WHERE id = 123" > replay.txt
  *   PRODUCTS_REPLAY_FILE=replay.txt RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "recorded slow search" --disableConsoleIntercept
  */
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import { EMPTY_CATEGORY_SCOPE, pageCategoryScope, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
-import { parseProductFilters, PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters, type SearchParamsLike } from '@/lib/products/filters';
+import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filters';
+import { parseRecordedProductSearch, scopeForReplay } from '@/lib/products/replayQuery';
 import { PRODUCT_READ_TIMEOUT_MS, productSearchSql, searchProducts, type ProductSearchResult, type ProductSummaryRow, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
 import { BROAD_CATEGORY_LIST_SQL } from '@/lib/products/listCategories';
 import { FACETS_SCOPE_SQL } from '@/lib/products/buildCategoryFacets';
@@ -224,16 +230,6 @@ function outline(node: PlanNode, depth = 0): string[] {
 
 /** What explainAnalyze reports for a statement it ran: the outline (actual rows and loops), the rows of the top node, the server's planning + execution seconds, and the shared blocks the whole statement hit and read. */
 interface AnalyzedPlan { lines: string[]; rows: number; seconds: number; hit: number; read: number }
-
-/** A query string's parameters in the shape Next hands a page its searchParams, which parseProductFilters reads: a repeated key (leaf) becomes a list. */
-function toSearchParamsLike(sp: URLSearchParams): SearchParamsLike {
-  const out: Record<string, string | string[]> = {};
-  for (const [key, value] of sp) {
-    const seen = out[key];
-    out[key] = seen === undefined ? value : Array.isArray(seen) ? [...seen, value] : [seen, value];
-  }
-  return out;
-}
 
 /** What every keyword row must carry, whatever the ASIN. */
 function expectKeywordRows(result: ProductKeywordsResult): void {
@@ -1123,30 +1119,31 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     'opt-in (PRODUCTS_REPLAY_QUERY=<query string>, or PRODUCTS_REPLAY_FILE=<path>): a recorded slow search, replayed with EXPLAIN (ANALYZE), finishes its rows statement under the page cap',
     async () => {
       await inReadOnlyTransaction(async () => {
-        // The reproduction loop of spec 2026-10-23 §5b: the string the digest lists, parsed as the list page parses its URL.
+        // The reproduction loop of spec 2026-10-23 §5b: the string the digest lists, read back by parseRecordedProductSearch
+        // (lib/products/replayQuery.ts, the code the unit tests run): leafExact taken out, the rest parsed as the list page
+        // parses its URL.
         const query = REPLAY_QUERY ?? '';
-        const params = new URLSearchParams(query);
-        // The search_products tool's exact leaf paths (leafExact, which the page has no form for) come out first, so the parser sees
-        // the page's own string; they join the exact paths below.
-        const leafExact = [...new Set(params.getAll('leafExact'))];
-        params.delete('leafExact');
-        const filters = parseProductFilters(toSearchParamsLike(params));
+        const { filters, leafExact, cut } = parseRecordedProductSearch(query);
+        if (cut) {
+          throw new Error(
+            "the recorded string ends with the recorder's ' ...[+N chars]' marker: it was cut at QUERY_STRING_MAX_CHARS (lib/products/slowQueries.ts) when stored, so its scope is partial and the search cannot be reproduced",
+          );
+        }
         // The page expands its custom ids for the signed-in account; the recorded string carries none, so each id expands to its
         // stored paths whoever owns it (the page offers an account only its own categories, and the tool refuses anyone else's).
         const customPaths = filters.customCategoryIds.length === 0
           ? []
           : (await client.query<{ leaf_paths: string[] | null }>('SELECT leaf_paths FROM custom_categories WHERE id = ANY($1::uuid[])', [filters.customCategoryIds])).rows.flatMap((r) => r.leaf_paths ?? []);
-        // pageCategoryScope builds a fresh, unfrozen object (its arrays copied), so its fields spread; the two that leafExact extends are replaced.
-        const pageScope = pageCategoryScope(filters, customPaths);
-        const scope: ProductCategoryScope = { ...pageScope, exactPaths: [...new Set([...customPaths, ...leafExact])], scoped: pageScope.scoped || leafExact.length > 0 };
-        const q = productSearchSql(filters, scope);
+        const q = productSearchSql(filters, scopeForReplay(filters, customPaths, leafExact));
         const cap = PRODUCT_READ_TIMEOUT_MS / 1000;
         // Parsing drops a value the page would drop (a bad one falls back to its default): the re-serialised string, against the
         // recorded one without leafExact and in any order (the tool appends its category groups after the page filters), shows that.
+        const recorded = new URLSearchParams(query);
+        recorded.delete('leafExact');
         const parsed = productFiltersToSearchParams(filters);
         const pairs = (sp: URLSearchParams): string => JSON.stringify([...sp].map((pair) => JSON.stringify(pair)).sort());
         console.log(
-          `[productsQueries] replay of "${query}": parsed as "${parsed.toString()}"${pairs(parsed) === pairs(params) ? '' : ' (differs from the recorded string)'}` +
+          `[productsQueries] replay of "${query}": parsed as "${parsed.toString()}"${pairs(parsed) === pairs(recorded) ? '' : ' (differs from the recorded string)'}` +
             `${filters.customCategoryIds.length > 0 ? `; ${filters.customCategoryIds.length} custom categories, ${customPaths.length} stored paths` : ''}` +
             `; ${leafExact.length} leafExact paths`,
         );
@@ -1161,6 +1158,18 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         console.log(
           `[productsQueries] replay rows statement with EXPLAIN ANALYZE: ${analyzed.seconds.toFixed(2)}s planning + execution (the page's cap is ${cap}s), ` +
             `${analyzed.rows} rows, shared blocks hit ${analyzed.hit}, read ${analyzed.read}:\n${analyzed.lines.join('\n')}`,
+        );
+        // The count statement too, printed only: in production a count that hits the cap is swallowed (the total reads as capped),
+        // so the search completes and is recorded as slow at about the cap. Run before the rows assertion so it always prints.
+        const countAnalyzed = await explainAnalyze(q.count).catch((e: unknown) => {
+          if ((e as { code?: unknown } | null)?.code !== '57014') throw e;
+          return null;
+        });
+        console.log(
+          countAnalyzed === null
+            ? `[productsQueries] replay count statement hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s): in production its total would read as capped`
+            : `[productsQueries] replay count statement with EXPLAIN ANALYZE: ${countAnalyzed.seconds.toFixed(2)}s planning + execution (the page's cap is ${cap}s), ` +
+                `shared blocks hit ${countAnalyzed.hit}, read ${countAnalyzed.read}:\n${countAnalyzed.lines.join('\n')}`,
         );
         expect(analyzed.seconds, `the replayed rows statement of "${query}" (the page's cap is ${cap}s)`).toBeLessThan(cap);
       });

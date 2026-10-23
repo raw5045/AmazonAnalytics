@@ -24,21 +24,22 @@ vi.mock('@/lib/products/listCategories', () => ({
   listProductDepartments: scopeMock.departments, listProductCategoryPaths: scopeMock.paths, listProductBroadCategories: scopeMock.broad,
 }));
 vi.mock('./categories', () => ({ loadCustomRows: scopeMock.customRows }));
-// The slow-search recorder is mocked (lib/products/slowQueries.test.ts covers the insert); the rest of its module is real, so the
-// tool reads the real SLOW_PRODUCT_SEARCH_MS, and the db client that module imports is a stub that never connects.
-const slow = vi.hoisted(() => ({ record: vi.fn() }));
+// The slow-search scheduler is mocked (lib/products/slowQueries.test.ts covers it and the insert); the rest of its module is
+// real, so the tool reads the real SLOW_PRODUCT_SEARCH_MS, and the db client that module imports is a stub that never connects.
+const slow = vi.hoisted(() => ({ schedule: vi.fn() }));
 vi.mock('@/db/client', () => ({ db: {} }));
 vi.mock('@/lib/products/slowQueries', async (orig) => ({
   ...(await orig<typeof import('@/lib/products/slowQueries')>()),
-  recordSlowProductSearch: slow.record,
+  scheduleSlowSearchRecord: slow.schedule,
 }));
 
-import { EMPTY_CATEGORY_SCOPE, pageCategoryScope, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
-import { parseProductFilters, PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filters';
+import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
+import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filters';
 import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import type { HistoryPoint } from '@/lib/products/loadProductHistory';
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
 import { PRODUCT_COUNT_CAP, productSearchSql, type ProductSearchResult, type ProductSummaryRow } from '@/lib/products/searchProducts';
+import { parseRecordedProductSearch, scopeForReplay } from '@/lib/products/replayQuery';
 import { SLOW_PRODUCT_SEARCH_MS } from '@/lib/products/slowQueries';
 import type { CustomRow } from './categories';
 import { ResearchError } from './errors';
@@ -383,8 +384,7 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
   beforeEach(() => {
     clock = 1_000_000;
     vi.spyOn(Date, 'now').mockImplementation(() => clock);
-    slow.record.mockReset();
-    slow.record.mockResolvedValue(undefined);
+    slow.schedule.mockReset();
   });
   afterEach(() => vi.mocked(Date.now).mockRestore());
   /** The search stub: the clock moves `ms` while it runs, then it resolves to the usual page, or rejects with `error` when one is given. */
@@ -399,14 +399,14 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
 
   it('a rows read cut off by the statement cap (57014) is recorded under products_tool as timed out, and answered with QUERY_TIMEOUT, not retryable', async () => {
     const deps = makeDeps({ search: searchTaking(30_000, statementTimeout()) });
-    // Never settles: the answer cannot be waiting on the recording.
-    slow.record.mockReturnValue(new Promise<void>(() => {}));
+    // Never settles: the answer cannot be waiting on the scheduler (which returns nothing by contract).
+    slow.schedule.mockReturnValue(new Promise<void>(() => {}));
     const err = await searchProductsForTool(deps, member, INPUT).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ResearchError);
     expect((err as ResearchError).toInfo()).toStrictEqual(TIMEOUT_INFO);
     // What both adapters (the MCP's errorResult, the chat's settle) hand the client: that info, not the generic retryable DATA_UNAVAILABLE.
     expect(classifyToolError(err, 'search_products', '[test]')).toStrictEqual(TIMEOUT_INFO);
-    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: QUERY_STRING, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+    expect(slow.schedule).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: QUERY_STRING, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
     expect(searchedQueryString(deps)).toBe(QUERY_STRING);
     // A failed call delivers nothing, so the usage counters record nothing.
     expect(deps.record).not.toHaveBeenCalled();
@@ -419,7 +419,7 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
   /** The page filters, then the three groups: leaf and custom in the page's URL form, then leafExact; encoded as URLSearchParams encodes them (› is %E2%80%BA, & is %26). */
   const SCOPED_QUERY_STRING = `broad=Home&sort=price&leaf=Pet+Supplies+%E2%80%BA+Dogs+%E2%80%BA+Toys&custom=${CUSTOM_ID}&leafExact=Health+%26+Household+%E2%80%BA+Vitamins+%E2%80%BA+Magnesium`;
   /** The query string the recorder was handed, call `n`. */
-  const recordedQueryString = (n = 0) => (slow.record.mock.calls[n][0] as { queryString: string }).queryString;
+  const recordedQueryString = (n = 0) => (slow.schedule.mock.calls[n][0] as { queryString: string }).queryString;
 
   it("a search with categories is recorded with them, in the page's URL form (leaf, custom) and then leafExact for its exact paths, on a timeout and a slow completion alike", async () => {
     expect(SCOPED_QUERY_STRING.endsWith(`&${new URLSearchParams([['leaf', TAXONOMY], ['custom', CUSTOM_ID], ['leafExact', EXACT]]).toString()}`)).toBe(true);
@@ -429,41 +429,47 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
     // The search itself is unchanged: the categories are in its scope, never in its page filters.
     expect(searchedQueryString(timedOut)).toBe('broad=Home&sort=price');
     expect(vi.mocked(timedOut.search).mock.calls[0][1]).toStrictEqual({ dept: null, subtreePaths: [TAXONOMY], exactPaths: [EXACT, ...customPaths], scoped: true });
-    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: SCOPED_QUERY_STRING, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+    expect(slow.schedule).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: SCOPED_QUERY_STRING, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
     await searchProductsForTool(makeDeps({ search: searchTaking(9_000) }), member, SCOPED_INPUT);
-    expect(slow.record).toHaveBeenCalledTimes(2);
-    expect(slow.record).toHaveBeenLastCalledWith({ userId: member.localUserId, queryString: SCOPED_QUERY_STRING, elapsedMs: 9_000, timedOut: false, surface: 'products_tool' });
+    expect(slow.schedule).toHaveBeenCalledTimes(2);
+    expect(slow.schedule).toHaveBeenLastCalledWith({ userId: member.localUserId, queryString: SCOPED_QUERY_STRING, elapsedMs: 9_000, timedOut: false, surface: 'products_tool' });
   });
 
-  it('the replay (tests/integration/productsQueries.test.ts) rebuilds from that string the page filters and the category scope the search ran on', async () => {
+  it('the replay parser (lib/products/replayQuery.ts, which tests/integration/productsQueries.test.ts runs) rebuilds from that string the page filters and the category scope the search ran on', async () => {
     const deps = makeDeps({ search: searchTaking(30_000, statementTimeout()) });
     await expect(searchProductsForTool(deps, member, SCOPED_INPUT)).rejects.toMatchObject(TIMEOUT_INFO);
     const [filters, scope] = vi.mocked(deps.search).mock.calls[0];
-    // As the replay does: leafExact out, the rest through the page's parser (one leaf here, so Object.fromEntries keeps every
-    // value), the custom id expanded to its stored paths, and the leafExact paths added to the exact ones.
-    const params = new URLSearchParams(recordedQueryString());
-    const leafExact = [...new Set(params.getAll('leafExact'))];
-    params.delete('leafExact');
-    const pageFilters = parseProductFilters(Object.fromEntries(params));
-    const [{ leafPaths: customPaths }] = await makeDeps().customRows(member.localUserId, pageFilters.customCategoryIds);
-    const pageScope = pageCategoryScope(pageFilters, customPaths);
-    const replayed = { ...pageScope, exactPaths: [...new Set([...customPaths, ...leafExact])], scoped: pageScope.scoped || leafExact.length > 0 };
-    expect({ ...pageFilters, leafPaths: [], customCategoryIds: [] }).toStrictEqual(filters);
+    // As the replay does: the string read back, the custom id expanded to its stored paths, then the scope.
+    const recorded = parseRecordedProductSearch(recordedQueryString());
+    expect(recorded.cut).toBe(false);
+    expect(recorded.leafExact).toEqual([EXACT]);
+    const [{ leafPaths: customPaths }] = await makeDeps().customRows(member.localUserId, recorded.filters.customCategoryIds);
+    const replayed = scopeForReplay(recorded.filters, customPaths, recorded.leafExact);
+    expect({ ...recorded.filters, leafPaths: [], customCategoryIds: [] }).toStrictEqual(filters);
     // The exact paths are one bound array (`= ANY`), so only their set matters.
     expect({ ...replayed, exactPaths: [...replayed.exactPaths].sort() }).toStrictEqual({ ...scope, exactPaths: [...scope.exactPaths].sort() });
+  });
+
+  it('a search that throws synchronously is handled the same: a 57014 is recorded and answered with QUERY_TIMEOUT, anything else passes through', async () => {
+    const syncTimeout = makeDeps({ search: vi.fn(() => { clock += 30_000; throw statementTimeout(); }) });
+    await expect(searchProductsForTool(syncTimeout, member, INPUT)).rejects.toMatchObject(TIMEOUT_INFO);
+    expect(slow.schedule).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: QUERY_STRING, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+    const boom = new Error('neon() could not start');
+    await expect(searchProductsForTool(makeDeps({ search: vi.fn(() => { throw boom; }) }), member, INPUT)).rejects.toBe(boom);
+    expect(slow.schedule).toHaveBeenCalledTimes(1);
   });
 
   it.each([8_001, 9_000])('a search that completes in %i ms (above SLOW_PRODUCT_SEARCH_MS) is answered as usual and recorded with timedOut false', async (ms) => {
     expect(SLOW_PRODUCT_SEARCH_MS).toBe(8_000);
     const deps = makeDeps({ search: searchTaking(ms) });
-    // Never settles: the answer cannot be waiting on the recording.
-    slow.record.mockReturnValue(new Promise<void>(() => {}));
+    // Never settles: the answer cannot be waiting on the scheduler (which returns nothing by contract).
+    slow.schedule.mockReturnValue(new Promise<void>(() => {}));
     const out = await searchProductsForTool(deps, member, INPUT);
-    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: QUERY_STRING, elapsedMs: ms, timedOut: false, surface: 'products_tool' });
+    expect(slow.schedule).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: QUERY_STRING, elapsedMs: ms, timedOut: false, surface: 'products_tool' });
     expect(deps.record).toHaveBeenCalledExactlyOnceWith(member, out.products.length);
     // The same answer as a fast search of the same filters, which records nothing.
     expect(out).toStrictEqual(await searchProductsForTool(makeDeps(), member, INPUT));
-    expect(slow.record).toHaveBeenCalledTimes(1);
+    expect(slow.schedule).toHaveBeenCalledTimes(1);
   });
 
   it.each([0, 8_000])('a search that completes in %i ms (not above SLOW_PRODUCT_SEARCH_MS) is answered as usual and not recorded', async (ms) => {
@@ -471,13 +477,13 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
     const out = await searchProductsForTool(deps, member, INPUT);
     expect(out.products.map((p) => p.asin)).toEqual(pageRows.map((r) => r.asin));
     expect(deps.record).toHaveBeenCalledExactlyOnceWith(member, out.products.length);
-    expect(slow.record).not.toHaveBeenCalled();
+    expect(slow.schedule).not.toHaveBeenCalled();
   });
 
   it('times the search read alone: slow scope reads before it do not count', async () => {
     const deps = makeDeps({ departments: vi.fn(async () => { clock += 20_000; return DEPARTMENTS; }), search: searchTaking(100) });
     await searchProductsForTool(deps, member, INPUT);
-    expect(slow.record).not.toHaveBeenCalled();
+    expect(slow.schedule).not.toHaveBeenCalled();
   });
 
   it('any other failure of the search passes through unchanged and is not recorded, however long it ran', async () => {
@@ -487,7 +493,7 @@ describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5
       await expect(searchProductsForTool(deps, member, INPUT)).rejects.toBe(failure);
       expect(deps.record).not.toHaveBeenCalled();
     }
-    expect(slow.record).not.toHaveBeenCalled();
+    expect(slow.schedule).not.toHaveBeenCalled();
   });
 });
 
@@ -512,10 +518,14 @@ describe('toolQueryString', () => {
       ['leaf', 'Tools › Bath'], ['leaf', 'Tools › Kitchen'], ['custom', `${CUSTOM_ID},${OTHER_ID}`], ['leafExact', 'Tools › Bath › Mats'], ['leafExact', 'Tools › Bath'],
     ]);
     expect(out).toBe(`${productFiltersToSearchParams(FILTERS).toString()}&${groups.toString()}`);
-    // The page's parser reads both leaf picks and both custom ids from it (the comma travels as %2C) and ignores leafExact.
-    const sp = new URLSearchParams(out);
-    expect(sp.getAll('custom')).toEqual([`${CUSTOM_ID},${OTHER_ID}`]);
-    expect(parseProductFilters({ ...Object.fromEntries(sp), leaf: sp.getAll('leaf') })).toStrictEqual({ ...FILTERS, leafPaths: ['Tools › Bath', 'Tools › Kitchen'], customCategoryIds: [CUSTOM_ID, OTHER_ID] });
+    expect(new URLSearchParams(out).getAll('custom')).toEqual([`${CUSTOM_ID},${OTHER_ID}`]);
+    // Read back by the replay parser (lib/products/replayQuery.ts): the page's parser takes both leaf picks and both custom
+    // ids (the comma travels as %2C), and the exact paths come back as leafExact.
+    expect(parseRecordedProductSearch(out)).toStrictEqual({
+      filters: { ...FILTERS, leafPaths: ['Tools › Bath', 'Tools › Kitchen'], customCategoryIds: [CUSTOM_ID, OTHER_ID] },
+      leafExact: ['Tools › Bath › Mats', 'Tools › Bath'],
+      cut: false,
+    });
   });
 });
 

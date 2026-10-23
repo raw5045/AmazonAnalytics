@@ -227,9 +227,13 @@ function activityTableHtml(users: PerUserActivity[], emptyText: string): string 
       </table>${dropped > 0 ? `<p style="margin:6px 0 0 0;font-size:12px;color:#6b7280;">…and ${dropped} more active users</p>` : ''}`;
 }
 
-/** e.g. "Slow product searches (timeouts 2, slow 5)": the day's true counts, whatever the list shows. */
+/**
+ * e.g. "Slow product searches (timeouts 2, slow 5)", or "(timeouts 2, slow 4, 3 via AI tools)" when some came from the
+ * search_products tool: the day's true counts, whatever the list shows.
+ */
 function slowSearchesHeading(s: SlowSearchesSummary): string {
-  return `Slow product searches (timeouts ${s.timeouts}, slow ${s.slow})`;
+  const viaTool = s.viaToolTotal > 0 ? `, ${s.viaToolTotal} via AI tools` : '';
+  return `Slow product searches (timeouts ${s.timeouts}, slow ${s.slow}${viaTool})`;
 }
 
 /**

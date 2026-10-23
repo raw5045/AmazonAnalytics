@@ -52,6 +52,8 @@ export interface ActiveUsersWindow {
 export interface SlowSearchesSummary {
   timeouts: number;
   slow: number;
+  /** How many of the day's rows (timeouts and slow runs alike) came from the search_products tool. */
+  viaToolTotal: number;
   /**
    * The top query strings by occurrences (at most ten; ties by the string), each with its distinct-account count and
    * `viaTool`, how many of its occurrences came from the search_products tool (0 when all came from the Products list).

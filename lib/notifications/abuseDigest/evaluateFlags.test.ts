@@ -12,7 +12,7 @@ function quietStats(): AbuseDigestStats {
     monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: [] },
     signIns: { count: 0, emails: [] },
     contact: { submissions: 0, honeypotTrips: 0 },
-    slowSearches: { timeouts: 0, slow: 0, top: [] },
+    slowSearches: { timeouts: 0, slow: 0, viaToolTotal: 0, top: [] },
   };
 }
 
@@ -156,20 +156,20 @@ describe('evaluateFlags — Products (spec 2026-10-23 §4, §5b)', () => {
   it('flags any product search timeout amber (threshold 0), singular at 1; slow searches alone never flag', () => {
     expect(THRESHOLDS.productSearchTimeoutsPerDay).toEqual({ amber: 0 });
     const top = [{ queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2, viaTool: 1 }];
-    expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 3, slow: 0, top } })).toEqual([
+    expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 3, slow: 0, viaToolTotal: 1, top } })).toEqual([
       { severity: 'amber', message: '3 product search timeouts yesterday (amber threshold: 0)' },
     ]);
-    expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 1, slow: 4, top } })).toEqual([
+    expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 1, slow: 4, viaToolTotal: 1, top } })).toEqual([
       { severity: 'amber', message: '1 product search timeout yesterday (amber threshold: 0)' },
     ]);
-    expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 0, slow: 12, top } })).toEqual([]);
+    expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 0, slow: 12, viaToolTotal: 1, top } })).toEqual([]);
   });
 
   it('a timeout flag sorts after a red flag like any amber one', () => {
     const flags = evaluateFlags({
       ...quietStats(),
       activeUsers: [userWith({ productViews: 2500 })],
-      slowSearches: { timeouts: 2, slow: 1, top: [] },
+      slowSearches: { timeouts: 2, slow: 1, viaToolTotal: 0, top: [] },
     });
     expect(flags).toEqual([
       { severity: 'red', message: 'a@x.com: 2500 reads (red threshold: 2000)' },

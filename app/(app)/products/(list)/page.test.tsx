@@ -27,16 +27,16 @@ vi.mock('@/lib/products/searchProducts', async (orig) => ({
 vi.mock('@/lib/products/listCategories', () => ({ listProductDepartments: data.departments, listProductBroadCategories: data.broad, listProductCategoryPaths: data.paths }));
 vi.mock('@/lib/customCategories/loadServer', () => ({ listCustomCategoriesForUser: data.custom }));
 vi.mock('@/lib/customCategories/expand', () => ({ expandCustomCategories: data.expand }));
-// The recorder is mocked (slowQueries.test.ts covers the insert); the rest of its module is real, so the page
-// reads the real SLOW_PRODUCT_SEARCH_MS, and the db client that module imports is a stub that never connects.
-const slow = vi.hoisted(() => ({ record: vi.fn() }));
-vi.mock('@/db/client', () => ({ db: {} }));
-vi.mock('@/lib/products/slowQueries', async (orig) => ({
-  ...(await orig<typeof import('@/lib/products/slowQueries')>()),
-  recordSlowProductSearch: slow.record,
-}));
-// after() throws "outside a request scope" in plain vitest; the page's is a mock that captures the callback (as in
-// app/api/ask/chat/route.test.ts), so a test runs it the way Next does once the response has finished.
+// lib/products/slowQueries.ts is real: the page hands its row to scheduleSlowSearchRecord, which hands
+// recordSlowProductSearch to after(), and the page reads the real SLOW_PRODUCT_SEARCH_MS. The db client that module
+// writes through is a stub that never connects; its insert is recorded here (slowQueries.test.ts covers the insert).
+const slow = vi.hoisted(() => {
+  const values = vi.fn();
+  return { values, insert: vi.fn(() => ({ values })) };
+});
+vi.mock('@/db/client', () => ({ db: { insert: slow.insert } }));
+// after() throws "outside a request scope" in plain vitest; the one the scheduler calls is a mock that captures the
+// callback (as in app/api/ask/chat/route.test.ts), so a test runs it the way Next does once the response has finished.
 const nextServer = vi.hoisted(() => ({ after: vi.fn() }));
 vi.mock('next/server', async (orig) => ({ ...(await orig<typeof import('next/server')>()), after: nextServer.after }));
 // The usage counter (lib/activity/bump.ts, covered in bump.test.ts) is mocked: the page fires it and never awaits it.
@@ -98,7 +98,7 @@ describe('ProductsPage (/products)', () => {
     data.paths.mockResolvedValue(['Home & Kitchen › Lighting › Desk Lamps']);
     data.custom.mockResolvedValue([{ id: '11111111-1111-4111-8111-000000000001', name: 'Lamps', leafPaths: ['Home & Kitchen › Lighting › Desk Lamps'], createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }]);
     data.expand.mockResolvedValue([]);
-    slow.record.mockResolvedValue(undefined);
+    slow.values.mockResolvedValue(undefined);
     nextServer.after.mockImplementation(() => undefined);
     activity.bump.mockResolvedValue(undefined);
   });
@@ -269,9 +269,9 @@ describe('ProductsPage (/products)', () => {
 
     it('a rows read cut off by the statement cap (57014): the notice in place of the table and the pager, the filter and perf panels kept; the timeout goes to after(), recorded only when Next runs it', async () => {
       data.search.mockImplementation(searchTaking(30_000, STATEMENT_TIMEOUT));
-      // Never settles: the page cannot be waiting on the recording.
-      const pending = new Promise<void>(() => {});
-      slow.record.mockReturnValue(pending);
+      // The insert lands only when the test says so: the page cannot be waiting on the recording.
+      let land!: () => void;
+      slow.values.mockReturnValue(new Promise<void>((resolve) => { land = resolve; }));
       render(<>{await resolveAsync(await callPage({ broad: 'Home', sort: 'keywords' }))}</>);
 
       expect(screen.getByText(NOTICE)).toHaveAttribute('role', 'status');
@@ -287,11 +287,18 @@ describe('ProductsPage (/products)', () => {
 
       // Scheduled once and not run yet: the page is already rendered when Next runs the callback.
       const callback = afterCallback();
-      expect(slow.record).not.toHaveBeenCalled();
-      // The callback hands Next the recorder's own promise to wait for (pending here).
-      expect(callback()).toBe(pending);
-      expect(slow.record).toHaveBeenCalledTimes(1);
-      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: 30_000, timedOut: true });
+      expect(slow.values).not.toHaveBeenCalled();
+      // The callback writes the row and hands Next the recorder's own promise, which settles only once the insert has landed.
+      const waited = callback();
+      expect(slow.values).toHaveBeenCalledTimes(1);
+      expect(slow.values).toHaveBeenCalledWith({ surface: 'products', userId: 'a1', queryString: searchedQueryString(), elapsedMs: 30_000, timedOut: true });
+      let settled = false;
+      void waited.then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      land();
+      await waited;
+      expect(settled).toBe(true);
       // The filters exactly as the URL carries them.
       expect(searchedQueryString()).toBe('broad=Home&sort=keywords');
       // The search ran (and timed out): it still counts once as a products query.
@@ -306,10 +313,10 @@ describe('ProductsPage (/products)', () => {
       expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
       expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
       const callback = afterCallback();
-      expect(slow.record).not.toHaveBeenCalled();
+      expect(slow.values).not.toHaveBeenCalled();
       await callback();
-      expect(slow.record).toHaveBeenCalledTimes(1);
-      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: ms, timedOut: false });
+      expect(slow.values).toHaveBeenCalledTimes(1);
+      expect(slow.values).toHaveBeenCalledWith({ surface: 'products', userId: 'a1', queryString: searchedQueryString(), elapsedMs: ms, timedOut: false });
       expect(searchedQueryString()).toBe('age=60&page=3');
     });
 
@@ -320,7 +327,7 @@ describe('ProductsPage (/products)', () => {
       expect(screen.getByText('1,234 products')).toBeInTheDocument();
       expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
       expect(nextServer.after).not.toHaveBeenCalled();
-      expect(slow.record).not.toHaveBeenCalled();
+      expect(slow.values).not.toHaveBeenCalled();
     });
 
     it('when after() throws (no request scope), the page still renders and the row is recorded directly, never awaited', async () => {
@@ -329,14 +336,14 @@ describe('ProductsPage (/products)', () => {
       });
       data.search.mockImplementation(searchTaking(9_000));
       // Never settles: the direct call is not awaited either.
-      slow.record.mockReturnValue(new Promise<void>(() => {}));
+      slow.values.mockReturnValue(new Promise<void>(() => {}));
       render(<>{await resolveAsync(await callPage({ sort: 'keywords' }))}</>);
 
       expect(screen.getByText('1,234 products')).toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
       expect(nextServer.after).toHaveBeenCalledTimes(1);
-      expect(slow.record).toHaveBeenCalledTimes(1);
-      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false });
+      expect(slow.values).toHaveBeenCalledTimes(1);
+      expect(slow.values).toHaveBeenCalledWith({ surface: 'products', userId: 'a1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false });
     });
 
     it('a custom-categories read that rejects after a timed-out search still fails the page, and the timeout was already scheduled', async () => {
@@ -347,10 +354,10 @@ describe('ProductsPage (/products)', () => {
       await expect(resolveAsync(await callPage({ broad: 'Home' }))).rejects.toBe(failure);
 
       const callback = afterCallback();
-      expect(slow.record).not.toHaveBeenCalled();
+      expect(slow.values).not.toHaveBeenCalled();
       await callback();
-      expect(slow.record).toHaveBeenCalledTimes(1);
-      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: 'broad=Home', elapsedMs: 30_000, timedOut: true });
+      expect(slow.values).toHaveBeenCalledTimes(1);
+      expect(slow.values).toHaveBeenCalledWith({ surface: 'products', userId: 'a1', queryString: 'broad=Home', elapsedMs: 30_000, timedOut: true });
     });
 
     it('any other search failure still fails the page; nothing is scheduled or recorded, even when slow', async () => {
@@ -359,7 +366,7 @@ describe('ProductsPage (/products)', () => {
         await expect(resolveAsync(await callPage())).rejects.toBe(error);
       }
       expect(nextServer.after).not.toHaveBeenCalled();
-      expect(slow.record).not.toHaveBeenCalled();
+      expect(slow.values).not.toHaveBeenCalled();
     });
   });
 });

@@ -12,7 +12,13 @@ import { mcpEnabled } from '@/lib/mcp/config';
 import { mcpRequestHandler } from '@/lib/mcp/handler';
 
 export const runtime = 'nodejs';
-export const maxDuration = 30;
+/**
+ * The product tools' reads run under PRODUCT_READ_TIMEOUT_MS (30 s) plus the gate, the reserve and the scope lookups, so a
+ * read that hits its cap still answers QUERY_TIMEOUT (and is logged) inside the invocation instead of a 504; the keyword
+ * tools budget for 30 s and keep doing so (lib/research/pool.ts). A literal, as Next reads it from the source;
+ * routeDeadline.test.ts pins it against PRODUCT_READ_TIMEOUT_MS.
+ */
+export const maxDuration = 60;
 
 async function serve(req: Request): Promise<Response> {
   if (!mcpEnabled()) return new Response(null, { status: 404 });

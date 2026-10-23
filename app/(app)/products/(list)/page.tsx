@@ -16,9 +16,10 @@
  * renders an inline notice in place of the table and the pager, with the filter panel still there to
  * narrow the filters (spec 2026-10-23 §5); any other failure still throws to the error page. That
  * timeout, and a search that completes slower than SLOW_PRODUCT_SEARCH_MS, is recorded in slow_queries
- * with the filters' URL query string (§5b): scheduled on the search's own settle through after(), so
- * Next writes the row once the response has finished (directly, never awaited, where after() is
- * unavailable), and the recording never delays or changes the page.
+ * with the filters' URL query string (§5b): scheduled on the search's own settle through
+ * scheduleSlowSearchRecord (lib/products/slowQueries.ts, shared with the search_products tool), whose
+ * after() has Next write the row once the response has finished (directly, never awaited, where after()
+ * is unavailable), and the recording never delays or changes the page.
  *
  * The (list) route group (no URL segment) scopes this folder's loading.tsx to the list: a
  * loading.tsx directly in products/ would also wrap /products/[asin] and flash the list skeleton
@@ -27,7 +28,6 @@
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
-import { after } from 'next/server';
 import { neon } from '@neondatabase/serverless';
 import type { User } from '@/db/schema';
 import { env } from '@/lib/env';
@@ -40,7 +40,7 @@ import { pageCategoryScope } from '@/lib/products/categoryPredicate';
 import { parseProductFilters, productFiltersToSearchParams, type ProductFilters, type SearchParamsLike } from '@/lib/products/filters';
 import { listProductBroadCategories, listProductCategoryPaths, listProductDepartments } from '@/lib/products/listCategories';
 import { searchProducts, neonRunner, isStatementTimeout } from '@/lib/products/searchProducts';
-import { recordSlowProductSearch, SLOW_PRODUCT_SEARCH_MS, type SlowProductSearch } from '@/lib/products/slowQueries';
+import { scheduleSlowSearchRecord, SLOW_PRODUCT_SEARCH_MS } from '@/lib/products/slowQueries';
 import { PerfPanel } from '@/app/(app)/PerfPanel';
 import { ProductFilterPanel } from '../ProductFilterPanel';
 import { ProductResultsTable } from '../ProductResultsTable';
@@ -66,20 +66,6 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
       <ProductsResults filters={filters} user={user} timer={timer} />
     </Suspense>
   );
-}
-
-/**
- * Hands one slow-search row to after() (spec 2026-10-23 §5b): Next runs the insert once the response has
- * finished and keeps the function alive until it lands (waitUntil), so a streamed response that ends first
- * cannot drop it. after() throws synchronously outside a request scope; the row is then recorded directly,
- * still never awaited. Either way the page is unchanged, and a failed insert only warns.
- */
-function scheduleSlowSearchRecord(row: SlowProductSearch): void {
-  try {
-    after(() => recordSlowProductSearch(row));
-  } catch {
-    void recordSlowProductSearch(row);
-  }
 }
 
 /**
