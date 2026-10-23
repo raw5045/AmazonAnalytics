@@ -15,8 +15,9 @@
  * renders an inline notice in place of the table and the pager, with the filter panel still there to
  * narrow the filters (spec 2026-10-23 §5); any other failure still throws to the error page. That
  * timeout, and a search that completes slower than SLOW_PRODUCT_SEARCH_MS, is recorded in slow_queries
- * with the filters' URL query string (§5b): fire-and-forget once the reads have settled, so the
- * recording never delays or changes the page.
+ * with the filters' URL query string (§5b): scheduled on the search's own settle through after(), so
+ * Next writes the row once the response has finished (directly, never awaited, where after() is
+ * unavailable), and the recording never delays or changes the page.
  *
  * The (list) route group (no URL segment) scopes this folder's loading.tsx to the list: a
  * loading.tsx directly in products/ would also wrap /products/[asin] and flash the list skeleton
@@ -25,6 +26,7 @@
 import { Suspense } from 'react';
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
+import { after } from 'next/server';
 import { neon } from '@neondatabase/serverless';
 import type { User } from '@/db/schema';
 import { env } from '@/lib/env';
@@ -36,7 +38,7 @@ import { pageCategoryScope } from '@/lib/products/categoryPredicate';
 import { parseProductFilters, productFiltersToSearchParams, type ProductFilters, type SearchParamsLike } from '@/lib/products/filters';
 import { listProductBroadCategories, listProductCategoryPaths, listProductDepartments } from '@/lib/products/listCategories';
 import { searchProducts, neonRunner, isStatementTimeout } from '@/lib/products/searchProducts';
-import { recordSlowProductSearch, SLOW_PRODUCT_SEARCH_MS } from '@/lib/products/slowQueries';
+import { recordSlowProductSearch, SLOW_PRODUCT_SEARCH_MS, type SlowProductSearch } from '@/lib/products/slowQueries';
 import { PerfPanel } from '@/app/(app)/PerfPanel';
 import { ProductFilterPanel } from '../ProductFilterPanel';
 import { ProductResultsTable } from '../ProductResultsTable';
@@ -63,6 +65,20 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
 }
 
 /**
+ * Hands one slow-search row to after() (spec 2026-10-23 §5b): Next runs the insert once the response has
+ * finished and keeps the function alive until it lands (waitUntil), so a streamed response that ends first
+ * cannot drop it. after() throws synchronously outside a request scope; the row is then recorded directly,
+ * still never awaited. Either way the page is unchanged, and a failed insert only warns.
+ */
+function scheduleSlowSearchRecord(row: SlowProductSearch): void {
+  try {
+    after(() => recordSlowProductSearch(row));
+  } catch {
+    void recordSlowProductSearch(row);
+  }
+}
+
+/**
  * The page's reads, in parallel, each timed on its own, and the moment they finished. The custom-category
  * ids expand (owner-scoped; unknown ids skipped, so an unowned selection scopes to nothing) before the
  * search they scope; the four option lists load alongside. One `loads` step on the timer runs from the
@@ -76,8 +92,9 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
  *
  * A rows read cut off by the statement cap settles the search as null instead of rejecting, so it is timed
  * like a completed one and the four lists still load for the panel; the null `result` is the page's
- * notice. A timed-out search, or one slower than SLOW_PRODUCT_SEARCH_MS, is recorded with that measured
- * time, never awaited.
+ * notice. A timed-out search, or one slower than SLOW_PRODUCT_SEARCH_MS, is scheduled for recording with
+ * that measured time on the search's own settle, before the other reads are awaited: a read that rejects
+ * later (the custom-categories read has no catch) still fails the page but cannot drop the row.
  */
 async function loadProductsPage(filters: ProductFilters, userId: string, timer: HandlerTimer) {
   const sql = neon(env.DATABASE_URL);
@@ -88,24 +105,27 @@ async function loadProductsPage(filters: ProductFilters, userId: string, timer: 
       throw e;
     }),
   );
+  // Scheduled on the search's own settle (spec 2026-10-23 §5b), not after the Promise.all below, where a later rejection of another read would skip it.
+  const search = timed(searched).then(({ value, ms }) => {
+    const timedOut = value === null;
+    if (timedOut || ms > SLOW_PRODUCT_SEARCH_MS) {
+      scheduleSlowSearchRecord({ userId, queryString: productFiltersToSearchParams(filters).toString(), elapsedMs: ms, timedOut });
+    }
+    return { value, ms, timedOut };
+  });
   // A failed department, broad-category or path read shows an empty list; caught here, outside the cached functions, so nothing empty is cached and the tools still reject.
   const [result, departments, broadCategories, leafCategories, customCategories] = await Promise.all([
-    timed(searched),
+    search,
     timed(listProductDepartments().catch(() => [] as string[])),
     timed(listProductBroadCategories().catch(() => [] as string[])),
     timed(listProductCategoryPaths().catch(() => [] as string[])),
     timed(listCustomCategoriesForUser(userId)),
   ]);
-  const timedOut = result.value === null;
-  // Fire-and-forget (spec 2026-10-23 §5b): never awaited, so the recording cannot delay or fail the page; a failed insert only warns.
-  if (timedOut || result.ms > SLOW_PRODUCT_SEARCH_MS) {
-    void recordSlowProductSearch({ userId, queryString: productFiltersToSearchParams(filters).toString(), elapsedMs: result.ms, timedOut });
-  }
   // UTF-16 code units, a close-enough proxy for the bytes the list adds to every load (each › is 3 bytes in UTF-8, counted as 1).
   const pathChars = leafCategories.value.reduce((n, p) => n + p.length, 0);
   timer.mark(
     'loads',
-    `parallel: search ${timedOut ? `timed out after ${result.ms}` : result.ms} · departments ${departments.ms} · broad ${broadCategories.ms} · paths ${leafCategories.ms} ` +
+    `parallel: search ${result.timedOut ? `timed out after ${result.ms}` : result.ms} · departments ${departments.ms} · broad ${broadCategories.ms} · paths ${leafCategories.ms} ` +
       `(${leafCategories.value.length.toLocaleString('en-US')} · ${(pathChars / 1024 / 1024).toFixed(1)} MB) · custom ${customCategories.ms} ms`,
   );
   return {

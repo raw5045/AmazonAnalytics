@@ -35,6 +35,10 @@ vi.mock('@/lib/products/slowQueries', async (orig) => ({
   ...(await orig<typeof import('@/lib/products/slowQueries')>()),
   recordSlowProductSearch: slow.record,
 }));
+// after() throws "outside a request scope" in plain vitest; the page's is a mock that captures the callback (as in
+// app/api/ask/chat/route.test.ts), so a test runs it the way Next does once the response has finished.
+const nextServer = vi.hoisted(() => ({ after: vi.fn() }));
+vi.mock('next/server', async (orig) => ({ ...(await orig<typeof import('next/server')>()), after: nextServer.after }));
 
 import ProductsPage from './page';
 
@@ -92,6 +96,7 @@ describe('ProductsPage (/products)', () => {
     data.custom.mockResolvedValue([{ id: '11111111-1111-4111-8111-000000000001', name: 'Lamps', leafPaths: ['Home & Kitchen › Lighting › Desk Lamps'], createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }]);
     data.expand.mockResolvedValue([]);
     slow.record.mockResolvedValue(undefined);
+    nextServer.after.mockImplementation(() => undefined);
   });
 
   it('redirects a signed-out visitor to /sign-in before any read', async () => {
@@ -224,11 +229,17 @@ describe('ProductsPage (/products)', () => {
     };
     /** The query string of the filters the page searched on, the form a recorded row carries. */
     const searchedQueryString = () => productFiltersToSearchParams((data.search.mock.calls[0] as [SqlRunner, ProductFilters, unknown])[1]).toString();
+    /** The one callback the page handed to after(); a test calls it the way Next does once the response has finished. */
+    const afterCallback = () => {
+      expect(nextServer.after).toHaveBeenCalledTimes(1);
+      return nextServer.after.mock.calls[0][0] as () => Promise<void>;
+    };
 
-    it('a rows read cut off by the statement cap (57014): the notice in place of the table and the pager, the filter and perf panels kept, the timeout recorded and never awaited', async () => {
+    it('a rows read cut off by the statement cap (57014): the notice in place of the table and the pager, the filter and perf panels kept; the timeout goes to after(), recorded only when Next runs it', async () => {
       data.search.mockImplementation(searchTaking(30_000, STATEMENT_TIMEOUT));
-      // Never settles: a page that awaited the recording would hang here.
-      slow.record.mockReturnValue(new Promise<void>(() => {}));
+      // Never settles: the page cannot be waiting on the recording.
+      const pending = new Promise<void>(() => {});
+      slow.record.mockReturnValue(pending);
       render(<>{await resolveAsync(await callPage({ broad: 'Home', sort: 'keywords' }))}</>);
 
       expect(screen.getByText(NOTICE)).toHaveAttribute('role', 'status');
@@ -242,38 +253,78 @@ describe('ProductsPage (/products)', () => {
       // The admin perf panel stays; its loads note names the timeout.
       expect(screen.getByText(/^\(parallel: search timed out after 30000 · departments \d+ · broad \d+ · paths \d+ \(1 · 0\.0 MB\) · custom \d+ ms\)$/)).toBeInTheDocument();
 
+      // Scheduled once and not run yet: the page is already rendered when Next runs the callback.
+      const callback = afterCallback();
+      expect(slow.record).not.toHaveBeenCalled();
+      // The callback hands Next the recorder's own promise to wait for (pending here).
+      expect(callback()).toBe(pending);
       expect(slow.record).toHaveBeenCalledTimes(1);
       expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: 30_000, timedOut: true });
       // The filters exactly as the URL carries them.
       expect(searchedQueryString()).toBe('broad=Home&sort=keywords');
     });
 
-    it('a search that completes slower than SLOW_PRODUCT_SEARCH_MS renders as usual and is recorded with timedOut false', async () => {
-      data.search.mockImplementation(searchTaking(9_000));
+    it.each([8_001, 9_000])('a search that completes in %i ms (above SLOW_PRODUCT_SEARCH_MS) renders as usual and goes to after() with timedOut false', async (ms) => {
+      data.search.mockImplementation(searchTaking(ms));
       render(<>{await resolveAsync(await callPage({ age: '60', page: '3' }))}</>);
 
       expect(screen.getByText('1,234 products')).toBeInTheDocument();
       expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
       expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+      const callback = afterCallback();
+      expect(slow.record).not.toHaveBeenCalled();
+      await callback();
       expect(slow.record).toHaveBeenCalledTimes(1);
-      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: 9_000, timedOut: false });
+      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: ms, timedOut: false });
       expect(searchedQueryString()).toBe('age=60&page=3');
     });
 
-    it.each([0, 8_000])('a search that completes in %i ms (not above SLOW_PRODUCT_SEARCH_MS) renders as usual and is not recorded', async (ms) => {
+    it.each([0, 8_000])('a search that completes in %i ms (not above SLOW_PRODUCT_SEARCH_MS) renders as usual; nothing is scheduled or recorded', async (ms) => {
       data.search.mockImplementation(searchTaking(ms));
       render(<>{await resolveAsync(await callPage())}</>);
 
       expect(screen.getByText('1,234 products')).toBeInTheDocument();
       expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+      expect(nextServer.after).not.toHaveBeenCalled();
       expect(slow.record).not.toHaveBeenCalled();
     });
 
-    it('any other search failure still fails the page, and is not recorded even when slow', async () => {
+    it('when after() throws (no request scope), the page still renders and the row is recorded directly, never awaited', async () => {
+      nextServer.after.mockImplementation(() => {
+        throw new Error('`after` was called outside a request scope.');
+      });
+      data.search.mockImplementation(searchTaking(9_000));
+      // Never settles: the direct call is not awaited either.
+      slow.record.mockReturnValue(new Promise<void>(() => {}));
+      render(<>{await resolveAsync(await callPage({ sort: 'keywords' }))}</>);
+
+      expect(screen.getByText('1,234 products')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
+      expect(nextServer.after).toHaveBeenCalledTimes(1);
+      expect(slow.record).toHaveBeenCalledTimes(1);
+      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false });
+    });
+
+    it('a custom-categories read that rejects after a timed-out search still fails the page, and the timeout was already scheduled', async () => {
+      const failure = new Error('custom categories read failed');
+      data.search.mockImplementation(searchTaking(30_000, STATEMENT_TIMEOUT));
+      // Rejects on a later macrotask: the search settles within microtasks, so it is timed (and scheduled) first.
+      data.custom.mockImplementation(() => new Promise<never>((_, reject) => setTimeout(() => reject(failure), 0)));
+      await expect(resolveAsync(await callPage({ broad: 'Home' }))).rejects.toBe(failure);
+
+      const callback = afterCallback();
+      expect(slow.record).not.toHaveBeenCalled();
+      await callback();
+      expect(slow.record).toHaveBeenCalledTimes(1);
+      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: 'broad=Home', elapsedMs: 30_000, timedOut: true });
+    });
+
+    it('any other search failure still fails the page; nothing is scheduled or recorded, even when slow', async () => {
       for (const error of [Object.assign(new Error('out of memory'), { code: '53200' }), new Error('fetch failed')]) {
         data.search.mockImplementation(searchTaking(30_000, error));
         await expect(resolveAsync(await callPage())).rejects.toBe(error);
       }
+      expect(nextServer.after).not.toHaveBeenCalled();
       expect(slow.record).not.toHaveBeenCalled();
     });
   });

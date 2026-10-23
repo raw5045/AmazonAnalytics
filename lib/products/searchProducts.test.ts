@@ -4,7 +4,7 @@ import { neon, neonConfig, type NeonQueryFunction } from '@neondatabase/serverle
 import { asinProducts, baCategoryCrosswalk } from '@/db/schema';
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from './categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
-import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
+import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, isStatementTimeout, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
 import { aliasCols, dbCols, notIn, recordingRow, selectNames } from './testHelpers';
 
 type Sort = ProductFilters['sort'];
@@ -221,6 +221,22 @@ describe('sortHidesNullKey', () => {
     const hint = (sort: Sort) => (sortHidesNullKey(sort) ? `Products without a ${SORT_KEY_LABEL[sort]} are hidden under this sort.` : null);
     expect(hint('sold')).toBe('Products without a monthly sold badge are hidden under this sort.');
     expect(hint('keywords')).toBeNull();
+  });
+});
+
+describe('isStatementTimeout', () => {
+  it('is true for an error carrying SQLSTATE 57014 as a string code', () => {
+    expect(isStatementTimeout({ code: '57014' })).toBe(true);
+    expect(isStatementTimeout(Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }))).toBe(true);
+  });
+  it.each([
+    ['null', null],
+    ['undefined', undefined],
+    ['the bare string', '57014'],
+    ['a numeric code', { code: 57014 }],
+    ['another SQLSTATE', { code: '53200' }],
+  ])('is false for %s', (_what, e) => {
+    expect(isStatementTimeout(e)).toBe(false);
   });
 });
 
