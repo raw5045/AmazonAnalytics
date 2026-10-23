@@ -10,7 +10,8 @@
 -- ascending keywords sort walk past all of them), like 0051's six sort indexes.
 -- (2) slow_queries: one row per product search that timed out (57014) or ran slower than
 -- SLOW_PRODUCT_SEARCH_MS, read by the daily usage digest; pruned to 90 days by the digest job.
--- Apply BEFORE the code deploys: the keywords sort reads the column (42703 without it).
+-- Every product search selects the column (the list, search_products, Ask AI), so apply before the
+-- deploy (42703 without it).
 
 ALTER TABLE asin_products ADD COLUMN IF NOT EXISTS keyword_count integer NOT NULL DEFAULT 0;
 --> statement-breakpoint

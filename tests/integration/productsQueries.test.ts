@@ -47,8 +47,10 @@
  *  - the ASIN page's loaders (facts, snapshot history, keywords with weeks in top 3) answer for an ASIN
  *    taken from the search; an ASIN the reverse table has but the catalog lacks gets a stub
  *    (inCatalog false); an unknown ASIN has no facts;
- *  - last of all, the stored keyword counts against a fresh count of keyword_top_asins for every catalog row (none may differ): a
- *    full pass over the catalog, so it runs after every timed case.
+ *  - after every timed case, the stored keyword counts against a fresh count of keyword_top_asins (none may differ) on a sample
+ *    of up to 6,000 products: the 2,000 with the highest counts and 2,000 at count 0, both read through the 0056 partial index,
+ *    and the pair table's 2,000 highest ASINs (the newest entrants). The full pass over every catalog row runs last, and only on
+ *    request (PRODUCTS_FULL_COUNT_CHECK=1).
  *
  * Read-only: every case runs inside BEGIN READ ONLY ... ROLLBACK on one dedicated connection (a stray
  * write would error), so nothing persists.
@@ -72,7 +74,9 @@
  *    the option-lists case skips with a note ("facets not built");
  *  - migration 0056 applied (checked up front: the file fails at once when asin_products_keyword_count_idx is missing, since every
  *    search selects asin_products.keyword_count) and the keyword counts built once (scripts/buildKeywordCounts.ts, spec 2026-10-23
- *    §9): while every count is 0 the stored-count case skips with a note ("keyword counts not built yet");
+ *    §9): until a product the list can show has a count above 0, the stored-count cases skip with a note ("keyword counts not built
+ *    yet"). The sampled check reads a few thousand rows through the 0056 index and the pair table's asin index; the full pass (a
+ *    probe of the pair table for every catalog row: minutes on a cold Neon) runs only with PRODUCTS_FULL_COUNT_CHECK=1;
  *  - a custom category with stored paths (any account's; only its paths are read) for the two
  *    custom-category cases: when there is none they are skipped ("no custom category to test with");
  *  - no import running. A cold Neon can take tens of seconds for the first reads.
@@ -91,6 +95,8 @@
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "mismatched department" --disableConsoleIntercept
  * Likewise for the coldest reading of the keywords sort (spec 2026-10-23 §5), its two cases alone:
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "keywords sort" --disableConsoleIntercept
+ * The stored-count full pass is opt-in: add PRODUCTS_FULL_COUNT_CHECK=1 to the whole-file run (it runs last), or run it alone:
+ *   PRODUCTS_FULL_COUNT_CHECK=1 RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "every catalog row" --disableConsoleIntercept
  */
 import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
@@ -104,6 +110,8 @@ import { loadProductHistory } from '@/lib/products/loadProductHistory';
 import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/loadProductKeywords';
 
 const RUN = !!process.env.RUN_INTEGRATION;
+/** The stored-count full pass (a probe of the pair table for every catalog row) runs only on request: PRODUCTS_FULL_COUNT_CHECK=1. */
+const FULL_COUNT_CHECK = process.env.PRODUCTS_FULL_COUNT_CHECK === '1';
 /** Per statement (see the header). */
 const STATEMENT_TIMEOUT = '300s';
 /** How often the server checks that the client is still there while it runs a statement. */
@@ -140,6 +148,26 @@ const FACETS_DEPARTMENT_INDEX = 'product_category_facets_department_idx';
  */
 const DEPARTMENTS_SQL = 'SELECT DISTINCT department FROM product_category_facets ORDER BY department';
 const PATHS_FOR_DEPARTMENT_SQL = 'SELECT category_path FROM product_category_facets WHERE department = $1 ORDER BY category_path';
+/**
+ * The list's base predicate (BASE in lib/products/searchProducts.ts), restated for the stored-count cases: the 0056 index is partial
+ * on exactly it, so a statement can read that index only when its WHERE carries it.
+ */
+const LIST_BASE = "a.in_scope AND a.enrichment_status IN ('active', 'no_price')";
+/**
+ * The stored-count sample (spec 2026-10-23 §5): up to 6,000 catalog rows as (asin, keyword_count). The 2,000 with the highest counts
+ * and 2,000 at count 0 are read through asin_products_keyword_count_idx, so both branches carry LIST_BASE; the catalog rows of the
+ * pair table's 2,000 highest ASINs (the newest entrants) are read through keyword_top_asins_asin_idx and the catalog's primary key.
+ * That third branch takes no LIST_BASE: the build writes every catalog row, so the newest entrants are compared whatever their fetch
+ * status (the base predicate would drop the ones not fetched yet). The branches can overlap; a row in two is compared twice.
+ */
+const KEYWORD_COUNT_SAMPLE = `WITH s AS (
+  (SELECT a.asin, a.keyword_count FROM asin_products a WHERE ${LIST_BASE} ORDER BY a.keyword_count DESC, a.asin DESC LIMIT 2000)
+  UNION ALL
+  (SELECT a.asin, a.keyword_count FROM asin_products a WHERE ${LIST_BASE} AND a.keyword_count = 0 ORDER BY a.asin LIMIT 2000)
+  UNION ALL
+  (SELECT a.asin, a.keyword_count FROM (SELECT DISTINCT k.asin FROM keyword_top_asins k ORDER BY k.asin DESC LIMIT 2000) t
+     JOIN asin_products a ON a.asin = t.asin)
+)`;
 
 /** The owner's example search: listed within 180 days, 1,000+ sold a month, at most 300 reviews. */
 const OWNER_SEARCH: ProductFilters = { ...PRODUCT_DEFAULTS, age: 180, soldMin: 1000, reviewsMax: 300 };
@@ -267,6 +295,20 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
     if (await codesPresent()) return;
     console.log('[productsQueries] crosswalk not built yet: skipped');
     ctx.skip('crosswalk not built');
+  }
+
+  /**
+   * The start of the stored-count cases: skip, with a note, until the first keyword-count build (scripts/buildKeywordCounts.ts, spec
+   * 2026-10-23 §9) has given a product the list can show a count above 0. The probe carries LIST_BASE, so it stops at the first entry
+   * of asin_products_keyword_count_idx above 0 instead of scanning the catalog.
+   */
+  async function skipUnlessKeywordCounts(ctx: TestContext): Promise<void> {
+    const r = await client.query<{ built: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM asin_products a WHERE ${LIST_BASE} AND a.keyword_count > 0) AS built`,
+    );
+    if (r.rows[0]?.built) return;
+    console.log('[productsQueries] no product the list can show has a keyword_count above 0 (the keyword-count backfill, scripts/buildKeywordCounts.ts, has not run): skipped');
+    ctx.skip('keyword counts not built yet');
   }
 
   /**
@@ -1010,19 +1052,45 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
   );
 
   it(
-    'the stored keyword counts agree with a fresh count',
+    'the stored keyword counts agree with a fresh count on a sample of up to 6,000 products',
     async (ctx) => {
       await inReadOnlyTransaction(async () => {
-        // Last of all: a full pass over the catalog with one probe of keyword_top_asins_asin_idx per row, which warms both, so it runs
-        // after every timed case. keyword_top_asins changes only at imports and keyword_counts_build rewrites the counts right after
-        // top_asins_build inside the import, so between imports the two agree exactly (no import may be running, see the header); a
-        // mismatch means that phase failed or was skipped ("[keyword-counts] failed" in the import log; scripts/buildKeywordCounts.ts
-        // re-runs it). Every row is checked, the retired ones too: the build zeroes any row whose product left the pair table.
-        const built = await client.query<{ max: number | null }>('SELECT max(keyword_count) AS max FROM asin_products');
-        if ((built.rows[0]?.max ?? 0) === 0) {
-          console.log('[productsQueries] every keyword_count is 0 (the keyword-count backfill, scripts/buildKeywordCounts.ts, has not run): the stored-count case is skipped.');
-          return ctx.skip('keyword counts not built yet');
-        }
+        // After every timed case. keyword_top_asins changes only at imports and keyword_counts_build rewrites the counts right after
+        // top_asins_build inside the import (the import's enqueue, the only writer of new catalog rows, runs before both), so between
+        // imports the two agree exactly (no import may be running, see the header); a mismatch means that phase failed or was skipped
+        // ("[keyword-counts] failed" in the import log; scripts/buildKeywordCounts.ts re-runs it). The sample (KEYWORD_COUNT_SAMPLE)
+        // covers the highest counts, products at count 0 (what the zeroing writes) and the pair table's newest entrants, one probe of
+        // keyword_top_asins_asin_idx each: a few thousand rows, not the catalog. A failure lists up to 20 as { asin, stored, fresh }.
+        await skipUnlessKeywordCounts(ctx);
+        const started = performance.now();
+        const size = await client.query<{ sampled: number; products: number }>(
+          `${KEYWORD_COUNT_SAMPLE} SELECT count(*)::int AS sampled, count(DISTINCT s.asin)::int AS products FROM s`,
+        );
+        const mismatched = await client.query<{ asin: string; stored: number; fresh: number }>(
+          `${KEYWORD_COUNT_SAMPLE}
+           SELECT s.asin, s.keyword_count AS stored, c.n AS fresh FROM s
+           CROSS JOIN LATERAL (SELECT count(*)::int AS n FROM keyword_top_asins k WHERE k.asin = s.asin) c
+           WHERE s.keyword_count <> c.n LIMIT 20`,
+        );
+        console.log(
+          `[productsQueries] stored keyword counts against a fresh count: ${size.rows[0].sampled} sampled rows (${size.rows[0].products} products), ` +
+            `${mismatched.rows.length} mismatched (listed up to 20) in ${((performance.now() - started) / 1000).toFixed(1)}s`,
+        );
+        expect(size.rows[0].products, 'products in the sample').toBeGreaterThan(0);
+        expect(mismatched.rows, 'sampled products whose stored keyword_count differs from a fresh count of keyword_top_asins').toEqual([]);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it.skipIf(!FULL_COUNT_CHECK)(
+    'opt-in (PRODUCTS_FULL_COUNT_CHECK=1): the stored keyword counts agree with a fresh count on every catalog row',
+    async (ctx) => {
+      await inReadOnlyTransaction(async () => {
+        // Last of all, and only on request: the full pass, one probe of keyword_top_asins_asin_idx per catalog row (minutes on a cold
+        // Neon, under the file's 300 s statement timeout), which warms the catalog and the pair table's index. Every row is checked,
+        // the retired ones too: the build zeroes any row whose product left the pair table.
+        await skipUnlessKeywordCounts(ctx);
         const started = performance.now();
         const mismatched = await client.query<{ n: number }>(
           `SELECT count(*)::int AS n FROM (
@@ -1033,7 +1101,7 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         );
         console.log(
           `[productsQueries] stored keyword counts against a fresh count per catalog row: ${mismatched.rows[0].n} mismatched (stops at 1,000) ` +
-            `in ${((performance.now() - started) / 1000).toFixed(1)}s; the largest stored count is ${built.rows[0].max}`,
+            `in ${((performance.now() - started) / 1000).toFixed(1)}s`,
         );
         expect(mismatched.rows[0].n, 'catalog rows whose stored keyword_count differs from a fresh count of keyword_top_asins').toBe(0);
       });

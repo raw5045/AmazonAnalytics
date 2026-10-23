@@ -163,9 +163,10 @@ export type NeonRunnerSql = Pick<NeonQueryFunction<false, false>, 'query' | 'tra
  * while holding a read lock on keyword_top_asins, the lock an import's table swap waits on (120 s,
  * then the build fails soft and the reverse table stays a week behind). The keywords sort now reads
  * the stored keyword_count (spec 2026-10-23 §5), so the search no longer reads that table and that
- * wait no longer applies to it. `@neondatabase/serverless` 1.x (checked against 1.0.2): `sql.query()` only builds a lazy
- * query, and `sql.transaction([...])` submits the batch as one transaction and resolves to one row
- * array per statement under the default options, so the query's rows are the last element.
+ * wait no longer applies to it. `@neondatabase/serverless` 1.x (checked against 1.0.2):
+ * `sql.query()` only builds a lazy query, and `sql.transaction([...])` submits the batch as one
+ * transaction and resolves to one row array per statement under the default options, so the
+ * query's rows are the last element.
  */
 export function neonRunner(sql: NeonRunnerSql): SqlRunner {
   return async (text, values) => {
