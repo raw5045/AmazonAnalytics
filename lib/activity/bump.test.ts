@@ -9,7 +9,9 @@ const { mockOnConflictDoUpdate, mockValues, mockInsert } = vi.hoisted(() => {
 
 vi.mock('@/db/client', () => ({ db: { insert: mockInsert } }));
 
-import { bumpUserActivityBy } from './bump';
+import { DrizzleQueryError } from 'drizzle-orm';
+import { consoleLines } from '@/tests/unit/consoleLines';
+import { bumpAppActivity, bumpUserActivity, bumpUserActivityBy } from './bump';
 
 describe('bumpUserActivityBy', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -43,6 +45,41 @@ describe('bumpUserActivityBy', () => {
     mockOnConflictDoUpdate.mockRejectedValueOnce(new Error('db down'));
     await expect(bumpUserActivityBy('u1', 'mcp_rows', 5)).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});
+
+describe('a failed bump logs coded fields only: never the statement, its params or a message', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** What drizzle rejects with when the upsert fails: its own message embeds the statement and the bound params; errFields reads the cause. */
+  const secretFailure = () =>
+    new DrizzleQueryError(
+      'insert into "user_activity_daily" ("user_id", "day", "metric", "count") values ($1, $2, $3, $4) -- SECRET',
+      ['SECRET-USER-ID', '2026-10-23', 'product_view', 1],
+      Object.assign(new Error('SECRET connection to the database host was refused'), { code: '08006' }),
+    );
+
+  const CASES: Array<[string, () => Promise<void>, string]> = [
+    ['bumpUserActivity', () => bumpUserActivity('u1', 'product_view'), 'product_view'],
+    ['bumpUserActivityBy', () => bumpUserActivityBy('u1', 'mcp_rows', 5), 'mcp_rows'],
+    ['bumpAppActivity', () => bumpAppActivity('contact_submission'), 'contact_submission'],
+  ];
+
+  it.each(CASES)('%s: resolves and warns one line with the metric, the error class and the code', async (fn, bump, metric) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockOnConflictDoUpdate.mockRejectedValueOnce(secretFailure());
+    await expect(bump()).resolves.toBeUndefined();
+    expect(consoleLines(warn)).toEqual([`[activity] ${fn} failed {"metric":"${metric}","error":"Error","code":"08006"}`]);
+    expect(consoleLines(warn).join('\n')).not.toContain('SECRET');
+    warn.mockRestore();
+  });
+
+  it('an uncoded failure warns the same line without a code', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockOnConflictDoUpdate.mockRejectedValueOnce(new TypeError('SECRET fetch failed'));
+    await expect(bumpUserActivity('u1', 'explorer_query')).resolves.toBeUndefined();
+    expect(consoleLines(warn)).toEqual(['[activity] bumpUserActivity failed {"metric":"explorer_query","error":"TypeError"}']);
     warn.mockRestore();
   });
 });

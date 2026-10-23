@@ -190,7 +190,7 @@ describe('ProductPage', () => {
     expect(activity.bump.mock.calls).toEqual([['u1', 'product_view']]);
   });
 
-  it('counts one product_view on the signed-in account, right after the gate and before the read, and never waits for it (spec 2026-10-23 §4)', async () => {
+  it('counts one product_view on the signed-in account, after the gate and the ASIN check and before the read, and never waits for it (spec 2026-10-23 §4)', async () => {
     // Never settles: the page cannot be waiting on the counter.
     activity.bump.mockReturnValue(new Promise<void>(() => {}));
     await renderPage();
@@ -204,20 +204,22 @@ describe('ProductPage', () => {
   });
 
   it.each(['b0cxyz1234', 'B0CXYZ123', 'B0CXYZ12345', 'B0CXYZ123?', '../explorer'])(
-    'a malformed ASIN (%j) is a 404 without a read',
+    'a malformed ASIN (%j) is a 404 without a read, and is not counted as a product view',
     async (asin) => {
       await expect(callPage(asin)).rejects.toThrow('notFound');
       expect(loaders.product).not.toHaveBeenCalled();
+      expect(activity.bump).not.toHaveBeenCalled();
     },
   );
 
-  it('an ASIN in neither table (the loader returns null) is a 404', async () => {
+  it('an ASIN in neither table (the loader returns null) is a 404, still counted: a read ran for it', async () => {
     loaders.product.mockResolvedValue(null);
     await expect(callPage(ASIN)).rejects.toThrow('notFound');
     expect(neonMock.neon).toHaveBeenCalledWith('postgres://test');
     expect(loaders.product).toHaveBeenCalledWith(expect.any(Function), ASIN);
     expect(loaders.history).not.toHaveBeenCalled();
     expect(loaders.keywords).not.toHaveBeenCalled();
+    expect(activity.bump.mock.calls).toEqual([['m1', 'product_view']]);
   });
 
   it('a catalog row: the title band, the facts card, then the history and keywords sections', async () => {

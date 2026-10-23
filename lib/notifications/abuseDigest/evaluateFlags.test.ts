@@ -153,14 +153,14 @@ describe('evaluateFlags — Products (spec 2026-10-23 §4, §5b)', () => {
     expect(evaluateFlags({ ...quietStats(), activeUsers: [userWith({ productsQueries: 250, productViews: 250 })] })).toEqual([]);
   });
 
-  it('flags any product search timeout amber (threshold 0); slow searches alone never flag', () => {
+  it('flags any product search timeout amber (threshold 0), singular at 1; slow searches alone never flag', () => {
     expect(THRESHOLDS.productSearchTimeoutsPerDay).toEqual({ amber: 0 });
     const top = [{ queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2 }];
     expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 3, slow: 0, top } })).toEqual([
-      { severity: 'amber', message: '3 product search timeouts (amber threshold: 0)' },
+      { severity: 'amber', message: '3 product search timeouts yesterday (amber threshold: 0)' },
     ]);
     expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 1, slow: 4, top } })).toEqual([
-      { severity: 'amber', message: '1 product search timeouts (amber threshold: 0)' },
+      { severity: 'amber', message: '1 product search timeout yesterday (amber threshold: 0)' },
     ]);
     expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 0, slow: 12, top } })).toEqual([]);
   });
@@ -173,7 +173,7 @@ describe('evaluateFlags — Products (spec 2026-10-23 §4, §5b)', () => {
     });
     expect(flags).toEqual([
       { severity: 'red', message: 'a@x.com: 2500 reads (red threshold: 2000)' },
-      { severity: 'amber', message: '2 product search timeouts (amber threshold: 0)' },
+      { severity: 'amber', message: '2 product search timeouts yesterday (amber threshold: 0)' },
     ]);
   });
 });

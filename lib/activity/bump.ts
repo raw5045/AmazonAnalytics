@@ -2,8 +2,9 @@
  * Fire-and-forget daily activity counters (admin abuse-digest source data).
  *
  * CONTRACT: callers invoke these UN-AWAITED (`void bumpUserActivity(...)`)
- * from hot request paths. Every error is swallowed to a console.warn — a
- * lost count is acceptable; a slowed or crashed request is not. (On Vercel,
+ * from hot request paths. Every error is swallowed to a console.warn of
+ * coded fields only (warnBumpFailed) — a lost count is acceptable; a slowed
+ * or crashed request is not. (On Vercel,
  * the function freeze after a response can also occasionally drop an
  * in-flight bump — same accepted trade.)
  *
@@ -12,7 +13,17 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@/db/client';
 import { userActivityDaily, appActivityDaily } from '@/db/schema';
+import { errFields } from '@/lib/ask/logSafe';
 import { etDay } from './etDay';
+
+/**
+ * The one warn line for a failed bump, coded fields only: a DrizzleQueryError's own message embeds the statement and
+ * its bound params (the account id among them), so neither it nor errFields' `detail` (the message) is logged.
+ */
+function warnBumpFailed(fn: 'bumpUserActivity' | 'bumpUserActivityBy' | 'bumpAppActivity', metric: string, e: unknown): void {
+  const { error, code } = errFields(e);
+  console.warn(`[activity] ${fn} failed`, JSON.stringify({ metric, error, code }));
+}
 
 export type UserActivityMetric =
   | 'explorer_query'
@@ -41,7 +52,7 @@ export async function bumpUserActivity(userId: string, metric: UserActivityMetri
         set: { count: sql`${userActivityDaily.count} + 1` },
       });
   } catch (e) {
-    console.warn(`[activity] bumpUserActivity(${metric}) failed:`, e instanceof Error ? e.message : e);
+    warnBumpFailed('bumpUserActivity', metric, e);
   }
 }
 
@@ -67,7 +78,7 @@ export async function bumpUserActivityBy(userId: string, metric: UserActivityMet
         set: { count: sql`${userActivityDaily.count} + ${by}` },
       });
   } catch (e) {
-    console.warn(`[activity] bumpUserActivityBy(${metric}) failed:`, e instanceof Error ? e.message : e);
+    warnBumpFailed('bumpUserActivityBy', metric, e);
   }
 }
 
@@ -81,6 +92,6 @@ export async function bumpAppActivity(metric: AppActivityMetric): Promise<void> 
         set: { count: sql`${appActivityDaily.count} + 1` },
       });
   } catch (e) {
-    console.warn(`[activity] bumpAppActivity(${metric}) failed:`, e instanceof Error ? e.message : e);
+    warnBumpFailed('bumpAppActivity', metric, e);
   }
 }

@@ -80,8 +80,9 @@ export function evaluateFlags(stats: AbuseDigestStats): Flag[] {
   banded(stats.contact.submissions, THRESHOLDS.contactSubmissionsPerDay, (v, th, sev) =>
     `${v} contact submissions yesterday (${sev} threshold: ${th})`,
   );
+  // Singular at 1: with an amber threshold of 0, a single timeout is the common case.
   banded(stats.slowSearches.timeouts, THRESHOLDS.productSearchTimeoutsPerDay, (v, th, sev) =>
-    `${v} product search timeouts (${sev} threshold: ${th})`,
+    `${v} product search timeout${v === 1 ? '' : 's'} yesterday (${sev} threshold: ${th})`,
   );
 
   // Red first so the worst news leads the email.
