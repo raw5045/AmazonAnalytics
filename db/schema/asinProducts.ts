@@ -44,6 +44,8 @@ export const asinProducts = pgTable(
     avg90SalesRank: integer('avg90_sales_rank'),
     /** round(100 × sales_rank ÷ avg30_sales_rank); null unless both > 0. < 100 = better than its 30-day average (migration 0051). */
     rankRatioX100: integer('rank_ratio_x100'),
+    /** The current week's count of keywords this product is a top-3 clicked product for; written by keyword_counts_build (spec 2026-10-23 §5); 0 until the first build (migration 0056). */
+    keywordCount: integer('keyword_count').notNull().default(0),
     /** NULL until the first fetch outcome ('error' after a failed first fetch). Never fetched = lastFetchedAt IS NULL. */
     enrichmentStatus: asinEnrichmentStatusEnum('enrichment_status'),
     errorCode: text('error_code'),
@@ -67,6 +69,8 @@ export const asinProducts = pgTable(
     claimedIdx: index('asin_products_claimed_idx').on(t.claimedAt),
     categoryPathIdx: index('asin_products_category_path_idx').on(t.categoryPath),
     scopeWeekIdx: index('asin_products_scope_week_idx').on(t.scopeWeek),
+    // Plain (not partial) in migration 0056, so this one mirrors it exactly: the keywords sort walks it (spec 2026-10-23 §5).
+    keywordCountIdx: index('asin_products_keyword_count_idx').on(t.keywordCount, t.asin),
   }),
 );
 

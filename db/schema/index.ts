@@ -39,3 +39,4 @@ export * from './keepaServiceStatus';
 export * from './keywordTopAsins';
 export * from './baCategoryCrosswalk';
 export * from './productCategoryFacets';
+export * from './slowQueries';
