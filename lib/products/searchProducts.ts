@@ -33,7 +33,8 @@
  * safety net (see neonRunner).
  *
  * The total is best-effort: a count that hits the statement timeout (57014) yields the capped total
- * and `countTimedOut`, so a slow count never costs the page its rows.
+ * and `countTimedOut`, so a slow count never costs the page its rows. A rows statement that hits it still
+ * rejects; the list page tells that apart with isStatementTimeout and shows its inline notice.
  */
 import type { NeonQueryFunction } from '@neondatabase/serverless';
 import { categoryPredicate, type ProductCategoryScope } from './categoryPredicate';
@@ -117,7 +118,10 @@ interface Raw { asin: string; title: string | null; brand: string | null; catego
 
 /** SQLSTATE 57014 (query_canceled), what a statement timeout raises; pg's DatabaseError and neon's NeonDbError both carry it as `.code`. */
 const STATEMENT_TIMEOUT = '57014';
-const isStatementTimeout = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === STATEMENT_TIMEOUT;
+/** Whether an error is the statement timeout the runners set (SQLSTATE 57014, query_canceled). */
+export function isStatementTimeout(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { code?: unknown }).code === STATEMENT_TIMEOUT;
+}
 
 /** The capped count, or `null` when it hit the statement timeout. Any other failure rejects. */
 async function cappedCount(run: SqlRunner, q: SqlStatement): Promise<number | null> {

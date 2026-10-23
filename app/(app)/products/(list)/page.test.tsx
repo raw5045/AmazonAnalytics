@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import { cloneElement, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { EMPTY_CATEGORY_SCOPE } from '@/lib/products/categoryPredicate';
-import { PRODUCT_DEFAULTS } from '@/lib/products/filterParams';
+import { PRODUCT_DEFAULTS, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filterParams';
 import type { ProductSearchResult, SqlRunner } from '@/lib/products/searchProducts';
 
 vi.mock('@/lib/env', () => ({ env: { DATABASE_URL: 'postgres://test' } }));
@@ -36,6 +36,14 @@ vi.mock('@/lib/products/searchProducts', async (orig) => ({
 vi.mock('@/lib/products/listCategories', () => ({ listProductDepartments: data.departments, listProductBroadCategories: data.broad, listProductCategoryPaths: data.paths }));
 vi.mock('@/lib/customCategories/loadServer', () => ({ listCustomCategoriesForUser: data.custom }));
 vi.mock('@/lib/customCategories/expand', () => ({ expandCustomCategories: data.expand }));
+// The recorder is mocked (slowQueries.test.ts covers the insert); the rest of its module is real, so the page
+// reads the real SLOW_PRODUCT_SEARCH_MS, and the db client that module imports is a stub that never connects.
+const slow = vi.hoisted(() => ({ record: vi.fn() }));
+vi.mock('@/db/client', () => ({ db: {} }));
+vi.mock('@/lib/products/slowQueries', async (orig) => ({
+  ...(await orig<typeof import('@/lib/products/slowQueries')>()),
+  recordSlowProductSearch: slow.record,
+}));
 
 import ProductsPage from './page';
 
@@ -88,6 +96,7 @@ describe('ProductsPage (/products)', () => {
     data.paths.mockResolvedValue(['Home & Kitchen › Lighting › Desk Lamps']);
     data.custom.mockResolvedValue([{ id: '11111111-1111-4111-8111-000000000001', name: 'Lamps', leafPaths: ['Home & Kitchen › Lighting › Desk Lamps'], createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }]);
     data.expand.mockResolvedValue([]);
+    slow.record.mockResolvedValue(undefined);
   });
 
   it('redirects a signed-out visitor to /sign-in before any read', async () => {
@@ -191,5 +200,79 @@ describe('ProductsPage (/products)', () => {
     data.expand.mockRejectedValue(new Error('expand failed'));
     await expect(resolveAsync(await callPage({ custom: '11111111-1111-4111-8111-000000000001' }))).rejects.toThrow('expand failed');
     expect(data.search).not.toHaveBeenCalled();
+  });
+
+  describe('a slow or timed-out search (spec 2026-10-23 §5 and §5b)', () => {
+    const NOTICE = 'This combination took too long to load. Narrow the filters or try again.';
+    /** What the neon driver rejects with when the statement cap cancels the rows read, reduced to the field the page reads. */
+    const STATEMENT_TIMEOUT = { code: '57014' };
+    // A stand-in clock for timed() and the handler timer: only the search mock moves it, by the time the search
+    // "takes", so the search's measured ms is exact.
+    let clock = 0;
+    beforeEach(() => {
+      clock = 1_000_000;
+      vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    });
+    afterEach(() => vi.mocked(Date.now).mockRestore());
+    /** The search mock: the clock moves `ms` while it runs, then it resolves to RESULT, or rejects with `error` when one is given. */
+    const searchTaking = (ms: number, error?: unknown) => async (): Promise<ProductSearchResult> => {
+      clock += ms;
+      if (error !== undefined) throw error;
+      return RESULT;
+    };
+    /** The query string of the filters the page searched on, the form a recorded row carries. */
+    const searchedQueryString = () => productFiltersToSearchParams((data.search.mock.calls[0] as [SqlRunner, ProductFilters, unknown])[1]).toString();
+
+    it('a rows read cut off by the statement cap (57014): the notice in place of the table and the pager, the filter and perf panels kept, the timeout recorded and never awaited', async () => {
+      data.search.mockImplementation(searchTaking(30_000, STATEMENT_TIMEOUT));
+      // Never settles: a page that awaited the recording would hang here.
+      slow.record.mockReturnValue(new Promise<void>(() => {}));
+      render(<>{await resolveAsync(await callPage({ broad: 'Home', sort: 'keywords' }))}</>);
+
+      expect(screen.getByText(NOTICE)).toHaveAttribute('role', 'status');
+      expect(screen.queryByRole('table')).not.toBeInTheDocument();
+      expect(screen.queryByText(/^[\d,]+\+? products?$/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Page \d+ of /)).not.toBeInTheDocument();
+      // The panel stays, seeded from the filters and with its lists loaded: the four other reads still ran.
+      expect(screen.getByLabelText('Broad category (Brand Analytics)')).toHaveDisplayValue('Home');
+      expect(within(screen.getByLabelText('Department (Keepa)')).getAllByRole('option').map((o) => o.textContent)).toEqual(['All departments', 'Home & Kitchen', 'Pet Supplies']);
+      expect(screen.getByText(/^1 category /)).toBeInTheDocument();
+      // The admin perf panel stays; its loads note names the timeout.
+      expect(screen.getByText(/^\(parallel: search timed out after 30000 · departments \d+ · broad \d+ · paths \d+ \(1 · 0\.0 MB\) · custom \d+ ms\)$/)).toBeInTheDocument();
+
+      expect(slow.record).toHaveBeenCalledTimes(1);
+      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: 30_000, timedOut: true });
+      // The filters exactly as the URL carries them.
+      expect(searchedQueryString()).toBe('broad=Home&sort=keywords');
+    });
+
+    it('a search that completes slower than SLOW_PRODUCT_SEARCH_MS renders as usual and is recorded with timedOut false', async () => {
+      data.search.mockImplementation(searchTaking(9_000));
+      render(<>{await resolveAsync(await callPage({ age: '60', page: '3' }))}</>);
+
+      expect(screen.getByText('1,234 products')).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'LED Desk Lamp' })).toBeInTheDocument();
+      expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+      expect(slow.record).toHaveBeenCalledTimes(1);
+      expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: 9_000, timedOut: false });
+      expect(searchedQueryString()).toBe('age=60&page=3');
+    });
+
+    it.each([0, 8_000])('a search that completes in %i ms (not above SLOW_PRODUCT_SEARCH_MS) renders as usual and is not recorded', async (ms) => {
+      data.search.mockImplementation(searchTaking(ms));
+      render(<>{await resolveAsync(await callPage())}</>);
+
+      expect(screen.getByText('1,234 products')).toBeInTheDocument();
+      expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+      expect(slow.record).not.toHaveBeenCalled();
+    });
+
+    it('any other search failure still fails the page, and is not recorded even when slow', async () => {
+      for (const error of [Object.assign(new Error('out of memory'), { code: '53200' }), new Error('fetch failed')]) {
+        data.search.mockImplementation(searchTaking(30_000, error));
+        await expect(resolveAsync(await callPage())).rejects.toBe(error);
+      }
+      expect(slow.record).not.toHaveBeenCalled();
+    });
   });
 });
