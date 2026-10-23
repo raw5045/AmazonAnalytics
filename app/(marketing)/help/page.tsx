@@ -98,13 +98,15 @@ export default function HelpPage() {
 
       <Section title="The Products tab">
         <p>
-          Every product that is one of the three most-clicked results for any keyword sits in the Products tab,
-          with Keepa catalog data: listing date and age, monthly sold (Amazon&apos;s &ldquo;bought in past month&rdquo;
-          floor), rating and reviews, best sellers rank and how it compares with its own 30-day average, price,
-          whether FBA and Amazon itself sell it, and how many keywords it currently wins. Filter by department,
-          leaf or custom category, age, sales, reviews, rating, price and rank; sort by any of them. Open a product
-          for its facts, its history charts (one point per fetch, filling in week by week) and every keyword it
-          ranks for. The catalog refreshes continuously; each product is re-fetched about weekly.
+          The Products tab lists the top-3 clicked products behind this week&apos;s keywords, with Keepa catalog
+          data: listing date and age, monthly sold (Amazon&apos;s &ldquo;bought in past month&rdquo; floor), rating and
+          reviews, best sellers rank and how it compares with its own 30-day average, price, whether it has FBA
+          offers and whether Amazon itself sells it, and how many keywords it is a top-3 clicked product for.
+          Filter by department, leaf or custom category, age, sales, reviews, rating, price and rank; sort by
+          sales, listing date, reviews, price, rank, the 30-day comparison or keyword count. Open a product for
+          its facts, its history charts (one point per fetch, filling in week by week) and the keywords it is a
+          top-3 clicked product for this week. The catalog refreshes continuously; products behind the top
+          million keywords are re-fetched about weekly.
         </p>
       </Section>
 

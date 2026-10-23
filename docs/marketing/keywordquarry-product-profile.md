@@ -4,7 +4,7 @@
 
 **Verified on 2026-10-16** against the product's own code, its help pages and its live database. Numbers change weekly; the "as of" figures are marked. Marketplace: **US only** (the data is Amazon's US Brand Analytics report). Pricing: **free during beta, no credit card** (re-check the pricing page before quoting; it will change). Not affiliated with Amazon.
 
-**How to use this profile.** Each of the eight subject sections has the same shape: the customer features that apply, how someone uses them, workflow examples, the data and metric definitions involved, the limitations, and "when the video is about something else" notes with complementary approaches. Section 9 lists what is not available to customers. Section 10 is the competitor fact sheet with what was and was not verified. Section 11 gives the commenting rules. When a claim is not in this document, do not make it.
+**How to use this profile.** Each of the eight subject sections has the same shape: the customer features that apply, how someone uses them, workflow examples, the data and metric definitions involved, the limitations, and "when the video is about something else" notes with complementary approaches. Section 11 lists what is not available to customers. Section 12 is the competitor fact sheet with what was and was not verified. Section 13 gives the commenting rules. When a claim is not in this document, do not make it.
 
 ---
 
@@ -19,7 +19,7 @@ What a signed-in user can open today:
 | Keywords tab | /explorer | The core table: about 3.9M keywords (those seen in the last 28 days), filterable by rank or estimated volume, movement over 1 to 52 weeks, category, competition (average reviews of the top-3 clicked products), word count, title gaps, fake-volume flags; CSV export; saved views |
 | Keyword page | /explorer/keyword/… | One keyword's 52-week history: rank and estimated-volume trend, the three most-clicked products with click and conversion share, title-match history, fake-volume history, variants, weekly table |
 | Category Builder | /category-builder | Browse Amazon's category tree down to exact leaf categories (about 20,800 leaves used by keywords; about 24,000 in the product catalog) and build custom categories (buckets of leaves) that the Keywords tab and the AI connector can filter on |
-| Products | /products | The product catalog, open to every member: about 3.5M Amazon ASINs that are top-3 clicked products for keywords, with Keepa facts (price, BSR, reviews, rating, monthly-sold badge, listing age, offers), category filters, and each product's keyword list |
+| Products | /products | The product catalog, open to every member: about 3.5M Amazon ASINs that are top-3 clicked products for keywords, about 1.6M of them with Keepa facts (price, BSR, reviews, rating, monthly-sold badge, listing age, offers), category filters, and each product's keyword list |
 | Watchlist | /watchlist | Up to 100 starred keywords; a weekly email digest with each one's movement after new data lands |
 | Connect AI | /connect-ai | A connector (MCP) that lets Claude, Claude Code, ChatGPT and Cursor search KeywordQuarry directly, and with approval save views, build custom categories and edit the watchlist |
 | Help / Tutorials | /help | Seven short videos (about 30 minutes): what the data is, how to navigate, how to focus on a market, three filtering recipes |
@@ -275,7 +275,7 @@ No pay-per-click cost or bid data. No sales or revenue estimates. No listing-tex
 - Counts are capped at 10,000 ("at least"); searches return up to 1,000 rows, so "give me everything" questions return the top slice.
 - Write actions always need the user's approval in the client; the AI cannot delete or save silently.
 - The connector requires a paid ChatGPT plan with Developer mode; Claude works on its standard plans. Setup happens outside KeywordQuarry's UI (in the AI client).
-- An in-app chat ("Ask AI") exists but is admin-only today (Section 9); do not describe it as available.
+- An in-app chat ("Ask AI") exists but is admin-only today (Section 11); do not describe it as available.
 
 ### When the video is about something else
 - **"ChatGPT for Amazon research" videos (pasting data into a chat):** the complementary approach is a connector so the AI queries live data instead of pasted screenshots; KeywordQuarry's is free in beta and read/write with approval.

@@ -54,6 +54,8 @@ describe('ProductFilterPanel controls', () => {
     expect(optionTexts('Monthly sold (at least)')).toEqual([
       'Any', '50+', '100+', '200+', '300+', '400+', '500+', '1,000+', '2,000+', '5,000+', '10,000+', '20,000+', '50,000+', '100,000+',
     ]);
+    // The hint under the sold select is the shared badge wording plus a period (lib/products/format BOUGHT_IN_PAST_MONTH).
+    expect(screen.getByText('Amazon’s “bought in past month” badge.')).toBeInTheDocument();
     for (const label of ['Reviews (at most)', 'Minimum rating', 'Maximum rating', 'Minimum price', 'Maximum price', 'Minimum BSR', 'Maximum BSR']) {
       expect(control(label), label).toHaveValue(null);
     }
