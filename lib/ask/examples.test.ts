@@ -12,7 +12,9 @@ describe('Ask AI example prompts', () => {
     }
   });
 
-  it('keep exactly seven prompts behind the first', () => {
-    expect(MORE_EXAMPLES).toHaveLength(7);
+  it('keep exactly eight prompts behind the first, the products one last (spec 2026-10-23 §3)', () => {
+    expect(MORE_EXAMPLES).toHaveLength(8);
+    expect(MORE_EXAMPLES.at(-1)).toBe('Show me products in the supplements niche that sell over 1,000 units a day and were listed within the last 60 days.');
+    expect(EXAMPLE_QUESTIONS).toContain('Show me products in the supplements niche that sell over 1,000 units a day and were listed within the last 60 days.');
   });
 });

@@ -121,8 +121,8 @@ async function gated(req: Request): Promise<Response> {
   logAuth({ outcome: 'admitted', ...ids, localUserId, role: account!.role });
   const enriched: AuthInfo = { ...authInfo, extra: { clerkUserId: extra.clerkUserId, account } };
   req.auth = enriched;
-  // The server is built per request inside this context, so the admin-only tools are registered
-  // (listed) for an admin account only (./listingContext.ts, spec 2026-10-09 §9).
+  // The server is built per request inside this context, so an adminOnly tool is registered (listed)
+  // for an admin account only (./listingContext.ts, spec 2026-10-09 §9; none since spec 2026-10-23 §3).
   return listing.run({ isAdmin: account!.role === 'admin' }, () => mcp(req));
 }
 

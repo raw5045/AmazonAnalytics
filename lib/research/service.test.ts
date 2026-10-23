@@ -86,7 +86,7 @@ describe('search: a new request', () => {
     expect(res.pagination.expiresAt).toBe('2026-09-21T12:15:00.000Z');
     const cursor = verifyCursor(res.pagination.nextCursor!, 'test-secret', 0);
     expect(cursor).toMatchObject({ off: 50, ps: 50, snap: 'snap-a', uid: 'u1', ch: 'mcp', tm: { kind: 'exact', value: 137 } });
-    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 7, queryVersion: 1 });
+    expect(res.provenance).toMatchObject({ datasetWeek: '2026-09-12', snapshotVersion: 'snap-a', guideVersion: 8, queryVersion: 1 });
     expect(res.warnings.map((w) => w.code)).toEqual(['ESTIMATED_VOLUME', 'LIVE_PAGINATION']);
     expect(deps.record).toHaveBeenCalledWith('u1', 50, 'mcp');
     const call = (deps.runSearch as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -409,7 +409,7 @@ describe('defaultResearchService', () => {
   });
 });
 
-describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
+describe('the products tools (spec 2026-10-09 §9; every account since spec 2026-10-23 §3)', () => {
   const admin: ResearchActor = { ...actor, isAdmin: true };
   const ASIN = 'B0ABCDEF12';
   const productRow: ProductSummaryRow = {
@@ -433,7 +433,7 @@ describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
     const deps = makeDeps();
     const svc = createResearchService(deps);
     const res = await svc.searchProducts(admin, { sort: 'bsr' });
-    expect(res).toMatchObject({ schemaVersion: 1, products: [], total: { kind: 'exact', value: 0 }, page: 1, pageSize: 50, adminOnly: true });
+    expect(res).toMatchObject({ schemaVersion: 1, products: [], total: { kind: 'exact', value: 0 }, page: 1, pageSize: 50, adminOnly: false });
     expect(deps.products.search).toHaveBeenCalledWith(expect.objectContaining({ sort: 'bsr', dir: 'desc', page: 1 }), EMPTY_CATEGORY_SCOPE);
     expect(deps.reserve).toHaveBeenNthCalledWith(1, { userId: 'u1', channel: 'mcp', rows: 50, now: new Date('2026-09-21T12:00:00Z'), limits: deps.limits });
     expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', 0, 'mcp');
@@ -443,12 +443,20 @@ describe('the products tools (admin-only, spec 2026-10-09 §9)', () => {
     expect(deps.products.facts).toHaveBeenCalledWith('B0ABCDEF12');
     expect(deps.record).toHaveBeenCalledTimes(1);
   });
-  it('refuse a non-admin account with FORBIDDEN before any reserve or read', async () => {
+  it('serve a member (a non-admin account) as they serve an admin: the reads run, metered on the member’s own reserve and record, never FORBIDDEN', async () => {
     const deps = makeDeps();
     const svc = createResearchService(deps);
-    await expect(svc.searchProducts(actor, {})).rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
-    await expect(svc.productDetails(actor, { asin: 'B0ABCDEF12' })).rejects.toMatchObject({ code: 'FORBIDDEN', retryable: false });
-    for (const fn of [deps.reserve, deps.record, deps.products.search, deps.products.facts, deps.products.history, deps.products.keywords]) expect(fn).not.toHaveBeenCalled();
+    expect(actor.isAdmin).toBe(false);
+    const res = await svc.searchProducts(actor, { filters: { listedWithinDays: 60, monthlySoldMin: 30000 } });
+    expect(res).toMatchObject({ schemaVersion: 1, products: [], total: { kind: 'exact', value: 0 }, page: 1, pageSize: 50, adminOnly: false });
+    expect(deps.products.search).toHaveBeenCalledWith(expect.objectContaining({ age: 60, soldMin: 30000 }), EMPTY_CATEGORY_SCOPE);
+    expect(deps.reserve).toHaveBeenNthCalledWith(1, expect.objectContaining({ userId: 'u1', channel: 'mcp', rows: 50 }));
+    expect(deps.record).toHaveBeenNthCalledWith(1, 'u1', 0, 'mcp');
+    // An unknown ASIN is NOT_FOUND for a member as for anyone: the facts read runs, nothing is recorded.
+    await expect(svc.productDetails({ ...actor, channel: 'chat' }, { asin: 'B0ABCDEF12' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(deps.reserve).toHaveBeenNthCalledWith(2, expect.objectContaining({ userId: 'u1', channel: 'chat', rows: 1 }));
+    expect(deps.products.facts).toHaveBeenCalledWith('B0ABCDEF12');
+    expect(deps.record).toHaveBeenCalledTimes(1);
   });
   it('link with the service’s own appUrl (deps.appUrl), as the keyword tools do', async () => {
     const base = makeDeps();
@@ -582,13 +590,16 @@ describe('guide: workspace section', () => {
   });
 });
 
-describe('guide: products section (spec 2026-10-09 §9)', () => {
-  it('is present for an admin account on either channel, never for any other account', async () => {
+describe('guide: products section (spec 2026-10-09 §9; every account since spec 2026-10-23 §3)', () => {
+  it('is present for every account, a member as an admin, on either channel, at guide version 8', async () => {
     const svc = createResearchService(makeDeps());
     const admin: ResearchActor = { ...actor, isAdmin: true };
-    expect(await svc.guide(admin)).toHaveProperty('products.rules', PRODUCT_RULES);
-    expect(await svc.guide({ ...admin, clientId: 'ask-ai', channel: 'chat' })).toHaveProperty('products.rules', PRODUCT_RULES);
-    expect(await svc.guide(actor)).not.toHaveProperty('products');
-    expect(await svc.guide({ ...actor, clientId: 'ask-ai', channel: 'chat' })).not.toHaveProperty('products');
+    for (const who of [actor, admin]) {
+      for (const g of [await svc.guide(who), await svc.guide({ ...who, clientId: 'ask-ai', channel: 'chat' })]) {
+        expect(g, String(who.isAdmin)).toHaveProperty('products.rules', PRODUCT_RULES);
+        expect(g.products?.filters.map((f) => f.name), String(who.isAdmin)).toContain('monthlySoldMin');
+        expect(g.guideVersion).toBe(8);
+      }
+    }
   });
 });

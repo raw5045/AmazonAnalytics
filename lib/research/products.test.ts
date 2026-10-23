@@ -41,8 +41,8 @@ import type { ResearchActor } from './service';
 const APP = 'https://keywordquarry.com';
 const ASIN = 'B0ABCDEF12';
 const admin: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: true };
+/** A standard_user account: served exactly as an admin since spec 2026-10-23 §3 (same local id, so the owner-scoped custom rows below are theirs too). */
 const member: ResearchActor = { ...admin, isAdmin: false };
-const FORBIDDEN_INFO = { code: 'FORBIDDEN', message: 'Products tools are admin-only for now.', retryable: false };
 
 const summaryRow = (asin: string, over: Partial<ProductSummaryRow> = {}): ProductSummaryRow => ({
   asin, title: `Product ${asin}`, brand: 'Acme', categoryPath: 'Health & Household › Vitamins', listedSince: '2026-06-01', monthlySold: 1000, reviewCount: 120, averageRatingX10: 46,
@@ -128,7 +128,7 @@ describe('searchProductsForTool', () => {
       total: { kind: 'exact', value: 2 },
       page: 1,
       pageSize: PRODUCT_PAGE_SIZE,
-      adminOnly: true,
+      adminOnly: false,
     });
     // Metered as search_keywords is: the page size reserved up front, before any read; the delivered rows recorded after.
     expect(deps.reserve).toHaveBeenCalledTimes(1);
@@ -163,14 +163,36 @@ describe('searchProductsForTool', () => {
     expect(out.products.map((p) => p.url)).toEqual([`${APP}/products/B0AAAAAAA1`, `${APP}/products/B0AAAAAAA2`]);
   });
 
-  it('refuses a non-admin account with FORBIDDEN before anything runs (no reserve, read or record), whatever the input', async () => {
-    for (const input of [{}, { filters: { priceMin: -1 } }, 'not an object', { filters: { department: 'Pet Supplies', categories: { leafPaths: ['Pet Supplies › Cats › Toys'] } } }, { filters: { broadCategory: 'Home' } }]) {
+  it('serves a member (a non-admin account) exactly as an admin: the same reserve, scope checks, search, answer and record (spec 2026-10-23 §3)', async () => {
+    const input = {
+      filters: { listedWithinDays: 60, monthlySoldMin: 30000, department: 'Pet Supplies', broadCategory: 'Home', categories: { selections: [{ kind: 'custom', id: CUSTOM_ID }], leafPaths: ['Pet Supplies › Cats › Toys'] } },
+      sort: 'bsr',
+    };
+    const forAdmin = makeDeps();
+    const forMember = makeDeps();
+    const asAdmin = await searchProductsForTool(forAdmin, admin, input);
+    const asMember = await searchProductsForTool(forMember, member, input);
+    expect(asMember).toStrictEqual(asAdmin);
+    expect(asMember.adminOnly).toBe(false);
+    expect(vi.mocked(forMember.search).mock.calls).toStrictEqual(vi.mocked(forAdmin.search).mock.calls);
+    for (const fn of [forMember.departments, forMember.broadCategories, forMember.categoryPaths]) expect(fn).toHaveBeenCalledTimes(1);
+    expect(forMember.customRows).toHaveBeenCalledWith(member.localUserId, [CUSTOM_ID]);
+    expect(forMember.reserve).toHaveBeenCalledExactlyOnceWith(member, PRODUCT_PAGE_SIZE);
+    expect(forMember.record).toHaveBeenCalledExactlyOnceWith(member, asMember.products.length);
+  });
+
+  it("checks a member's input like anyone's: an invalid one is INVALID_FILTERS and an unknown department CATEGORY_NOT_AVAILABLE, never FORBIDDEN", async () => {
+    for (const input of [{ filters: { priceMin: -1 } }, 'not an object']) {
       const deps = makeDeps();
       const err = await searchProductsForTool(deps, member, input).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(ResearchError);
-      expect((err as ResearchError).toInfo()).toStrictEqual(FORBIDDEN_INFO);
-      for (const fn of [deps.reserve, deps.departments, deps.categoryPaths, deps.broadCategories, deps.customRows, deps.search, deps.record]) expect(fn).not.toHaveBeenCalled();
+      expect((err as ResearchError).code, JSON.stringify(input)).toBe('INVALID_FILTERS');
+      for (const fn of [deps.reserve, deps.search, deps.record]) expect(fn).not.toHaveBeenCalled();
     }
+    const deps = makeDeps();
+    await expect(searchProductsForTool(deps, member, { filters: { department: 'Pets' } })).rejects.toMatchObject({ code: 'CATEGORY_NOT_AVAILABLE' });
+    expect(deps.reserve).toHaveBeenCalledExactlyOnceWith(member, PRODUCT_PAGE_SIZE);
+    for (const fn of [deps.search, deps.record]) expect(fn).not.toHaveBeenCalled();
   });
 
   it('rejects invalid input as INVALID_FILTERS with the field path, before reserving', async () => {
@@ -419,13 +441,24 @@ describe('productDetailsForTool', () => {
     for (const fn of [deps.history, deps.keywords, deps.record]) expect(fn).not.toHaveBeenCalled();
   });
 
-  it('refuses a non-admin account with FORBIDDEN before anything runs, whatever the input', async () => {
-    for (const input of [{ asin: ASIN }, { asin: 'nope' }]) {
-      const deps = makeDeps();
-      const err = await productDetailsForTool(deps, member, input).catch((e: unknown) => e);
-      expect((err as ResearchError).toInfo()).toStrictEqual(FORBIDDEN_INFO);
-      for (const fn of [deps.reserve, deps.facts, deps.history, deps.keywords, deps.record]) expect(fn).not.toHaveBeenCalled();
-    }
+  it('serves a member (a non-admin account) exactly as an admin (spec 2026-10-23 §3); a malformed ASIN is INVALID_FILTERS and an unknown one NOT_FOUND, as for anyone', async () => {
+    const forAdmin = makeDeps();
+    const forMember = makeDeps();
+    const asMember = await productDetailsForTool(forMember, member, { asin: ASIN });
+    expect(asMember).toStrictEqual(await productDetailsForTool(forAdmin, admin, { asin: ASIN }));
+    expect(forMember.facts).toHaveBeenCalledWith(ASIN);
+    expect(forMember.history).toHaveBeenCalledWith(ASIN);
+    expect(forMember.keywords).toHaveBeenCalledWith(ASIN, PRODUCT_TOOL_KEYWORDS_CAP);
+    expect(forMember.reserve).toHaveBeenCalledExactlyOnceWith(member, 1);
+    expect(forMember.record).toHaveBeenCalledExactlyOnceWith(member, 1);
+
+    const malformed = makeDeps();
+    await expect(productDetailsForTool(malformed, member, { asin: 'nope' })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
+    expect(malformed.reserve).not.toHaveBeenCalled();
+    const unknown = makeDeps({ facts: vi.fn(async () => null) });
+    await expect(productDetailsForTool(unknown, member, { asin: ASIN })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(unknown.reserve).toHaveBeenCalledExactlyOnceWith(member, 1);
+    expect(unknown.record).not.toHaveBeenCalled();
   });
 
   it('rejects a malformed ASIN, a missing one or an extra key as INVALID_FILTERS, before reserving', async () => {

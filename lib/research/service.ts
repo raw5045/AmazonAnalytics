@@ -28,15 +28,15 @@ import { recordResearchActivity, reserveResearchRequest, type ResearchChannel } 
 
 /**
  * Identity comes from a trusted adapter — the MCP gate, or the Ask AI route (a session-derived `chat` actor) — never from tool arguments.
- * `isAdmin` is whether that account's role is `admin`, decided by the same adapter; the admin-only tools read it. It is required so every
- * place that builds an actor has to decide it.
+ * `isAdmin` is whether that account's role is `admin`, decided by the same adapter; the `adminOnly` offer check reads it (isOfferedTo in
+ * ./tools.ts; no tool is adminOnly since spec 2026-10-23 §3). It is required so every place that builds an actor has to decide it.
  */
 export interface ResearchActor { localUserId: string; clerkUserId: string; clientId: string; channel: ResearchChannel; isAdmin: boolean }
 
 /**
  * The research tools (MCP and the in-app chat), each independently callable: the five keyword
- * tools, plus the two admin-only products tools (spec 2026-10-09 §9, run in ./products.ts), which
- * reject a non-admin actor with FORBIDDEN before any read. Every method validates its own
+ * tools, plus the two products tools (spec 2026-10-09 §9, run in ./products.ts), which serve every
+ * account since spec 2026-10-23 §3. Every method validates its own
  * `input` (an `unknown` from the wire) and rejects with a `ResearchError` — see `guarded()`
  * below for how a non-`ResearchError` failure (a raw DB/pool error) is classified before it
  * ever reaches a caller.
@@ -191,8 +191,8 @@ function buildWarnings(args: { filters: Filters; sort: Sort; meta: SnapshotMeta;
  * `record` (the daily-digest counters, Task 17) runs only after every earlier step has already
  * succeeded — never before, and never on a rejected or failed call — so those counters only
  * ever reflect calls that actually returned a result to the caller. The two products tools
- * (./products.ts) keep the same order behind an admin check, on this service's own reserve and
- * record (bound into `products` below).
+ * (./products.ts) keep the same order, on this service's own reserve and record (bound into
+ * `products` below).
  */
 export function createResearchService(deps: ResearchServiceDeps): ResearchService {
   const loadDetails = deps.loadDetails ?? loadKeywordDetails;
@@ -425,8 +425,8 @@ export function createResearchService(deps: ResearchServiceDeps): ResearchServic
       audience: deps.audience(),
       limits: deps.limits,
       workspace: actor.channel === 'mcp' && deps.workspaceEnabled(),
-      // Spec 2026-10-09 §9: only an admin has the products tools, so only an admin's guide explains them.
-      products: actor.isAdmin,
+      // Spec 2026-10-23 §3: every account has the products tools, so every account's guide explains them.
+      products: true,
     });
     // I3: every tool call records a request, even a rows: 0 one — Task 17's "MCP tool calls"
     // (the request counter of the actor's channel: mcp_request or ask_tool_call) must count this

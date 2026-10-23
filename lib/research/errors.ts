@@ -15,7 +15,8 @@ export const RESEARCH_ERROR_CODES = [
   'LIMIT_REACHED',
   'DUPLICATE_NAME',
   'NOT_FOUND',
-  // Products tools (spec 2026-10-09 §9, §10): an admin-only tool called by a non-admin account. Never retryable.
+  // An adminOnly tool called by a non-admin account (spec 2026-10-09 §9, §10): today only Ask AI's approval resume check
+  // (lib/ask/tools.ts) returns it; the products tools stopped refusing with it in spec 2026-10-23 §3. Never retryable.
   'FORBIDDEN',
 ] as const;
 export type ResearchErrorCode = (typeof RESEARCH_ERROR_CODES)[number];

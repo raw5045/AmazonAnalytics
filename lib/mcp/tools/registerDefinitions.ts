@@ -23,8 +23,9 @@ export interface RegisterToolsOptions {
  * `args`), and `runTool` turns the service call into `okResult`/`errorResult`. Shared by
  * registerResearchTools.ts and registerWorkspaceTools.ts (spec 2026-09-30 §4). The server is
  * built per request, so an `adminOnly` definition is registered (listed) only when the request's
- * listing context (../listingContext.ts, set by the gate) is an admin's; with no context, never.
- * Its service still refuses a non-admin call with FORBIDDEN, as a backstop (spec 2026-10-09 §9).
+ * listing context (../listingContext.ts, set by the gate) is an admin's; with no context, never
+ * (spec 2026-10-09 §9). No definition is adminOnly since spec 2026-10-23 §3 opened the two products
+ * tools to every account; a future one's service should also refuse a non-admin call, as a backstop.
  */
 export function registerDefinitions<TService>(
   server: McpServer,

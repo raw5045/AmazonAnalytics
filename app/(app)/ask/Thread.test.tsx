@@ -53,7 +53,7 @@ describe('Thread', () => {
     expect(screen.queryByRole('heading', { name: 'What do you want to find?' })).toBeNull();
   });
 
-  it('the empty state (spec 2026-10-04 §4): a heading, the line under it and the eight examples; the select is disabled once the chat has a message', () => {
+  it('the empty state (spec 2026-10-04 §4): a heading, the line under it and the nine examples; the select is disabled once the chat has a message', () => {
     const { rerender } = render(<Harness />);
     expect(screen.getByRole('heading', { name: 'What do you want to find?' })).toBeInTheDocument();
     expect(screen.getByText('Same data as the Keywords tab, answered in plain language.')).toBeInTheDocument();

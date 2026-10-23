@@ -13,7 +13,7 @@ export function keywordUrlFor(appUrl: string, searchTermId: string): string {
 }
 
 /**
- * The ASIN page URL for one product (the admin-only Products pages, spec 2026-10-09 §6).
+ * The ASIN page URL for one product (the Products pages, spec 2026-10-09 §6; every signed-in account since spec 2026-10-23 §2).
  * `appUrl` loses its trailing slashes exactly as keywordUrlFor's does; `asin` is inserted
  * verbatim (the products tools only ever pass a schema-validated ASIN). Shared by
  * search_products' rows and get_product_details' product (lib/research/products.ts).

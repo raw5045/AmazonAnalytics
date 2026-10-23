@@ -139,11 +139,11 @@ describe('POST /api/ask/chat', () => {
     expect(activity.bumpUserActivity).toHaveBeenCalledTimes(1);
     expect(activity.bumpUserActivity).toHaveBeenCalledWith('u1', 'ask_question');
   });
-  it('builds the chat actor with isAdmin from the signed-in user\'s role (the admin-only product tools read it)', async () => {
+  it('builds the chat actor with isAdmin from the signed-in user\'s role (the adminOnly offer check reads it)', async () => {
     await post(newChat);
     expect(toolsMock.buildAskTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ channel: 'chat', isAdmin: false }), expect.anything(), null);
-    // The prompt's guide carries the products section exactly when the chat has the products tools.
-    expect(catalog.buildGuide).toHaveBeenLastCalledWith(expect.objectContaining({ products: false }));
+    // The prompt's guide carries the products section exactly when the chat has the products tools: every chat since spec 2026-10-23 §3.
+    expect(catalog.buildGuide).toHaveBeenLastCalledWith(expect.objectContaining({ products: true }));
     auth.user = { ...member, role: 'admin' };
     await post(newChat);
     expect(toolsMock.buildAskTools).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ channel: 'chat', isAdmin: true }), expect.anything(), null);

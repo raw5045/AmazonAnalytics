@@ -14,22 +14,23 @@ vi.mock('@/lib/env', () => ({ env: {} }));
 
 import { McpServer } from '@modelcontextprotocol/server';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
+import { registerDefinitions } from './registerDefinitions';
 import { registerResearchTools } from './registerResearchTools';
 import { ResearchError } from '@/lib/research/errors';
 import { PAGE_SIZE_MAX } from '@/lib/research/contracts';
 import { DEFAULT_LIMITS } from '@/lib/research/limits';
 import { COUNT_CAP } from '@/lib/explorer/buildQuery';
 import { RESEARCH_TOOLS } from '@/lib/research/tools';
-import { productsForbiddenError } from '@/lib/research/products';
 import type { ResearchLimits } from '@/lib/research/limits';
 import type { ResearchActor, ResearchService } from '@/lib/research/service';
 import { listing } from '../listingContext';
 
 const actor: ResearchActor = { localUserId: 'u1', clerkUserId: 'user_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
 const admin: ResearchActor = { ...actor, isAdmin: true };
-const FORBIDDEN = { error: { code: 'FORBIDDEN', message: 'Products tools are admin-only for now.', retryable: false } };
 const KEYWORD_TOOLS = ['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords'];
 const PRODUCT_TOOLS = ['get_product_details', 'search_products'];
+/** Every research tool, sorted: what every account's request lists since spec 2026-10-23 §3. */
+const ALL_TOOLS = [...KEYWORD_TOOLS, ...PRODUCT_TOOLS].sort();
 
 // searchToolInputSchema's `cursor` is `z.string().min(16)...` — the SDK validates tool
 // arguments against inputSchema BEFORE the callback runs, so a continuation cursor used to
@@ -108,13 +109,9 @@ const service: ResearchService = {
     searchTermId: 'id-1', keyword: 'kw', windowStart: 'a', windowEnd: 'b', requestedWeeks: 13,
     points: [], missingWeeks: [], source: 'chart_series' as const, seriesUpdatedAt: null, warnings: [],
   })),
-  // As the real service does (lib/research/products.ts): a non-admin account is refused with FORBIDDEN before anything runs.
-  searchProducts: vi.fn(async (a: ResearchActor) => {
-    if (!a.isAdmin) throw productsForbiddenError();
-    return { schemaVersion: 1 as const, products: [], total: { kind: 'exact' as const, value: 0 }, page: 1, pageSize: 50, adminOnly: true as const };
-  }),
-  productDetails: vi.fn(async (a: ResearchActor) => {
-    if (!a.isAdmin) throw productsForbiddenError();
+  // As the real service does since spec 2026-10-23 §3 (lib/research/products.ts): every account is served, admin or not.
+  searchProducts: vi.fn(async () => ({ schemaVersion: 1 as const, products: [], total: { kind: 'exact' as const, value: 0 }, page: 1, pageSize: 50, adminOnly: false as const })),
+  productDetails: vi.fn(async () => {
     throw new ResearchError('NOT_FOUND', 'No data for that ASIN.');
   }),
 };
@@ -122,11 +119,13 @@ const service: ResearchService = {
 /**
  * A client on a fresh server whose tools were registered the way the gate (lib/mcp/handler.ts)
  * does it per request: inside `listing.run({ isAdmin })`, or with `isAdmin` undefined outside any
- * listing context.
+ * listing context. `defs` swaps in another definition list (the adminOnly mechanism test below).
  */
-async function connectListed(isAdmin: boolean | undefined, actorFor: () => ResearchActor, limits?: ResearchLimits) {
+async function connectListed(isAdmin: boolean | undefined, actorFor: () => ResearchActor, limits?: ResearchLimits, defs?: typeof RESEARCH_TOOLS) {
   const server = new McpServer({ name: 'keywordquarry-test-listing', version: '0' });
-  const register = () => registerResearchTools(server, service, { actorFor, ...(limits ? { limits } : {}) });
+  const register = defs
+    ? () => registerDefinitions(server, defs, service, actorFor, limits ?? DEFAULT_LIMITS)
+    : () => registerResearchTools(server, service, { actorFor, ...(limits ? { limits } : {}) });
   if (isAdmin === undefined) register();
   else listing.run({ isAdmin }, register);
   const client = new Client({ name: 'test-listing', version: '0' });
@@ -156,9 +155,9 @@ describe('research tools over an in-memory MCP connection (a non-admin request)'
     await server.close();
   });
 
-  it('lists exactly the five keyword tools, all read-only, with titles and descriptions', async () => {
+  it('lists all seven research tools, the two products tools included (spec 2026-10-23 §3), all read-only, with titles and descriptions', async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(KEYWORD_TOOLS);
+    expect(tools.map((t) => t.name).sort()).toEqual(ALL_TOOLS);
     for (const t of tools) {
       expect(t.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
       expect(t.title).toBeTruthy();
@@ -265,26 +264,37 @@ describe('research tools over an in-memory MCP connection (a non-admin request)'
     expect(service.search).not.toHaveBeenCalled();
   });
 
-  // Spec 2026-10-09 §9: the server is built per request, so a non-admin request never registers the
-  // two admin-only products tools; a direct call is the SDK's own unknown-tool error, and the service
-  // never runs.
-  it('does not offer the products tools: they are not listed, and a direct call gets the SDK\'s not-found error before any service call', async () => {
+  // Spec 2026-10-23 §3: a member's request lists the two products tools like the keyword tools, and
+  // the call reaches the service with the member's own actor (the owner's example: listed within 60
+  // days, over 1,000 a day = monthlySoldMin 30000).
+  it('offers the products tools to a member: listed read-only and strict, with no admin-only note, and run with the member\'s actor', async () => {
     vi.mocked(service.searchProducts).mockClear();
     vi.mocked(service.productDetails).mockClear();
     const { tools } = await client.listTools();
-    for (const name of PRODUCT_TOOLS) expect(tools.map((t) => t.name)).not.toContain(name);
-    await expect(client.callTool({ name: 'search_products', arguments: { filters: { listedWithinDays: 180 } } })).rejects.toThrow('Tool search_products not found');
-    await expect(client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } })).rejects.toThrow('Tool get_product_details not found');
-    expect(service.searchProducts).not.toHaveBeenCalled();
-    expect(service.productDetails).not.toHaveBeenCalled();
+    for (const name of PRODUCT_TOOLS) {
+      const t = tools.find((x) => x.name === name);
+      expect(t, name).toBeDefined();
+      expect(t!.description, name).not.toMatch(/admin/i);
+      expect(t!.annotations, name).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
+      expect(t!.inputSchema, name).toMatchObject({ type: 'object', additionalProperties: false });
+    }
+    const filters = { listedWithinDays: 60, monthlySoldMin: 30000 };
+    const r = await client.callTool({ name: 'search_products', arguments: { filters } });
+    expect(r.isError).toBeFalsy();
+    expect(service.searchProducts).toHaveBeenCalledExactlyOnceWith(actor, { filters });
+    expect(r.structuredContent).toMatchObject({ adminOnly: false, total: { kind: 'exact', value: 0 }, pageSize: 50 });
+    const d = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
+    expect(d.isError).toBe(true);
+    expect(JSON.parse((d.content[0] as { text: string }).text).error.code).toBe('NOT_FOUND');
+    expect(service.productDetails).toHaveBeenCalledExactlyOnceWith(actor, { asin: 'B0ABCDEF12' });
   });
 });
 
-describe('who is offered the admin-only products tools', () => {
-  it('outside any listing context (a caller other than the gate), nobody: the five keyword tools only', async () => {
-    const { client, close } = await connectListed(undefined, () => admin);
+describe('who is offered the products tools (every account since spec 2026-10-23 §3)', () => {
+  it('outside any listing context (a caller other than the gate): all seven, as no research tool is adminOnly', async () => {
+    const { client, close } = await connectListed(undefined, () => actor);
     try {
-      expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(KEYWORD_TOOLS);
+      expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(ALL_TOOLS);
     } finally {
       await close();
     }
@@ -294,17 +304,17 @@ describe('who is offered the admin-only products tools', () => {
     const { client, close } = await connectListed(true, () => admin);
     try {
       const { tools } = await client.listTools();
-      expect(tools.map((t) => t.name).sort()).toEqual([...KEYWORD_TOOLS, ...PRODUCT_TOOLS].sort());
+      expect(tools.map((t) => t.name).sort()).toEqual(ALL_TOOLS);
       for (const name of PRODUCT_TOOLS) {
         const t = tools.find((x) => x.name === name)!;
-        expect(t.description, name).toContain('Admin accounts only for now.');
+        expect(t.description, name).not.toMatch(/admin/i);
         expect(t.annotations, name).toMatchObject({ readOnlyHint: true, destructiveHint: false, openWorldHint: false });
         expect(t.inputSchema, name).toMatchObject({ type: 'object', additionalProperties: false });
       }
       const r = await client.callTool({ name: 'search_products', arguments: { sort: 'bsr', dir: 'asc' } });
       expect(r.isError).toBeFalsy();
       expect(service.searchProducts).toHaveBeenLastCalledWith(admin, { sort: 'bsr', dir: 'asc' });
-      expect(r.structuredContent).toMatchObject({ adminOnly: true, total: { kind: 'exact', value: 0 }, pageSize: 50 });
+      expect(r.structuredContent).toMatchObject({ adminOnly: false, total: { kind: 'exact', value: 0 }, pageSize: 50 });
       const d = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
       expect(d.isError).toBe(true);
       expect(JSON.parse((d.content[0] as { text: string }).text).error.code).toBe('NOT_FOUND');
@@ -319,23 +329,22 @@ describe('who is offered the admin-only products tools', () => {
     }
   });
 
-  // The backstop: should the listing ever say admin while the actor is not (e.g. a role change in
-  // between), the service refuses with FORBIDDEN and the adapter maps it to a tool error with that code.
-  it('keeps the service\'s FORBIDDEN as a backstop, mapped to an MCP tool error carrying the code', async () => {
-    const { client, close } = await connectListed(true, () => actor);
-    try {
-      const filters = { listedWithinDays: 180, monthlySoldMin: 1000, reviewsMax: 300 };
-      const search = await client.callTool({ name: 'search_products', arguments: { filters } });
-      expect(search.isError).toBe(true);
-      expect(JSON.parse((search.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
-      expect(service.searchProducts).toHaveBeenLastCalledWith(actor, { filters });
-      const details = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
-      expect(details.isError).toBe(true);
-      expect(JSON.parse((details.content[0] as { text: string }).text)).toEqual(FORBIDDEN);
-      expect(service.productDetails).toHaveBeenLastCalledWith(actor, { asin: 'B0ABCDEF12' });
-    } finally {
-      await close();
-    }
+  // The mechanism stays for a future tool (registerDefinitions.ts, ../listingContext.ts): a definition
+  // flagged adminOnly is registered for an admin request only, and outside any listing context for nobody.
+  it('keeps the adminOnly mechanism: a flagged definition is listed to an admin request only, never to a member or outside a listing context', async () => {
+    const flagged = RESEARCH_TOOLS.map((d) => (d.name === 'search_products' ? { ...d, adminOnly: true } : d));
+    const namesFor = async (isAdmin: boolean | undefined) => {
+      const { client, close } = await connectListed(isAdmin, () => (isAdmin ? admin : actor), DEFAULT_LIMITS, flagged);
+      try {
+        return (await client.listTools()).tools.map((t) => t.name).sort();
+      } finally {
+        await close();
+      }
+    };
+    const withoutFlagged = ALL_TOOLS.filter((n) => n !== 'search_products');
+    expect(await namesFor(true)).toEqual(ALL_TOOLS);
+    expect(await namesFor(false)).toEqual(withoutFlagged);
+    expect(await namesFor(undefined)).toEqual(withoutFlagged);
   });
 });
 
@@ -359,14 +368,14 @@ describe('the limits option', () => {
 });
 
 describe('parity with lib/research/tools.ts', () => {
-  it('exposes exactly the shared module\'s names, titles, descriptions and annotations (spec §4 parity): all of them to an admin, the non-adminOnly ones to anyone else', async () => {
+  it('exposes exactly the shared module\'s names, titles, descriptions and annotations (spec §4 parity): all of them to every account, an admin and a member alike (spec 2026-10-23 §3)', async () => {
     const limits = DEFAULT_LIMITS;
-    const shared = (defs: typeof RESEARCH_TOOLS) => defs.map((d) => [d.name, d.title, d.description(limits), d.annotations]);
-    for (const [isAdmin, expected] of [[true, RESEARCH_TOOLS], [false, RESEARCH_TOOLS.filter((d) => !d.adminOnly)]] as const) {
+    const shared = RESEARCH_TOOLS.map((d) => [d.name, d.title, d.description(limits), d.annotations]);
+    for (const isAdmin of [true, false]) {
       const { client, close } = await connectListed(isAdmin, () => (isAdmin ? admin : actor), limits);
       try {
         const { tools } = await client.listTools();
-        expect(tools.map((t) => [t.name, t.title, t.description, t.annotations]), String(isAdmin)).toEqual(shared(expected));
+        expect(tools.map((t) => [t.name, t.title, t.description, t.annotations]), String(isAdmin)).toEqual(shared);
       } finally {
         await close();
       }

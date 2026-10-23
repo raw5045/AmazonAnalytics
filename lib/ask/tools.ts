@@ -85,8 +85,9 @@ export async function runWorkspaceTool(workspace: WorkspaceService, actor: Resea
  * adapter returns (which additionally flags isError) — so the model explains or narrows within the
  * loop bound; anything else becomes the safe sentence. With `workspace` (ASK_AI_WRITES_ENABLED,
  * spec 2026-10-01 §3) the eleven workspace tools follow the research tools; without it the set is
- * exactly today's. An `adminOnly` definition, in either list (today the two products tools, spec
- * 2026-10-09 §9), is bound for an admin actor only: every other account's chat is never offered it.
+ * exactly today's. Every research tool, the two products tools included, is bound for every account
+ * (spec 2026-10-23 §3). An `adminOnly` definition, in either list (none today; the mechanism stays
+ * for a future tool), is bound for an admin actor only: every other account's chat is never offered it.
  */
 export function buildAskTools(service: ResearchService, actor: ResearchActor, limits: ResearchLimits = researchLimits(), workspace: WorkspaceService | null = null): ToolSet {
   const out: ToolSet = {};

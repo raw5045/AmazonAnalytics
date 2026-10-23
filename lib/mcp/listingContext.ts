@@ -7,7 +7,8 @@ export interface McpListing {
 }
 
 /**
- * Spec 2026-10-09 §9: the admin-only tools are listed to admins only. mcp-handler (2.2.0, over the
+ * Spec 2026-10-09 §9: an adminOnly tool is listed to admins only (no tool is adminOnly since spec
+ * 2026-10-23 §3 opened the products tools; the mechanism stays for a future one). mcp-handler (2.2.0, over the
  * SDK's stateless mode) builds a fresh server for every request, so the gate in ./handler.ts runs
  * the handler inside `listing.run({ isAdmin }, …)` and ./tools/registerDefinitions.ts reads the
  * store while it registers. No store (a caller outside the gate) lists no admin-only tool.

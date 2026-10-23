@@ -16,7 +16,7 @@ const service = {
   search: vi.fn(async () => { throw new ResearchError('RATE_LIMITED', 'Rate limit reached', { retryable: true, retryAfterSeconds: 9 }); }),
   details: vi.fn(async () => { throw new Error('pg: connection reset'); }),
   history: vi.fn(async () => ({ points: [] })),
-  searchProducts: vi.fn(async () => ({ products: [], adminOnly: true })),
+  searchProducts: vi.fn(async () => ({ products: [], adminOnly: false })),
   productDetails: vi.fn(async () => ({ product: { asin: 'B0ABCDEF12' } })),
 } as unknown as ResearchService;
 const admin: ResearchActor = { ...actor, isAdmin: true };
@@ -30,9 +30,11 @@ const workspace = {
 } as unknown as WorkspaceService;
 const HEX_ID = 'abcdef12-abcd-4abc-8abc-abcdef123456';
 const INVALID = { error: { code: 'INVALID_FILTERS', message: 'The approved action could not be run: its details were invalid.', retryable: false } };
-const RESEARCH = ['get_research_guide', 'resolve_categories', 'search_keywords', 'get_keyword_details', 'get_keyword_history'];
-/** The admin-only research tools (spec 2026-10-09 §9): bound for an admin actor only. */
+const KEYWORDS = ['get_research_guide', 'resolve_categories', 'search_keywords', 'get_keyword_details', 'get_keyword_history'];
+/** The products tools (spec 2026-10-09 §9): bound for every actor since spec 2026-10-23 §3, after the keyword tools. */
 const PRODUCTS = ['search_products', 'get_product_details'];
+/** Every research tool, in the shared list's order: what every chat is offered. */
+const RESEARCH = [...KEYWORDS, ...PRODUCTS];
 const CHANGES = ['create_saved_view', 'update_saved_view', 'create_custom_category', 'update_custom_category', 'add_to_watchlist', 'remove_from_watchlist'];
 const DELETES = ['delete_saved_view', 'delete_custom_category'];
 const LISTS = ['list_saved_views', 'list_custom_categories', 'list_watchlist'];
@@ -49,9 +51,9 @@ afterEach(() => vi.restoreAllMocks());
 describe('buildAskTools', () => {
   const tools = buildAskTools(service, actor, DEFAULT_LIMITS);
 
-  it('without a workspace service (the flag off) exposes exactly the five research tools, byte-for-byte today\'s chat: the shared descriptions and schemas (spec 2026-10-01 §2)', () => {
+  it('without a workspace service (the flag off) exposes exactly the seven research tools, the products tools included (spec 2026-10-23 §3): the shared descriptions and schemas (spec 2026-10-01 §2)', () => {
     expect(Object.keys(tools)).toEqual(RESEARCH);
-    for (const d of RESEARCH_TOOLS.filter((t) => !t.adminOnly)) {
+    for (const d of RESEARCH_TOOLS) {
       expect(bound(tools, d.name).description).toBe(d.description(DEFAULT_LIMITS));
       expect(bound(tools, d.name).inputSchema).toBe(d.inputSchema);
     }
@@ -75,39 +77,44 @@ describe('buildAskTools', () => {
     expect(String(error.mock.calls[0][1])).toContain('get_keyword_details');
   });
 
-  describe('the admin-only products tools (spec 2026-10-09 §9)', () => {
-    it('leaves search_products and get_product_details out of a non-admin chat, with or without the workspace tools', () => {
-      expect(RESEARCH_TOOLS.filter((t) => t.adminOnly).map((t) => t.name)).toEqual(PRODUCTS);
-      for (const set of [tools, buildAskTools(service, actor, DEFAULT_LIMITS, workspace)]) {
-        for (const name of PRODUCTS) expect(set[name], name).toBeUndefined();
+  describe('the products tools (every account since spec 2026-10-23 §3)', () => {
+    it('binds both for a member as for an admin, after the five keyword tools and before the workspace tools, with the shared descriptions and schemas', () => {
+      expect(RESEARCH_TOOLS.filter((t) => t.adminOnly).map((t) => t.name)).toEqual([]);
+      for (const who of [actor, admin]) {
+        const set = buildAskTools(service, who, DEFAULT_LIMITS);
+        expect(Object.keys(set), String(who.isAdmin)).toEqual([...KEYWORDS, ...PRODUCTS]);
+        for (const d of RESEARCH_TOOLS) {
+          expect(bound(set, d.name).description).toBe(d.description(DEFAULT_LIMITS));
+          expect(bound(set, d.name).inputSchema).toBe(d.inputSchema);
+        }
+        expect(bound(set, 'search_products').description).not.toMatch(/admin/i);
+        expect(Object.keys(buildAskTools(service, who, DEFAULT_LIMITS, workspace)), String(who.isAdmin)).toEqual([...KEYWORDS, ...PRODUCTS, ...WORKSPACE_TOOL_NAMES]);
       }
     });
-    it('binds both for an admin, after the five keyword tools and before the workspace tools, with the shared descriptions and schemas', () => {
-      const forAdmin = buildAskTools(service, admin, DEFAULT_LIMITS);
-      expect(Object.keys(forAdmin)).toEqual([...RESEARCH, ...PRODUCTS]);
-      for (const d of RESEARCH_TOOLS) {
-        expect(bound(forAdmin, d.name).description).toBe(d.description(DEFAULT_LIMITS));
-        expect(bound(forAdmin, d.name).inputSchema).toBe(d.inputSchema);
-      }
-      expect(bound(forAdmin, 'search_products').description).toContain('Admin accounts only for now.');
-      expect(Object.keys(buildAskTools(service, admin, DEFAULT_LIMITS, workspace))).toEqual([...RESEARCH, ...PRODUCTS, ...WORKSPACE_TOOL_NAMES]);
+    it('runs them against the service with the bound member actor and the SDK-parsed input', async () => {
+      const forMember = buildAskTools(service, actor, DEFAULT_LIMITS);
+      const filters = { listedWithinDays: 60, monthlySoldMin: 30000 };
+      await expect(exec(forMember, 'search_products', { filters })).resolves.toEqual({ products: [], adminOnly: false });
+      expect(service.searchProducts).toHaveBeenCalledExactlyOnceWith(actor, { filters });
+      await expect(exec(forMember, 'get_product_details', { asin: 'B0ABCDEF12' })).resolves.toEqual({ product: { asin: 'B0ABCDEF12' } });
+      expect(service.productDetails).toHaveBeenCalledExactlyOnceWith(actor, { asin: 'B0ABCDEF12' });
     });
-    it('runs them against the service with the bound admin actor and the SDK-parsed input', async () => {
-      const forAdmin = buildAskTools(service, admin, DEFAULT_LIMITS);
-      await expect(exec(forAdmin, 'search_products', { filters: { listedWithinDays: 180 } })).resolves.toEqual({ products: [], adminOnly: true });
-      expect(service.searchProducts).toHaveBeenCalledExactlyOnceWith(admin, { filters: { listedWithinDays: 180 } });
-      await expect(exec(forAdmin, 'get_product_details', { asin: 'B0ABCDEF12' })).resolves.toEqual({ product: { asin: 'B0ABCDEF12' } });
-      expect(service.productDetails).toHaveBeenCalledExactlyOnceWith(admin, { asin: 'B0ABCDEF12' });
-    });
-    it('honours adminOnly on a workspace definition too: the workspace loop and the approval resume path offer it to an admin only', async () => {
-      // No workspace tool is adminOnly today, so flag one in a fresh module graph.
+    it('keeps the adminOnly mechanism for a future tool: a flagged research or workspace definition is offered to an admin only, in the chat and on the approval resume path', async () => {
+      // No definition is adminOnly today, so flag one of each list in a fresh module graph.
       vi.resetModules();
+      vi.doMock('@/lib/research/tools', async (importOriginal) => {
+        const real = await importOriginal<typeof import('@/lib/research/tools')>();
+        return { ...real, RESEARCH_TOOLS: real.RESEARCH_TOOLS.map((d) => (d.name === 'search_products' ? { ...d, adminOnly: true } : d)) };
+      });
       vi.doMock('@/lib/workspace/tools', async (importOriginal) => {
         const real = await importOriginal<typeof import('@/lib/workspace/tools')>();
         return { ...real, WORKSPACE_TOOLS: real.WORKSPACE_TOOLS.map((d) => (d.name === 'add_to_watchlist' ? { ...d, adminOnly: true } : d)) };
       });
       try {
         const fresh = await import('./tools');
+        expect(fresh.buildAskTools(service, actor, DEFAULT_LIMITS).search_products).toBeUndefined();
+        expect(fresh.buildAskTools(service, actor, DEFAULT_LIMITS).get_product_details).toBeDefined();
+        expect(fresh.buildAskTools(service, admin, DEFAULT_LIMITS).search_products).toBeDefined();
         expect(fresh.buildAskTools(service, actor, DEFAULT_LIMITS, workspace).add_to_watchlist).toBeUndefined();
         expect(fresh.buildAskTools(service, admin, DEFAULT_LIMITS, workspace).add_to_watchlist).toBeDefined();
         const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -119,6 +126,7 @@ describe('buildAskTools', () => {
         await expect(fresh.runWorkspaceTool(workspace, admin, 'add_to_watchlist', { keywords: ['desk lamp'] })).resolves.toMatchObject({ added: 1 });
         expect(workspace.addToWatchlist).toHaveBeenCalledExactlyOnceWith(admin, { keywords: ['desk lamp'], searchTermIds: [] });
       } finally {
+        vi.doUnmock('@/lib/research/tools');
         vi.doUnmock('@/lib/workspace/tools');
         vi.resetModules();
       }
@@ -128,7 +136,7 @@ describe('buildAskTools', () => {
   describe('with a workspace service (the flag on)', () => {
     const all = buildAskTools(service, actor, DEFAULT_LIMITS, workspace);
 
-    it('exposes the five research tools followed by the eleven workspace tools, with the shared descriptions and schemas', () => {
+    it('exposes the seven research tools followed by the eleven workspace tools, with the shared descriptions and schemas', () => {
       expect(Object.keys(all)).toEqual([...RESEARCH, ...WORKSPACE_TOOL_NAMES]);
       for (const d of WORKSPACE_TOOLS) {
         expect(bound(all, d.name).description).toBe(d.description(DEFAULT_LIMITS));

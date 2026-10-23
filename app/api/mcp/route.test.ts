@@ -22,6 +22,8 @@ const { fakeService } = vi.hoisted(() => ({
     search: vi.fn(async () => ({ schemaVersion: 1, requestId: 'r1', rows: [], pagination: { nextCursor: null } })),
     details: vi.fn(async () => ({ status: 'dormant' })),
     history: vi.fn(async () => ({ points: [] })),
+    searchProducts: vi.fn(async () => ({ schemaVersion: 1, products: [], total: { kind: 'exact', value: 0 }, page: 1, pageSize: 50, adminOnly: false })),
+    productDetails: vi.fn(async () => ({ schemaVersion: 1, product: { asin: 'B0ABCDEF12' } })),
   },
 }));
 const { fakeWorkspace, mockDefaultWorkspaceService } = vi.hoisted(() => {
@@ -186,7 +188,7 @@ describe('/api/mcp', () => {
       expect(client.getInstructions()).toContain('KeywordQuarry');
 
       const { tools } = await client.listTools();
-      // An admin's request: the seven research tools (the two admin-only products tools included) and whoami.
+      // An admin's request: the seven research tools (the two products tools included) and whoami.
       expect(tools.map((t) => t.name).sort()).toEqual([
         'get_keyword_details', 'get_keyword_history', 'get_product_details', 'get_research_guide', 'resolve_categories', 'search_keywords', 'search_products', 'whoami',
       ]);
@@ -237,11 +239,11 @@ describe('/api/mcp', () => {
     }
   });
 
-  it('lists the admin-only products tools per request, to an admin only: a standard user neither sees nor can call them (spec 2026-10-09 §9)', async () => {
+  it('lists the products tools to every account (spec 2026-10-23 §3): a standard user sees the same eight tools as an admin and calls them with their own actor', async () => {
     envMock.env.MCP_AUDIENCE = 'all';
-    // Sorted: the five keyword tools and whoami, then the same with the two products tools.
-    const EVERYONE = ['get_keyword_details', 'get_keyword_history', 'get_research_guide', 'resolve_categories', 'search_keywords', 'whoami'];
-    const ADMIN = [...EVERYONE, 'get_product_details', 'search_products'].sort();
+    const EVERY_ACCOUNT = [
+      'get_keyword_details', 'get_keyword_history', 'get_product_details', 'get_research_guide', 'resolve_categories', 'search_keywords', 'search_products', 'whoami',
+    ];
     const toolsFor = async (row: typeof adminRow) => {
       mockFindFirst.mockResolvedValue(row);
       const client = await connect();
@@ -251,16 +253,21 @@ describe('/api/mcp', () => {
         await client.close().catch(() => {});
       }
     };
-    // One process, three requests: the listing follows each request's account, never the first one's.
-    expect(await toolsFor(adminRow)).toEqual(ADMIN);
-    expect(await toolsFor(standardRow)).toEqual(EVERYONE);
-    expect(await toolsFor(adminRow)).toEqual(ADMIN);
+    expect(await toolsFor(standardRow)).toEqual(EVERY_ACCOUNT);
+    expect(await toolsFor(adminRow)).toEqual(EVERY_ACCOUNT);
 
     mockFindFirst.mockResolvedValue(standardRow);
     const client = await connect();
     try {
-      await expect(client.callTool({ name: 'search_products', arguments: {} })).rejects.toThrow('Tool search_products not found');
-      await expect(client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } })).rejects.toThrow('Tool get_product_details not found');
+      const filters = { listedWithinDays: 60, monthlySoldMin: 30000 };
+      const search = await client.callTool({ name: 'search_products', arguments: { filters } });
+      expect(search.isError).toBeFalsy();
+      expect(search.structuredContent).toMatchObject({ adminOnly: false });
+      const member = { localUserId: 'uuid-std', clerkUserId: 'user_clerk_1', clientId: 'client_claude', channel: 'mcp', isAdmin: false };
+      expect(fakeService.searchProducts).toHaveBeenCalledExactlyOnceWith(member, { filters });
+      const details = await client.callTool({ name: 'get_product_details', arguments: { asin: 'B0ABCDEF12' } });
+      expect(details.isError).toBeFalsy();
+      expect(fakeService.productDetails).toHaveBeenCalledExactlyOnceWith(member, { asin: 'B0ABCDEF12' });
     } finally {
       await client.close().catch(() => {});
     }
@@ -431,5 +438,49 @@ describe('/api/mcp with MCP_WRITE_ENABLED=1 when the workspace service cannot be
     } finally {
       await client.close().catch(() => {});
     }
+  });
+});
+
+// No tool is adminOnly since spec 2026-10-23 §3, but the mechanism stays for a future one (spec 2026-10-09 §9):
+// the gate still builds each request's server inside that request's listing context.
+describe('/api/mcp listing an adminOnly tool (the mechanism, kept for a future tool)', () => {
+  const spies: Array<{ mockRestore(): void }> = [];
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.resetModules(); // the route is re-imported below, over a research tool list with one tool flagged
+    envMock.env.MCP_ENABLED = '1';
+    envMock.env.MCP_AUDIENCE = 'all';
+    delete envMock.env.MCP_ALLOWED_CLIENT_IDS;
+    mockAuth.mockResolvedValue(clerkOauth());
+    mockGetConnection.mockResolvedValue(null);
+    mockDatasetWeek.mockResolvedValue('2026-09-12');
+    vi.doMock('@/lib/research/tools', async (importOriginal) => {
+      const real = await importOriginal<typeof import('@/lib/research/tools')>();
+      return { ...real, RESEARCH_TOOLS: real.RESEARCH_TOOLS.map((d) => (d.name === 'search_products' ? { ...d, adminOnly: true } : d)) };
+    });
+    for (const m of ['log', 'warn', 'error'] as const) spies.push(vi.spyOn(console, m).mockImplementation(() => {}));
+  });
+  afterEach(() => {
+    vi.doUnmock('@/lib/research/tools');
+    vi.resetModules();
+    delete envMock.env.MCP_AUDIENCE;
+    spies.splice(0).forEach((s) => s.mockRestore());
+  });
+
+  it('lists a flagged tool per request, to an admin only: one process, three requests, the listing follows each request\'s account', async () => {
+    const toolsFor = async (row: typeof adminRow) => {
+      mockFindFirst.mockResolvedValue(row);
+      const client = await connectFresh('route-test-admin-only');
+      try {
+        return (await client.listTools()).tools.map((t) => t.name);
+      } finally {
+        await client.close().catch(() => {});
+      }
+    };
+    expect(await toolsFor(adminRow)).toContain('search_products');
+    const forMember = await toolsFor(standardRow);
+    expect(forMember).not.toContain('search_products');
+    expect(forMember).toContain('get_product_details');
+    expect(await toolsFor(adminRow)).toContain('search_products');
   });
 });

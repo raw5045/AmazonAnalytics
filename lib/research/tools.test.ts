@@ -30,19 +30,19 @@ describe('RESEARCH_TOOLS', () => {
     }
     expect(Object.isFrozen(RESEARCH_TOOLS)).toBe(true);
   });
-  it('marks exactly the two products tools adminOnly (spec 2026-10-09 §9); the keyword tools stay open to every account', () => {
-    expect(RESEARCH_TOOLS.filter((t) => t.adminOnly === true).map((t) => t.name)).toEqual(['search_products', 'get_product_details']);
-    for (const t of RESEARCH_TOOLS.filter((d) => d.adminOnly !== true)) expect(t.adminOnly, t.name).toBeUndefined();
+  it('marks no tool adminOnly: the products tools are offered to every account like the keyword tools (spec 2026-10-23 §3)', () => {
+    expect(RESEARCH_TOOLS.filter((t) => t.adminOnly === true).map((t) => t.name)).toEqual([]);
+    for (const t of RESEARCH_TOOLS) expect(t.adminOnly, t.name).toBeUndefined();
   });
-  it('isOfferedTo: an adminOnly definition is offered to an admin only, every other one to everyone', () => {
+  it('isOfferedTo: an adminOnly definition is offered to an admin only, every other one to everyone (the mechanism stays for a future tool)', () => {
     for (const isAdmin of [true, false]) {
       expect(isOfferedTo({}, isAdmin)).toBe(true);
       expect(isOfferedTo({ adminOnly: false }, isAdmin)).toBe(true);
     }
     expect(isOfferedTo({ adminOnly: true }, true)).toBe(true);
     expect(isOfferedTo({ adminOnly: true }, false)).toBe(false);
-    expect(RESEARCH_TOOLS.filter((t) => isOfferedTo(t, false)).map((t) => t.name)).toEqual(RESEARCH_TOOL_NAMES.slice(0, 5));
-    expect(RESEARCH_TOOLS.filter((t) => isOfferedTo(t, true)).map((t) => t.name)).toEqual([...RESEARCH_TOOL_NAMES]);
+    // A member is offered all seven, the two products tools included, exactly as an admin is.
+    for (const isAdmin of [true, false]) expect(RESEARCH_TOOLS.filter((t) => isOfferedTo(t, isAdmin)).map((t) => t.name), String(isAdmin)).toEqual([...RESEARCH_TOOL_NAMES]);
   });
   it('binds each tool to the contracts.ts schema the MCP server has always published', () => {
     expect(researchToolByName('get_research_guide').inputSchema).toBe(emptyInputSchema);
@@ -53,7 +53,7 @@ describe('RESEARCH_TOOLS', () => {
     expect(researchToolByName('search_products').inputSchema).toBe(productSearchInputSchema);
     expect(researchToolByName('get_product_details').inputSchema).toBe(productDetailsInputSchema);
   });
-  it('builds the products descriptions from the Products constants, with the units, the badge, the ratio, weeks in top 3 and the admin-only note', () => {
+  it('builds the products descriptions from the Products constants, with the units, the badge, the ratio and weeks in top 3, and no admin-only note', () => {
     const search = researchToolByName('search_products').description(DEFAULT_LIMITS);
     expect(search).toContain(`Pages hold ${PRODUCT_PAGE_SIZE} products, page 1 to ${PRODUCT_MAX_PAGE}`);
     expect(search).toContain(`exact below ${PRODUCT_COUNT_CAP.toLocaleString('en-US')}, then at_least`);
@@ -75,7 +75,8 @@ describe('RESEARCH_TOOLS', () => {
     expect(details).not.toContain('broadCategories');
     expect(details).toContain('averageRatingX10 = stars × 10');
     expect(details).toContain('prices are in cents');
-    for (const d of [search, details]) expect(d.endsWith('Admin accounts only for now.')).toBe(true);
+    // Every account is offered both tools (spec 2026-10-23 §3), so neither description mentions admins.
+    for (const d of [search, details]) expect(d).not.toMatch(/admin/i);
   });
   it('search_products describes the department and categories filters', () => {
     const text = researchToolByName('search_products').description(DEFAULT_LIMITS);
@@ -110,7 +111,7 @@ describe('RESEARCH_TOOLS', () => {
     expect(service.search).toHaveBeenCalledWith(actor, { filters: {} });
     expect(service.details).toHaveBeenCalledWith(actor, { searchTermId: 'id' });
     expect(service.history).toHaveBeenCalledWith(actor, { searchTermId: 'id', weeks: 4 });
-    // The definitions never gate on the actor themselves: the service refuses a non-admin (FORBIDDEN).
+    // The definitions never gate on the actor: a member's products call reaches the service as any other call does (spec 2026-10-23 §3).
     expect(service.searchProducts).toHaveBeenCalledWith(actor, { sort: 'bsr' });
     expect(service.productDetails).toHaveBeenCalledWith(actor, { asin: 'B0ABCDEF12' });
   });

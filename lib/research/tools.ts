@@ -60,12 +60,13 @@ export interface ToolDefinition<TService, TName extends string = string> {
   readonly annotations: ToolAnnotations;
   readonly requiresConfirmation: boolean;
   /**
-   * True for a tool only admin accounts may use (spec 2026-10-09 §9, §10: the two products tools);
-   * absent means false. Every consumer offers such a tool to an admin only (`isOfferedTo` below):
-   * Ask AI builds its tool map per request (lib/ask/tools.ts), and the MCP builds a server per
-   * request, registering it for an admin request only (lib/mcp/tools/registerDefinitions.ts,
-   * lib/mcp/listingContext.ts). The service itself also refuses a non-admin call with FORBIDDEN,
-   * as a backstop.
+   * True for a tool only admin accounts may use (spec 2026-10-09 §9, §10); absent means false. No
+   * definition sets it since spec 2026-10-23 §3 offered the two products tools, the only ones that
+   * did, to every account; it stays for a future tool. Every consumer offers such a tool to an admin
+   * only (`isOfferedTo` below): Ask AI builds its tool map per request (lib/ask/tools.ts), and the
+   * MCP builds a server per request, registering it for an admin request only
+   * (lib/mcp/tools/registerDefinitions.ts, lib/mcp/listingContext.ts). Its service should also
+   * refuse a non-admin call (FORBIDDEN) as a backstop, as the products service did until then.
    */
   readonly adminOnly?: boolean;
 }
@@ -78,8 +79,8 @@ export function isOfferedTo(def: { readonly adminOnly?: boolean }, isAdmin: bool
 /**
  * One research tool. Every field is `readonly` and every entry in `RESEARCH_TOOLS` below is
  * individually `Object.freeze`d (in addition to the array itself), so no caller can mutate a
- * shared definition out from under another. All seven are read-only and need no confirmation;
- * the two products tools are also `adminOnly`.
+ * shared definition out from under another. All seven are read-only, need no confirmation and are
+ * offered to every account: none is `adminOnly` (the two products tools were until spec 2026-10-23 §3).
  */
 export interface ResearchToolDefinition extends ToolDefinition<ResearchService, ResearchToolName> {
   readonly annotations: typeof READ_ONLY_ANNOTATIONS;
@@ -125,7 +126,6 @@ function searchProductsDescription(): string {
     'bsrRatioMax: current BSR ÷ 30-day average × 100; 70 = at least 30 % better (rankRatioX100 in answers: under 100 = better than its 30-day average).',
     'keywordCount = the current keywords the product is a top-3 clicked product for.',
     `Pages hold ${PRODUCT_PAGE_SIZE} products, page 1 to ${PRODUCT_MAX_PAGE}; totals are exact below ${PRODUCT_COUNT_CAP.toLocaleString('en-US')}, then at_least. Zero products is a true empty result. Each product carries url (its page in the app); pass its asin to get_product_details.`,
-    'Admin accounts only for now.',
   ].join(' ');
 }
 
@@ -142,7 +142,6 @@ function productDetailsDescription(): string {
     `keywords: up to ${PRODUCT_TOOL_KEYWORDS_CAP}, best keyword rank first, each with its slot, click and conversion share percentages, weeksInTop3 and keywordUrl; keywordsTotal counts every keyword, past the cap too.`,
     'weeks in top 3 = consecutive imported weeks the ASIN has been a top-3 clicked product for that keyword (any slot); streakStartedWeek is the first week of that run.',
     'product.inCatalog false: keywords known, no product facts (the title may still come from the keyword side; usually the category is excluded from enrichment; broadCategory is null) and no history. product.fetched false: in the catalog but not fetched yet, so no product facts or history yet either. NOT_FOUND: no data for that ASIN.',
-    'Admin accounts only for now.',
   ].join(' ');
 }
 
@@ -212,7 +211,6 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
     run: (service, actor, args) => service.searchProducts(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
     requiresConfirmation: false,
-    adminOnly: true,
   }),
   frozenTool({
     name: 'get_product_details',
@@ -222,7 +220,6 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
     run: (service, actor, args) => service.productDetails(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,
     requiresConfirmation: false,
-    adminOnly: true,
   }),
 ]);
 

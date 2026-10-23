@@ -1,13 +1,13 @@
 // lib/research/products.ts
 /**
- * The two admin-only products tools (spec 2026-10-09 §9): search_products and get_product_details,
- * over the Products page's own loaders (lib/products/*), so the page and the tools share one query
- * each. Order of operations, for both: refuse a non-admin actor (FORBIDDEN, before anything else:
- * no read, no usage reserve, no record) → validate → reserve → resolve the category scope (the
- * search only) → read → build → record. `reserve` and `record` are the service's own
- * (createResearchService binds them), so a products call is metered exactly as the keyword tools
- * are: search_keywords reserves its page size up front and records the rows it delivered;
- * get_keyword_details reserves and records one row.
+ * The two products tools (spec 2026-10-09 §9): search_products and get_product_details, for every
+ * account since spec 2026-10-23 §3 (admin or not, as the keyword tools are; the per-account rate
+ * limits cover them), over the Products page's own loaders (lib/products/*), so the page and the
+ * tools share one query each. Order of operations, for both: validate → reserve → resolve the
+ * category scope (the search only) → read → build → record. `reserve` and `record` are the
+ * service's own (createResearchService binds them), so a products call is metered exactly as the
+ * keyword tools are: search_keywords reserves its page size up front and records the rows it
+ * delivered; get_keyword_details reserves and records one row.
  */
 import { neon } from '@neondatabase/serverless';
 import { PATH_SEP } from '@/lib/categoryBuilder/buildTree';
@@ -95,17 +95,8 @@ export function defaultProductsDeps(): ProductLoaders {
   };
 }
 
-/** Spec 2026-10-09 §10: the products tools answer admin accounts only for now. Not retryable. */
-export function productsForbiddenError(): ResearchError {
-  return new ResearchError('FORBIDDEN', 'Products tools are admin-only for now.');
-}
-
 function productNotFoundError(): ResearchError {
   return new ResearchError('NOT_FOUND', 'No data for that ASIN: it is not in the product catalog and is not a top-3 clicked product of any current keyword.');
-}
-
-function assertAdmin(actor: ResearchActor): void {
-  if (!actor.isAdmin) throw productsForbiddenError();
 }
 
 type ProductSearchFilters = NonNullable<ProductSearchInput['filters']>;
@@ -202,7 +193,6 @@ export async function resolveProductCategoryScope(deps: ScopeDeps, actor: Resear
  * The broad category is checked there too and travels on the page filters, not in the scope.
  */
 export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchActor, input: unknown): Promise<ProductSearchResponse> {
-  assertAdmin(actor);
   const parsed = productSearchInputSchema.safeParse(input);
   if (!parsed.success) throw invalid(parsed.error);
   const filters = toProductFilters(parsed.data);
@@ -215,7 +205,8 @@ export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchA
     total: { kind: result.totalIsCapped ? 'at_least' : 'exact', value: result.total },
     page: result.page,
     pageSize: result.pageSize,
-    adminOnly: true,
+    // Spec 2026-10-23 §3: the tools are no longer restricted; the field stays so the answer's shape does not change.
+    adminOnly: false,
   };
   deps.record(actor, response.products.length);
   return response;
@@ -231,7 +222,6 @@ export async function searchProductsForTool(deps: ProductsDeps, actor: ResearchA
  * never fetched is answered normally without the history read, since neither has any snapshots.
  */
 export async function productDetailsForTool(deps: ProductsDeps, actor: ResearchActor, input: unknown): Promise<ProductDetailsResponse> {
-  assertAdmin(actor);
   const parsed = productDetailsInputSchema.safeParse(input);
   if (!parsed.success) throw invalid(parsed.error);
   const { asin } = parsed.data;

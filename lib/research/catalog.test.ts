@@ -12,7 +12,7 @@ import {
 import { searchRequestSchema, filtersSchema, DEFAULT_SORT, productSearchInputSchema, type PresetId } from './contracts';
 import { DEFAULT_LIMITS } from './limits';
 import { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP } from './productCaps';
-import { PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE } from '@/lib/products/filters';
+import { PRODUCT_AGES, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE } from '@/lib/products/filters';
 import { PRODUCT_HISTORY_CAP } from '@/lib/products/loadProductHistory';
 import { PRODUCT_COUNT_CAP } from '@/lib/products/searchProducts';
 
@@ -226,9 +226,9 @@ describe('buildGuide', () => {
 
 describe('buildGuide workspace section (spec 2026-09-30 §9.1)', () => {
   it('is absent unless asked for, and then carries the rules and the caps', () => {
-    expect(GUIDE_VERSION).toBe(7);
+    expect(GUIDE_VERSION).toBe(8);
     const off = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: DEFAULT_LIMITS });
-    expect(off.guideVersion).toBe(7);
+    expect(off.guideVersion).toBe(8);
     expect(off.workspace).toBeUndefined();
     const on = buildGuide({ datasetWeek: '2026-09-12', audience: 'all', limits: { ...DEFAULT_LIMITS, writesPerDay: 42 }, workspace: true });
     expect(on.workspace).toEqual({ rules: WORKSPACE_RULES, caps: { savedViews: 5, customCategories: 25, watchedKeywords: 100, leavesPerCategory: 12000, writesPerDay: 42 } });
@@ -246,7 +246,7 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
   const rulesText = () => on.products?.rules.join('\n') ?? '';
   const unitsOf = (name: string) => on.products?.filters.find((f) => f.name === name)?.definition ?? '';
 
-  it('is absent unless asked for (an admin account), and then carries the rules and every search_products filter', () => {
+  it('is absent unless asked for (the service asks for every account since spec 2026-10-23 §3), and then carries the rules and every search_products filter', () => {
     expect(buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS }).products).toBeUndefined();
     expect(buildGuide({ datasetWeek: '2026-09-12', audience: 'admin', limits: DEFAULT_LIMITS, products: false }).products).toBeUndefined();
     expect(on.guideVersion).toBe(GUIDE_VERSION);
@@ -265,9 +265,25 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
     expect(JSON.stringify(on)).not.toMatch(/@/);
   });
 
-  it('states the units, the badge, the ratio, weeks in top 3, the not-in-catalog case, the paging numbers, the details caps and that the tools are admin-only', () => {
+  // Spec 2026-10-23 §3: the tools are offered to every account, so the section opens with how to read a member's
+  // niche and per-day question (the owner's example: the supplements niche, over 1,000 a day, listed within 60 days).
+  it('opens with the niche rule and the per-day rule, verbatim, and says nothing about admin accounts', () => {
+    expect(PRODUCT_RULES.slice(0, 2)).toEqual([
+      'A niche or category in a product question means: resolve the words with resolve_categories first and pass the returned selection in filters.categories (the supplements niche → the Vitamins, Minerals & Supplements selection), optionally narrowed with department or broadCategory.',
+      "Sales asked per day or per week map onto monthlySoldMin: multiply by 30 or by 4 (1,000 a day → monthlySoldMin 30000). monthlySold is Amazon's 'bought in past month' floor, so read the result as 'at least'. Listed within N days → listedWithinDays (60, 90, 180 or 365; pick the smallest that covers the ask and say so).",
+    ]);
     const rules = rulesText();
-    expect(rules).toContain('for admin accounts only for now: no other account is offered them, and a call from one is refused with FORBIDDEN');
+    expect(rules).not.toContain('admin accounts only');
+    expect(rules).not.toContain('FORBIDDEN');
+    expect(rules).not.toMatch(/admin/i);
+    // The rules name real search_products filters, and the ages they list are exactly the ones the schema accepts.
+    expect(Object.keys(filterShape)).toEqual(expect.arrayContaining(['categories', 'department', 'broadCategory', 'monthlySoldMin', 'listedWithinDays']));
+    expect(rules).toContain(`listedWithinDays (${PRODUCT_AGES.slice(0, -1).join(', ')} or ${PRODUCT_AGES.at(-1)};`);
+    expect(unitsOf('listedWithinDays')).toContain(PRODUCT_AGES.join(', '));
+  });
+
+  it('states the units, the badge, the ratio, weeks in top 3, the not-in-catalog case, the paging numbers and the details caps', () => {
+    const rules = rulesText();
     expect(rules).toContain('stars (0–5, one decimal)');
     expect(rules).toContain('US dollars');
     expect(rules).toContain('averageRatingX10 (stars × 10');

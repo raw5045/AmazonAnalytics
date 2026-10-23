@@ -334,7 +334,7 @@ export const keywordHistoryInputSchema = z.strictObject({ searchTermId: z.uuid()
 export const emptyInputSchema = z.strictObject({});
 
 // ---------------------------------------------------------------------------
-// Products tools (spec 2026-10-09 §8, §9; admin-only). The search input is the Products page's
+// Products tools (spec 2026-10-09 §8, §9; every account since spec 2026-10-23 §3). The search input is the Products page's
 // filter set (lib/products/filters.ts) in a caller's units — US dollars and stars — under names a
 // reader expects; toProductFilters maps it onto ProductFilters (cents, stars × 10, the page's own
 // field names). The three category fields (spec 2026-10-12 §6; spec 2026-10-14 §7, §10 (arc 9 §9's mechanics)): `department`
@@ -661,7 +661,10 @@ export interface GuideResponse {
     rules: string[];
     caps: { savedViews: number; customCategories: number; watchedKeywords: number; leavesPerCategory: number; writesPerDay: number };
   };
-  /** Present only for an admin account, the only one offered the two products tools, search_products and get_product_details (spec 2026-10-09 §9). */
+  /**
+   * The section for the two products tools, search_products and get_product_details (spec 2026-10-09 §9). Every account's guide
+   * carries it since spec 2026-10-23 §3, as every account is offered the tools; optional because buildGuide adds it only when asked.
+   */
   products?: {
     rules: string[];
     /** search_products' filters, each with its own schema description (units included). */
@@ -670,7 +673,7 @@ export interface GuideResponse {
 }
 
 // ---------------------------------------------------------------------------
-// Output shapes of the two admin-only products tools (spec 2026-10-09 §9), search_products and
+// Output shapes of the two products tools (spec 2026-10-09 §9; every account since spec 2026-10-23 §3), search_products and
 // get_product_details, built in ./products.ts. They extend the Products page's own loader shapes
 // (lib/products/*, type-only imports), so the page and the tools never describe a product
 // differently: prices in cents, ratings in stars × 10, dates YYYY-MM-DD, fetch times ISO 8601.
@@ -685,8 +688,8 @@ export interface ProductSearchResponse {
   total: { kind: Extract<TotalMatchesKind, 'exact' | 'at_least'>; value: number };
   page: number;
   pageSize: number;
-  /** Always true while the products tools are admin-only (spec 2026-10-09 §10). */
-  adminOnly: true;
+  /** Whether the product tools are restricted to admin accounts; false since 2026-10-23 (spec products open-up §3); kept for shape stability. */
+  adminOnly: false;
 }
 /** One Keepa snapshot of the product (lib/products/loadProductHistory.ts), named apart from the keyword HistoryPoint above. */
 export type ProductHistoryPoint = SnapshotHistoryPoint;

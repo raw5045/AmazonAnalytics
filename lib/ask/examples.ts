@@ -1,4 +1,4 @@
-/** The eight owner-chosen prompts (2026-09-24), shared by the Connect AI page and the Ask AI empty state. */
+/** The owner-chosen prompts (eight on 2026-09-24, then the products one, spec 2026-10-23 §3), shared by the Connect AI page and the Ask AI empty state. */
 export const FIRST_EXAMPLE = 'Show me the highest volume keywords in the lighting niche with less than 500 average reviews.';
 export const MORE_EXAMPLES = [
   'Which lighting keywords gained the most search volume in the last 4 weeks?',
@@ -8,5 +8,6 @@ export const MORE_EXAMPLES = [
   "How has 'solar path lights' trended over the past year?",
   "Compare 'floor lamp' and 'standing lamp'. Which has more demand and less competition?",
   'What categories do you have under pet supplies, and how many keywords are in each?',
+  'Show me products in the supplements niche that sell over 1,000 units a day and were listed within the last 60 days.',
 ] as const;
 export const EXAMPLE_QUESTIONS = [FIRST_EXAMPLE, ...MORE_EXAMPLES] as const;

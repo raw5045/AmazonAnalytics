@@ -54,15 +54,16 @@ describe('Connect AI page example questions', () => {
     envMock.env = { APP_PUBLIC_URL: 'https://keywordquarry.com', MCP_ENABLED: '1', MCP_AUDIENCE: 'all' };
   });
 
-  it('shows the first example openly and the other seven behind a disclosure', async () => {
+  it('shows the first example openly and the other eight behind a disclosure, the products one included (spec 2026-10-23 §3)', async () => {
     render(await ConnectAiPage());
     const first = screen.getByText(/highest volume keywords in the lighting niche/i);
     expect(first.closest('details')).toBeNull();
     const details = screen.getByText('Show more example questions').closest('details');
     expect(details).not.toBeNull();
-    expect(details!.querySelectorAll('li')).toHaveLength(7);
+    expect(details!.querySelectorAll('li')).toHaveLength(8);
     expect(screen.getByText(/gained the most search volume/i).closest('details')).toBe(details);
     expect(screen.getByText(/under pet supplies/i).closest('details')).toBe(details);
+    expect(screen.getByText(/products in the supplements niche that sell over 1,000 units a day/i).closest('details')).toBe(details);
   });
 
   it('sits above the Server URL card so the benefit shows before the setup', async () => {
@@ -131,17 +132,17 @@ describe('Connect AI page with the workspace tools on (spec 2026-09-30 §9.3)', 
     expect(screen.getByText(/with your approval, save views, build custom categories and edit your watchlist/)).toBeInTheDocument();
     expect(screen.queryByText(/The connection is read-only/)).toBeNull();
     const details = screen.getByText('Show more example questions').closest('details')!;
-    expect(details.querySelectorAll('li')).toHaveLength(10);
+    expect(details.querySelectorAll('li')).toHaveLength(11);
     expect(screen.getByText('It can also save. Try asking').closest('details')).toBe(details);
     expect(within(screen.getByRole('list', { name: 'It can also save. Try asking' })).getAllByRole('listitem')).toHaveLength(3);
     expect(screen.getByText(/Add the top 20 results to my watchlist/).closest('details')).toBe(details);
   });
 
-  it('keeps the read-only wording and seven prompts while the flag is off', async () => {
+  it('keeps the read-only wording and eight prompts while the flag is off', async () => {
     delete envMock.env.MCP_WRITE_ENABLED;
     render(await ConnectAiPage());
     expect(screen.getByText(/The connection is read-only/)).toBeInTheDocument();
     expect(screen.queryByText('It can also save. Try asking')).toBeNull();
-    expect(screen.getByText('Show more example questions').closest('details')!.querySelectorAll('li')).toHaveLength(7);
+    expect(screen.getByText('Show more example questions').closest('details')!.querySelectorAll('li')).toHaveLength(8);
   });
 });

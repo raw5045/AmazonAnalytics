@@ -13,8 +13,8 @@ import type { ResearchLimits } from './limits';
 import { PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP } from './productCaps';
 
 export const CATALOG_VERSION = 1;
-/** 2: the workspace section (spec 2026-09-30 §9.1); 3: the products section (spec 2026-10-09 §9); 4: the products section's category rules and filters (spec 2026-10-12 §6); 5: the products broad-category filter and field (spec 2026-10-12 broad category §9); 6: the broad category is the product's own, one per product (spec 2026-10-14 §10); 7: the Explorer is named the Keywords tab throughout (spec 2026-10-21 Keywords tab rename). */
-export const GUIDE_VERSION = 7;
+/** 2: the workspace section (spec 2026-09-30 §9.1); 3: the products section (spec 2026-10-09 §9); 4: the products section's category rules and filters (spec 2026-10-12 §6); 5: the products broad-category filter and field (spec 2026-10-12 broad category §9); 6: the broad category is the product's own, one per product (spec 2026-10-14 §10); 7: the Explorer is named the Keywords tab throughout (spec 2026-10-21 Keywords tab rename); 8: the products tools are offered to every account; niche and per-day rules (spec 2026-10-23 §3). */
+export const GUIDE_VERSION = 8;
 export const QUERY_VERSION = 1;
 
 export interface PresetDefinition {
@@ -231,14 +231,15 @@ export const WORKSPACE_RULES: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Spec 2026-10-09 §9: the products section's rules, for the two admin-only products tools. Only an
- * admin's guide carries the section (buildGuide's `products`), as only an admin is offered the
- * tools: Ask AI binds them per request and the MCP registers them per request, for an admin only
- * (the service's FORBIDDEN is the backstop). Same voice as WORKSPACE_RULES; the numbers come from
- * the Products page's constants and the tool caps.
+ * Spec 2026-10-09 §9: the products section's rules, for the two products tools. Every account's
+ * guide carries the section since spec 2026-10-23 §3 (buildGuide's `products`, which the service and
+ * the Ask AI route pass for every account), as every account is offered the tools; the first two
+ * rules turn a member's niche and per-day question into filters. Same voice as WORKSPACE_RULES; the
+ * numbers come from the Products page's constants and the tool caps.
  */
 export const PRODUCT_RULES: readonly string[] = Object.freeze([
-  'search_products and get_product_details are for admin accounts only for now: no other account is offered them, and a call from one is refused with FORBIDDEN.',
+  'A niche or category in a product question means: resolve the words with resolve_categories first and pass the returned selection in filters.categories (the supplements niche → the Vitamins, Minerals & Supplements selection), optionally narrowed with department or broadCategory.',
+  "Sales asked per day or per week map onto monthlySoldMin: multiply by 30 or by 4 (1,000 a day → monthlySoldMin 30000). monthlySold is Amazon's 'bought in past month' floor, so read the result as 'at least'. Listed within N days → listedWithinDays (60, 90, 180 or 365; pick the smallest that covers the ask and say so).",
   'search_products finds catalog products (Amazon ASINs with Keepa data) by the filters below, combined with AND. It covers in-scope products with an active or no_price listing, so a delisted product never appears there; get_product_details still opens one by its ASIN.',
   "Categories on products are the product's own Keepa category path. filters.department is one of the catalog's storefront departments (Health & Household, Pet Supplies, …), not a keyword row's broadCategory; an unknown name fails with CATEGORY_NOT_AVAILABLE and the message lists the valid names.",
   "filters.broadCategory is a Brand Analytics code as search_keywords' broadCategory carries it ('Home', 'Apparel', 'Biss' …); on products it is the product's own category: the code its Keepa category path maps to, one per product, relearned weekly from the Brand Analytics report (null when the product has no path or its path is not mapped yet); get_product_details returns it as product.broadCategory. A keyword's broadCategory is the category most clicked for that search, so a product and the keywords it is a top-3 clicked product for usually agree but need not (get_product_details lists the product's keywords). filters.department is the product's own Keepa storefront department — a different list; both may be set. An unknown code fails with CATEGORY_NOT_AVAILABLE and the message lists the valid codes.",
