@@ -44,8 +44,9 @@ export function availabilityLabel(code: number | null): string {
  * How long ago a listing started, as of `now` (spec 2026-10-23 listing age §1): "245 days" under a
  * year; from a year on, whole calendar years since the listing date and the days since that
  * anniversary, "1 year, 245 days", or just "2 years" on the anniversary itself. `date` is a
- * YYYY-MM-DD string; a date after `now` reads as 0 days (never negative). A Feb 29 listing takes
- * Mar 1 as its anniversary in a non-leap year (what Date.UTC does with day 29 of February).
+ * YYYY-MM-DD string; a date after `now` reads as 0 days (never negative); null, a value not starting
+ * YYYY-MM-DD, or an invalid `now` reads as the dash. A Feb 29 listing takes Mar 1 as its anniversary
+ * in a non-leap year (what Date.UTC does with day 29 of February).
  *
  * Days are counted on the UTC calendar. That agrees with the Products page's age filter
  * (`listed_since >= current_date - N`) on one assumption: `current_date` there is evaluated in the

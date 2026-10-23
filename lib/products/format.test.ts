@@ -78,6 +78,15 @@ describe('listingAge', () => {
   it('shows a dash when now is not a valid date', () => {
     expect(listingAge('2026-07-01', new Date('nope'))).toBe('—');
   });
+  it('turns over at the UTC anniversary, across a year boundary and around Feb 29', () => {
+    expect(listingAge('2025-12-31', new Date('2026-12-30T23:59:59Z'))).toBe('364 days');
+    expect(listingAge('2025-12-31', new Date('2026-12-31T00:00:00Z'))).toBe('1 year');
+    expect(listingAge('2025-12-31', new Date('2027-01-01T12:00:00Z'))).toBe('1 year, 1 day');
+    expect(listingAge('2024-02-29', new Date('2025-02-28T12:00:00Z'))).toBe('365 days');
+    expect(listingAge('2024-02-29', new Date('2028-02-29T12:00:00Z'))).toBe('4 years');
+    // Mar 1 → the following Feb 29 is a full leap year minus a day: correct, though it reads oddly.
+    expect(listingAge('2022-03-01', new Date('2024-02-29T12:00:00Z'))).toBe('1 year, 365 days');
+  });
 });
 
 describe('formatPriceCents', () => {

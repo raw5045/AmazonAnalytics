@@ -198,9 +198,11 @@ describe('TopProductsSection columns (spec 2026-10-21 round 1 §4)', () => {
     expect(age).toHaveAttribute('title', 'Listed on Amazon Feb 6, 2026');
     expect(age.closest('tr')).toBe(screen.getByText(TITLES[0].title).closest('tr'));
     expect(screen.getAllByText(/listed .* ago/)).toHaveLength(1);
-    // The ASIN link keeps its monospace face; the age reads in the normal font.
+    // The ASIN link keeps its monospace face; the age reads in the normal font (no mono ancestor),
+    // after the ASIN with the separator.
     expect(screen.getByRole('link', { name: 'B000000001' })).toHaveClass('font-mono');
-    expect(age).not.toHaveClass('font-mono');
+    expect(age.closest('.font-mono')).toBeNull();
+    expect(age.parentElement).toHaveTextContent('B000000001 · listed 245 days ago');
   });
 
   it('a listing older than a year reads years and days', async () => {
