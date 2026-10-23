@@ -14,7 +14,7 @@ import type { AbuseDigestStats, Flag } from './types';
  */
 export const THRESHOLDS = {
   signupsPerDay: { amber: 10, red: 25 },
-  userReadsPerDay: { amber: 500, red: 2000 }, // explorer queries + detail views
+  userReadsPerDay: { amber: 500, red: 2000 }, // explorer queries + detail views + product searches + product views
   // Derived from the live API caps so these can never drift into
   // unreachable territory (a flag that can't fire fakes coverage):
   // watchlist cap 100 → amber = half the quota added in one day; no red
@@ -32,6 +32,9 @@ export const THRESHOLDS = {
   userMcpWritesPerDay: { amber: DEFAULT_WRITES_PER_DAY / 2 },
   honeypotTripsPerDay: { amber: 20 },
   contactSubmissionsPerDay: { amber: 10 },
+  // Any product search cut off by the 30 s statement cap (spec 2026-10-23 §5b): the digest is the only channel for
+  // these, so one is enough to flag. Slow-but-completed searches only show in their section.
+  productSearchTimeoutsPerDay: { amber: 0 },
 } as const;
 
 export function evaluateFlags(stats: AbuseDigestStats): Flag[] {
@@ -54,7 +57,7 @@ export function evaluateFlags(stats: AbuseDigestStats): Flag[] {
   );
 
   for (const u of stats.activeUsers) {
-    banded(u.explorerQueries + u.detailViews, THRESHOLDS.userReadsPerDay, (v, th, sev) =>
+    banded(u.explorerQueries + u.detailViews + u.productsQueries + u.productViews, THRESHOLDS.userReadsPerDay, (v, th, sev) =>
       `${u.email}: ${v} reads (${sev} threshold: ${th})`,
     );
     banded(u.watchlistAdds, THRESHOLDS.userWatchlistAddsPerDay, (v, th, sev) =>
@@ -76,6 +79,9 @@ export function evaluateFlags(stats: AbuseDigestStats): Flag[] {
   );
   banded(stats.contact.submissions, THRESHOLDS.contactSubmissionsPerDay, (v, th, sev) =>
     `${v} contact submissions yesterday (${sev} threshold: ${th})`,
+  );
+  banded(stats.slowSearches.timeouts, THRESHOLDS.productSearchTimeoutsPerDay, (v, th, sev) =>
+    `${v} product search timeouts (${sev} threshold: ${th})`,
   );
 
   // Red first so the worst news leads the email.

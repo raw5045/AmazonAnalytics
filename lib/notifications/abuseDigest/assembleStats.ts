@@ -31,13 +31,15 @@ const USER_METRICS = {
   mcpRequest: 'mcp_request',
   mcpRows: 'mcp_rows',
   mcpWrite: 'mcp_write',
+  productsQuery: 'products_query',
+  productView: 'product_view',
 } satisfies Record<string, UserActivityMetric>;
 
 /**
  * One row per user that has ANY counter or creation for the day, sorted by
- * reads (explorer queries + detail views + MCP calls) desc. Unknown metric names are
- * ignored (forward-compat if a future metric ships before the digest knows
- * how to display it).
+ * reads (explorer queries + detail views + product searches + product views +
+ * MCP calls) desc. Unknown metric names are ignored (forward-compat if a future
+ * metric ships before the digest knows how to display it).
  */
 export function assemblePerUserActivity(
   counters: CounterRow[],
@@ -63,6 +65,8 @@ export function assemblePerUserActivity(
         mcpRequests: 0,
         mcpRows: 0,
         mcpWrites: 0,
+        productsQueries: 0,
+        productViews: 0,
       };
       byUser.set(userId, row);
     }
@@ -77,6 +81,8 @@ export function assemblePerUserActivity(
     else if (c.metric === USER_METRICS.mcpRequest) row.mcpRequests = c.count;
     else if (c.metric === USER_METRICS.mcpRows) row.mcpRows = c.count;
     else if (c.metric === USER_METRICS.mcpWrite) row.mcpWrites = c.count;
+    else if (c.metric === USER_METRICS.productsQuery) row.productsQueries = c.count;
+    else if (c.metric === USER_METRICS.productView) row.productViews = c.count;
     // unknown metrics: row still marks the user active, but no column moves
   }
   for (const [userId, n] of creations.watchlistAdds) rowFor(userId).watchlistAdds = n;
@@ -84,10 +90,12 @@ export function assemblePerUserActivity(
   for (const [userId, n] of creations.customCategoriesCreated) rowFor(userId).customCategoriesCreated = n;
 
   // Rank = every request the user initiated, whichever door: explorer queries,
-  // detail views, MCP calls (research or workspace calls, writes included).
+  // detail views, product searches and product views (spec 2026-10-23 §4), MCP
+  // calls (research or workspace calls, writes included).
   // Calls, not rows — rows are volume, not intent.
-  // The subject-line "reads" pulse and THRESHOLDS.userReadsPerDay stay
-  // explorer + detail on purpose (owner-tracked trend; MCP has its own limiter).
-  const rank = (u: PerUserActivity) => u.explorerQueries + u.detailViews + u.mcpRequests;
+  // The subject-line "reads" pulse and THRESHOLDS.userReadsPerDay count the
+  // in-app reads only (explorer + detail + products + product views) on purpose
+  // (owner-tracked trend; MCP has its own limiter).
+  const rank = (u: PerUserActivity) => u.explorerQueries + u.detailViews + u.productsQueries + u.productViews + u.mcpRequests;
   return [...byUser.values()].sort((a, b) => rank(b) - rank(a));
 }

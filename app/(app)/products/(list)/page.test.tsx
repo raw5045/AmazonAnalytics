@@ -39,6 +39,9 @@ vi.mock('@/lib/products/slowQueries', async (orig) => ({
 // app/api/ask/chat/route.test.ts), so a test runs it the way Next does once the response has finished.
 const nextServer = vi.hoisted(() => ({ after: vi.fn() }));
 vi.mock('next/server', async (orig) => ({ ...(await orig<typeof import('next/server')>()), after: nextServer.after }));
+// The usage counter (lib/activity/bump.ts, covered in bump.test.ts) is mocked: the page fires it and never awaits it.
+const activity = vi.hoisted(() => ({ bump: vi.fn() }));
+vi.mock('@/lib/activity/bump', () => ({ bumpUserActivity: activity.bump }));
 
 import ProductsPage from './page';
 
@@ -97,6 +100,7 @@ describe('ProductsPage (/products)', () => {
     data.expand.mockResolvedValue([]);
     slow.record.mockResolvedValue(undefined);
     nextServer.after.mockImplementation(() => undefined);
+    activity.bump.mockResolvedValue(undefined);
   });
 
   it('redirects a signed-out visitor to /sign-in before any read', async () => {
@@ -105,6 +109,34 @@ describe('ProductsPage (/products)', () => {
     expect(neonMock.neon).not.toHaveBeenCalled();
     expect(data.search).not.toHaveBeenCalled();
     for (const fn of [data.departments, data.broad, data.paths, data.custom, data.expand]) expect(fn).not.toHaveBeenCalled();
+    // Nothing is counted for a visitor the gate turned away.
+    expect(activity.bump).not.toHaveBeenCalled();
+  });
+
+  it('counts one products_query on the signed-in account, after the gate and before the reads, and never waits for it (spec 2026-10-23 §4)', async () => {
+    auth.user = MEMBER;
+    // Never settles: the page cannot be waiting on the counter.
+    activity.bump.mockReturnValue(new Promise<void>(() => {}));
+    render(<>{await resolveAsync(await callPage({ sort: 'price' }))}</>);
+
+    expect(screen.getByText('1,234 products')).toBeInTheDocument();
+    expect(activity.bump).toHaveBeenCalledTimes(1);
+    expect(activity.bump).toHaveBeenCalledWith('m1', 'products_query');
+    // Before every read: the custom-id expansion the search waits for, the search itself and the four lists.
+    const counted = activity.bump.mock.invocationCallOrder[0];
+    for (const read of [data.expand, data.search, data.departments, data.broad, data.paths, data.custom]) {
+      expect(counted).toBeLessThan(read.mock.invocationCallOrder[0]);
+    }
+  });
+
+  it("each render that runs a search counts once more, an admin's included", async () => {
+    await resolveAsync(await callPage());
+    await resolveAsync(await callPage({ page: '2' }));
+    expect(data.search).toHaveBeenCalledTimes(2);
+    expect(activity.bump.mock.calls).toEqual([
+      ['a1', 'products_query'],
+      ['a1', 'products_query'],
+    ]);
   });
 
   it('for a signed-in member (not an admin): renders the list on their own account and shows no perf panel (spec 2026-10-23 §2)', async () => {
@@ -262,6 +294,8 @@ describe('ProductsPage (/products)', () => {
       expect(slow.record).toHaveBeenCalledWith({ userId: 'a1', queryString: searchedQueryString(), elapsedMs: 30_000, timedOut: true });
       // The filters exactly as the URL carries them.
       expect(searchedQueryString()).toBe('broad=Home&sort=keywords');
+      // The search ran (and timed out): it still counts once as a products query.
+      expect(activity.bump.mock.calls).toEqual([['a1', 'products_query']]);
     });
 
     it.each([8_001, 9_000])('a search that completes in %i ms (above SLOW_PRODUCT_SEARCH_MS) renders as usual and goes to after() with timedOut false', async (ms) => {

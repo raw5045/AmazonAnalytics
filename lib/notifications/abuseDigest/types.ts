@@ -27,6 +27,10 @@ export interface PerUserActivity {
   mcpRows: number;
   /** Workspace writes through the MCP (mcp_write counter): saved views, custom categories and watchlist changes, +1 per successful call. Capped at 200/day by default (overridable through RESEARCH_LIMITS_JSON; spec 2026-09-30 §8.2). */
   mcpWrites: number;
+  /** Products list renders (products_query counter): one per render, each runs a search (spec 2026-10-23 §4). */
+  productsQueries: number;
+  /** Product page renders (product_view counter; spec 2026-10-23 §4). */
+  productViews: number;
 }
 
 /** Per-user activity over a trailing window of ET days (inclusive bounds). */
@@ -35,8 +39,20 @@ export interface ActiveUsersWindow {
   startDay: string;
   /** Last ET day in the window (the digest day), YYYY-MM-DD. */
   endDay: string;
-  /** One row per user active anywhere in the window, sorted by reads (queries + detail views + MCP calls) desc. */
+  /** One row per user active anywhere in the window, sorted by reads (queries + detail views + product searches + product views + MCP calls) desc. */
   users: PerUserActivity[];
+}
+
+/**
+ * The digest day's slow or timed-out product searches (slow_queries rows with surface 'products'; spec 2026-10-23
+ * §5b): timeouts (the 30 s statement cap) and completed-but-slow runs counted apart, then the most frequent filter
+ * combinations.
+ */
+export interface SlowSearchesSummary {
+  timeouts: number;
+  slow: number;
+  /** The top query strings by occurrences (at most ten; ties by the string), each with its distinct-account count. */
+  top: Array<{ queryString: string; occurrences: number; accounts: number }>;
 }
 
 export interface AbuseDigestStats {
@@ -44,7 +60,7 @@ export interface AbuseDigestStats {
   day: string;
   totalUsers: number;
   signups: SignupRow[];
-  /** One row per active user on `day`, sorted by reads (queries + detail views + MCP calls) desc. */
+  /** One row per active user on `day`, sorted by reads (queries + detail views + product searches + product views + MCP calls) desc. */
   activeUsers: PerUserActivity[];
   /** Trailing 7 ET days ending on `day` (same columns, counters summed across the window). */
   weeklyActiveUsers: ActiveUsersWindow;
@@ -52,6 +68,8 @@ export interface AbuseDigestStats {
   monthlyActiveUsers: ActiveUsersWindow;
   signIns: { count: number; emails: string[] };
   contact: { submissions: number; honeypotTrips: number };
+  /** Slow and timed-out product searches on `day`. */
+  slowSearches: SlowSearchesSummary;
 }
 
 export interface Flag {

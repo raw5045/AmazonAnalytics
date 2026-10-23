@@ -40,6 +40,8 @@ describe('assemblePerUserActivity', () => {
       mcpRequests: 0,
       mcpRows: 0,
       mcpWrites: 0,
+      productsQueries: 0,
+      productViews: 0,
     });
     // A creations-only user (no counters) still appears as active:
     expect(rows[2].customCategoriesCreated).toBe(1);
@@ -128,6 +130,42 @@ describe('assemblePerUserActivity — MCP', () => {
     expect(rows.map((r) => r.userId)).toEqual([U2, U1]);
     expect(rows[1].mcpWrites).toBe(4);
     expect(rows[0].mcpWrites).toBe(0);
+  });
+});
+
+describe('assemblePerUserActivity — Products (spec 2026-10-23 §4)', () => {
+  const noCreations = (): CreationCounts => ({ watchlistAdds: new Map(), savedViewsCreated: new Map(), customCategoriesCreated: new Map() });
+
+  it('maps products_query onto productsQueries and product_view onto productViews, leaving the other columns alone', () => {
+    const rows = assemblePerUserActivity(
+      [
+        { userId: U1, metric: 'products_query', count: 7 },
+        { userId: U1, metric: 'product_view', count: 3 },
+      ],
+      noCreations(),
+      info,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ productsQueries: 7, productViews: 3, explorerQueries: 0, detailViews: 0, mcpRequests: 0 });
+  });
+
+  it('starts both at 0 for a user with only other activity', () => {
+    const rows = assemblePerUserActivity([{ userId: U1, metric: 'explorer_query', count: 2 }], noCreations(), info);
+    expect(rows[0]).toMatchObject({ productsQueries: 0, productViews: 0 });
+  });
+
+  it('ranks product searches and product views with the other reads', () => {
+    const rows = assemblePerUserActivity(
+      [
+        { userId: U1, metric: 'explorer_query', count: 4 }, // 4 reads
+        { userId: U2, metric: 'products_query', count: 3 },
+        { userId: U2, metric: 'product_view', count: 2 }, // 5 reads
+        { userId: U3, metric: 'product_view', count: 6 }, // 6 reads
+      ],
+      noCreations(),
+      info,
+    );
+    expect(rows.map((r) => r.userId)).toEqual([U3, U2, U1]);
   });
 });
 

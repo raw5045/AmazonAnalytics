@@ -3,7 +3,8 @@
  * account (spec 2026-10-23 §2).
  *
  * Server component, built like /explorer:
- *   1. Signed-in gate, then parse searchParams → ProductFilters (bad values fall back per field)
+ *   1. Signed-in gate, the usage counter (products_query, never awaited; spec 2026-10-23 §4), then parse
+ *      searchParams → ProductFilters (bad values fall back per field)
  *   2. Stream the shell; behind <Suspense>, expand the custom ids, run the product search, and read
  *      the department, broad-category, path and custom-category lists
  *   3. Render the admin PerfPanel (spec 2026-10-19 §7), ProductFilterPanel, ProductResultsTable and
@@ -30,6 +31,7 @@ import { after } from 'next/server';
 import { neon } from '@neondatabase/serverless';
 import type { User } from '@/db/schema';
 import { env } from '@/lib/env';
+import { bumpUserActivity } from '@/lib/activity/bump';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { expandCustomCategories } from '@/lib/customCategories/expand';
 import { listCustomCategoriesForUser } from '@/lib/customCategories/loadServer';
@@ -56,6 +58,8 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
   const user = await getCurrentUser();
   if (!user) redirect('/sign-in');
   timer.mark('auth');
+  // Usage-digest counter, one per render (every render runs a search; spec 2026-10-23 §4): fire-and-forget by contract (see lib/activity/bump.ts).
+  void bumpUserActivity(user.id, 'products_query');
   const filters = parseProductFilters(await searchParams);
   return (
     <Suspense fallback={<ProductsSkeleton />}>

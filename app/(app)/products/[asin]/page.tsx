@@ -1,7 +1,8 @@
 /**
  * /products/<asin>: the ASIN page (spec 2026-10-09 §6), open to every signed-in account (spec
  * 2026-10-23 §2). Modelled on the keyword page (app/(app)/explorer/keyword/[id]/page.tsx):
- *   1. Signed-in gate, then validate the [asin] param (cheap 404 path).
+ *   1. Signed-in gate, the usage counter (product_view, never awaited; spec 2026-10-23 §4), then
+ *      validate the [asin] param (cheap 404 path).
  *   2. Await ONLY loadProduct (the primary-key read, which carries the path's Brand Analytics
  *      code, plus a keyword-side title read for a catalog row without a title) so the title band
  *      and the facts card paint fast.
@@ -14,6 +15,7 @@ import { notFound, redirect } from 'next/navigation';
 import { neon } from '@neondatabase/serverless';
 import { ExternalLink } from 'lucide-react';
 import { env } from '@/lib/env';
+import { bumpUserActivity } from '@/lib/activity/bump';
 import { getCurrentUser } from '@/lib/auth/getCurrentUser';
 import { isAsin } from '@/lib/products/asin';
 import { loadProduct, type ProductFacts as ProductPageFacts } from '@/lib/products/loadProduct';
@@ -39,6 +41,8 @@ export default async function ProductPage({
   // checked here too, before any data read.
   const user = await getCurrentUser();
   if (!user) redirect('/sign-in');
+  // Usage-digest counter, one per render (spec 2026-10-23 §4): fire-and-forget by contract (see lib/activity/bump.ts).
+  void bumpUserActivity(user.id, 'product_view');
 
   const { asin } = await params;
   if (!isAsin(asin)) notFound();

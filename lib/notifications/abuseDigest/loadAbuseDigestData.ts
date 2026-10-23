@@ -4,7 +4,7 @@
 // into the Railway worker's import graph via sendAbuseDigest.ts (the worker
 // runs plain Node via tsx). See the matching note in
 // lib/notifications/digest/loadDigestData.ts.
-import { and, asc, desc, eq, gte, inArray, lt, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, lt, lte, sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db/client';
 import {
   users,
@@ -13,13 +13,17 @@ import {
   customCategories,
   userActivityDaily,
   appActivityDaily,
+  slowQueries,
 } from '@/db/schema';
 import type { AppActivityMetric } from '@/lib/activity/bump';
 import { addDays } from '@/lib/activity/etDay';
 import { assemblePerUserActivity, type CounterRow, type UserInfo } from './assembleStats';
-import type { AbuseDigestStats, ActiveUsersWindow, PerUserActivity, SignupRow } from './types';
+import { SLOW_SEARCH_ROW_CAP } from './buildAbuseDigestEmail';
+import type { AbuseDigestStats, ActiveUsersWindow, PerUserActivity, SignupRow, SlowSearchesSummary } from './types';
 
 const SIGNIN_EMAILS_CAP = 10;
+/** The slow_queries surface the Products list records under (lib/products/slowQueries.ts). */
+const PRODUCTS_SURFACE = 'products';
 /** Trailing windows for the weekly/monthly sections, inclusive of the digest day. */
 export const WEEKLY_WINDOW_DAYS = 7;
 export const MONTHLY_WINDOW_DAYS = 30;
@@ -33,7 +37,8 @@ const CONTACT_METRICS = {
 
 /**
  * UTC instants for the half-open window [startDay 00:00 ET, endDay+1 00:00 ET)
- * used to filter timestamptz columns (created_at / added_at / last_login_at).
+ * used to filter timestamptz columns (created_at / added_at / last_login_at /
+ * happened_at).
  * Postgres's `naive_ts AT TIME ZONE 'America/New_York'` interprets the naive
  * timestamp as ET wall time and yields the correct UTC instant across DST
  * changes. Counter tables carry the ET day directly in their `day` column.
@@ -48,7 +53,8 @@ function etWindowBounds(startDay: string, endDay: string) {
 /**
  * Load everything the digest reports for one ET calendar day (YYYY-MM-DD):
  * the day's signups, per-user activity for the day and for the trailing
- * 7- and 30-day windows ending on it, sign-ins, and contact counters.
+ * 7- and 30-day windows ending on it, sign-ins, contact counters, and the
+ * slow product searches.
  */
 export async function loadAbuseDigestData(day: string): Promise<AbuseDigestStats> {
   const { start: dayStart, end: dayEnd } = etWindowBounds(day, day);
@@ -98,7 +104,40 @@ export async function loadAbuseDigestData(day: string): Promise<AbuseDigestStats
     honeypotTrips: appRows.find((r) => r.metric === CONTACT_METRICS.honeypotTrips)?.count ?? 0,
   };
 
-  return { day, totalUsers, signups, activeUsers, weeklyActiveUsers, monthlyActiveUsers, signIns, contact };
+  // 5. Slow and timed-out product searches, over the same ET-day bounds.
+  const slowSearches = await loadSlowSearches(dayStart, dayEnd);
+
+  return { day, totalUsers, signups, activeUsers, weeklyActiveUsers, monthlyActiveUsers, signIns, contact, slowSearches };
+}
+
+/**
+ * The day's slow_queries rows for the Products list (spec 2026-10-23 §5b), read through the (surface, happened_at)
+ * index: timeouts and completed-but-slow runs counted apart, then the SLOW_SEARCH_ROW_CAP most frequent query
+ * strings (ties by the string) with their occurrences and distinct accounts (a null user_id, an unknown account, is
+ * not counted as one).
+ */
+async function loadSlowSearches(start: SQL, end: SQL): Promise<SlowSearchesSummary> {
+  const inDay = and(eq(slowQueries.surface, PRODUCTS_SURFACE), gte(slowQueries.happenedAt, start), lt(slowQueries.happenedAt, end));
+  // An aggregate without GROUP BY always returns its one row; the fallback only keeps the type honest.
+  const [counts] = await db
+    .select({
+      timeouts: sql<number>`(count(*) filter (where ${slowQueries.timedOut}))::int`,
+      slow: sql<number>`(count(*) filter (where not ${slowQueries.timedOut}))::int`,
+    })
+    .from(slowQueries)
+    .where(inDay);
+  const top = await db
+    .select({
+      queryString: slowQueries.queryString,
+      occurrences: sql<number>`count(*)::int`,
+      accounts: sql<number>`count(distinct ${slowQueries.userId})::int`,
+    })
+    .from(slowQueries)
+    .where(inDay)
+    .groupBy(slowQueries.queryString)
+    .orderBy(desc(sql`count(*)`), asc(slowQueries.queryString))
+    .limit(SLOW_SEARCH_ROW_CAP);
+  return { timeouts: counts?.timeouts ?? 0, slow: counts?.slow ?? 0, top };
 }
 
 async function loadWindow(startDay: string, endDay: string): Promise<ActiveUsersWindow> {

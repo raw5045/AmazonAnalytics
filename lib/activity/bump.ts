@@ -24,7 +24,11 @@ export type UserActivityMetric =
   | 'ask_tool_call'
   | 'ask_rows'
   /** One successful workspace write through the MCP (spec 2026-09-30 §8.2); the daily cap reads it back with countUserActivityToday. */
-  | 'mcp_write';
+  | 'mcp_write'
+  /** One per Products list render that runs a search (spec 2026-10-23 §4). */
+  | 'products_query'
+  /** One per product page render (spec 2026-10-23 §4). */
+  | 'product_view';
 export type AppActivityMetric = 'contact_submission' | 'contact_honeypot' | 'feedback_submission';
 
 export async function bumpUserActivity(userId: string, metric: UserActivityMetric): Promise<void> {

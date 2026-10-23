@@ -3,7 +3,7 @@
 // buildDigestEmail.ts: no network, returns { subject, text, html }.
 // The subject line IS the quiet-day pulse — flags, signups, active users,
 // and total reads are readable without opening the email.
-import type { AbuseDigestStats, ActiveUsersWindow, Flag, PerUserActivity } from './types';
+import type { AbuseDigestStats, ActiveUsersWindow, Flag, PerUserActivity, SlowSearchesSummary } from './types';
 
 export const ACTIVE_USER_ROW_CAP = 25;
 // Render caps guard the body against pathological days (Gmail clips bodies
@@ -11,6 +11,10 @@ export const ACTIVE_USER_ROW_CAP = 25;
 // counts; only the rendered lists truncate — the DB has the rest.
 export const SIGNUP_ROW_CAP = 50;
 export const FLAG_ROW_CAP = 50;
+/** Slow product searches listed (spec 2026-10-23 §5b); the loader's LIMIT, so it reads at most this many. */
+export const SLOW_SEARCH_ROW_CAP = 10;
+/** A recorded query string longer than this shows cut, with a "… (+N chars)" marker (the row keeps it whole). */
+export const SLOW_SEARCH_DISPLAY_CHARS = 400;
 
 const AMBER_BG = '#fef3c7';
 const AMBER_BORDER = '#f59e0b';
@@ -25,7 +29,8 @@ export interface BuiltAbuseDigestEmail {
 
 export function buildAbuseDigestEmail(stats: AbuseDigestStats, flags: Flag[]): BuiltAbuseDigestEmail {
   const appUrl = process.env.APP_PUBLIC_URL ?? 'https://keywordquarry.com';
-  const totalReads = stats.activeUsers.reduce((s, u) => s + u.explorerQueries + u.detailViews, 0);
+  // In-app reads: both tabs' searches and detail pages (spec 2026-10-23 §4); MCP calls stay out of the pulse.
+  const totalReads = stats.activeUsers.reduce((s, u) => s + u.explorerQueries + u.detailViews + u.productsQueries + u.productViews, 0);
 
   // Subject stays a daily pulse by owner decision — the weekly/monthly
   // sections are body-only (2026-09-15 spec).
@@ -58,6 +63,11 @@ export function buildAbuseDigestEmail(stats: AbuseDigestStats, flags: Flag[]): B
     textLines.push(`Daily active users (${stats.activeUsers.length}):`);
     textLines.push(...activityTextLines(stats.activeUsers));
   }
+  // Slow product searches render every day (a timeout is flagged; the rows show what ran long).
+  textLines.push('');
+  textLines.push(`${slowSearchesHeading(stats.slowSearches)}:`);
+  const shownSlow = stats.slowSearches.top.slice(0, SLOW_SEARCH_ROW_CAP);
+  textLines.push(...(shownSlow.length ? shownSlow.map((r) => `  ${slowSearchRow(r)}`) : ['  none']));
   // The trailing windows render on quiet days too — that is when they matter.
   for (const [label, w] of windowsOf(stats)) {
     textLines.push('');
@@ -96,6 +106,13 @@ export function buildAbuseDigestEmail(stats: AbuseDigestStats, flags: Flag[]): B
     : `<p style="margin:0;font-size:13px;color:#6b7280;">No signups.</p>`;
 
   const activityHtml = activityTableHtml(stats.activeUsers, 'No user activity.');
+  const slowSearchesHtml = `<h2 style="margin:18px 0 6px 0;font-size:14px;">${escapeHtml(slowSearchesHeading(stats.slowSearches))}</h2>${
+    shownSlow.length
+      ? `<ul style="margin:0;padding-left:18px;font-size:12px;color:#333;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all;">${shownSlow
+          .map((r) => `<li>${escapeHtml(slowSearchRow(r))}</li>`)
+          .join('')}</ul>`
+      : `<p style="margin:0;font-size:13px;color:#6b7280;">none</p>`
+  }`;
   const windowsHtml = windowsOf(stats)
     .map(
       ([label, w]) =>
@@ -117,6 +134,7 @@ export function buildAbuseDigestEmail(stats: AbuseDigestStats, flags: Flag[]): B
     <h2 style="margin:18px 0 6px 0;font-size:14px;">Daily active users (${stats.activeUsers.length})</h2>
     ${activityHtml}`
     }
+    ${slowSearchesHtml}
     ${windowsHtml}
     <p style="margin:18px 0 0 0;font-size:13px;color:#333;">
       Sign-ins: <strong>${stats.signIns.count}</strong>${stats.signIns.emails.length ? ` (${escapeHtml(stats.signIns.emails.join(', '))})` : ''}<br/>
@@ -157,6 +175,7 @@ function activityTextLines(users: PerUserActivity[]): string[] {
   const lines = shown.map(
     (u) =>
       `  ${u.email}: ${u.explorerQueries} queries, ${u.detailViews} detail views, ` +
+      `${u.productsQueries} product searches, ${u.productViews} product views, ` +
       `${u.watchlistAdds} watchlist adds, ${u.savedViewsCreated} views, ${u.customCategoriesCreated} categories, ${u.exports} exports` +
       `, ${u.mcpRequests} MCP calls (${u.mcpRows} rows), ${u.mcpWrites} MCP writes`,
   );
@@ -174,6 +193,8 @@ function activityTableHtml(users: PerUserActivity[], emptyText: string): string 
           <th style="padding:5px 8px 5px 0;">User</th>
           <th style="padding:5px 8px;text-align:right;">Queries</th>
           <th style="padding:5px 8px;text-align:right;">Detail views</th>
+          <th style="padding:5px 8px;text-align:right;">Products</th>
+          <th style="padding:5px 8px;text-align:right;">Product views</th>
           <th style="padding:5px 8px;text-align:right;">Watchlist adds</th>
           <th style="padding:5px 8px;text-align:right;">Saved views</th>
           <th style="padding:5px 8px;text-align:right;">Categories</th>
@@ -188,6 +209,8 @@ function activityTableHtml(users: PerUserActivity[], emptyText: string): string 
           <td style="padding:5px 8px 5px 0;">${escapeHtml(u.email)}</td>
           <td style="padding:5px 8px;text-align:right;">${u.explorerQueries.toLocaleString()}</td>
           <td style="padding:5px 8px;text-align:right;">${u.detailViews.toLocaleString()}</td>
+          <td style="padding:5px 8px;text-align:right;">${u.productsQueries.toLocaleString()}</td>
+          <td style="padding:5px 8px;text-align:right;">${u.productViews.toLocaleString()}</td>
           <td style="padding:5px 8px;text-align:right;">${u.watchlistAdds.toLocaleString()}</td>
           <td style="padding:5px 8px;text-align:right;">${u.savedViewsCreated.toLocaleString()}</td>
           <td style="padding:5px 8px;text-align:right;">${u.customCategoriesCreated.toLocaleString()}</td>
@@ -199,6 +222,27 @@ function activityTableHtml(users: PerUserActivity[], emptyText: string): string 
           )
           .join('')}</tbody>
       </table>${dropped > 0 ? `<p style="margin:6px 0 0 0;font-size:12px;color:#6b7280;">…and ${dropped} more active users</p>` : ''}`;
+}
+
+/** e.g. "Slow product searches (timeouts 2, slow 5)": the day's true counts, whatever the list shows. */
+function slowSearchesHeading(s: SlowSearchesSummary): string {
+  return `Slow product searches (timeouts ${s.timeouts}, slow ${s.slow})`;
+}
+
+/** e.g. "3× by 2 account(s): broad=Home&sort=keywords" (unescaped; the html escapes the whole row). */
+function slowSearchRow(r: SlowSearchesSummary['top'][number]): string {
+  // An empty string is the default list (no filter, sort or page in the URL).
+  const query = r.queryString === '' ? '(no filters)' : truncateForDisplay(r.queryString, SLOW_SEARCH_DISPLAY_CHARS);
+  return `${r.occurrences}× by ${r.accounts} account(s): ${query}`;
+}
+
+/**
+ * `s` cut to `max` characters plus "… (+N chars)" when longer, else `s` itself. Cut before any escaping, so N counts
+ * stored characters and no entity is split. (The recorded strings are URL query strings, so ASCII: no surrogate
+ * pair to split either.)
+ */
+function truncateForDisplay(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max)}… (+${s.length - max} chars)`;
 }
 
 function plural(n: number): string {

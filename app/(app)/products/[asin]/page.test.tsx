@@ -30,6 +30,9 @@ vi.mock('@/lib/products/loadProductKeywords', async (orig) => ({
   loadProductKeywords: loaders.keywords,
 }));
 vi.mock('./LazyHistoryCharts', () => ({ LazyHistoryCharts: () => null, HistorySkeleton: () => null }));
+// The usage counter (lib/activity/bump.ts, covered in bump.test.ts) is mocked: the page fires it and never awaits it.
+const activity = vi.hoisted(() => ({ bump: vi.fn() }));
+vi.mock('@/lib/activity/bump', () => ({ bumpUserActivity: activity.bump }));
 
 import ProductPage from './page';
 import { HistorySection, KeywordsSection } from './StreamedProductSections';
@@ -166,6 +169,7 @@ describe('ProductPage', () => {
     loaders.product.mockResolvedValue(CATALOG_ROW);
     loaders.history.mockResolvedValue([]);
     loaders.keywords.mockResolvedValue(KEYWORDS);
+    activity.bump.mockResolvedValue(undefined);
   });
 
   it('redirects a signed-out visitor to /sign-in before any read', async () => {
@@ -173,6 +177,8 @@ describe('ProductPage', () => {
     await expect(callPage(ASIN)).rejects.toThrow('redirect:/sign-in');
     expect(neonMock.neon).not.toHaveBeenCalled();
     expect(loaders.product).not.toHaveBeenCalled();
+    // Nothing is counted for a visitor the gate turned away.
+    expect(activity.bump).not.toHaveBeenCalled();
   });
 
   it.each(['standard_user', 'admin'] as const)('a signed-in %s account gets the page (spec 2026-10-23 §2)', async (role) => {
@@ -181,6 +187,20 @@ describe('ProductPage', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(TITLE);
     expect(screen.getByRole('heading', { name: 'Product facts' })).toBeInTheDocument();
     expect(loaders.product).toHaveBeenCalledWith(expect.any(Function), ASIN);
+    expect(activity.bump.mock.calls).toEqual([['u1', 'product_view']]);
+  });
+
+  it('counts one product_view on the signed-in account, right after the gate and before the read, and never waits for it (spec 2026-10-23 §4)', async () => {
+    // Never settles: the page cannot be waiting on the counter.
+    activity.bump.mockReturnValue(new Promise<void>(() => {}));
+    await renderPage();
+
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(TITLE);
+    expect(activity.bump).toHaveBeenCalledTimes(1);
+    expect(activity.bump).toHaveBeenCalledWith('m1', 'product_view');
+    const counted = activity.bump.mock.invocationCallOrder[0];
+    expect(counted).toBeLessThan(neonMock.neon.mock.invocationCallOrder[0]);
+    expect(counted).toBeLessThan(loaders.product.mock.invocationCallOrder[0]);
   });
 
   it.each(['b0cxyz1234', 'B0CXYZ123', 'B0CXYZ12345', 'B0CXYZ123?', '../explorer'])(

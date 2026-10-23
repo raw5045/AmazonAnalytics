@@ -4,6 +4,7 @@ import {
   ACTIVE_USER_ROW_CAP,
   SIGNUP_ROW_CAP,
   FLAG_ROW_CAP,
+  SLOW_SEARCH_ROW_CAP,
 } from './buildAbuseDigestEmail';
 import type { AbuseDigestStats, Flag, PerUserActivity } from './types';
 
@@ -17,6 +18,7 @@ function quietStats(): AbuseDigestStats {
     monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: [] },
     signIns: { count: 0, emails: [] },
     contact: { submissions: 0, honeypotTrips: 0 },
+    slowSearches: { timeouts: 0, slow: 0, top: [] },
   };
 }
 
@@ -34,6 +36,8 @@ function activeUser(i: number, reads: number): PerUserActivity {
     mcpRequests: 0,
     mcpRows: 0,
     mcpWrites: 0,
+    productsQueries: 0,
+    productViews: 0,
   };
 }
 
@@ -241,6 +245,143 @@ describe('buildAbuseDigestEmail — MCP columns', () => {
     expect(html).toContain('<th style="padding:5px 0 5px 8px;text-align:right;">MCP writes</th>');
     expect(html.indexOf('>MCP writes</th>')).toBeGreaterThan(html.indexOf('>MCP rows</th>'));
     expect(html).toMatch(/<td[^>]*>2<\/td>\s*<\/tr>/);
+  });
+});
+
+describe('buildAbuseDigestEmail — Products columns (spec 2026-10-23 §4)', () => {
+  /** 12 queries, 3 detail views, 7 product searches, 5 product views; every other counter 0. */
+  const productsUser = (i: number): PerUserActivity => ({ ...activeUser(i, 12), detailViews: 3, productsQueries: 7, productViews: 5 });
+  /** The same user in all three per-user tables: daily, weekly, monthly. */
+  function everyTable(): AbuseDigestStats {
+    return {
+      ...quietStats(),
+      activeUsers: [productsUser(1)],
+      weeklyActiveUsers: { startDay: '2026-07-06', endDay: '2026-07-12', users: [productsUser(1)] },
+      monthlyActiveUsers: { startDay: '2026-06-13', endDay: '2026-07-12', users: [productsUser(1)] },
+    };
+  }
+
+  it('puts "Products" and "Product views" right after "Detail views" in every per-user table, headers and cells alike', () => {
+    const { html } = buildAbuseDigestEmail(everyTable(), []);
+    const headers = [...html.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((m) => m[1]);
+    const one = ['User', 'Queries', 'Detail views', 'Products', 'Product views', 'Watchlist adds', 'Saved views', 'Categories', 'Exports', 'MCP calls', 'MCP rows', 'MCP writes'];
+    expect(headers).toEqual([...one, ...one, ...one]); // daily, weekly, monthly
+    const rows = [...html.matchAll(/<tr style="border-bottom:1px solid #f3f4f6;">([\s\S]*?)<\/tr>/g)].map((m) =>
+      [...m[1].matchAll(/<td[^>]*>([^<]*)<\/td>/g)].map((c) => c[1]),
+    );
+    expect(rows).toHaveLength(3);
+    for (const cells of rows) expect(cells).toEqual(['user1@x.com', '12', '3', '7', '5', '0', '0', '0', '0', '0', '0', '0']);
+  });
+
+  it('carries both counts right after the detail views in every text row', () => {
+    const { text } = buildAbuseDigestEmail(everyTable(), []);
+    const line =
+      'user1@x.com: 12 queries, 3 detail views, 7 product searches, 5 product views, 0 watchlist adds, 0 views, 0 categories, 0 exports, ' +
+      '0 MCP calls (0 rows), 0 MCP writes';
+    expect(text.split('\n').filter((l) => l.trim() === line)).toHaveLength(3);
+  });
+
+  it("counts them in the subject's reads pulse", () => {
+    const stats: AbuseDigestStats = { ...quietStats(), activeUsers: [productsUser(1), { ...activeUser(2, 0), productViews: 1_000 }] };
+    // (12 + 3 + 7 + 5) + 1,000
+    expect(buildAbuseDigestEmail(stats, []).subject).toBe('KeywordQuarry daily — 0 signups · 2 active · 1,027 reads');
+  });
+});
+
+describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)', () => {
+  const TOP = [
+    { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2 },
+    { queryString: 'age=60', occurrences: 1, accounts: 1 },
+  ];
+  const withSlow = (slowSearches: AbuseDigestStats['slowSearches']): AbuseDigestStats => ({ ...quietStats(), activeUsers: [activeUser(1, 5)], slowSearches });
+  /** The text rows under the section heading, up to the next blank line. */
+  function sectionLines(text: string, heading: string): string[] {
+    const lines = text.split('\n');
+    const at = lines.indexOf(heading);
+    expect(at).toBeGreaterThan(-1);
+    const end = lines.indexOf('', at);
+    return lines.slice(at + 1, end === -1 ? undefined : end);
+  }
+
+  it('text: the heading with both counts, then one "N× by M account(s): <query string>" row per query', () => {
+    const { text } = buildAbuseDigestEmail(withSlow({ timeouts: 2, slow: 5, top: TOP }), []);
+    expect(sectionLines(text, 'Slow product searches (timeouts 2, slow 5):')).toEqual([
+      '  3× by 2 account(s): broad=Home&sort=keywords',
+      '  1× by 1 account(s): age=60',
+    ]);
+  });
+
+  it('html: the heading, then the rows as a monospace list, each query string escaped', () => {
+    const { html } = buildAbuseDigestEmail(withSlow({ timeouts: 2, slow: 5, top: TOP }), []);
+    expect(html).toContain('>Slow product searches (timeouts 2, slow 5)</h2>');
+    expect(html).toMatch(/>Slow product searches \(timeouts 2, slow 5\)<\/h2>\s*<ul style="[^"]*font-family:[^"]*monospace[^"]*">/);
+    expect(html).toContain('<li>3× by 2 account(s): broad=Home&amp;sort=keywords</li><li>1× by 1 account(s): age=60</li>');
+  });
+
+  it('sits after the daily active users and before the weekly and monthly sections, in both bodies', () => {
+    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 0, slow: 1, top: TOP.slice(1) }), []);
+    for (const body of [text, html]) {
+      const daily = body.indexOf('Daily active users (1)');
+      const slow = body.indexOf('Slow product searches (timeouts 0, slow 1)');
+      expect(daily).toBeGreaterThan(-1);
+      expect(slow).toBeGreaterThan(daily);
+      expect(body.indexOf('Weekly active users (0)')).toBeGreaterThan(slow);
+      expect(body.indexOf('Monthly active users (0)')).toBeGreaterThan(slow);
+    }
+  });
+
+  it('says "none" when there were no rows, and renders on a quiet day too', () => {
+    const { text, html } = buildAbuseDigestEmail(quietStats(), []);
+    expect(text).toContain('All quiet');
+    expect(sectionLines(text, 'Slow product searches (timeouts 0, slow 0):')).toEqual(['  none']);
+    expect(html).toMatch(/>Slow product searches \(timeouts 0, slow 0\)<\/h2>\s*<p[^>]*>none<\/p>/);
+    expect(html).not.toContain('account(s):');
+  });
+
+  it('escapes HTML in a query string', () => {
+    const { html } = buildAbuseDigestEmail(
+      withSlow({ timeouts: 1, slow: 0, top: [{ queryString: `q=<script>alert(1)</script>&x="1'`, occurrences: 1, accounts: 1 }] }),
+      [],
+    );
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('<li>1× by 1 account(s): q=&lt;script&gt;alert(1)&lt;/script&gt;&amp;x=&quot;1&#39;</li>');
+  });
+
+  it('truncates a query string longer than 400 characters for display, with a "… (+N chars)" marker, in both bodies', () => {
+    const long = `custom=${'a'.repeat(593)}`; // 600 characters
+    const exact = `q=${'b'.repeat(398)}`; // 400 characters: shown whole
+    expect([long.length, exact.length]).toEqual([600, 400]);
+    const { text, html } = buildAbuseDigestEmail(
+      withSlow({ timeouts: 0, slow: 2, top: [{ queryString: long, occurrences: 1, accounts: 1 }, { queryString: exact, occurrences: 1, accounts: 1 }] }),
+      [],
+    );
+    const shown = `${long.slice(0, 400)}… (+200 chars)`;
+    expect(sectionLines(text, 'Slow product searches (timeouts 0, slow 2):')).toEqual([`  1× by 1 account(s): ${shown}`, `  1× by 1 account(s): ${exact}`]);
+    expect(html).toContain(`<li>1× by 1 account(s): ${shown}</li><li>1× by 1 account(s): ${exact}</li>`);
+    expect(text).not.toContain(long);
+    expect(html).not.toContain(long);
+  });
+
+  it('truncates before escaping: the marker counts stored characters and no entity is cut in half', () => {
+    const { html } = buildAbuseDigestEmail(withSlow({ timeouts: 1, slow: 0, top: [{ queryString: '&'.repeat(450), occurrences: 1, accounts: 1 }] }), []);
+    expect(html).toContain(`<li>1× by 1 account(s): ${'&amp;'.repeat(400)}… (+50 chars)</li>`);
+  });
+
+  it('an empty query string (the default list) reads "(no filters)"', () => {
+    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 1, slow: 0, top: [{ queryString: '', occurrences: 2, accounts: 1 }] }), []);
+    expect(sectionLines(text, 'Slow product searches (timeouts 1, slow 0):')).toEqual(['  2× by 1 account(s): (no filters)']);
+    expect(html).toContain('<li>2× by 1 account(s): (no filters)</li>');
+  });
+
+  it(`shows at most ${SLOW_SEARCH_ROW_CAP} rows; the heading keeps the true counts`, () => {
+    expect(SLOW_SEARCH_ROW_CAP).toBe(10);
+    const top = Array.from({ length: SLOW_SEARCH_ROW_CAP + 2 }, (_, i) => ({ queryString: `sort=price&page=${i + 1}`, occurrences: 20 - i, accounts: 1 }));
+    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 4, slow: 30, top }), []);
+    const rows = sectionLines(text, 'Slow product searches (timeouts 4, slow 30):');
+    expect(rows).toHaveLength(SLOW_SEARCH_ROW_CAP);
+    expect(rows[SLOW_SEARCH_ROW_CAP - 1]).toBe('  11× by 1 account(s): sort=price&page=10');
+    expect(html.match(/account\(s\): /g)).toHaveLength(SLOW_SEARCH_ROW_CAP);
+    expect(html).not.toContain('page=11');
   });
 });
 
