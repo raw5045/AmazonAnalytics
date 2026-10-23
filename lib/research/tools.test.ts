@@ -88,6 +88,9 @@ describe('RESEARCH_TOOLS', () => {
     expect(text).toContain('An unknown department, broad category, path or custom id fails with CATEGORY_NOT_AVAILABLE.');
     expect(text).not.toContain('unless includeDescendants is false');
   });
+  it('resolve_categories says its selection objects serve both searches, search_keywords and search_products', () => {
+    expect(researchToolByName('resolve_categories').description(DEFAULT_LIMITS)).toContain('returns ready-to-use selection objects for search_keywords and search_products.');
+  });
   it('builds the search description from the operating constants', () => {
     const d = researchToolByName('search_keywords').description({ ...DEFAULT_LIMITS, maxRowsPerSearch: 1234 });
     expect(d).toContain(`up to ${PAGE_SIZE_MAX} rows`);

@@ -269,17 +269,22 @@ describe('buildGuide products section (spec 2026-10-09 §9)', () => {
   // niche and per-day question (the owner's example: the supplements niche, over 1,000 a day, listed within 60 days).
   it('opens with the niche rule and the per-day rule, verbatim, and says nothing about admin accounts', () => {
     expect(PRODUCT_RULES.slice(0, 2)).toEqual([
-      'A niche or category in a product question means: resolve the words with resolve_categories first and pass the returned selection in filters.categories (the supplements niche → the Vitamins, Minerals & Supplements selection), optionally narrowed with department or broadCategory.',
-      "Sales asked per day or per week map onto monthlySoldMin: multiply by 30 or by 4 (1,000 a day → monthlySoldMin 30000). monthlySold is Amazon's 'bought in past month' floor, so read the result as 'at least'. Listed within N days → listedWithinDays (60, 90, 180 or 365; pick the smallest that covers the ask and say so).",
+      'A niche or category in a product question means: resolve the words with resolve_categories first and pass the returned selection objects in filters.categories.selections (the supplements niche → the Vitamins, Minerals & Supplements selection), optionally narrowed with department or broadCategory.',
+      "Sales asked per day or per week map onto monthlySoldMin: multiply by 30 or by 4 (1,000 a day → monthlySoldMin 30000), capped at 100000 (the top badge bucket; say so when you cap). monthlySold is Amazon's 'bought in past month' floor, so read the result as 'at least'. Listed within N days → listedWithinDays (60, 90, 180 or 365; pick the smallest that covers the ask and say so; over 365 days, leave it unset and say so).",
     ]);
     const rules = rulesText();
     expect(rules).not.toContain('admin accounts only');
     expect(rules).not.toContain('FORBIDDEN');
     expect(rules).not.toMatch(/admin/i);
-    // The rules name real search_products filters, and the ages they list are exactly the ones the schema accepts.
+    // The rules name real search_products filters, the ages they list are exactly the ones the schema accepts, and the
+    // cap is the top badge bucket the monthlySoldMin description names.
     expect(Object.keys(filterShape)).toEqual(expect.arrayContaining(['categories', 'department', 'broadCategory', 'monthlySoldMin', 'listedWithinDays']));
+    expect(Object.keys(filterShape.categories.unwrap().shape)).toContain('selections');
     expect(rules).toContain(`listedWithinDays (${PRODUCT_AGES.slice(0, -1).join(', ')} or ${PRODUCT_AGES.at(-1)};`);
+    expect(rules).toContain(`over ${PRODUCT_AGES.at(-1)} days, leave it unset`);
     expect(unitsOf('listedWithinDays')).toContain(PRODUCT_AGES.join(', '));
+    expect(rules).toContain('capped at 100000 (the top badge bucket');
+    expect(unitsOf('monthlySoldMin')).toContain('buckets run from 50 to 100000');
   });
 
   it('states the units, the badge, the ratio, weeks in top 3, the not-in-catalog case, the paging numbers and the details caps', () => {

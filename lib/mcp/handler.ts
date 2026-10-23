@@ -40,7 +40,7 @@ import {
 const PROTECTED_RESOURCE_METADATA_PREFIX = '/.well-known/oauth-protected-resource';
 
 const BASE_INSTRUCTIONS =
-  'KeywordQuarry research tools (beta). Call get_research_guide once per conversation; use resolve_categories before any category-scoped search; search_keywords takes exact filters and pages with {cursor} only; get_keyword_details and get_keyword_history read one keyword. Search volumes are estimates, capped results are labelled, and null means unknown, never zero.';
+  'KeywordQuarry research tools (beta). Call get_research_guide once per conversation; use resolve_categories before any category-scoped search; search_keywords takes exact filters and pages with {cursor} only; get_keyword_details and get_keyword_history read one keyword; search_products searches the product catalog and get_product_details reads one product by its ASIN. Search volumes are estimates, capped results are labelled, and null means unknown, never zero.';
 /** Spec 2026-09-30 §9.2. */
 const WORKSPACE_INSTRUCTIONS =
   "Workspace tools (list/create/update/delete saved views and custom categories, add to and remove from the watchlist) change this account's own data; clients normally ask the person before each write; confirm names and deletions.";

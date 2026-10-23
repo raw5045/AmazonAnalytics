@@ -56,7 +56,7 @@ describe('Thread', () => {
   it('the empty state (spec 2026-10-04 §4): a heading, the line under it and the nine examples; the select is disabled once the chat has a message', () => {
     const { rerender } = render(<Harness />);
     expect(screen.getByRole('heading', { name: 'What do you want to find?' })).toBeInTheDocument();
-    expect(screen.getByText('Same data as the Keywords tab, answered in plain language.')).toBeInTheDocument();
+    expect(screen.getByText('Same data as the Keywords and Products tabs, answered in plain language.')).toBeInTheDocument();
     for (const q of EXAMPLE_QUESTIONS) expect(screen.getByRole('button', { name: q })).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Model' })).toBeEnabled();
     chat.messages = [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }];

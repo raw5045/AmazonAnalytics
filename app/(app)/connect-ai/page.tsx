@@ -19,7 +19,7 @@ const card = 'mt-4 rounded-lg border border-slate-200 bg-white p-4';
 // The intro sentence, by MCP_WRITE_ENABLED (spec 2026-09-30 §9.3). The approval prompt is the AI client's, not ours,
 // and a client set to always allow a tool stops asking, so the copy says "with your approval", never "each time".
 const INTRO_READ_ONLY =
-  'Let Claude or ChatGPT read KeywordQuarry directly while you work. The connection is read-only: search, categories, keyword details and history. Beta, free while it lasts.';
+  'Let Claude or ChatGPT read KeywordQuarry directly while you work. The connection is read-only: search, categories, keyword details and history, and products. Beta, free while it lasts.';
 const INTRO_WITH_WRITES =
   'Let Claude or ChatGPT search KeywordQuarry directly while you work and, with your approval, save views, build custom categories and edit your watchlist. Beta, free while it lasts.';
 

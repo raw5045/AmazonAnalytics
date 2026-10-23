@@ -170,7 +170,7 @@ export const RESEARCH_TOOLS: ReadonlyArray<ResearchToolDefinition> = Object.free
   frozenTool({
     name: 'resolve_categories',
     title: 'Resolve categories',
-    description: () => "Find Amazon category paths (and this account's custom categories) matching words like \"lighting\"; returns ready-to-use selection objects for search_keywords. Broad words span several branches: ask the person which before searching. Browse with parentPath and an empty query; page with cursor.",
+    description: () => "Find Amazon category paths (and this account's custom categories) matching words like \"lighting\"; returns ready-to-use selection objects for search_keywords and search_products. Broad words span several branches: ask the person which before searching. Browse with parentPath and an empty query; page with cursor.",
     inputSchema: resolveCategoriesInputSchema,
     run: (service, actor, args) => service.resolveCategories(actor, args),
     annotations: READ_ONLY_ANNOTATIONS,

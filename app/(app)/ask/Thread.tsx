@@ -542,7 +542,7 @@ export function Thread({ open, defaultModel, cantSendReason, atCap, appOrigin, d
         {empty && !open && (
           <div className="flex flex-1 flex-col items-center justify-center py-10 text-center">
             <h2 className="text-2xl font-semibold text-slate-800">What do you want to find?</h2>
-            <p className="mt-2 text-slate-500">Same data as the Keywords tab, answered in plain language.</p>
+            <p className="mt-2 text-slate-500">Same data as the Keywords and Products tabs, answered in plain language.</p>
             <ul className="mt-6 grid w-full gap-2 md:grid-cols-2">
               {EXAMPLE_QUESTIONS.map((q) => (
                 <li key={q}>

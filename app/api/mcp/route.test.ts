@@ -186,6 +186,8 @@ describe('/api/mcp', () => {
     try {
       expect(client.getServerVersion()?.name).toBe('keywordquarry');
       expect(client.getInstructions()).toContain('KeywordQuarry');
+      // The instructions name the product tools beside the keyword tools (spec 2026-10-23 §3).
+      expect(client.getInstructions()).toContain('get_keyword_details and get_keyword_history read one keyword; search_products searches the product catalog and get_product_details reads one product by its ASIN.');
 
       const { tools } = await client.listTools();
       // An admin's request: the seven research tools (the two products tools included) and whoami.

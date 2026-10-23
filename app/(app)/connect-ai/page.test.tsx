@@ -141,7 +141,8 @@ describe('Connect AI page with the workspace tools on (spec 2026-09-30 §9.3)', 
   it('keeps the read-only wording and eight prompts while the flag is off', async () => {
     delete envMock.env.MCP_WRITE_ENABLED;
     render(await ConnectAiPage());
-    expect(screen.getByText(/The connection is read-only/)).toBeInTheDocument();
+    // The read-only list names the products tools too (spec 2026-10-23 §3).
+    expect(screen.getByText(/The connection is read-only: search, categories, keyword details and history, and products\./)).toBeInTheDocument();
     expect(screen.queryByText('It can also save. Try asking')).toBeNull();
     expect(screen.getByText('Show more example questions').closest('details')!.querySelectorAll('li')).toHaveLength(8);
   });
