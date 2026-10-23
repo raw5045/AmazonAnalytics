@@ -52,8 +52,8 @@ import { loadAbuseDigestData } from './loadAbuseDigestData';
 
 const DAY = '2026-10-22';
 const TOP = [
-  { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2 },
-  { queryString: 'age=60', occurrences: 1, accounts: 1 },
+  { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2, viaTool: 1 },
+  { queryString: 'age=60', occurrences: 1, accounts: 1, viaTool: 0 },
 ];
 
 /** Answers the total-users count and the two slow_queries reads; every other read gets no rows. */
@@ -84,7 +84,7 @@ describe('loadAbuseDigestData — slow product searches (spec 2026-10-23 §5b)',
     answerWith({ counts: [{ timeouts: 2, slow: 5 }], top: TOP });
   });
 
-  it("returns the day's timeouts and slow runs, and the top query strings with their occurrences and accounts", async () => {
+  it("returns the day's timeouts and slow runs, and the top query strings with their occurrences, accounts and tool occurrences", async () => {
     const stats = await loadAbuseDigestData(DAY);
     expect(stats.slowSearches).toEqual({ timeouts: 2, slow: 5, top: TOP });
     // The rest of the digest still loads around it.
@@ -103,21 +103,25 @@ describe('loadAbuseDigestData — slow product searches (spec 2026-10-23 §5b)',
     expect(counts.sql).not.toMatch(/ group by | order by | limit /);
   });
 
-  it('reads the top ten query strings by occurrences (ties by the string), with count(distinct user_id) as the accounts', async () => {
+  it('reads the top ten query strings by occurrences (ties by the string), with count(distinct user_id) as the accounts and the products_tool rows counted apart', async () => {
     await loadAbuseDigestData(DAY);
     const [, top] = slowStatements();
     expect(top.sql).toMatch(
-      /^select "query_string", count\(\*\)::int, count\(distinct "user_id"\)::int from "slow_queries" where .+ group by "slow_queries"\."query_string" order by count\(\*\) desc, "slow_queries"\."query_string" asc limit \$\d+$/,
+      /^select "query_string", count\(\*\)::int, count\(distinct "user_id"\)::int, \(count\(\*\) filter \(where "surface" = \$1\)\)::int from "slow_queries" where .+ group by "slow_queries"\."query_string" order by count\(\*\) desc, "slow_queries"\."query_string" asc limit \$\d+$/,
     );
+    // viaTool: the occurrences of the search_products tool's surface.
+    expect(top.params[0]).toBe('products_tool');
     expect(top.params.at(-1)).toBe(10);
   });
 
-  it('scopes both reads to surface = products and to [day 00:00 ET, day + 1 00:00 ET), the bounds the other timestamp reads use', async () => {
+  it('scopes both reads to the two product-search surfaces (the list and the tool) and to [day 00:00 ET, day + 1 00:00 ET), the bounds the other timestamp reads use', async () => {
     await loadAbuseDigestData(DAY);
     expect(slowStatements()).toHaveLength(2);
     for (const s of slowStatements()) {
-      expect(s.sql).toMatch(/ where \("slow_queries"\."surface" = \$1 and /);
-      expect(s.params[0]).toBe('products');
+      // The timeouts and slow counts, and the top list, cover both surfaces.
+      const surfaces = s.sql.match(/ where \("slow_queries"\."surface" in \(\$(\d+), \$(\d+)\) and /);
+      expect(surfaces).not.toBeNull();
+      expect([s.params[Number(surfaces![1]) - 1], s.params[Number(surfaces![2]) - 1]]).toEqual(['products', 'products_tool']);
       const window = s.sql.match(etDayWindow('"slow_queries"."happened_at"'));
       expect(window).not.toBeNull();
       expect([s.params[Number(window![1]) - 1], s.params[Number(window![2]) - 1]]).toEqual([DAY, DAY]);

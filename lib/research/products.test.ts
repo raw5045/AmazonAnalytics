@@ -1,5 +1,5 @@
 // lib/research/products.test.ts
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // products.ts reads env only inside the default loaders (never at import). Both env and neon() are
 // mocked, so no test here can reach a database: the fake neon client answers every query with [].
@@ -24,19 +24,29 @@ vi.mock('@/lib/products/listCategories', () => ({
   listProductDepartments: scopeMock.departments, listProductCategoryPaths: scopeMock.paths, listProductBroadCategories: scopeMock.broad,
 }));
 vi.mock('./categories', () => ({ loadCustomRows: scopeMock.customRows }));
+// The slow-search recorder is mocked (lib/products/slowQueries.test.ts covers the insert); the rest of its module is real, so the
+// tool reads the real SLOW_PRODUCT_SEARCH_MS, and the db client that module imports is a stub that never connects.
+const slow = vi.hoisted(() => ({ record: vi.fn() }));
+vi.mock('@/db/client', () => ({ db: {} }));
+vi.mock('@/lib/products/slowQueries', async (orig) => ({
+  ...(await orig<typeof import('@/lib/products/slowQueries')>()),
+  recordSlowProductSearch: slow.record,
+}));
 
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
-import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
+import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters } from '@/lib/products/filters';
 import type { ProductFacts as CatalogProductFacts } from '@/lib/products/loadProduct';
 import type { HistoryPoint } from '@/lib/products/loadProductHistory';
 import type { ProductKeywordRow } from '@/lib/products/loadProductKeywords';
 import { PRODUCT_COUNT_CAP, productSearchSql, type ProductSearchResult, type ProductSummaryRow } from '@/lib/products/searchProducts';
+import { SLOW_PRODUCT_SEARCH_MS } from '@/lib/products/slowQueries';
 import type { CustomRow } from './categories';
 import { ResearchError } from './errors';
 import {
   defaultProductsDeps, PRODUCT_TOOL_HISTORY_POINTS, PRODUCT_TOOL_KEYWORDS_CAP, productDetailsForTool, searchProductsForTool, type ProductsDeps,
 } from './products';
 import type { ResearchActor } from './service';
+import { classifyToolError } from './toolErrors';
 
 const APP = 'https://keywordquarry.com';
 const ASIN = 'B0ABCDEF12';
@@ -354,6 +364,96 @@ describe('searchProductsForTool: department and categories (spec 2026-10-12 §6)
   });
   it('the retired categoryPath field is rejected as INVALID_FILTERS', async () => {
     await expect(searchProductsForTool(makeDeps(), admin, { filters: { categoryPath: 'Pet Supplies' } })).rejects.toMatchObject({ code: 'INVALID_FILTERS' });
+  });
+});
+
+describe('searchProductsForTool: a slow or timed-out search (spec 2026-10-23 §5b)', () => {
+  /** What the neon driver rejects with when the statement cap cancels the rows read: an error carrying SQLSTATE 57014 as `.code`. */
+  const statementTimeout = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' });
+  /** A department, a broad category and the keywords sort, and the page filters' URL form, the string a recorded row carries. */
+  const INPUT = { filters: { department: 'Pet Supplies', broadCategory: 'Home' }, sort: 'keywords' };
+  const QUERY_STRING = 'dept=Pet+Supplies&broad=Home&sort=keywords';
+  const TIMEOUT_INFO = {
+    code: 'QUERY_TIMEOUT',
+    message: 'This combination of filters took too long to search; narrow the filters (a department, a category, a sales floor) rather than retrying the same search.',
+    retryable: false,
+  };
+  // A stand-in clock: only the stubs move it, by the time they "take", so the measured ms is exact.
+  let clock = 0;
+  beforeEach(() => {
+    clock = 1_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    slow.record.mockReset();
+    slow.record.mockResolvedValue(undefined);
+  });
+  afterEach(() => vi.mocked(Date.now).mockRestore());
+  /** The search stub: the clock moves `ms` while it runs, then it resolves to the usual page, or rejects with `error` when one is given. */
+  const searchTaking = (ms: number, error?: unknown) =>
+    vi.fn(async (): Promise<ProductSearchResult> => {
+      clock += ms;
+      if (error !== undefined) throw error;
+      return { rows: pageRows, total: 2, totalIsCapped: false, page: 1, pageSize: PRODUCT_PAGE_SIZE };
+    });
+  /** The URL form of the filters the tool searched on. */
+  const searchedQueryString = (deps: ProductsDeps) => productFiltersToSearchParams(vi.mocked(deps.search).mock.calls[0][0]).toString();
+
+  it('a rows read cut off by the statement cap (57014) is recorded under products_tool as timed out, and answered with QUERY_TIMEOUT, not retryable', async () => {
+    const deps = makeDeps({ search: searchTaking(30_000, statementTimeout()) });
+    // Never settles: the answer cannot be waiting on the recording.
+    slow.record.mockReturnValue(new Promise<void>(() => {}));
+    const err = await searchProductsForTool(deps, member, INPUT).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResearchError);
+    expect((err as ResearchError).toInfo()).toStrictEqual(TIMEOUT_INFO);
+    // What both adapters (the MCP's errorResult, the chat's settle) hand the client: that info, not the generic retryable DATA_UNAVAILABLE.
+    expect(classifyToolError(err, 'search_products', '[test]')).toStrictEqual(TIMEOUT_INFO);
+    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: QUERY_STRING, elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+    expect(searchedQueryString(deps)).toBe(QUERY_STRING);
+    // A failed call delivers nothing, so the usage counters record nothing.
+    expect(deps.record).not.toHaveBeenCalled();
+  });
+
+  it("the recorded string is the page filters' URL form: a categories object, resolved into the scope, is not in it", async () => {
+    const deps = makeDeps({ search: searchTaking(30_000, statementTimeout()) });
+    await expect(searchProductsForTool(deps, admin, { filters: { categories: { leafPaths: ['Pet Supplies › Cats › Toys'] } }, sort: 'price' })).rejects.toMatchObject(TIMEOUT_INFO);
+    expect(vi.mocked(deps.search).mock.calls[0][1]).toStrictEqual({ dept: null, subtreePaths: [], exactPaths: ['Pet Supplies › Cats › Toys'], scoped: true });
+    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: admin.localUserId, queryString: 'sort=price', elapsedMs: 30_000, timedOut: true, surface: 'products_tool' });
+  });
+
+  it.each([8_001, 9_000])('a search that completes in %i ms (above SLOW_PRODUCT_SEARCH_MS) is answered as usual and recorded with timedOut false', async (ms) => {
+    expect(SLOW_PRODUCT_SEARCH_MS).toBe(8_000);
+    const deps = makeDeps({ search: searchTaking(ms) });
+    // Never settles: the answer cannot be waiting on the recording.
+    slow.record.mockReturnValue(new Promise<void>(() => {}));
+    const out = await searchProductsForTool(deps, member, INPUT);
+    expect(slow.record).toHaveBeenCalledExactlyOnceWith({ userId: member.localUserId, queryString: QUERY_STRING, elapsedMs: ms, timedOut: false, surface: 'products_tool' });
+    expect(deps.record).toHaveBeenCalledExactlyOnceWith(member, out.products.length);
+    // The same answer as a fast search of the same filters, which records nothing.
+    expect(out).toStrictEqual(await searchProductsForTool(makeDeps(), member, INPUT));
+    expect(slow.record).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, 8_000])('a search that completes in %i ms (not above SLOW_PRODUCT_SEARCH_MS) is answered as usual and not recorded', async (ms) => {
+    const deps = makeDeps({ search: searchTaking(ms) });
+    const out = await searchProductsForTool(deps, member, INPUT);
+    expect(out.products.map((p) => p.asin)).toEqual(pageRows.map((r) => r.asin));
+    expect(deps.record).toHaveBeenCalledExactlyOnceWith(member, out.products.length);
+    expect(slow.record).not.toHaveBeenCalled();
+  });
+
+  it('times the search read alone: slow scope reads before it do not count', async () => {
+    const deps = makeDeps({ departments: vi.fn(async () => { clock += 20_000; return DEPARTMENTS; }), search: searchTaking(100) });
+    await searchProductsForTool(deps, member, INPUT);
+    expect(slow.record).not.toHaveBeenCalled();
+  });
+
+  it('any other failure of the search passes through unchanged and is not recorded, however long it ran', async () => {
+    const failures = [new Error('fetch failed'), Object.assign(new Error('relation "asin_products" does not exist'), { code: '42P01' }), new ResearchError('DATA_UNAVAILABLE', 'refreshing', { retryable: true })];
+    for (const failure of failures) {
+      const deps = makeDeps({ search: searchTaking(30_000, failure) });
+      await expect(searchProductsForTool(deps, member, INPUT)).rejects.toBe(failure);
+      expect(deps.record).not.toHaveBeenCalled();
+    }
+    expect(slow.record).not.toHaveBeenCalled();
   });
 });
 

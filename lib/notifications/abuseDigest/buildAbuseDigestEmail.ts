@@ -229,11 +229,15 @@ function slowSearchesHeading(s: SlowSearchesSummary): string {
   return `Slow product searches (timeouts ${s.timeouts}, slow ${s.slow})`;
 }
 
-/** e.g. "3× by 2 account(s): broad=Home&sort=keywords" (unescaped; the html escapes the whole row). */
+/**
+ * e.g. "3× by 2 account(s): broad=Home&sort=keywords", or "3× by 2 account(s), 1 via AI tools: …" when some of the
+ * occurrences came from the search_products tool (unescaped; the html escapes the whole row).
+ */
 function slowSearchRow(r: SlowSearchesSummary['top'][number]): string {
   // An empty string is the default list (no filter, sort or page in the URL).
   const query = r.queryString === '' ? '(no filters)' : truncateForDisplay(r.queryString, SLOW_SEARCH_DISPLAY_CHARS);
-  return `${r.occurrences}× by ${r.accounts} account(s): ${query}`;
+  const viaTool = r.viaTool > 0 ? `, ${r.viaTool} via AI tools` : '';
+  return `${r.occurrences}× by ${r.accounts} account(s)${viaTool}: ${query}`;
 }
 
 /**

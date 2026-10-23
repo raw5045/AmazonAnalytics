@@ -289,9 +289,10 @@ describe('buildAbuseDigestEmail — Products columns (spec 2026-10-23 §4)', () 
 });
 
 describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)', () => {
+  /** Every occurrence from the Products list (viaTool 0); the tool's marker has its own case below. */
   const TOP = [
-    { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2 },
-    { queryString: 'age=60', occurrences: 1, accounts: 1 },
+    { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2, viaTool: 0 },
+    { queryString: 'age=60', occurrences: 1, accounts: 1, viaTool: 0 },
   ];
   const withSlow = (slowSearches: AbuseDigestStats['slowSearches']): AbuseDigestStats => ({ ...quietStats(), activeUsers: [activeUser(1, 5)], slowSearches });
   /** The text rows under the section heading, up to the next blank line. */
@@ -318,6 +319,23 @@ describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)
     expect(html).toContain('<li>3× by 2 account(s): broad=Home&amp;sort=keywords</li><li>1× by 1 account(s): age=60</li>');
   });
 
+  it('marks the occurrences from AI tools (the search_products tool) after the accounts, only on rows that have any, in both bodies', () => {
+    const top = [
+      { queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2, viaTool: 1 },
+      { queryString: 'dept=Pet+Supplies&sort=price', occurrences: 2, accounts: 1, viaTool: 2 },
+      { queryString: 'age=60', occurrences: 1, accounts: 1, viaTool: 0 },
+    ];
+    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 2, slow: 4, top }), []);
+    expect(sectionLines(text, 'Slow product searches (timeouts 2, slow 4):')).toEqual([
+      '  3× by 2 account(s), 1 via AI tools: broad=Home&sort=keywords',
+      '  2× by 1 account(s), 2 via AI tools: dept=Pet+Supplies&sort=price',
+      '  1× by 1 account(s): age=60',
+    ]);
+    expect(html).toContain(
+      '<li>3× by 2 account(s), 1 via AI tools: broad=Home&amp;sort=keywords</li><li>2× by 1 account(s), 2 via AI tools: dept=Pet+Supplies&amp;sort=price</li><li>1× by 1 account(s): age=60</li>',
+    );
+  });
+
   it('sits after the daily active users and before the weekly and monthly sections, in both bodies', () => {
     const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 0, slow: 1, top: TOP.slice(1) }), []);
     for (const body of [text, html]) {
@@ -340,7 +358,7 @@ describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)
 
   it('escapes HTML in a query string', () => {
     const { html } = buildAbuseDigestEmail(
-      withSlow({ timeouts: 1, slow: 0, top: [{ queryString: `q=<script>alert(1)</script>&x="1'`, occurrences: 1, accounts: 1 }] }),
+      withSlow({ timeouts: 1, slow: 0, top: [{ queryString: `q=<script>alert(1)</script>&x="1'`, occurrences: 1, accounts: 1, viaTool: 0 }] }),
       [],
     );
     expect(html).not.toContain('<script>');
@@ -352,7 +370,7 @@ describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)
     const exact = `q=${'b'.repeat(398)}`; // 400 characters: shown whole
     expect([long.length, exact.length]).toEqual([600, 400]);
     const { text, html } = buildAbuseDigestEmail(
-      withSlow({ timeouts: 0, slow: 2, top: [{ queryString: long, occurrences: 1, accounts: 1 }, { queryString: exact, occurrences: 1, accounts: 1 }] }),
+      withSlow({ timeouts: 0, slow: 2, top: [{ queryString: long, occurrences: 1, accounts: 1, viaTool: 0 }, { queryString: exact, occurrences: 1, accounts: 1, viaTool: 0 }] }),
       [],
     );
     const shown = `${long.slice(0, 400)}… (+200 chars)`;
@@ -363,19 +381,19 @@ describe('buildAbuseDigestEmail — slow product searches (spec 2026-10-23 §5b)
   });
 
   it('truncates before escaping: the marker counts stored characters and no entity is cut in half', () => {
-    const { html } = buildAbuseDigestEmail(withSlow({ timeouts: 1, slow: 0, top: [{ queryString: '&'.repeat(450), occurrences: 1, accounts: 1 }] }), []);
+    const { html } = buildAbuseDigestEmail(withSlow({ timeouts: 1, slow: 0, top: [{ queryString: '&'.repeat(450), occurrences: 1, accounts: 1, viaTool: 0 }] }), []);
     expect(html).toContain(`<li>1× by 1 account(s): ${'&amp;'.repeat(400)}… (+50 chars)</li>`);
   });
 
   it('an empty query string (the default list) reads "(no filters)"', () => {
-    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 1, slow: 0, top: [{ queryString: '', occurrences: 2, accounts: 1 }] }), []);
+    const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 1, slow: 0, top: [{ queryString: '', occurrences: 2, accounts: 1, viaTool: 0 }] }), []);
     expect(sectionLines(text, 'Slow product searches (timeouts 1, slow 0):')).toEqual(['  2× by 1 account(s): (no filters)']);
     expect(html).toContain('<li>2× by 1 account(s): (no filters)</li>');
   });
 
   it(`shows at most ${SLOW_SEARCH_ROW_CAP} rows; the heading keeps the true counts`, () => {
     expect(SLOW_SEARCH_ROW_CAP).toBe(10);
-    const top = Array.from({ length: SLOW_SEARCH_ROW_CAP + 2 }, (_, i) => ({ queryString: `sort=price&page=${i + 1}`, occurrences: 20 - i, accounts: 1 }));
+    const top = Array.from({ length: SLOW_SEARCH_ROW_CAP + 2 }, (_, i) => ({ queryString: `sort=price&page=${i + 1}`, occurrences: 20 - i, accounts: 1, viaTool: 0 }));
     const { text, html } = buildAbuseDigestEmail(withSlow({ timeouts: 4, slow: 30, top }), []);
     const rows = sectionLines(text, 'Slow product searches (timeouts 4, slow 30):');
     expect(rows).toHaveLength(SLOW_SEARCH_ROW_CAP);

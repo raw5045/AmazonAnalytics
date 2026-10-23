@@ -44,15 +44,19 @@ export interface ActiveUsersWindow {
 }
 
 /**
- * The digest day's slow or timed-out product searches (slow_queries rows with surface 'products'; spec 2026-10-23
- * §5b): timeouts (the 30 s statement cap) and completed-but-slow runs counted apart, then the most frequent filter
+ * The digest day's slow or timed-out product searches (slow_queries rows with surface 'products', the Products list,
+ * or 'products_tool', the search_products tool from an AI client or Ask AI; spec 2026-10-23 §5b): timeouts (the 30 s
+ * statement cap) and completed-but-slow runs counted apart over both surfaces, then the most frequent filter
  * combinations.
  */
 export interface SlowSearchesSummary {
   timeouts: number;
   slow: number;
-  /** The top query strings by occurrences (at most ten; ties by the string), each with its distinct-account count. */
-  top: Array<{ queryString: string; occurrences: number; accounts: number }>;
+  /**
+   * The top query strings by occurrences (at most ten; ties by the string), each with its distinct-account count and
+   * `viaTool`, how many of its occurrences came from the search_products tool (0 when all came from the Products list).
+   */
+  top: Array<{ queryString: string; occurrences: number; accounts: number; viaTool: number }>;
 }
 
 export interface AbuseDigestStats {

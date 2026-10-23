@@ -9,6 +9,12 @@
  * Careful: .env.local's DATABASE_URL points at PRODUCTION — this swaps the live keyword_top_asins
  * table (readers never see a half-built week; the build takes a few minutes).
  *
+ * Then run scripts/buildKeywordCounts.ts (once this has finished, and outside an import), so the stored
+ * keyword counts (asin_products.keyword_count, which the Products keywords sort reads) follow the
+ * rebuilt table: the import's keyword_counts_build phase runs only right after the import's own
+ * top_asins_build, so until the next import nothing else brings them up to date.
+ *   node --env-file=.env.local --import tsx scripts/buildKeywordCounts.ts
+ *
  * Add TOP_ASINS_FORCE=1 to build a week older than the built week (never needed for a normal
  * import; any other TOP_ASINS_FORCE value is refused). A forced rewind carries nothing: EVERY
  * streak restarts at 1 and nothing of the newer build is kept. Readers see that older week until a

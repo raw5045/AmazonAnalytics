@@ -36,6 +36,17 @@ describe('recordSlowProductSearch', () => {
     expect(mockValues).toHaveBeenCalledWith({ surface: 'products', userId: null, queryString: '', elapsedMs: 9_000, timedOut: false });
   });
 
+  it("stores the surface as given: 'products_tool' for the search_products tool, 'products' when passed or absent (the list's calls)", async () => {
+    await recordSlowProductSearch({ userId: 'u1', queryString: 'dept=Pet+Supplies&sort=keywords', elapsedMs: 30_001, timedOut: true, surface: 'products_tool' });
+    await recordSlowProductSearch({ userId: 'u1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false, surface: 'products' });
+    await recordSlowProductSearch({ userId: 'u1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false });
+    expect(mockValues.mock.calls).toEqual([
+      [{ surface: 'products_tool', userId: 'u1', queryString: 'dept=Pet+Supplies&sort=keywords', elapsedMs: 30_001, timedOut: true }],
+      [{ surface: 'products', userId: 'u1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false }],
+      [{ surface: 'products', userId: 'u1', queryString: 'sort=keywords', elapsedMs: 9_000, timedOut: false }],
+    ]);
+  });
+
   it('a failed insert resolves anyway and warns one line with the coded fields only: never the message, the statement or its params', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     // drizzle's neon-http session rethrows a failed statement as DrizzleQueryError (its own message embeds the SQL and the params); errFields reads the cause.

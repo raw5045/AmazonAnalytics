@@ -61,7 +61,12 @@ export interface ProductSearchResult {
   countTimedOut?: boolean;
 }
 
-const BASE = "a.in_scope AND a.enrichment_status IN ('active', 'no_price')";
+/**
+ * The list's base predicate, over alias `a`: the first term of every statement's WHERE. The seven partial (key, asin)
+ * indexes (0051's six, 0056's asin_products_keyword_count_idx) carry exactly this predicate, alias aside, which is what
+ * lets the planner use them; searchProducts.test.ts pins it to both migrations, so an edit here cannot silently disable them.
+ */
+export const BASE = "a.in_scope AND a.enrichment_status IN ('active', 'no_price')";
 
 /** The catalog column each nullable-key sort orders by (and hides the NULLs of). */
 const SORT_COLUMN: Record<NullableKeySort, string> = {

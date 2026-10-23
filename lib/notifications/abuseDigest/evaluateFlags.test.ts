@@ -155,7 +155,7 @@ describe('evaluateFlags — Products (spec 2026-10-23 §4, §5b)', () => {
 
   it('flags any product search timeout amber (threshold 0), singular at 1; slow searches alone never flag', () => {
     expect(THRESHOLDS.productSearchTimeoutsPerDay).toEqual({ amber: 0 });
-    const top = [{ queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2 }];
+    const top = [{ queryString: 'broad=Home&sort=keywords', occurrences: 3, accounts: 2, viaTool: 1 }];
     expect(evaluateFlags({ ...quietStats(), slowSearches: { timeouts: 3, slow: 0, top } })).toEqual([
       { severity: 'amber', message: '3 product search timeouts yesterday (amber threshold: 0)' },
     ]);

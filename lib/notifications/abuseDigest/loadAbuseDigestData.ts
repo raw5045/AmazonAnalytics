@@ -17,13 +17,20 @@ import {
 } from '@/db/schema';
 import type { AppActivityMetric } from '@/lib/activity/bump';
 import { addDays } from '@/lib/activity/etDay';
+import type { SlowQuerySurface } from '@/lib/products/slowQueries';
 import { assemblePerUserActivity, type CounterRow, type UserInfo } from './assembleStats';
 import { SLOW_SEARCH_ROW_CAP } from './buildAbuseDigestEmail';
 import type { AbuseDigestStats, ActiveUsersWindow, PerUserActivity, SignupRow, SlowSearchesSummary } from './types';
 
 const SIGNIN_EMAILS_CAP = 10;
-/** The slow_queries surface the Products list records under (lib/products/slowQueries.ts). */
-const PRODUCTS_SURFACE = 'products';
+/**
+ * The slow_queries surfaces a product search records under (lib/products/slowQueries.ts): the Products list, and the
+ * search_products tool (an AI client over the MCP, or Ask AI). Tethered to the writer's type, as CONTACT_METRICS below is
+ * to its metric names: a renamed surface is a type error, not a section that silently reads nothing.
+ */
+const PRODUCT_SEARCH_SURFACES = ['products', 'products_tool'] as const satisfies readonly SlowQuerySurface[];
+/** The tool's surface: its rows are counted apart per query string (viaTool). */
+const PRODUCTS_TOOL_SURFACE = 'products_tool' satisfies SlowQuerySurface;
 /** Trailing windows for the weekly/monthly sections, inclusive of the digest day. */
 export const WEEKLY_WINDOW_DAYS = 7;
 export const MONTHLY_WINDOW_DAYS = 30;
@@ -111,13 +118,14 @@ export async function loadAbuseDigestData(day: string): Promise<AbuseDigestStats
 }
 
 /**
- * The day's slow_queries rows for the Products list (spec 2026-10-23 §5b), read through the (surface, happened_at)
- * index: timeouts and completed-but-slow runs counted apart, then the SLOW_SEARCH_ROW_CAP most frequent query
- * strings (ties by the string) with their occurrences and distinct accounts (a null user_id, an unknown account, is
- * not counted as one).
+ * The day's slow_queries rows of a product search, from the Products list and from the search_products tool (spec
+ * 2026-10-23 §5b), read through the (surface, happened_at) index: timeouts and completed-but-slow runs counted apart over
+ * both surfaces, then the SLOW_SEARCH_ROW_CAP most frequent query strings (ties by the string) with their occurrences,
+ * their distinct accounts (a null user_id, an unknown account, is not counted as one) and how many of the occurrences
+ * came from the tool (viaTool).
  */
 async function loadSlowSearches(start: SQL, end: SQL): Promise<SlowSearchesSummary> {
-  const inDay = and(eq(slowQueries.surface, PRODUCTS_SURFACE), gte(slowQueries.happenedAt, start), lt(slowQueries.happenedAt, end));
+  const inDay = and(inArray(slowQueries.surface, PRODUCT_SEARCH_SURFACES), gte(slowQueries.happenedAt, start), lt(slowQueries.happenedAt, end));
   // An aggregate without GROUP BY always returns its one row; the fallback only keeps the type honest.
   const [counts] = await db
     .select({
@@ -131,6 +139,7 @@ async function loadSlowSearches(start: SQL, end: SQL): Promise<SlowSearchesSumma
       queryString: slowQueries.queryString,
       occurrences: sql<number>`count(*)::int`,
       accounts: sql<number>`count(distinct ${slowQueries.userId})::int`,
+      viaTool: sql<number>`(count(*) filter (where ${slowQueries.surface} = ${PRODUCTS_TOOL_SURFACE}))::int`,
     })
     .from(slowQueries)
     .where(inDay)

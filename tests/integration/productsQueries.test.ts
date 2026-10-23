@@ -50,7 +50,15 @@
  *  - after every timed case, the stored keyword counts against a fresh count of keyword_top_asins (none may differ) on a sample
  *    of up to 6,000 products: the 2,000 with the highest counts and 2,000 at count 0, both read through the 0056 partial index,
  *    and the pair table's 2,000 highest ASINs (the newest entrants). The full pass over every catalog row runs last, and only on
- *    request (PRODUCTS_FULL_COUNT_CHECK=1).
+ *    request (PRODUCTS_FULL_COUNT_CHECK=1);
+ *  - opt-in, by hand: the replay of a recorded slow search (spec 2026-10-23 §5b), PRODUCTS_REPLAY_QUERY=<query string> (a
+ *    slow_queries.query_string, as the digest's "Slow product searches" lists it; an empty value is the default list, the digest's
+ *    "(no filters)"). The string is parsed as the list page parses its URL (parseProductFilters over the searchParams shape Next hands
+ *    the page: a repeated leaf stays a list), its custom-category ids are expanded to their stored paths (whoever owns them: the
+ *    string carries no account), and its rows statement is planned (EXPLAIN), then run with EXPLAIN (ANALYZE, BUFFERS) under the
+ *    local cap: the plan and the time print, and the statement must finish under the page's cap. Skipped without the variable;
+ *    nothing replays a recorded string automatically. A string the search_products tool recorded (surface products_tool) holds its
+ *    page filters only (its categories object is not in it), so its replay runs without that scope.
  *
  * Read-only: every case runs inside BEGIN READ ONLY ... ROLLBACK on one dedicated connection (a stray
  * write would error), so nothing persists.
@@ -97,11 +105,14 @@
  *   RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "keywords sort" --disableConsoleIntercept
  * The stored-count full pass is opt-in: add PRODUCTS_FULL_COUNT_CHECK=1 to the whole-file run (it runs last), or run it alone:
  *   PRODUCTS_FULL_COUNT_CHECK=1 RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "every catalog row" --disableConsoleIntercept
+ * The replay of a recorded slow search is opt-in too; run it alone, for the coldest reading (in a whole-file run it comes after every
+ * other case but the full pass). Single quotes keep Git Bash off the & of the string:
+ *   PRODUCTS_REPLAY_QUERY='broad=Home&sort=keywords' RUN_INTEGRATION=1 pnpm vitest run tests/integration/productsQueries.test.ts -t "recorded slow search" --disableConsoleIntercept
  */
 import { describe, it, expect, beforeAll, afterAll, type TestContext } from 'vitest';
 import { Pool, type PoolClient } from 'pg';
 import { EMPTY_CATEGORY_SCOPE, pageCategoryScope, type ProductCategoryScope } from '@/lib/products/categoryPredicate';
-import { PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, type ProductFilters } from '@/lib/products/filters';
+import { parseProductFilters, PRODUCT_DEFAULTS, PRODUCT_PAGE_SIZE, productFiltersToSearchParams, type ProductFilters, type SearchParamsLike } from '@/lib/products/filters';
 import { PRODUCT_READ_TIMEOUT_MS, productSearchSql, searchProducts, type ProductSearchResult, type ProductSummaryRow, type SqlRunner, type SqlStatement } from '@/lib/products/searchProducts';
 import { BROAD_CATEGORY_LIST_SQL } from '@/lib/products/listCategories';
 import { FACETS_SCOPE_SQL } from '@/lib/products/buildCategoryFacets';
@@ -112,6 +123,8 @@ import { loadProductKeywords, type ProductKeywordsResult } from '@/lib/products/
 const RUN = !!process.env.RUN_INTEGRATION;
 /** The stored-count full pass (a probe of the pair table for every catalog row) runs only on request: PRODUCTS_FULL_COUNT_CHECK=1. */
 const FULL_COUNT_CHECK = process.env.PRODUCTS_FULL_COUNT_CHECK === '1';
+/** The replay of a recorded slow search runs only on request: PRODUCTS_REPLAY_QUERY=<query string> (an empty value is the default list). */
+const REPLAY_QUERY = process.env.PRODUCTS_REPLAY_QUERY;
 /** Per statement (see the header). */
 const STATEMENT_TIMEOUT = '300s';
 /** How often the server checks that the client is still there while it runs a statement. */
@@ -198,6 +211,16 @@ function outline(node: PlanNode, depth = 0): string[] {
 
 /** What explainAnalyze reports for a statement it ran: the outline (actual rows and loops), the rows of the top node, the server's planning + execution seconds, and the shared blocks the whole statement hit and read. */
 interface AnalyzedPlan { lines: string[]; rows: number; seconds: number; hit: number; read: number }
+
+/** A query string's parameters in the shape Next hands a page its searchParams, which parseProductFilters reads: a repeated key (leaf) becomes a list. */
+function toSearchParamsLike(sp: URLSearchParams): SearchParamsLike {
+  const out: Record<string, string | string[]> = {};
+  for (const [key, value] of sp) {
+    const seen = out[key];
+    out[key] = seen === undefined ? value : Array.isArray(seen) ? [...seen, value] : [seen, value];
+  }
+  return out;
+}
 
 /** What every keyword row must carry, whatever the ASIN. */
 function expectKeywordRows(result: ProductKeywordsResult): void {
@@ -1078,6 +1101,44 @@ describe.skipIf(!RUN)('Products queries (integration)', () => {
         );
         expect(size.rows[0].products, 'products in the sample').toBeGreaterThan(0);
         expect(mismatched.rows, 'sampled products whose stored keyword_count differs from a fresh count of keyword_top_asins').toEqual([]);
+      });
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  it.skipIf(REPLAY_QUERY === undefined)(
+    'opt-in (PRODUCTS_REPLAY_QUERY=<query string>): a recorded slow search, replayed with EXPLAIN (ANALYZE), finishes its rows statement under the page cap',
+    async () => {
+      await inReadOnlyTransaction(async () => {
+        // The reproduction loop of spec 2026-10-23 §5b: the string the digest lists, parsed as the list page parses its URL.
+        const query = REPLAY_QUERY ?? '';
+        const filters = parseProductFilters(toSearchParamsLike(new URLSearchParams(query)));
+        // The page expands its custom ids for the signed-in account; the recorded string carries none, so each id expands to its
+        // stored paths whoever owns it (the page offers an account only its own categories).
+        const customPaths = filters.customCategoryIds.length === 0
+          ? []
+          : (await client.query<{ leaf_paths: string[] | null }>('SELECT leaf_paths FROM custom_categories WHERE id = ANY($1::uuid[])', [filters.customCategoryIds])).rows.flatMap((r) => r.leaf_paths ?? []);
+        const q = productSearchSql(filters, pageCategoryScope(filters, customPaths));
+        const cap = PRODUCT_READ_TIMEOUT_MS / 1000;
+        // Parsing drops a value the page would drop (a bad one falls back to its default): the re-serialised string shows what is replayed.
+        const parsed = productFiltersToSearchParams(filters).toString();
+        console.log(
+          `[productsQueries] replay of "${query}": parsed as "${parsed}"${parsed === query ? '' : ' (differs from the recorded string)'}` +
+            `${filters.customCategoryIds.length > 0 ? `; ${filters.customCategoryIds.length} custom categories, ${customPaths.length} stored paths` : ''}`,
+        );
+        const planned = await explain(q.rows);
+        console.log(`[productsQueries] replay rows plan (planned in ${planned.seconds.toFixed(2)}s):\n${planned.lines.join('\n')}`);
+        // Under the local cap (twice the page's), so a plan that is still slow is cancelled here, not at the 300 s statement timeout.
+        await client.query(`SET LOCAL statement_timeout = '${SEARCH_TIMEOUT}'`);
+        const analyzed = await explainAnalyze(q.rows).catch((e: unknown) => {
+          if ((e as { code?: unknown } | null)?.code !== '57014') throw e;
+          throw new Error(`the replayed rows statement hit the local ${SEARCH_TIMEOUT} cap (the page's is ${cap}s)`, { cause: e });
+        });
+        console.log(
+          `[productsQueries] replay rows statement with EXPLAIN ANALYZE: ${analyzed.seconds.toFixed(2)}s planning + execution (the page's cap is ${cap}s), ` +
+            `${analyzed.rows} rows, shared blocks hit ${analyzed.hit}, read ${analyzed.read}:\n${analyzed.lines.join('\n')}`,
+        );
+        expect(analyzed.seconds, `the replayed rows statement of "${query}" (the page's cap is ${cap}s)`).toBeLessThan(cap);
       });
     },
     TEST_TIMEOUT_MS,

@@ -1,10 +1,11 @@
 // lib/products/searchProducts.test.ts
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { neon, neonConfig, type NeonQueryFunction } from '@neondatabase/serverless';
 import { asinProducts, baCategoryCrosswalk } from '@/db/schema';
 import { EMPTY_CATEGORY_SCOPE, type ProductCategoryScope } from './categoryPredicate';
 import { PRODUCT_DEFAULTS, PRODUCT_MAX_PAGE, PRODUCT_PAGE_SIZE, PRODUCT_SORTS, type ProductFilters } from './filters';
-import { productSearchSql, searchProducts, neonRunner, sortHidesNullKey, isStatementTimeout, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
+import { BASE, productSearchSql, searchProducts, neonRunner, sortHidesNullKey, isStatementTimeout, SORT_KEY_LABEL, PRODUCT_COUNT_CAP, PRODUCT_READ_TIMEOUT_MS } from './searchProducts';
 import { aliasCols, dbCols, notIn, recordingRow, selectNames } from './testHelpers';
 
 type Sort = ProductFilters['sort'];
@@ -206,6 +207,32 @@ describe('productSearchSql', () => {
     // pair-table read (k) is left.
     expect([...t.matchAll(/\bFROM (\w+)/g)].map((m) => m[1])).toEqual(['asin_products', 'ba_category_crosswalk']);
     for (const alias of ['p', 'kc', 'k']) expect([...aliasCols(t, alias)], `columns of ${alias}`).toEqual([]);
+  });
+});
+
+describe('BASE against the partial indexes (migrations 0051 and 0056)', () => {
+  /**
+   * Each `CREATE INDEX ... WHERE <predicate>` of a migration, as [index name, predicate]: one statement per breakpoint chunk,
+   * comment lines dropped, whitespace collapsed (a fresh worktree checks the files out with CRLF). Plain indexes have no WHERE.
+   */
+  const partialIndexes = (file: string): Array<[name: string, predicate: string]> =>
+    readFileSync(file, 'utf8')
+      .split('--> statement-breakpoint')
+      .map((chunk) => chunk.replace(/^\s*--.*$/gm, '').replace(/\s+/g, ' ').trim())
+      .flatMap((statement): Array<[string, string]> => {
+        const m = /^CREATE INDEX (?:IF NOT EXISTS )?(\w+) ON .+? WHERE (.+?);?$/.exec(statement);
+        return m ? [[m[1], m[2]]] : [];
+      });
+
+  it("every partial index's predicate is BASE without its `a.` alias: an edit to BASE cannot silently disable the seven", () => {
+    const partial = [...partialIndexes('db/migrations/0051_products.sql'), ...partialIndexes('db/migrations/0056_keyword_counts_and_slow_queries.sql')];
+    // 0051's six sort indexes and 0056's keyword-count index (the plain indexes of both files have no WHERE).
+    expect(partial.map(([name]) => name)).toEqual([
+      'asin_products_listed_since_idx', 'asin_products_monthly_sold_idx', 'asin_products_review_count_idx', 'asin_products_sales_rank_idx',
+      'asin_products_price_idx', 'asin_products_rank_ratio_idx', 'asin_products_keyword_count_idx',
+    ]);
+    const unaliased = BASE.replace(/\ba\./g, '').replace(/\s+/g, ' ').trim();
+    for (const [name, predicate] of partial) expect(predicate, `the predicate of ${name}`).toBe(unaliased);
   });
 });
 

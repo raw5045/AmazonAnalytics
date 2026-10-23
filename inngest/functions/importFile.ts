@@ -1093,8 +1093,11 @@ export async function processFileImport(input: ImportFileInput): Promise<ImportF
       // with consecutive-week streaks) right after the Keepa hand-off and
       // BEFORE the long summary refresh. Fail-soft, like the hand-off: a
       // failure here never fails the import — the previous build stays in
-      // place and scripts/buildTopAsinsWeek.ts re-runs it by hand. Same
-      // replay rule: a historical week must not rewrite the live table.
+      // place and scripts/buildTopAsinsWeek.ts re-runs it by hand. After
+      // that by-hand rebuild, run scripts/buildKeywordCounts.ts too, so the
+      // stored keyword counts follow the rebuilt table (keyword_counts_build
+      // below counted the build that was in place). Same replay rule: a
+      // historical week must not rewrite the live table.
       // ----------------------------------------------------------------
       await timePhase(
         file.id,
